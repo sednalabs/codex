@@ -222,6 +222,57 @@ impl Mailbox {
         Ok(selected)
     }
 
+    /// Load only causal envelopes attached to work admitted in this exact
+    /// native turn. Unscoped quiet notes are intentionally excluded.
+    pub async fn automatic_inputs(
+        &self,
+        recipient: ThreadId,
+        source_turn_id: &str,
+        limit: usize,
+    ) -> MailboxResult<Vec<Envelope>> {
+        if limit == 0 || limit > 2 {
+            return Err(MailboxError::InvalidInput(
+                "automatic input limit must be between 1 and 2".into(),
+            ));
+        }
+        let rows = sqlx::query(
+            "SELECT message.* FROM mailbox_messages AS message
+             JOIN mailbox_work AS work ON work.id = message.work_id
+             JOIN mailbox_admissions AS admission ON admission.work_id = work.id
+             WHERE admission.recipient = ? AND admission.source_turn_id = ?
+               AND work.agent = ? AND message.recipient = ?
+               AND message.input_admitted = 0 AND message.superseded_by IS NULL
+               AND message.withdrawn = 0
+             ORDER BY message.seq LIMIT ?",
+        )
+        .bind(recipient.to_string())
+        .bind(source_turn_id)
+        .bind(recipient.to_string())
+        .bind(recipient.to_string())
+        .bind(limit as i64)
+        .fetch_all(&self.pool)
+        .await?;
+        let envelopes = rows
+            .iter()
+            .map(envelope_from_row)
+            .collect::<MailboxResult<Vec<_>>>()?;
+        let bytes = envelopes.iter().fold(0_usize, |total, envelope| {
+            total
+                .saturating_add(envelope.communication.content.len())
+                .saturating_add(
+                    envelope
+                        .communication
+                        .encrypted_content
+                        .as_ref()
+                        .map_or(0, String::len),
+                )
+        });
+        if bytes > 16_384 {
+            return Err(MailboxError::Backpressure("automatic input byte limit"));
+        }
+        Ok(envelopes)
+    }
+
     /// Exact bounded list of accepted native-work input IDs not yet admitted.
     pub async fn unadmitted_native_input_ids(
         &self,

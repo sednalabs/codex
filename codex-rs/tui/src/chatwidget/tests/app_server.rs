@@ -514,6 +514,7 @@ async fn collab_spawn_end_shows_requested_model_and_effort() {
                 wake_notifications: None,
                 completion_reason: None,
                 wake_cause: None,
+                mailbox_wait_report: None,
             },
         }),
         /*replay_kind*/ None,
@@ -547,6 +548,7 @@ async fn collab_spawn_end_shows_requested_model_and_effort() {
                 wake_notifications: None,
                 completion_reason: None,
                 wake_cause: None,
+                mailbox_wait_report: None,
             },
         }),
         /*replay_kind*/ None,
@@ -1028,6 +1030,7 @@ async fn live_app_server_collab_wait_items_render_history() {
                 wake_notifications: None,
                 completion_reason: None,
                 wake_cause: None,
+                mailbox_wait_report: None,
             },
         }),
         /*replay_kind*/ None,
@@ -1074,6 +1077,7 @@ async fn live_app_server_collab_wait_items_render_history() {
                 wake_notifications: None,
                 completion_reason: None,
                 wake_cause: None,
+                mailbox_wait_report: None,
             },
         }),
         /*replay_kind*/ None,
@@ -1085,6 +1089,181 @@ async fn live_app_server_collab_wait_items_render_history() {
         .collect::<Vec<_>>()
         .join("\n");
     assert_chatwidget_snapshot!("app_server_collab_wait_items_render_history", combined);
+}
+
+#[tokio::test]
+async fn live_mailbox_wait_report_shows_join_pending_state_and_actual_wake() {
+    let (mut chat, mut rx, _op_rx) = make_chatwidget_manual(/*model_override*/ None).await;
+    drain_insert_history(&mut rx);
+    let sender_thread_id = ThreadId::new();
+    let receiver_thread_id = ThreadId::new();
+    let mailbox_wait_item = |status, mailbox_wait_report| {
+        AppServerThreadItem::CollabAgentToolCall {
+            id: "wait-mailbox-1".to_string(),
+            tool: AppServerCollabAgentTool::Wait,
+            status,
+            sender_thread_id: sender_thread_id.to_string(),
+            receiver_thread_ids: vec![receiver_thread_id.to_string()],
+            prompt: None,
+            model: None,
+            reasoning_effort: None,
+            requested_model: None,
+            requested_reasoning_effort: None,
+            effective_model: None,
+            effective_reasoning_effort: None,
+            agents_states: HashMap::new(),
+            wake_notifications: None,
+            completion_reason: None,
+            wake_cause: None,
+            mailbox_wait_report,
+        }
+    };
+    let active_report = codex_protocol::items::MailboxWaitReport {
+        requested_targets: vec!["Ada".to_string(), "work_42".to_string()],
+        requested_replies_to: vec!["msg_request".to_string()],
+        return_when: codex_protocol::items::MailboxWaitReturnWhen::All,
+        completed: vec![codex_protocol::items::MailboxWaitSelectionItem {
+            work_ref: None,
+            message_id: None,
+            agent: Some("Ada".to_string()),
+            status: "completed".to_string(),
+        }],
+        pending: vec![
+            codex_protocol::items::MailboxWaitSelectionItem {
+                work_ref: Some("work_42".to_string()),
+                message_id: None,
+                agent: None,
+                status: "running".to_string(),
+            },
+            codex_protocol::items::MailboxWaitSelectionItem {
+                work_ref: None,
+                message_id: Some("msg_request".to_string()),
+                agent: Some("Robie".to_string()),
+                status: "awaiting_reply".to_string(),
+            },
+        ],
+        completion_reason: None,
+        condition_satisfied: false,
+        quiet_count: 3,
+        wake_sender: None,
+        wake_ref: None,
+    };
+
+    chat.handle_server_notification(
+        ServerNotification::ItemStarted(ItemStartedNotification {
+            thread_id: "thread-mailbox-wait".to_string(),
+            turn_id: "turn-mailbox-wait".to_string(),
+            started_at_ms: 0,
+            item: mailbox_wait_item(
+                AppServerCollabAgentToolCallStatus::InProgress,
+                Some(active_report.clone()),
+            ),
+        }),
+        /*replay_kind*/ None,
+    );
+    let initial_lines = lines_to_single_string(
+        &chat
+            .active_cell_transcript_lines(/*width*/ 80)
+            .expect("mailbox wait active row"),
+    );
+    assert!(initial_lines.contains("Waiting for all of 3 selected conditions"));
+    assert!(initial_lines.contains("Join condition: all"));
+    assert!(initial_lines.contains("Pending work_42: running"));
+    assert!(initial_lines.contains("Pending Robie · msg_request: awaiting_reply"));
+    assert!(initial_lines.contains("Quiet count: 3"));
+    assert!(!initial_lines.contains("Completion reason:"));
+
+    let progressed_report = codex_protocol::items::MailboxWaitReport {
+        requested_targets: active_report.requested_targets.clone(),
+        requested_replies_to: active_report.requested_replies_to.clone(),
+        return_when: active_report.return_when,
+        completed: vec![
+            active_report.completed[0].clone(),
+            codex_protocol::items::MailboxWaitSelectionItem {
+                work_ref: Some("work_42".to_string()),
+                message_id: None,
+                agent: None,
+                status: "completed".to_string(),
+            },
+        ],
+        pending: vec![codex_protocol::items::MailboxWaitSelectionItem {
+            work_ref: None,
+            message_id: Some("msg_request".to_string()),
+            agent: Some("Robie".to_string()),
+            status: "awaiting_reply".to_string(),
+        }],
+        completion_reason: None,
+        condition_satisfied: false,
+        quiet_count: 4,
+        wake_sender: None,
+        wake_ref: None,
+    };
+    chat.handle_server_notification(
+        ServerNotification::ItemStarted(ItemStartedNotification {
+            thread_id: "thread-mailbox-wait".to_string(),
+            turn_id: "turn-mailbox-wait".to_string(),
+            started_at_ms: 1,
+            item: mailbox_wait_item(
+                AppServerCollabAgentToolCallStatus::InProgress,
+                Some(progressed_report.clone()),
+            ),
+        }),
+        /*replay_kind*/ None,
+    );
+    let updated_lines = lines_to_single_string(
+        &chat
+            .active_cell_transcript_lines(/*width*/ 80)
+            .expect("mailbox wait active row after selection progress"),
+    );
+    assert!(updated_lines.contains("Completed work_42: completed"));
+    assert!(updated_lines.contains("Pending Robie · msg_request: awaiting_reply"));
+    assert!(updated_lines.contains("Quiet count: 4"));
+    assert!(!updated_lines.contains("Pending work_42:"));
+    assert!(drain_insert_history(&mut rx).is_empty());
+
+    let terminal_report = codex_protocol::items::MailboxWaitReport {
+        requested_targets: active_report.requested_targets.clone(),
+        requested_replies_to: active_report.requested_replies_to.clone(),
+        return_when: active_report.return_when,
+        completed: vec![
+            progressed_report.completed[0].clone(),
+            progressed_report.completed[1].clone(),
+            codex_protocol::items::MailboxWaitSelectionItem {
+                work_ref: None,
+                message_id: Some("msg_reply".to_string()),
+                agent: Some("Robie".to_string()),
+                status: "replied".to_string(),
+            },
+        ],
+        pending: Vec::new(),
+        completion_reason: Some(codex_protocol::items::MailboxWakeCause::Reply),
+        condition_satisfied: true,
+        quiet_count: 4,
+        wake_sender: Some("Robie".to_string()),
+        wake_ref: Some("msg_reply".to_string()),
+    };
+    chat.handle_server_notification(
+        ServerNotification::ItemCompleted(ItemCompletedNotification {
+            thread_id: "thread-mailbox-wait".to_string(),
+            turn_id: "turn-mailbox-wait".to_string(),
+            completed_at_ms: 1,
+            item: mailbox_wait_item(
+                AppServerCollabAgentToolCallStatus::Completed,
+                Some(terminal_report),
+            ),
+        }),
+        /*replay_kind*/ None,
+    );
+    let terminal_lines = drain_insert_history(&mut rx)
+        .into_iter()
+        .map(|lines| lines_to_single_string(&lines))
+        .collect::<Vec<_>>()
+        .join("\n");
+    assert!(terminal_lines.contains("Mailbox wait returned: reply"));
+    assert!(terminal_lines.contains("Condition satisfied: yes"));
+    assert!(terminal_lines.contains("Wake sender: Robie"));
+    assert!(terminal_lines.contains("Wake reference: msg_reply"));
+    assert!(terminal_lines.contains("Quiet count: 4"));
 }
 
 #[tokio::test]
@@ -1118,6 +1297,7 @@ async fn live_app_server_collab_spawn_completed_renders_requested_model_and_effo
                 wake_notifications: None,
                 completion_reason: None,
                 wake_cause: None,
+                mailbox_wait_report: None,
             },
         }),
         /*replay_kind*/ None,
@@ -1152,6 +1332,7 @@ async fn live_app_server_collab_spawn_completed_renders_requested_model_and_effo
                 wake_notifications: None,
                 completion_reason: None,
                 wake_cause: None,
+                mailbox_wait_report: None,
             },
         }),
         /*replay_kind*/ None,
@@ -1206,6 +1387,7 @@ async fn live_app_server_spawn_completion_does_not_fill_missing_effective_identi
                 wake_notifications: None,
                 completion_reason: None,
                 wake_cause: None,
+                mailbox_wait_report: None,
             },
         }),
         /*replay_kind*/ None,
@@ -1239,6 +1421,7 @@ async fn live_app_server_spawn_completion_does_not_fill_missing_effective_identi
                 wake_notifications: None,
                 completion_reason: None,
                 wake_cause: None,
+                mailbox_wait_report: None,
             },
         }),
         /*replay_kind*/ None,

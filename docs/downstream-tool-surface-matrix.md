@@ -9,6 +9,19 @@ divergences.
 
 Last reviewed: `2026-08-16`.
 
+Opt-in mailbox increment (`agent_mailbox`, V2 only): `send_message` advertises
+the bundled encrypted message contract with note/progress/request/alert intent,
+exact work/reply/replacement references, legacy one-shot attention, and separate
+recipient-opted-in idle activation. Its stable message receipt proves durable
+acceptance, not acknowledgement or comprehension. Spawn/followup add an optional
+immutable `work_ref`. `wait_agent` joins optional agent snapshots/exact work refs
+and request IDs with any/all semantics; omitted timeout is event-only, selected
+failures return pending refs, and attention does not satisfy the join.
+`mailbox_read` is bounded and paginated: native canonical AgentMessage carries
+the body, and the JSON result contains metadata rather than duplicate ciphertext.
+The same structured report drives the tool result and live/replay display.
+Disabling the feature restores native schemas without consuming pending mail.
+
 Review baseline:
 
 - live `openai/codex` `main`: `49db349ffdd888f5e3c91abf9b7519d8631e6e9a`

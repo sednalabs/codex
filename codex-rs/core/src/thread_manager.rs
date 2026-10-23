@@ -1,6 +1,7 @@
 use crate::CodexAppsToolsCache;
 use crate::SkillsService;
 use crate::agent::AgentControl;
+use crate::agent::goal_notifications::GoalNotificationSnapshot;
 use crate::agent_communication::AgentCommunicationContext;
 use crate::agent_communication::AgentCommunicationKind;
 use crate::attestation::AttestationProvider;
@@ -1367,45 +1368,77 @@ impl ThreadManager {
         AgentControl::new(Arc::downgrade(&self.state), /*rollout_budget*/ None)
     }
 
-    /// Delivers a queue-only V2 child completion to its immediate parent.
-    /// Extensions use this when a completion was intentionally deferred during
-    /// a child turn and a later external state change makes it terminal while
-    /// the child is idle.
+    /// Settles a deferred V2 child completion after a later external state
+    /// change makes it terminal while the child is idle. Mailbox-enabled
+    /// sessions persist the outcome and delivery intent instead of queueing a
+    /// separate native completion. A false return means the legacy native
+    /// enqueue was rejected; mailbox persistence failures return an error.
     pub async fn notify_v2_child_completion(
         &self,
         child_thread_id: ThreadId,
         parent_thread_id: ThreadId,
         child_agent_path: AgentPath,
+        source_turn_id: &str,
         status: AgentStatus,
-    ) -> Result<(), String> {
-        let Some(parent_agent_path) = child_agent_path
+        goal: Option<GoalNotificationSnapshot>,
+    ) -> Result<bool, String> {
+        let parent_agent_path = child_agent_path
             .as_str()
             .rsplit_once('/')
-            .and_then(|(parent, _)| AgentPath::try_from(parent).ok())
-        else {
-            return Ok(());
+            .and_then(|(parent, _)| AgentPath::try_from(parent).ok());
+        let communication = match parent_agent_path.as_ref() {
+            Some(parent_agent_path) => format_inter_agent_completion_message(
+                parent_agent_path.clone(),
+                child_agent_path.clone(),
+                &status,
+            )
+            .map(|message| {
+                codex_protocol::protocol::InterAgentCommunication::new(
+                    child_agent_path.clone(),
+                    parent_agent_path.clone(),
+                    Vec::new(),
+                    message,
+                    /*trigger_turn*/ false,
+                )
+            }),
+            None => None,
         };
-        let Some(message) = format_inter_agent_completion_message(
-            parent_agent_path.clone(),
-            child_agent_path.clone(),
-            &status,
-        ) else {
-            return Ok(());
+        if let Ok(child_thread) = self.get_thread(child_thread_id).await {
+            let child_agent_control = child_thread.session.services.agent_control.clone();
+            if child_agent_control.mailbox_enabled() {
+                child_agent_control
+                    .mailbox_record_terminal(
+                        child_thread_id,
+                        source_turn_id,
+                        status,
+                        goal,
+                        communication,
+                    )
+                    .await
+                    .map_err(|err| err.to_string())?;
+                return Ok(true);
+            }
+        }
+
+        let Some(parent_agent_path) = parent_agent_path else {
+            return Ok(true);
         };
-        let communication = codex_protocol::protocol::InterAgentCommunication::new(
-            child_agent_path,
-            parent_agent_path,
-            Vec::new(),
-            message,
-            /*trigger_turn*/ false,
-        );
+        let Some(communication) = communication else {
+            return Ok(true);
+        };
         let context =
             AgentCommunicationContext::new(AgentCommunicationKind::Result, child_thread_id);
-        self.agent_control()
+        match self
+            .agent_control()
             .send_inter_agent_communication(parent_thread_id, communication, context)
             .await
-            .map(|_| ())
-            .map_err(|err| err.to_string())
+        {
+            Ok(_) => Ok(true),
+            Err(err) => {
+                tracing::warn!("failed to queue deferred child completion: {err}");
+                Ok(false)
+            }
+        }
     }
 
     fn agent_control_for_config(&self, config: &Config) -> AgentControl {

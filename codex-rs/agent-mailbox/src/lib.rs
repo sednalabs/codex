@@ -10,15 +10,20 @@ mod messages;
 mod message_delivery;
 mod message_rules;
 mod outcome;
+mod outcome_messages;
+mod outcome_store;
+mod runtime_fault;
 mod schema;
 mod snapshot;
 mod store;
+mod wait_graph;
 mod work;
 mod types;
 
 pub use error::{MailboxError, MailboxResult};
 pub use store::Mailbox;
 pub use snapshot::is_provably_closed_peer_cycle;
+pub use wait_graph::WaitRegistration;
 pub use types::{
     ActivationDecision, ActivationDisposition, AdmissionReceipt, Attention,
     CanonicalConfirmation, Continuation, ContinuationReceipt, ContinuationState, Dependency,

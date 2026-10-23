@@ -207,8 +207,8 @@ pub(crate) async fn insert_message_tx(
         "INSERT INTO mailbox_messages (
             id, invocation_key, request_json, sender, recipient, author_path, recipient_path,
             communication_json,
-            kind, work_ref_json, reply_to, supersedes, activate_if_idle, legacy_attention
-         ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            kind, work_ref_json, work_id, reply_to, supersedes, activate_if_idle, legacy_attention
+         ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
     )
     .bind(&id)
     .bind(&draft.invocation_key)
@@ -220,6 +220,7 @@ pub(crate) async fn insert_message_tx(
     .bind(&communication_json)
     .bind(kind_json)
     .bind(draft.work_ref.as_ref().map(serde_json::to_string).transpose()?)
+    .bind(draft.work_ref.as_ref().map(|work_ref| work_ref.id.as_str()))
     .bind(&draft.reply_to)
     .bind(&draft.supersedes)
     .bind(i64::from(draft.activate_if_idle))
@@ -238,22 +239,32 @@ pub(crate) async fn insert_message_tx(
     .await?;
     add_invocation_tx(transaction, &draft.invocation_key, &request_json, &id).await?;
     if let Some(old_id) = draft.supersedes.as_deref() {
-        let old_quiet = sqlx::query_scalar::<_, i64>(
-            "SELECT CASE WHEN legacy_attention = 0 THEN 1 ELSE 0 END
-             FROM mailbox_messages WHERE id = ? AND canonical = 0",
+        let old = sqlx::query(
+            "SELECT recipient, canonical, input_admitted, legacy_attention
+             FROM mailbox_messages
+             WHERE id = ? AND superseded_by IS NULL AND withdrawn = 0",
         )
         .bind(old_id)
         .fetch_optional(&mut **transaction)
-        .await?
-        .unwrap_or(0)
-            != 0;
-        let replaced = sqlx::query("UPDATE mailbox_messages SET superseded_by = ? WHERE id = ? AND canonical = 0")
+        .await?;
+        let replaced = sqlx::query(
+            "UPDATE mailbox_messages SET superseded_by = ?
+             WHERE id = ? AND superseded_by IS NULL AND withdrawn = 0",
+        )
             .bind(&id)
             .bind(old_id)
             .execute(&mut **transaction)
             .await?;
         if replaced.rows_affected() == 1 {
-            decrement_pending_count(transaction, &draft.recipient.to_string(), old_quiet).await?;
+            if let Some(old) = old {
+                let unread = old.try_get::<i64, _>("canonical")? == 0
+                    || old.try_get::<i64, _>("input_admitted")? == 0;
+                if unread {
+                    let recipient: String = old.try_get("recipient")?;
+                    let quiet = old.try_get::<i64, _>("legacy_attention")? == 0;
+                    decrement_pending_count(transaction, &recipient, quiet).await?;
+                }
+            }
         }
     }
     sqlx::query("UPDATE mailbox_counts SET item_count = item_count + 1 WHERE name = 'message'")

@@ -3587,34 +3587,44 @@
     },
     {
       "id": "exact-target-wait-mailbox-filter",
-      "title": "Exact-target V2 wait filters queue-only mailbox activity",
+      "title": "Exact-target waits and opt-in durable V2 mailboxes",
       "status": "live",
       "category": "agent-runtime",
       "surface_type": "wait-agent",
-      "surface": ["multi-agent V2 wait_agent", "session input queue"],
+      "surface": ["multi-agent V2 collaboration", "canonical history", "live and replay wait reports"],
       "files": [
+        "codex-rs/agent-mailbox",
+        "codex-rs/core/src/agent/control/mailbox.rs",
+        "codex-rs/core/src/tools/handlers/multi_agents_v2/mailbox_message.rs",
+        "codex-rs/core/src/tools/handlers/multi_agents_v2/mailbox_wait.rs",
         "codex-rs/core/src/tools/handlers/multi_agents_v2/wait.rs",
         "codex-rs/core/src/session/input_queue.rs"
       ],
-      "behavior": "Exact-target waits ignore queue-only inter-agent mailbox activity while retaining FIFO durable messages and later notification summaries; targetless waits remain broadly mailbox-wakeable.",
+      "behavior": "The native default keeps exact-target queue-only filtering. Opt-in agent_mailbox supplies a core-independent library and separately versioned mailbox_1.sqlite for same-tree V2 accepted work, quiet messages, exact request replies, bounded reads, per-item observation, and any/all work/reply joins. Native acceptance and execution admission remain authoritative; canonical append and successful flush precede observation. Optional recipient idle activation never implies comprehension or business acceptance.",
       "upstream_equivalent": false,
       "introduced_in": {"carry_commit": null, "upstream_commit": null},
       "guardrail_lane": "codex.core-multi-agent-orchestration-targeted",
       "tests": [
+        "native_retry_dispatch_reopen_and_capture_backpressure_are_safe",
+        "admission_is_incremental_but_outcomes_and_snapshots_stay_exactly_scoped",
+        "pending_deferred_and_terminal_continuations_bind_to_exact_generation",
+        "quiet_reply_and_author_dispositions_settle_only_the_exact_request",
+        "canonical_outcomes_are_observed_per_item_without_cursor_loss",
+        "only_closed_any_and_all_peer_cycles_are_provable",
         "multi_agent_v2_wait_agent_accepts_target_and_timeout_arguments",
         "multi_agent_v2_wait_agent_does_not_return_completed_content",
         "multi_agent_v2_wait_agent_wakes_on_trigger_turn_mailbox_notification",
         "input_queue_tracks_pending_trigger_turn_mail"
       ],
       "owner": "downstream",
-      "notes": "Regression repair for exact-target waits; preserve queue-only delivery and notification visibility until upstream adopts the typed actionable-input distinction.",
+      "notes": "Preserve six native seams during sync: accepted-work capture inside spawn/followup acceptance; local delivery eligibility; exact execution-input admission; captured producer terminal outcome and typed goal-continuation disposition; fallible canonical append/flush with stable-ID reconciliation; existing collaboration live/replay mapping. Retain compatible source/library/history/UI tests as one semantic guardrail, not private layout snapshots. Feature disable preserves pending custody without acknowledgement, deletion, stock draining, or shared-state rewind. Explicit resume reconciles exact retained work or reports recovery needed; it never mass-resumes historical agents or claims exactly-once business effects. Cross-root mail, subscriptions, shadow hubs, watchdogs, new schedulers, and provider/auth changes are not included. Retire each downstream mechanism only when upstream owns equivalent semantics and the same consumer suite passes; remove obsolete adapters with their dependencies rather than restoring copied agent/session implementations.",
       "upstreamability_tier": "upstream-pr",
-      "boundary_type": "runtime-regression-repair",
+      "boundary_type": "narrow-native-adapter",
       "hotspot_files": [
         "codex-rs/core/src/tools/handlers/multi_agents_v2/wait.rs",
         "codex-rs/core/src/session/input_queue.rs"
       ],
-      "extraction_target": "upstream exact-target wait mailbox filtering"
+      "extraction_target": "upstream-equivalent accepted work and mailbox settlement semantics"
     },
     {
       "id": "rmcp-streamable-http-cancellation",

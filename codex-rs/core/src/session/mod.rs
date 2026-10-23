@@ -2014,6 +2014,27 @@ impl Session {
                 .await
                 .replace(error.clone());
         }
+        let mailbox_terminal_before_publish = self.services.agent_control.mailbox_enabled()
+            && turn_context.multi_agent_version == MultiAgentVersion::V2
+            && matches!(
+                &legacy_source,
+                EventMsg::TurnComplete(_) | EventMsg::TurnAborted(_)
+            )
+            && matches!(
+                &turn_context.session_source,
+                SessionSource::SubAgent(SubAgentSource::ThreadSpawn {
+                    agent_path: Some(_),
+                    ..
+                })
+            );
+        let mailbox_status_override = if mailbox_terminal_before_publish {
+            // Persist producer outcome and delivery intent before exposing a terminal status
+            // that can end the child session's custody.
+            self.maybe_notify_parent_of_terminal_turn(turn_context, &legacy_source)
+                .await
+        } else {
+            None
+        };
         self.services
             .rollout_thread_trace
             .record_codex_turn_event(&turn_context.sub_id, &legacy_source);
@@ -2024,9 +2045,17 @@ impl Session {
             id: turn_context.sub_id.clone(),
             msg,
         };
-        self.send_event_raw(event).await;
-        self.maybe_notify_parent_of_terminal_turn(turn_context, &legacy_source)
-            .await;
+        if mailbox_terminal_before_publish {
+            self.send_event_raw_with_status_override(event, mailbox_status_override)
+                .await;
+        } else {
+            self.send_event_raw(event).await;
+        }
+        if !mailbox_terminal_before_publish {
+            let _ = self
+                .maybe_notify_parent_of_terminal_turn(turn_context, &legacy_source)
+                .await;
+        }
         self.maybe_mirror_event_text_to_realtime(&legacy_source)
             .await;
         self.maybe_clear_realtime_handoff_for_event(&legacy_source)
@@ -2050,13 +2079,13 @@ impl Session {
         &self,
         turn_context: &TurnContext,
         msg: &EventMsg,
-    ) {
+    ) -> Option<AgentStatus> {
         if turn_context.multi_agent_version != MultiAgentVersion::V2 {
-            return;
+            return None;
         }
 
         if !matches!(msg, EventMsg::TurnComplete(_) | EventMsg::TurnAborted(_)) {
-            return;
+            return None;
         }
 
         let SessionSource::SubAgent(SubAgentSource::ThreadSpawn {
@@ -2065,25 +2094,26 @@ impl Session {
             ..
         }) = &turn_context.session_source
         else {
-            return;
+            return None;
         };
 
-        let status = match turn_context.terminal_error.lock().await.take() {
+        let mailbox_enabled = self.services.agent_control.mailbox_enabled();
+        let terminal_error = turn_context.terminal_error.lock().await.take();
+        let status = match terminal_error.as_ref() {
             Some(error) => {
-                let status = AgentStatus::Errored(error.message);
-                self.agent_status.send_replace(status.clone());
+                let status = AgentStatus::Errored(error.message.clone());
+                if !mailbox_enabled {
+                    self.agent_status.send_replace(status.clone());
+                }
                 status
             }
             None => {
                 let Some(status) = agent_status_from_event(msg) else {
-                    return;
+                    return None;
                 };
                 status
             }
         };
-        if !is_final(&status) {
-            return;
-        }
 
         if let EventMsg::TurnComplete(event) = msg
             && matches!(status, AgentStatus::Completed(_))
@@ -2097,6 +2127,43 @@ impl Session {
                 .get::<crate::agent::goal_notifications::GoalNotificationStore>()
         {
             let _ = store.publish_turn_complete(&token, event.last_agent_message.clone());
+        }
+
+        if mailbox_enabled {
+            let completion = Self::child_completion_communication(child_agent_path, &status);
+            let goal_snapshot = self
+                .services
+                .thread_extension_data
+                .get::<crate::agent::goal_notifications::GoalNotificationStore>()
+                .and_then(|store| store.snapshot());
+            if let Err(error) = self
+                .services
+                .agent_control
+                .mailbox_record_terminal(
+                    self.thread_id,
+                    &turn_context.sub_id,
+                    status.clone(),
+                    goal_snapshot,
+                    completion,
+                )
+                .await
+            {
+                warn!(
+                    thread_id = %self.thread_id,
+                    turn_id = %turn_context.sub_id,
+                    error = %error,
+                    "failed to durably record mailbox turn outcome"
+                );
+                return Some(AgentStatus::Errored(format!(
+                    "Mailbox turn outcome could not be durably recorded: {error}"
+                )));
+            }
+        }
+
+        // An interrupted turn is terminal for mailbox accounting but not for native agent
+        // residency, so record it above and leave the existing native completion behavior alone.
+        if !is_final(&status) {
+            return mailbox_enabled.then_some(status);
         }
 
         // Only a normal, error-free TurnComplete may be deferred. Aborts and
@@ -2115,7 +2182,16 @@ impl Session {
                 })
                 == Some(false)
         {
-            return;
+            if mailbox_enabled {
+                return Some(status);
+            }
+            return None;
+        }
+
+        // The mailbox adapter owns result delivery to every exact issuer. If its persistence
+        // fails, report the error above and do not publish a success-shaped native fallback.
+        if mailbox_enabled {
+            return Some(status);
         }
 
         self.forward_child_completion_to_parent(
@@ -2125,6 +2201,7 @@ impl Session {
             status,
         )
         .await;
+        None
     }
 
     /// Sends the standard completion envelope from a spawned MultiAgentV2 child to its parent.
@@ -2135,36 +2212,15 @@ impl Session {
         child_agent_path: &codex_protocol::AgentPath,
         status: AgentStatus,
     ) {
-        let Some(parent_agent_path) = child_agent_path
-            .as_str()
-            .rsplit_once('/')
-            .and_then(|(parent, _)| codex_protocol::AgentPath::try_from(parent).ok())
+        let Some(communication) = Self::child_completion_communication(child_agent_path, &status)
         else {
             return;
         };
-
-        let Some(message) = format_inter_agent_completion_message(
-            parent_agent_path.clone(),
-            child_agent_path.clone(),
-            &status,
-        ) else {
-            return;
-        };
-        // `communication` owns the message. Keep a second copy only when the
-        // recorder will actually need it after parent delivery succeeds.
         let trace_message = self
             .services
             .rollout_thread_trace
             .is_enabled()
-            .then(|| message.clone());
-        let mut communication = InterAgentCommunication::new(
-            child_agent_path.clone(),
-            parent_agent_path,
-            Vec::new(),
-            message,
-            /*trigger_turn*/ false,
-        );
-        communication.origin = Some(codex_protocol::protocol::AgentCommunicationOrigin::Result);
+            .then(|| communication.content.clone());
         let context =
             AgentCommunicationContext::new(AgentCommunicationKind::Result, self.thread_id);
         if let Err(err) = self
@@ -2189,6 +2245,30 @@ impl Session {
                     },
                 );
         }
+    }
+
+    fn child_completion_communication(
+        child_agent_path: &codex_protocol::AgentPath,
+        status: &AgentStatus,
+    ) -> Option<InterAgentCommunication> {
+        let parent_agent_path = child_agent_path
+            .as_str()
+            .rsplit_once('/')
+            .and_then(|(parent, _)| codex_protocol::AgentPath::try_from(parent).ok())?;
+        let message = format_inter_agent_completion_message(
+            parent_agent_path.clone(),
+            child_agent_path.clone(),
+            status,
+        )?;
+        let mut communication = InterAgentCommunication::new(
+            child_agent_path.clone(),
+            parent_agent_path,
+            Vec::new(),
+            message,
+            /*trigger_turn*/ false,
+        );
+        communication.origin = Some(codex_protocol::protocol::AgentCommunicationOrigin::Result);
+        Some(communication)
     }
 
     async fn maybe_mirror_event_text_to_realtime(&self, msg: &EventMsg) {
@@ -2250,6 +2330,19 @@ impl Session {
             .await;
     }
 
+    async fn send_event_raw_with_status_override(
+        &self,
+        event: Event,
+        status_override: Option<AgentStatus>,
+    ) {
+        self.send_event_raw_with_persistence_and_status_override(
+            event,
+            /*persist*/ true,
+            status_override,
+        )
+        .await;
+    }
+
     /// Delivers an event without creating a local rollout for a thread that has not materialized.
     pub(crate) async fn send_event_raw_without_materializing_rollout(&self, event: Event) {
         let persist = match self.current_rollout_path().await {
@@ -2264,6 +2357,16 @@ impl Session {
     }
 
     async fn send_event_raw_with_persistence(&self, event: Event, persist: bool) {
+        self.send_event_raw_with_persistence_and_status_override(event, persist, None)
+            .await;
+    }
+
+    async fn send_event_raw_with_persistence_and_status_override(
+        &self,
+        event: Event,
+        persist: bool,
+        status_override: Option<AgentStatus>,
+    ) {
         // Persist the event into rollout storage; the store applies its persistence policy.
         if persist {
             let rollout_items = vec![RolloutItem::EventMsg(event.msg.clone())];
@@ -2273,12 +2376,12 @@ impl Session {
             .rollout_thread_trace
             .record_protocol_event(&event.msg);
         self.services.log_usage_event(self.thread_id, &event).await;
-        self.deliver_event_raw(event).await;
+        self.deliver_event_raw(event, status_override).await;
     }
 
-    async fn deliver_event_raw(&self, event: Event) {
+    async fn deliver_event_raw(&self, event: Event, status_override: Option<AgentStatus>) {
         // Record the last known agent status.
-        if let Some(status) = agent_status_from_event(&event.msg) {
+        if let Some(status) = status_override.or_else(|| agent_status_from_event(&event.msg)) {
             self.agent_status.send_replace(status);
         }
         if let Err(e) = self.tx_event.send(event).await {
@@ -3152,6 +3255,31 @@ impl Session {
         }
     }
 
+    fn canonical_agent_message_ids(initial_history: &InitialHistory) -> HashSet<ResponseItemId> {
+        let items: &[RolloutItem] = match initial_history {
+            InitialHistory::New | InitialHistory::Cleared => return HashSet::new(),
+            InitialHistory::Resumed(resumed) => resumed.history.as_slice(),
+            InitialHistory::Forked(items) => items,
+        };
+        let mut ids = HashSet::new();
+        for item in items {
+            let response_items: &[ResponseItem] = match item {
+                RolloutItem::ResponseItem(item) => std::slice::from_ref(item),
+                RolloutItem::Compacted(compacted) => {
+                    compacted.replacement_history.as_deref().unwrap_or_default()
+                }
+                _ => continue,
+            };
+            ids.extend(response_items.iter().filter_map(|item| match item {
+                ResponseItem::AgentMessage { id: Some(id), .. } if !id.is_empty() => {
+                    Some(id.clone())
+                }
+                _ => None,
+            }));
+        }
+        ids
+    }
+
     pub(crate) fn response_item_from_user_input(&self, input: Vec<UserInput>) -> ResponseItem {
         ResponseItem::from(ResponseInputItem::from_user_input(
             input,
@@ -3273,7 +3401,7 @@ impl Session {
         &self,
         turn_context: &TurnContext,
         mut communication: InterAgentCommunication,
-    ) {
+    ) -> CodexResult<ResponseItemId> {
         communication.set_turn_id_if_missing(&turn_context.sub_id);
         let response_item = communication.to_model_input_item();
         let items = self.prepare_conversation_items_for_history(
@@ -3282,7 +3410,92 @@ impl Session {
         );
         let items = items.as_ref();
         let response_item = items[0].clone();
-        {
+        let response_item_id = response_item
+            .id()
+            .cloned()
+            .expect("prepared agent message should have a stable ID");
+        let rollout_items = [
+            RolloutItem::InterAgentCommunicationMetadata {
+                trigger_turn: communication.trigger_turn,
+            },
+            RolloutItem::ResponseItem(response_item),
+        ];
+        let mailbox_enabled = self.services.agent_control.mailbox_enabled();
+        let custody_gate = if mailbox_enabled {
+            Some(self.mailbox_custody_gate.lock().await)
+        } else {
+            None
+        };
+        if mailbox_enabled {
+            self.live_thread().ok_or_else(|| {
+                std::io::Error::other(
+                    "mailbox canonical admission requires a durable session rollout",
+                )
+            })?;
+            if self
+                .mailbox_unsettled_response_item_ids
+                .lock()
+                .await
+                .contains(&response_item_id)
+            {
+                return Err(std::io::Error::other(
+                    "mailbox message has an indeterminate canonical append; resume the session to reconcile it",
+                )
+                .into());
+            }
+            let mut canonical_ids = self.mailbox_canonical_response_item_ids.lock().await;
+            let already_canonical = canonical_ids.contains(&response_item_id);
+            if already_canonical {
+                // InitialHistory and this set are the canonical source across compaction. Flush
+                // before acknowledging even when the exact message was already present.
+                self.flush_rollout().await?;
+                // Re-delivery after a crash between canonical flush and mailbox acknowledgement
+                // must not duplicate the body in in-memory history or emit it a second time.
+                self.services
+                    .agent_control
+                    .mailbox_mark_canonical(
+                        self.thread_id,
+                        std::slice::from_ref(&response_item_id),
+                    )
+                    .await?;
+                drop(canonical_ids);
+                drop(custody_gate);
+                return Ok(response_item_id);
+            }
+
+            // Do not retain the ID as canonical until the append has passed its durability
+            // barrier and the in-memory history has accepted the same item. Failed writes are
+            // separately marked indeterminate to prevent retries from duplicating partial appends.
+            if let Err(error) = self.try_persist_rollout_items(&rollout_items).await {
+                self.mailbox_unsettled_response_item_ids
+                    .lock()
+                    .await
+                    .insert(response_item_id.clone());
+                return Err(error.into());
+            }
+            if let Err(error) = self.flush_rollout().await {
+                self.mailbox_unsettled_response_item_ids
+                    .lock()
+                    .await
+                    .insert(response_item_id.clone());
+                return Err(error.into());
+            }
+            {
+                let mut state = self.state.lock().await;
+                state.current_time_reminder.note_recorded_items(items);
+                state.record_items(
+                    items.iter(),
+                    turn_context.model_info.truncation_policy.into(),
+                );
+            }
+            canonical_ids.insert(response_item_id.clone());
+            self.services
+                .agent_control
+                .mailbox_mark_canonical(self.thread_id, std::slice::from_ref(&response_item_id))
+                .await?;
+            drop(canonical_ids);
+        } else {
+            self.persist_rollout_items(&rollout_items).await;
             let mut state = self.state.lock().await;
             state.current_time_reminder.note_recorded_items(items);
             state.record_items(
@@ -3290,14 +3503,9 @@ impl Session {
                 turn_context.model_info.truncation_policy.into(),
             );
         }
-        self.persist_rollout_items(&[
-            RolloutItem::InterAgentCommunicationMetadata {
-                trigger_turn: communication.trigger_turn,
-            },
-            RolloutItem::ResponseItem(response_item),
-        ])
-        .await;
+        drop(custody_gate);
         self.send_raw_response_items(turn_context, items).await;
+        Ok(response_item_id)
     }
 
     async fn maybe_warn_on_server_model_mismatch(
@@ -3376,9 +3584,9 @@ impl Session {
         reference_context_item: Option<TurnContextItem>,
         world_state_baseline: Option<Arc<WorldState>>,
         metadata: CompactedHistoryMetadata,
-    ) {
-        let items = Self::assign_missing_response_item_ids(Cow::Owned(items)).into_owned();
-        let compacted_item = CompactedItem {
+    ) -> CodexResult<()> {
+        let mut items = Self::assign_missing_response_item_ids(Cow::Owned(items)).into_owned();
+        let mut compacted_item = CompactedItem {
             message: metadata.message,
             replacement_history: Some(items.clone()),
             window_number: Some(metadata.window_number),
@@ -3391,7 +3599,55 @@ impl Session {
         };
         // Compaction starts a new history window, so its WorldState baseline must be full.
         let mut world_state_item = None;
-        {
+        if self.services.agent_control.mailbox_enabled() {
+            let _custody_gate = self.mailbox_custody_gate.lock().await;
+            self.live_thread().ok_or_else(|| {
+                std::io::Error::other(
+                    "mailbox history checkpoint requires a durable session rollout",
+                )
+            })?;
+            if !self
+                .mailbox_unsettled_response_item_ids
+                .lock()
+                .await
+                .is_empty()
+            {
+                return Err(std::io::Error::other(
+                    "mailbox history checkpoint is blocked by an indeterminate canonical append",
+                )
+                .into());
+            }
+            let canonical_ids = self.mailbox_canonical_response_item_ids.lock().await.clone();
+            self.services
+                .agent_control
+                .mailbox_reconcile_canonical_ids(self.thread_id, &canonical_ids)
+                .await?;
+            // A canonical message that has not entered a provider request is still unread. Keep
+            // its exact body in the replacement context so a checkpoint cannot discard custody.
+            let active_history = self.clone_history().await.into_raw_items();
+            let unadmitted_items = self
+                .services
+                .agent_control
+                .mailbox_preserve_unadmitted(self.thread_id, &active_history)
+                .await?;
+            let mut replacement_message_ids = items
+                .iter()
+                .filter_map(|item| match item {
+                    ResponseItem::AgentMessage { id: Some(id), .. } => Some(id.clone()),
+                    _ => None,
+                })
+                .collect::<HashSet<_>>();
+            for item in unadmitted_items {
+                if let ResponseItem::AgentMessage { id: Some(id), .. } = &item
+                    && replacement_message_ids.insert(id.clone())
+                {
+                    items.push(item);
+                }
+            }
+            compacted_item.replacement_history = Some(items.clone());
+            let checkpoint = [RolloutItem::Compacted(compacted_item)];
+            self.try_persist_rollout_items(&checkpoint).await?;
+            self.flush_rollout().await?;
             let mut state = self.state.lock().await;
             state.replace_history(items, reference_context_item.clone());
             if let Some(world_state) = world_state_baseline {
@@ -3399,10 +3655,19 @@ impl Session {
                 world_state_item = Some(WorldStateItem::full(snapshot.clone().into_value()));
                 state.history.set_world_state_baseline(snapshot);
             }
+        } else {
+            {
+                let mut state = self.state.lock().await;
+                state.replace_history(items, reference_context_item.clone());
+                if let Some(world_state) = world_state_baseline {
+                    let snapshot = world_state.snapshot();
+                    world_state_item = Some(WorldStateItem::full(snapshot.clone().into_value()));
+                    state.history.set_world_state_baseline(snapshot);
+                }
+            }
+            self.persist_rollout_items(&[RolloutItem::Compacted(compacted_item)])
+                .await;
         }
-
-        self.persist_rollout_items(&[RolloutItem::Compacted(compacted_item)])
-            .await;
         // Persist the baseline after the replacement history that established it.
         if let Some(world_state_item) = world_state_item {
             self.persist_rollout_items(&[RolloutItem::WorldState(world_state_item)])
@@ -3416,6 +3681,7 @@ impl Session {
             let mut state = self.state.lock().await;
             state.queue_pending_session_start_source(codex_hooks::SessionStartSource::Compact);
         }
+        Ok(())
     }
 
     async fn persist_rollout_response_items(&self, items: &[ResponseItem]) {
@@ -3794,10 +4060,18 @@ impl Session {
         items
     }
 
+    async fn try_persist_rollout_items(&self, items: &[RolloutItem]) -> std::io::Result<()> {
+        if let Some(live_thread) = self.live_thread() {
+            live_thread
+                .append_items(items)
+                .await
+                .map_err(std::io::Error::other)?;
+        }
+        Ok(())
+    }
+
     pub(crate) async fn persist_rollout_items(&self, items: &[RolloutItem]) {
-        if let Some(live_thread) = self.live_thread()
-            && let Err(e) = live_thread.append_items(items).await
-        {
+        if let Err(e) = self.try_persist_rollout_items(items).await {
             error!("failed to record rollout items: {e:#}");
         }
     }
@@ -3833,7 +4107,7 @@ impl Session {
         &self,
         step_context: &StepContext,
         world_state: Arc<WorldState>,
-    ) -> u64 {
+    ) -> CodexResult<u64> {
         let turn_context = step_context.turn.as_ref();
         let window = {
             let mut state = self.state.lock().await;
@@ -3854,9 +4128,9 @@ impl Session {
                 window_ids,
             },
         )
-        .await;
+        .await?;
         self.recompute_token_usage(turn_context).await;
-        window_number
+        Ok(window_number)
     }
 
     pub(crate) async fn reference_context_item(&self) -> Option<TurnContextItem> {

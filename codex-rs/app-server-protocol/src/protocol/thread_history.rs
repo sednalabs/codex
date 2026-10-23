@@ -901,6 +901,7 @@ impl ThreadHistoryBuilder {
             wake_notifications: None,
             completion_reason: None,
             wake_cause: None,
+            mailbox_wait_report: None,
         };
         self.upsert_item_in_current_turn(item);
     }
@@ -947,6 +948,7 @@ impl ThreadHistoryBuilder {
             wake_notifications: None,
             completion_reason: None,
             wake_cause: None,
+            mailbox_wait_report: None,
         });
     }
 
@@ -971,6 +973,7 @@ impl ThreadHistoryBuilder {
             wake_notifications: None,
             completion_reason: None,
             wake_cause: None,
+            mailbox_wait_report: None,
         };
         self.upsert_item_in_current_turn(item);
     }
@@ -1002,6 +1005,7 @@ impl ThreadHistoryBuilder {
             wake_notifications: None,
             completion_reason: None,
             wake_cause: None,
+            mailbox_wait_report: None,
         });
     }
 
@@ -1044,6 +1048,7 @@ impl ThreadHistoryBuilder {
             wake_notifications: None,
             completion_reason: None,
             wake_cause: None,
+            mailbox_wait_report: payload.mailbox_wait_report.clone(),
         };
         self.upsert_item_in_current_turn(item);
     }
@@ -1086,6 +1091,7 @@ impl ThreadHistoryBuilder {
             wake_notifications: None,
             completion_reason: None,
             wake_cause: None,
+            mailbox_wait_report: payload.mailbox_wait_report.clone(),
         });
     }
 
@@ -1110,6 +1116,7 @@ impl ThreadHistoryBuilder {
             wake_notifications: None,
             completion_reason: None,
             wake_cause: None,
+            mailbox_wait_report: None,
         };
         self.upsert_item_in_current_turn(item);
     }
@@ -1143,6 +1150,7 @@ impl ThreadHistoryBuilder {
             wake_notifications: None,
             completion_reason: None,
             wake_cause: None,
+            mailbox_wait_report: None,
         });
     }
 
@@ -1167,6 +1175,7 @@ impl ThreadHistoryBuilder {
             wake_notifications: None,
             completion_reason: None,
             wake_cause: None,
+            mailbox_wait_report: None,
         };
         self.upsert_item_in_current_turn(item);
     }
@@ -1203,6 +1212,7 @@ impl ThreadHistoryBuilder {
             wake_notifications: None,
             completion_reason: None,
             wake_cause: None,
+            mailbox_wait_report: None,
         });
     }
 
@@ -3970,6 +3980,40 @@ mod tests {
         let turn_id = "turn-collab";
         let spawn_request_model = "gpt-requested";
         let spawn_effective_model = "gpt-effective";
+        let active_wait_report = codex_protocol::items::MailboxWaitReport {
+            requested_targets: vec!["work_42".to_string()],
+            requested_replies_to: vec!["msg-request".to_string()],
+            return_when: codex_protocol::items::MailboxWaitReturnWhen::All,
+            completed: Vec::new(),
+            pending: vec![codex_protocol::items::MailboxWaitSelectionItem {
+                work_ref: Some("work_42".to_string()),
+                message_id: None,
+                agent: Some("worker-A".to_string()),
+                status: "running".to_string(),
+            }],
+            completion_reason: None,
+            condition_satisfied: false,
+            quiet_count: 1,
+            wake_sender: None,
+            wake_ref: None,
+        };
+        let completed_wait_report = codex_protocol::items::MailboxWaitReport {
+            requested_targets: active_wait_report.requested_targets.clone(),
+            requested_replies_to: active_wait_report.requested_replies_to.clone(),
+            return_when: active_wait_report.return_when,
+            completed: vec![codex_protocol::items::MailboxWaitSelectionItem {
+                work_ref: Some("work_42".to_string()),
+                message_id: Some("msg-reply".to_string()),
+                agent: Some("worker-A".to_string()),
+                status: "replied".to_string(),
+            }],
+            pending: Vec::new(),
+            completion_reason: Some(codex_protocol::items::MailboxWakeCause::Reply),
+            condition_satisfied: true,
+            quiet_count: 1,
+            wake_sender: Some("worker-A".to_string()),
+            wake_ref: Some("msg-reply".to_string()),
+        };
 
         let legacy = vec![
             RolloutItem::EventMsg(EventMsg::TurnStarted(TurnStartedEvent {
@@ -4009,6 +4053,7 @@ mod tests {
                 receiver_thread_ids: vec![child, waiting_child],
                 receiver_agents: Vec::new(),
                 call_id: "wait-1".to_string(),
+                mailbox_wait_report: Some(active_wait_report.clone()),
             })),
             RolloutItem::EventMsg(EventMsg::CollabWaitingEnd(CollabWaitingEndEvent {
                 sender_thread_id: sender,
@@ -4018,6 +4063,7 @@ mod tests {
                 statuses: [(child, AgentStatus::Completed(Some("waited".to_string())))]
                     .into_iter()
                     .collect(),
+                mailbox_wait_report: Some(completed_wait_report.clone()),
             })),
             RolloutItem::EventMsg(EventMsg::CollabResumeBegin(CollabResumeBeginEvent {
                 call_id: "resume-1".to_string(),
@@ -4074,6 +4120,7 @@ mod tests {
                     wake_notifications: None,
                     completion_reason: None,
                     wake_cause: None,
+                    mailbox_wait_report: Some(active_wait_report.clone()),
                 },
                 /*started*/ true,
             ),
@@ -4096,6 +4143,7 @@ mod tests {
                     wake_notifications: None,
                     completion_reason: None,
                     wake_cause: None,
+                    mailbox_wait_report: Some(completed_wait_report.clone()),
                 },
                 /*started*/ false,
             ),
@@ -4118,6 +4166,7 @@ mod tests {
                     wake_notifications: None,
                     completion_reason: None,
                     wake_cause: None,
+                    mailbox_wait_report: None,
                 },
                 /*started*/ true,
             ),
@@ -4142,6 +4191,7 @@ mod tests {
                     wake_notifications: None,
                     completion_reason: None,
                     wake_cause: None,
+                    mailbox_wait_report: None,
                 },
                 /*started*/ false,
             ),
@@ -4164,6 +4214,7 @@ mod tests {
                     wake_notifications: None,
                     completion_reason: None,
                     wake_cause: None,
+                    mailbox_wait_report: None,
                 },
                 /*started*/ true,
             ),
@@ -4188,6 +4239,7 @@ mod tests {
                     wake_notifications: None,
                     completion_reason: None,
                     wake_cause: None,
+                    mailbox_wait_report: None,
                 },
                 /*started*/ false,
             ),
@@ -4201,6 +4253,28 @@ mod tests {
         let canonical_turns = build_turns_from_rollout_items(&canonical);
 
         assert_eq!(legacy_turns, canonical_turns);
+        let wait = legacy_turns[0]
+            .items
+            .iter()
+            .find(|item| {
+                matches!(
+                    item,
+                    ThreadItem::CollabAgentToolCall {
+                        id,
+                        tool: CollabAgentTool::Wait,
+                        ..
+                    } if id == "wait-1"
+                )
+            })
+            .expect("replay materializes the mailbox wait report");
+        let ThreadItem::CollabAgentToolCall {
+            mailbox_wait_report,
+            ..
+        } = wait
+        else {
+            unreachable!("wait lookup must return the wait lifecycle item");
+        };
+        assert_eq!(mailbox_wait_report.as_ref(), Some(&completed_wait_report));
         let spawn = legacy_turns[0]
             .items
             .iter()
@@ -4273,6 +4347,7 @@ mod tests {
                 wake_notifications: None,
                 completion_reason: None,
                 wake_cause: None,
+                mailbox_wait_report: None,
             }),
         };
         let legacy_started = current_started
@@ -4387,6 +4462,7 @@ mod tests {
                     wake_notifications: None,
                     completion_reason: None,
                     wake_cause: None,
+                    mailbox_wait_report: None,
                 }),
             };
             let legacy_started = pre_additive_started
@@ -4426,6 +4502,7 @@ mod tests {
                 wake_notifications: None,
                 completion_reason: None,
                 wake_cause: None,
+                mailbox_wait_report: None,
             };
             let Some(ServerNotification::ItemStarted(mapped_started)) =
                 crate::protocol::event_mapping::item_event_to_server_notification(
@@ -4487,6 +4564,7 @@ mod tests {
                     wake_notifications: None,
                     completion_reason: None,
                     wake_cause: None,
+                    mailbox_wait_report: None,
                 },
                 /*started*/ false,
             ),
@@ -4511,6 +4589,7 @@ mod tests {
                     wake_notifications: None,
                     completion_reason: None,
                     wake_cause: None,
+                    mailbox_wait_report: None,
                 },
                 /*started*/ true,
             ),
@@ -4562,6 +4641,7 @@ mod tests {
                 wake_notifications: None,
                 completion_reason: None,
                 wake_cause: None,
+                mailbox_wait_report: None,
             }]
         );
     }
@@ -4608,6 +4688,7 @@ mod tests {
                 wake_notifications: None,
                 completion_reason: None,
                 wake_cause: None,
+                mailbox_wait_report: None,
             }]
         );
     }
@@ -4652,6 +4733,7 @@ mod tests {
                 wake_notifications: None,
                 completion_reason: None,
                 wake_cause: None,
+                mailbox_wait_report: None,
             }]
         );
     }
@@ -4715,6 +4797,7 @@ mod tests {
                 wake_notifications: None,
                 completion_reason: None,
                 wake_cause: None,
+                mailbox_wait_report: None,
             }
         );
     }
@@ -4796,6 +4879,7 @@ mod tests {
                 wake_notifications: None,
                 completion_reason: None,
                 wake_cause: None,
+                mailbox_wait_report: None,
             }
         );
     }
@@ -4833,6 +4917,7 @@ mod tests {
                 wake_notifications: None,
                 completion_reason: None,
                 wake_cause: None,
+                mailbox_wait_report: None,
             }),
         };
 
@@ -4891,6 +4976,7 @@ mod tests {
                 wake_notifications: None,
                 completion_reason: None,
                 wake_cause: None,
+                mailbox_wait_report: None,
             }
         );
     }
@@ -4956,6 +5042,7 @@ mod tests {
                 wake_notifications: None,
                 completion_reason: None,
                 wake_cause: None,
+                mailbox_wait_report: None,
             }
         );
     }
@@ -5036,6 +5123,7 @@ mod tests {
                 wake_notifications: None,
                 completion_reason: None,
                 wake_cause: None,
+                mailbox_wait_report: None,
             }
         );
     }
@@ -5703,6 +5791,7 @@ mod tests {
                     wake_notifications: None,
                     completion_reason: None,
                     wake_cause: None,
+                    mailbox_wait_report: None,
                 },
                 /*started*/ true,
             ),
@@ -5738,6 +5827,7 @@ mod tests {
                     wake_notifications: None,
                     completion_reason: None,
                     wake_cause: None,
+                    mailbox_wait_report: None,
                 },
                 /*started*/ false,
             ),

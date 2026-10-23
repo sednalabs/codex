@@ -59,6 +59,13 @@ pub(crate) struct Session {
     pub(crate) input_queue: InputQueue,
     pub(crate) guardian_review_session: GuardianReviewSessionManager,
     pub(crate) services: SessionServices,
+    /// Stable IDs of canonical native agent messages, retained even if model history is compacted.
+    pub(super) mailbox_canonical_response_item_ids: Mutex<HashSet<ResponseItemId>>,
+    /// IDs whose append/flush had an indeterminate persistence result. They are never acked or
+    /// retried in-place, because the canonical writer may have committed a partial append.
+    pub(super) mailbox_unsettled_response_item_ids: Mutex<HashSet<ResponseItemId>>,
+    /// Serializes mailbox history settlement with compacted-history checkpoints.
+    pub(super) mailbox_custody_gate: Mutex<()>,
     pub(super) git_enrichment_policy: GitEnrichmentPolicy,
     pub(super) fork_persistence: ForkPersistence,
     pub(super) next_internal_sub_id: AtomicU64,
@@ -619,6 +626,12 @@ impl Session {
                 .effective_agent_max_threads(MultiAgentVersion::V2)
                 .unwrap_or(usize::MAX),
         );
+        agent_control.mailbox_initialize(&config).await?;
+        let mailbox_canonical_response_item_ids = if agent_control.mailbox_enabled() {
+            Session::canonical_agent_message_ids(&initial_history)
+        } else {
+            HashSet::new()
+        };
         let time_provider = crate::current_time::resolve_time_provider(
             config.current_time_reminder.as_ref(),
             external_time_provider,
@@ -1226,6 +1239,11 @@ impl Session {
                 input_queue: InputQueue::new(),
                 guardian_review_session: GuardianReviewSessionManager::default(),
                 services,
+                mailbox_canonical_response_item_ids: Mutex::new(
+                    mailbox_canonical_response_item_ids,
+                ),
+                mailbox_unsettled_response_item_ids: Mutex::new(HashSet::new()),
+                mailbox_custody_gate: Mutex::new(()),
                 git_enrichment_policy,
                 fork_persistence,
                 next_internal_sub_id: AtomicU64::new(0),

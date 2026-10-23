@@ -181,7 +181,7 @@ pub(crate) async fn run_turn(
             return Err(err);
         }
         if matches!(err.details(), CodexErrorDetails::TurnAborted) {
-            run_hooks_and_record_inputs(&sess, &turn_context, &input).await;
+            run_hooks_and_record_inputs(&sess, &turn_context, &input).await?;
             return Err(err);
         }
         let error = err.to_codex_protocol_error();
@@ -198,7 +198,7 @@ pub(crate) async fn run_turn(
     {
         Ok(step_context) => step_context,
         Err(err) if matches!(err.details(), CodexErrorDetails::TurnAborted) => {
-            run_hooks_and_record_inputs(&sess, &turn_context, &input).await;
+            run_hooks_and_record_inputs(&sess, &turn_context, &input).await?;
             return Err(err);
         }
         Err(err) => return Err(err),
@@ -224,7 +224,8 @@ pub(crate) async fn run_turn(
         return Ok(None);
     }
     let mut can_drain_pending_input = input.is_empty();
-    if run_hooks_and_record_inputs(&sess, &turn_context, &input).await {
+    let should_stop = run_hooks_and_record_inputs(&sess, &turn_context, &input).await?;
+    if should_stop {
         return Ok(None);
     }
 
@@ -269,7 +270,8 @@ pub(crate) async fn run_turn(
             Vec::new()
         };
 
-        if run_hooks_and_record_inputs(&sess, &turn_context, &pending_input).await {
+        let should_stop = run_hooks_and_record_inputs(&sess, &turn_context, &pending_input).await?;
+        if should_stop {
             break;
         }
 
@@ -301,6 +303,13 @@ pub(crate) async fn run_turn(
                 .record_step_world_state_if_changed(&world_state, step_context.as_ref())
                 .await;
 
+            for communication in sess.services.agent_control
+                .mailbox_automatic_inputs(sess.thread_id, &turn_context.sub_id)
+                .await?
+            {
+                sess.record_inter_agent_communication(&turn_context, communication).await?;
+            }
+
             // Construct the input that we will send to the model.
             let sampling_request_input: Vec<ResponseItem> = async {
                 sess.clone_history()
@@ -309,6 +318,28 @@ pub(crate) async fn run_turn(
             }
             .instrument(trace_span!("run_turn.prepare_sampling_request_input"))
             .await;
+
+            let mailbox_message_ids = sampling_request_input
+                .iter()
+                .filter_map(|item| match item {
+                    ResponseItem::AgentMessage { id: Some(id), .. } if !id.is_empty() => {
+                        Some(id.clone())
+                    }
+                    _ => None,
+                })
+                .collect::<HashSet<_>>()
+                .into_iter()
+                .collect::<Vec<_>>();
+            if !mailbox_message_ids.is_empty() {
+                sess.services
+                    .agent_control
+                    .mailbox_record_admission(
+                        sess.thread_id,
+                        &turn_context.sub_id,
+                        &mailbox_message_ids,
+                    )
+                    .await?;
+            }
 
             let responses_metadata = turn_context.turn_metadata_state.to_responses_metadata(
                 sess.installation_id.clone(),
@@ -592,7 +623,7 @@ pub(crate) async fn run_hooks_and_record_inputs(
     sess: &Arc<Session>,
     turn_context: &Arc<TurnContext>,
     input: &[TurnInput],
-) -> bool {
+) -> CodexResult<bool> {
     let mut blocked_input = false;
     let mut accepted_user_input = false;
     for input_item in input {
@@ -610,10 +641,10 @@ pub(crate) async fn run_hooks_and_record_inputs(
                 input_item.clone(),
                 hook_outcome.additional_contexts,
             )
-            .await;
+            .await?;
         }
     }
-    blocked_input && !accepted_user_input
+    Ok(blocked_input && !accepted_user_input)
 }
 
 #[instrument(level = "trace", skip_all)]

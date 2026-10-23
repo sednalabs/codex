@@ -79,6 +79,7 @@ const INSPECT_AGENT_TREE_STATE_DB_UNAVAILABLE_MESSAGE: &str = concat!(
 mod execution;
 mod legacy;
 mod lifecycle;
+mod mailbox;
 mod residency;
 mod spawn;
 
@@ -224,6 +225,8 @@ pub(crate) struct AgentControl {
     state: Arc<AgentRegistry>,
     v2_residency: Arc<V2Residency>,
     agent_execution_limiter: Arc<AgentExecutionLimiter>,
+    /// One durable mailbox per native agent tree; membership remains in `AgentRegistry`.
+    mailbox: Arc<tokio::sync::OnceCell<Arc<codex_agent_mailbox::Mailbox>>>,
     /// Session-scoped state shared by the root thread and every cloned sub-agent control handle.
     rollout_budget: Arc<RolloutBudget>,
     #[cfg(test)]
@@ -1172,6 +1175,11 @@ impl AgentControl {
         child_reference: String,
         child_agent_path: Option<AgentPath>,
     ) {
+        // The mailbox settles at the producer's authoritative terminal boundary. A status
+        // observer must not fabricate a second completion or lose typed goal disposition.
+        if self.mailbox_enabled() {
+            return;
+        }
         let Some(SessionSource::SubAgent(SubAgentSource::ThreadSpawn {
             parent_thread_id, ..
         })) = session_source

@@ -76,6 +76,77 @@ async fn resumed_initial_messages_render_history() {
 }
 
 #[tokio::test]
+async fn replayed_mailbox_wait_report_preserves_active_join_selection() {
+    let (mut chat, mut rx, _ops) = make_chatwidget_manual(/*model_override*/ None).await;
+    let sender_thread_id = ThreadId::new();
+    let report = codex_protocol::items::MailboxWaitReport {
+        requested_targets: vec!["worker-A".to_string(), "work_17".to_string()],
+        requested_replies_to: vec!["msg_request".to_string()],
+        return_when: codex_protocol::items::MailboxWaitReturnWhen::Any,
+        completed: Vec::new(),
+        pending: vec![
+            codex_protocol::items::MailboxWaitSelectionItem {
+                work_ref: None,
+                message_id: None,
+                agent: Some("worker-A".to_string()),
+                status: "running".to_string(),
+            },
+            codex_protocol::items::MailboxWaitSelectionItem {
+                work_ref: Some("work_17".to_string()),
+                message_id: None,
+                agent: None,
+                status: "pending".to_string(),
+            },
+            codex_protocol::items::MailboxWaitSelectionItem {
+                work_ref: None,
+                message_id: Some("msg_request".to_string()),
+                agent: Some("reviewer".to_string()),
+                status: "awaiting_reply".to_string(),
+            },
+        ],
+        completion_reason: None,
+        condition_satisfied: false,
+        quiet_count: 2,
+        wake_sender: None,
+        wake_ref: None,
+    };
+    chat.replay_thread_item(
+        AppServerThreadItem::CollabAgentToolCall {
+            id: "wait-replay".to_string(),
+            tool: AppServerCollabAgentTool::Wait,
+            status: AppServerCollabAgentToolCallStatus::InProgress,
+            sender_thread_id: sender_thread_id.to_string(),
+            receiver_thread_ids: Vec::new(),
+            prompt: None,
+            model: None,
+            reasoning_effort: None,
+            requested_model: None,
+            requested_reasoning_effort: None,
+            effective_model: None,
+            effective_reasoning_effort: None,
+            agents_states: HashMap::new(),
+            wake_notifications: None,
+            completion_reason: None,
+            wake_cause: None,
+            mailbox_wait_report: Some(report),
+        },
+        "turn-replayed-mailbox-wait".to_string(),
+        ReplayKind::ResumeInitialMessages,
+    );
+    let lines = drain_insert_history(&mut rx)
+        .into_iter()
+        .map(|lines| lines_to_single_string(&lines))
+        .collect::<Vec<_>>()
+        .join("\n");
+    assert!(lines.contains("Waiting for any of 3 selected conditions"));
+    assert!(lines.contains("Targets: worker-A, work_17"));
+    assert!(lines.contains("Replies to: msg_request"));
+    assert!(lines.contains("Pending work_17: pending"));
+    assert!(lines.contains("Quiet count: 2"));
+    assert!(!lines.contains("Completion reason:"));
+}
+
+#[tokio::test]
 async fn replayed_collab_spawn_terminal_uses_only_explicit_effective_identity() {
     let (mut chat, mut rx, _ops) = make_chatwidget_manual(/*model_override*/ None).await;
     let sender_thread_id = ThreadId::new();
@@ -118,6 +189,7 @@ async fn replayed_collab_spawn_terminal_uses_only_explicit_effective_identity() 
             wake_notifications: None,
             completion_reason: None,
             wake_cause: None,
+            mailbox_wait_report: None,
         },
         "turn-replay".to_string(),
         ReplayKind::ResumeInitialMessages,
@@ -141,6 +213,7 @@ async fn replayed_collab_spawn_terminal_uses_only_explicit_effective_identity() 
             wake_notifications: None,
             completion_reason: None,
             wake_cause: None,
+            mailbox_wait_report: None,
         },
         "turn-replay".to_string(),
         ReplayKind::ResumeInitialMessages,
@@ -253,6 +326,7 @@ async fn replayed_failed_collab_spawn_without_receiver_keeps_requested_identity(
             wake_notifications: None,
             completion_reason: None,
             wake_cause: None,
+            mailbox_wait_report: None,
         },
         "turn-replay".to_string(),
         ReplayKind::ResumeInitialMessages,

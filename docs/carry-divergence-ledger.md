@@ -43,6 +43,33 @@ decisions.
 
 ### Exact-target wait ignores queue-only mailbox activity
 
+The optional `agent_mailbox` feature extends this carry for same-tree V2 only.
+Its library does not depend on core and owns `mailbox_1.sqlite` independently of
+native state migrations. Spawn/followup receipts expose immutable accepted work
+references; quiet notes/progress do not return a sleeping wait to the provider.
+Request attention is one-shot and separate from an unresolved request: only an
+exact durable final reply or the author's withdrawal/replacement resolves it.
+Selected work and request replies form one any/all join, while attention,
+human input, and native tool input interrupt without satisfying that join.
+
+The maintained adapter has six authoritative seams: native work acceptance,
+local delivery eligibility, actual execution-input admission, producer terminal
+outcome with typed goal disposition, fallible canonical append/flush and stable-ID
+reconciliation, and existing collaboration live/replay projection. Canonical
+custody is not execution admission; compact checkpoints preserve selected unread
+bodies. Digests and UI rows do not consume omitted bodies. Body delivery is
+bounded; longer final previews identify their canonical source turn explicitly.
+
+Both `agent_mailbox` and recipient `agent_mailbox_idle_activation` are off by
+default. Disabled mailbox handling preserves pending records and cannot drain,
+acknowledge, delete, or downgrade shared native state. A compatible explicit
+resume may reconcile original IDs or report recovery needed; it never replaces
+accepted work, mass-resumes old agents, or claims comprehension/exactly-once
+business effects. Cross-root mail, subscriptions, shadow membership, watchdogs,
+new scheduling, and provider/auth changes remain outside this carry. Future
+upstream syncs retain the same semantic suite and retire equivalent mechanisms
+and dependencies together, rather than restoring donor framework code.
+
 - Downstream V2 `wait_agent` keeps queue-only inter-agent mail durable and
   visible in later notification summaries, but an exact-target wait wakes only
   for terminal target state, actionable (`trigger_turn`) mail, user steer,

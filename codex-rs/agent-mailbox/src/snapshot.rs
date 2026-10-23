@@ -6,7 +6,7 @@ use crate::types::{
     RequestDisposition, RequestSnapshot, Selector, Snapshot, SnapshotItem, SnapshotState,
     WorkSnapshot,
 };
-use crate::outcome::{continuation_receipts_for, stored_outcome_receipt_for};
+use crate::outcome_store::{continuation_receipts_for, stored_outcome_receipt_for};
 use crate::work::{parse_dispatch_state, work_ref_from_row};
 use codex_protocol::ThreadId;
 use sqlx::Row;
@@ -28,6 +28,11 @@ impl Mailbox {
         if selection.limit == 0 || selection.limit > MAX_PAGE_SIZE {
             return Err(MailboxError::InvalidInput(
                 "snapshot limit must be between 1 and 100".into(),
+            ));
+        }
+        if selection.limit < selection.selectors.len() {
+            return Err(MailboxError::InvalidInput(
+                "snapshot limit must cover every selected item".into(),
             ));
         }
         let mut items = Vec::new();
@@ -60,15 +65,15 @@ impl Mailbox {
                     matched += 1;
                     let work_ref = work_ref_from_row(&row)?;
                     let observed = row.try_get::<i64, _>("outcome_observed")? != 0;
-                    if observed {
-                        satisfied += 1;
-                    }
                     let input: String = row.try_get("input_json")?;
                     let outcome = if row.try_get::<Option<String>, _>("outcome_json")?.is_some() {
                         Some(stored_outcome_receipt_for(&self.pool, work_ref.clone()).await?)
                     } else {
                         None
                     };
+                    if outcome.is_some() {
+                        satisfied += 1;
+                    }
                     let continuations = continuation_receipts_for(&self.pool, &work_ref).await?;
                     if items.len() < selection.limit {
                         items.push(SnapshotItem::Work(WorkSnapshot {
@@ -86,10 +91,13 @@ impl Mailbox {
                 Selector::Reply(id) => {
                     let row = sqlx::query(
                         "SELECT * FROM mailbox_messages
-                         WHERE id = ? AND sender = ? AND kind = '\"request\"' LIMIT 1",
+                         WHERE id = ? AND sender = ? AND kind = '\"request\"'
+                           AND (? IS NULL OR recipient = ?) LIMIT 1",
                     )
                     .bind(id)
                     .bind(selection.caller.to_string())
+                    .bind(selection.agent.map(|agent| agent.to_string()))
+                    .bind(selection.agent.map(|agent| agent.to_string()))
                     .fetch_optional(&self.pool)
                     .await?;
                     let Some(row) = row else {
@@ -333,7 +341,7 @@ async fn ensure_observation_target(
 pub fn is_provably_closed_peer_cycle(start: &str, dependencies: &[Dependency]) -> bool {
     let mut by_owner = HashMap::new();
     for dependency in dependencies {
-        if dependency.peers.is_empty() || by_owner.contains_key(&dependency.owner) {
+        if dependency.peers.is_empty() || by_owner.contains_key(dependency.owner.as_str()) {
             return false;
         }
         by_owner.insert(dependency.owner.as_str(), dependency);
@@ -347,10 +355,14 @@ pub fn is_provably_closed_peer_cycle(start: &str, dependencies: &[Dependency]) -
                 return false;
             };
             match dependency.mode {
-                DependencyMode::All | DependencyMode::Any => dependency
+                DependencyMode::Any => dependency
                     .peers
                     .iter()
                     .all(|peer| previous.contains(peer.as_str())),
+                DependencyMode::All => dependency
+                    .peers
+                    .iter()
+                    .any(|peer| previous.contains(peer.as_str())),
             }
         });
         if closed.len() == previous_len {

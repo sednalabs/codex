@@ -403,6 +403,36 @@ impl AgentControl {
         session_source: Option<SessionSource>,
         options: SpawnAgentOptions,
     ) -> CodexResult<LiveAgent> {
+        if let Some(native_key) = context.native_key.as_deref()
+            && let Some(work) = self
+                .mailbox_work_for_key(context.sender_thread_id, native_key)
+                .await?
+            && let Some(mailbox) = self.mailbox()
+        {
+            // A repeated native invocation retains its original child, including when the
+            // original tool publication was lost. Never provision a replacement for a retry.
+            mailbox
+                .accept_work(codex_agent_mailbox::NativeWork {
+                    native_key: native_key.to_string(),
+                    issuer: context.sender_thread_id,
+                    agent: work.agent,
+                    submission_id: work.submission_id.clone(),
+                    input: communication,
+                })
+                .await
+                .map_err(|err| CodexErr::Fatal(format!("agent mailbox acceptance failed: {err}")))?;
+            let metadata = self.get_agent_metadata(work.agent).ok_or_else(|| {
+                CodexErr::UnsupportedOperation(format!(
+                    "accepted work {} retains original child {}; native recovery is required and no replacement was spawned",
+                    work.id, work.agent
+                ))
+            })?;
+            return Ok(LiveAgent {
+                thread_id: work.agent,
+                metadata,
+                status: self.get_status(work.agent).await,
+            });
+        }
         Box::pin(self.spawn_agent_internal(
             config,
             SpawnInitialInput::InterAgentCommunication(communication, context),

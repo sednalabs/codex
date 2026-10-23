@@ -8,7 +8,8 @@ pub(crate) async fn validate_reply_tx(
     draft: &MessageDraft,
 ) -> MailboxResult<()> {
     let request = sqlx::query(
-        "SELECT sender, recipient, kind, canonical FROM mailbox_messages WHERE id = ?",
+        "SELECT sender, recipient, kind, canonical, superseded_by, withdrawn
+         FROM mailbox_messages WHERE id = ?",
     )
     .bind(request_id)
     .fetch_optional(&mut **transaction)
@@ -24,6 +25,11 @@ pub(crate) async fn validate_reply_tx(
     }
     if request.try_get::<i64, _>("canonical")? == 0 {
         return Err(MailboxError::NotCanonical);
+    }
+    if request.try_get::<Option<String>, _>("superseded_by")?.is_some()
+        || request.try_get::<i64, _>("withdrawn")? != 0
+    {
+        return Err(MailboxError::RequestAlreadyResolved);
     }
     let resolved: Option<String> = sqlx::query_scalar(
         "SELECT id FROM mailbox_messages WHERE reply_to = ? LIMIT 1",
@@ -61,12 +67,14 @@ pub(crate) async fn validate_replacement_tx(
     let already_replaced: Option<String> = old.try_get("superseded_by")?;
     let old_kind: String = old.try_get("kind")?;
     let valid_pair = match old_kind.as_str() {
-        "\"progress\"" => draft.kind == MessageKind::Progress,
+        "\"progress\"" => {
+            draft.kind == MessageKind::Progress
+                && old.try_get::<i64, _>("canonical")? == 0
+        }
         "\"request\"" => matches!(draft.kind, MessageKind::Request | MessageKind::Note),
         _ => false,
     };
     if !valid_pair
-        || old.try_get::<i64, _>("canonical")? != 0
         || already_replaced.is_some()
         || old.try_get::<i64, _>("withdrawn")? != 0
     {

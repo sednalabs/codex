@@ -612,6 +612,7 @@ pub(crate) struct ChatWidget {
     running_commands: HashMap<String, RunningCommand>,
     collab_agent_metadata: HashMap<ThreadId, AgentMetadata>,
     pending_collab_spawn_requests: HashMap<String, multi_agents::SpawnRequestSummary>,
+    active_mailbox_waits: HashMap<String, multi_agents::mailbox_wait::MailboxWaitProgressHandle>,
     suppressed_exec_calls: HashSet<String>,
     skills_all: Vec<SkillMetadata>,
     skills_initial_state: Option<HashMap<AbsolutePathBuf, bool>>,
@@ -1262,6 +1263,11 @@ impl ChatWidget {
     fn flush_active_cell(&mut self) {
         if let Some(active) = self.transcript.active_cell.take() {
             self.transcript.needs_final_message_separator = true;
+            let active = active
+                .as_any()
+                .downcast_ref::<multi_agents::mailbox_wait::MailboxWaitProgressCell>()
+                .map(|cell| Box::new(cell.snapshot_cell()) as Box<dyn HistoryCell>)
+                .unwrap_or(active);
             self.app_event_tx.send(AppEvent::InsertHistoryCell(active));
             self.request_pending_usage_output_insertion();
         }

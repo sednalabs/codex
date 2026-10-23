@@ -35,6 +35,7 @@ use codex_protocol::protocol::HookSource;
 use codex_protocol::protocol::HookStartedEvent;
 use codex_protocol::protocol::SessionSource;
 use codex_protocol::protocol::SubAgentSource;
+use codex_protocol::error::Result as CodexResult;
 use codex_thread_store::ReadThreadParams;
 use serde_json::Value;
 use tracing::instrument;
@@ -573,7 +574,7 @@ pub(crate) async fn record_pending_input(
     turn_context: &Arc<TurnContext>,
     pending_input: TurnInput,
     additional_contexts: Vec<String>,
-) {
+) -> CodexResult<()> {
     match pending_input {
         TurnInput::UserInput { content, client_id } => {
             sess.record_user_prompt_and_emit_turn_item(
@@ -589,10 +590,11 @@ pub(crate) async fn record_pending_input(
         }
         TurnInput::InterAgentCommunication(communication) => {
             sess.record_inter_agent_communication(turn_context, communication)
-                .await;
+                .await?;
         }
     }
     record_additional_contexts(sess, turn_context, additional_contexts).await;
+    Ok(())
 }
 
 async fn run_context_injecting_hook<Fut, Outcome>(

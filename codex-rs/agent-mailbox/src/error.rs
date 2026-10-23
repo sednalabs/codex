@@ -30,4 +30,6 @@ pub enum MailboxError {
     NewerSchema { found: i64, supported: i64 },
     #[error("mailbox cursor is malformed")]
     InvalidCursor,
+    #[error("wait depends on a provably closed peer cycle")]
+    ClosedPeerCycle,
 }

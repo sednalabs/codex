@@ -50,6 +50,18 @@ server, and natural first use must verify the actual request path.
 
 ## Core default path
 
+The opt-in same-tree V2 `agent_mailbox` path is covered by the standalone
+`codex-agent-mailbox` behavioral suite in
+`codex.core-multi-agent-orchestration-targeted`, plus real core admission/history,
+wrapped tool-schema, and collaboration live/replay tests. The native path remains
+the default. Qualify accepted-work retries and caller cancellation, exact
+incremental provider admission, mixed issuer/outcome and request joins, fixed
+deadlines across quiet mail, typed goal continuation, canonical flush failure and
+compaction, activation denial, backpressure, and conservative closed-peer cycles.
+Library tests alone do not prove the native adapter, UI, final packages, landing,
+or an installed session. Linux preview packages remain exact-SHA artifacts;
+install/restart and runtime adoption are separate operator actions.
+
 Exact-target V2 `wait_agent` ignores queue-only (`trigger_turn=false`) mailbox
 activity while preserving durable FIFO delivery and notification summaries;
 targetless waits retain broad mailbox wake behavior. The focused guardrail is

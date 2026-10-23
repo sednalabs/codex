@@ -1,5 +1,7 @@
 use crate::error::MailboxResult;
 use crate::schema;
+use std::collections::HashMap;
+use std::sync::{Arc, Mutex};
 use sqlx::SqlitePool;
 use tokio::sync::watch;
 
@@ -7,6 +9,8 @@ use tokio::sync::watch;
 pub struct Mailbox {
     pub(crate) pool: SqlitePool,
     change_tx: watch::Sender<u64>,
+    pub(crate) waits: Arc<Mutex<HashMap<String, crate::wait_graph::ActiveWait>>>,
+    pub(crate) runtime_faults: Arc<Mutex<crate::runtime_fault::RuntimeFaults>>,
 }
 
 impl Mailbox {
@@ -16,7 +20,12 @@ impl Mailbox {
         let pool = config.open_read_write_pool(&path).await?;
         crate::schema::initialize(&pool).await?;
         let (change_tx, _) = watch::channel(0_u64);
-        Ok(Self { pool, change_tx })
+        Ok(Self {
+            pool,
+            change_tx,
+            waits: Arc::new(Mutex::new(HashMap::new())),
+            runtime_faults: Arc::new(Mutex::new(crate::runtime_fault::RuntimeFaults::default())),
+        })
     }
 
     /// Subscribe before querying a snapshot to avoid missing local mailbox writes.

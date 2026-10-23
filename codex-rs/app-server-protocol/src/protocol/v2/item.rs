@@ -28,6 +28,7 @@ use codex_protocol::items::AgentNotificationContent as CoreAgentNotificationCont
 use codex_protocol::items::AgentNotificationOrigin as CoreAgentNotificationOrigin;
 use codex_protocol::items::AgentNotificationSummary as CoreAgentNotificationSummary;
 use codex_protocol::items::AgentWakeCause as CoreAgentWakeCause;
+use codex_protocol::items::MailboxWaitReport as CoreMailboxWaitReport;
 use codex_protocol::items::CollabAgentTool as CoreCollabAgentTool;
 use codex_protocol::items::CollabAgentToolCallStatus as CoreCollabAgentToolCallStatus;
 use codex_protocol::items::CommandExecutionStatus as CoreCommandExecutionStatus;
@@ -497,6 +498,10 @@ pub enum ThreadItem {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         #[ts(optional)]
         wake_cause: Option<AgentWakeCause>,
+        /// Selection-aware mailbox wait state/result, when reported by the producer.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        #[ts(optional)]
+        mailbox_wait_report: Option<CoreMailboxWaitReport>,
     },
     #[serde(rename_all = "camelCase")]
     #[ts(rename_all = "camelCase")]
@@ -1165,6 +1170,7 @@ impl From<CoreTurnItem> for ThreadItem {
                         .map(|notifications| notifications.into_iter().map(Into::into).collect()),
                     completion_reason: call.completion_reason,
                     wake_cause: call.wake_cause.map(Into::into),
+                    mailbox_wait_report: call.mailbox_wait_report,
                 }
             }
             CoreTurnItem::SubAgentActivity(activity) => ThreadItem::SubAgentActivity {

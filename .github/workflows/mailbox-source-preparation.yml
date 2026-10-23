@@ -1,0 +1,82 @@
+name: Mailbox focused hosted source preparation
+
+on:
+  push:
+    branches: [feat/quiet-durable-mailbox]
+    paths: [.github/workflows/mailbox-source-preparation.yml]
+
+permissions:
+  contents: read
+
+jobs:
+  prepare-and-compile:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
+    env:
+      CARGO_INCREMENTAL: "0"
+      RUST_MIN_STACK: "8388608"
+      PREPARATION_ATTEMPT: "1"
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          ref: ${{ github.sha }}
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: ./.github/actions/setup-bazel-ci
+        with:
+          target: x86_64-unknown-linux-gnu
+      - uses: dtolnay/rust-toolchain@ebb3d1676050bfd0971c36c1e215b5751473994d
+        with:
+          toolchain: 1.96.0
+          components: rustfmt, clippy
+      - uses: ./.github/actions/setup-rusty-v8
+        with:
+          target: x86_64-unknown-linux-gnu
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1
+        with:
+          node-version: 22
+      - name: Install standard Linux build dependencies
+        run: |
+          sudo apt-get update -y
+          sudo DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends pkg-config libcap-dev
+      - name: Prepare only this branch's changed Rust files and lock metadata
+        shell: bash
+        run: |
+          set -euo pipefail
+          while IFS= read -r source; do
+            rustfmt --edition 2024 --config skip_children=true "$source"
+          done < <(git diff --name-only 2d91cb7437de6e146c8ec4eb654755dac2fb5ddd HEAD -- '*.rs')
+          cd codex-rs
+          cargo metadata --no-deps --format-version 1 > /dev/null
+      - name: Refresh the Bazel dependency lock
+        run: just bazel-lock-update
+      - name: Run the owned library contracts
+        working-directory: codex-rs
+        run: cargo test --locked -p codex-agent-mailbox --lib -- --test-threads=1
+      - name: Generate the affected native schemas
+        run: |
+          just write-config-schema
+          just write-app-server-schema
+      - name: Compile focused core mailbox and schema consumers
+        working-directory: codex-rs
+        run: cargo test --locked -p codex-core --lib mailbox -- --test-threads=1
+      - name: Compile focused UI mailbox consumers
+        working-directory: codex-rs
+        env:
+          INSTA_UPDATE: always
+        run: cargo test --locked -p codex-tui --lib mailbox -- --test-threads=1
+      - name: Capture the exact generated source delta
+        if: always()
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p "$RUNNER_TEMP/mailbox-source-preparation"
+          git diff --binary > "$RUNNER_TEMP/mailbox-source-preparation/source.patch"
+          git rev-parse HEAD > "$RUNNER_TEMP/mailbox-source-preparation/source-sha.txt"
+          git status --short > "$RUNNER_TEMP/mailbox-source-preparation/status.txt"
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        if: always()
+        with:
+          name: mailbox-source-preparation-${{ github.sha }}
+          path: ${{ runner.temp }}/mailbox-source-preparation/
+          retention-days: 3

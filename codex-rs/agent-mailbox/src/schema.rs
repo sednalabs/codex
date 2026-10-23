@@ -163,7 +163,6 @@ pub(crate) async fn initialize(pool: &SqlitePool) -> MailboxResult<()> {
         &mut transaction,
         "mailbox_continuations",
         "outcome",
-        "TEXT NOT NULL DEFAULT 'needs_attention'",
     )
     .await?;
     sqlx::query(
@@ -192,6 +191,7 @@ pub(crate) async fn initialize(pool: &SqlitePool) -> MailboxResult<()> {
             communication_json TEXT NOT NULL,
             kind TEXT NOT NULL,
             work_ref_json TEXT,
+            work_id TEXT REFERENCES mailbox_work(id),
             reply_to TEXT,
             supersedes TEXT,
             superseded_by TEXT,
@@ -212,42 +212,42 @@ pub(crate) async fn initialize(pool: &SqlitePool) -> MailboxResult<()> {
         &mut transaction,
         "mailbox_messages",
         "withdrawn",
-        "INTEGER NOT NULL DEFAULT 0",
     )
     .await?;
     ensure_column(
         &mut transaction,
         "mailbox_messages",
         "activate_if_idle",
-        "INTEGER NOT NULL DEFAULT 0",
     )
     .await?;
     ensure_column(
         &mut transaction,
         "mailbox_messages",
         "input_admitted",
-        "INTEGER NOT NULL DEFAULT 0",
     )
     .await?;
     ensure_column(
         &mut transaction,
         "mailbox_messages",
         "author_path",
-        "TEXT NOT NULL DEFAULT ''",
     )
     .await?;
     ensure_column(
         &mut transaction,
         "mailbox_messages",
         "recipient_path",
-        "TEXT NOT NULL DEFAULT ''",
+    )
+    .await?;
+    ensure_column(
+        &mut transaction,
+        "mailbox_messages",
+        "work_id",
     )
     .await?;
     ensure_column(
         &mut transaction,
         "mailbox_pending_counts",
         "quiet_count",
-        "INTEGER NOT NULL DEFAULT 0",
     )
     .await?;
     if version.is_some_and(|version| version < SCHEMA_VERSION) {
@@ -295,6 +295,12 @@ pub(crate) async fn initialize(pool: &SqlitePool) -> MailboxResult<()> {
     sqlx::query(
         "CREATE INDEX IF NOT EXISTS mailbox_messages_work
          ON mailbox_messages(recipient, seq)",
+    )
+    .execute(&mut *transaction)
+    .await?;
+    sqlx::query(
+        "CREATE INDEX IF NOT EXISTS mailbox_messages_admitted_work
+         ON mailbox_messages(recipient, work_id, input_admitted, seq)",
     )
     .execute(&mut *transaction)
     .await?;
@@ -361,10 +367,14 @@ async fn ensure_column(
     transaction: &mut sqlx::Transaction<'_, sqlx::Sqlite>,
     table: &str,
     column: &str,
-    declaration: &str,
 ) -> MailboxResult<()> {
-    let pragma = format!("PRAGMA table_info({table})");
-    let rows = sqlx::query(&pragma).fetch_all(&mut **transaction).await?;
+    let pragma = match table {
+        "mailbox_continuations" => "PRAGMA table_info(mailbox_continuations)",
+        "mailbox_messages" => "PRAGMA table_info(mailbox_messages)",
+        "mailbox_pending_counts" => "PRAGMA table_info(mailbox_pending_counts)",
+        _ => return Err(crate::MailboxError::InvalidInput("unsupported mailbox schema table".into())),
+    };
+    let rows = sqlx::query(pragma).fetch_all(&mut **transaction).await?;
     let exists = rows
         .iter()
         .map(|row| row.try_get::<String, _>("name"))
@@ -372,8 +382,34 @@ async fn ensure_column(
         .iter()
         .any(|name| name == column);
     if !exists {
-        let alter = format!("ALTER TABLE {table} ADD COLUMN {column} {declaration}");
-        sqlx::query(&alter).execute(&mut **transaction).await?;
+        let alter = match (table, column) {
+            ("mailbox_continuations", "outcome") => {
+                "ALTER TABLE mailbox_continuations ADD COLUMN outcome TEXT NOT NULL DEFAULT 'needs_attention'"
+            }
+            ("mailbox_messages", "withdrawn") => {
+                "ALTER TABLE mailbox_messages ADD COLUMN withdrawn INTEGER NOT NULL DEFAULT 0"
+            }
+            ("mailbox_messages", "activate_if_idle") => {
+                "ALTER TABLE mailbox_messages ADD COLUMN activate_if_idle INTEGER NOT NULL DEFAULT 0"
+            }
+            ("mailbox_messages", "input_admitted") => {
+                "ALTER TABLE mailbox_messages ADD COLUMN input_admitted INTEGER NOT NULL DEFAULT 0"
+            }
+            ("mailbox_messages", "author_path") => {
+                "ALTER TABLE mailbox_messages ADD COLUMN author_path TEXT NOT NULL DEFAULT ''"
+            }
+            ("mailbox_messages", "recipient_path") => {
+                "ALTER TABLE mailbox_messages ADD COLUMN recipient_path TEXT NOT NULL DEFAULT ''"
+            }
+            ("mailbox_messages", "work_id") => {
+                "ALTER TABLE mailbox_messages ADD COLUMN work_id TEXT REFERENCES mailbox_work(id)"
+            }
+            ("mailbox_pending_counts", "quiet_count") => {
+                "ALTER TABLE mailbox_pending_counts ADD COLUMN quiet_count INTEGER NOT NULL DEFAULT 0"
+            }
+            _ => return Err(crate::MailboxError::InvalidInput("unsupported mailbox schema column".into())),
+        };
+        sqlx::query(alter).execute(&mut **transaction).await?;
     }
     Ok(())
 }

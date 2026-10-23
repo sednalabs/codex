@@ -2133,6 +2133,34 @@ async fn record_response_item_and_emit_turn_item_emits_hook_prompt_lifecycle() {
     assert!(rx.try_recv().is_err(), "no extra events expected");
 }
 
+#[test]
+fn canonical_agent_message_ids_include_compacted_replacement_history() {
+    let id = ResponseItemId::with_suffix("amsg", "stable-native-id");
+    let mut communication = InterAgentCommunication::new(
+        AgentPath::root().join("worker").expect("worker path"),
+        AgentPath::root(),
+        Vec::new(),
+        "mailbox body".to_string(),
+        /*trigger_turn*/ true,
+    );
+    communication.id = Some(id.clone());
+    let replacement_history = vec![communication.to_model_input_item()];
+    let history = InitialHistory::Resumed(ResumedHistory {
+        conversation_id: ThreadId::default(),
+        history: Arc::new(vec![RolloutItem::Compacted(CompactedItem {
+            message: String::new(),
+            replacement_history: Some(replacement_history),
+            window_number: None,
+            first_window_id: None,
+            previous_window_id: None,
+            window_id: None,
+        })]),
+        rollout_path: None,
+    });
+
+    assert!(Session::canonical_agent_message_ids(&history).contains(&id));
+}
+
 #[tokio::test]
 async fn record_inter_agent_communication_sets_turn_id_in_rollout_and_resume() {
     let (mut session, turn_context) = make_session_and_context().await;
@@ -2149,7 +2177,8 @@ async fn record_inter_agent_communication_sets_turn_id_in_rollout_and_resume() {
 
     session
         .record_inter_agent_communication(&turn_context, communication)
-        .await;
+        .await
+        .expect("inter-agent communication should be recorded");
 
     assert_eq!(
         strip_response_item_ids(session.clone_history().await.raw_items()),
@@ -2207,17 +2236,20 @@ async fn record_inter_agent_communication_preserves_item_id_in_rollout_and_resum
     .await;
     let rollout_path =
         attach_thread_persistence(Arc::get_mut(&mut session).expect("unique session")).await;
-    let communication = InterAgentCommunication::new(
+    let mut communication = InterAgentCommunication::new(
         AgentPath::root().join("worker").expect("worker path"),
         AgentPath::root(),
         Vec::new(),
         "child done".to_string(),
         /*trigger_turn*/ false,
     );
+    let supplied_id = ResponseItemId::with_suffix("amsg", "stable-native-id");
+    communication.id = Some(supplied_id.clone());
 
     session
         .record_inter_agent_communication(&turn_context, communication)
-        .await;
+        .await
+        .expect("inter-agent communication should be recorded");
 
     let live_history = session.clone_history().await;
     let [live_item] = live_history.raw_items() else {
@@ -2226,8 +2258,8 @@ async fn record_inter_agent_communication_preserves_item_id_in_rollout_and_resum
     let live_item_id = live_item
         .id()
         .expect("live agent message should have an item id")
-        .to_string();
-    assert!(live_item_id.starts_with("amsg_"));
+        .clone();
+    assert_eq!(live_item_id, supplied_id);
 
     session.flush_rollout().await.expect("rollout should flush");
     let InitialHistory::Resumed(resumed) = RolloutRecorder::get_rollout_history(&rollout_path)
@@ -2242,7 +2274,7 @@ async fn record_inter_agent_communication_preserves_item_id_in_rollout_and_resum
     });
     assert_eq!(
         persisted_item_id.map(ResponseItemId::as_str),
-        Some(live_item_id.as_str())
+        Some(supplied_id.as_str())
     );
 
     let (resumed_session, _resumed_turn_context, _rx) =
@@ -3215,7 +3247,8 @@ async fn start_new_context_window_assigns_and_persists_item_ids() {
 
     session
         .start_new_context_window(&step_context, world_state)
-        .await;
+        .await
+        .expect("context window checkpoint should be recorded");
 
     let live_history = session.clone_history().await;
     assert!(!live_history.raw_items().is_empty());
@@ -5895,6 +5928,9 @@ pub(crate) async fn make_session_and_context() -> (Session, TurnContext) {
         input_queue: super::input_queue::InputQueue::new(),
         guardian_review_session: crate::guardian::GuardianReviewSessionManager::default(),
         services,
+        mailbox_canonical_response_item_ids: Mutex::new(HashSet::new()),
+        mailbox_unsettled_response_item_ids: Mutex::new(HashSet::new()),
+        mailbox_custody_gate: Mutex::new(()),
         git_enrichment_policy: GitEnrichmentPolicy::Fresh,
         fork_persistence: ForkPersistence::Copied,
         next_internal_sub_id: AtomicU64::new(0),
@@ -8132,6 +8168,9 @@ where
         input_queue: super::input_queue::InputQueue::new(),
         guardian_review_session: crate::guardian::GuardianReviewSessionManager::default(),
         services,
+        mailbox_canonical_response_item_ids: Mutex::new(HashSet::new()),
+        mailbox_unsettled_response_item_ids: Mutex::new(HashSet::new()),
+        mailbox_custody_gate: Mutex::new(()),
         git_enrichment_policy: GitEnrichmentPolicy::Fresh,
         fork_persistence: ForkPersistence::Copied,
         next_internal_sub_id: AtomicU64::new(0),

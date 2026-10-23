@@ -118,7 +118,8 @@ async fn handle_spawn_agent(
         .get_agent_path()
         .unwrap_or_else(AgentPath::root);
     let communication = communication_from_tool_message(author, new_agent_path.clone(), message);
-    let context = AgentCommunicationContext::new(AgentCommunicationKind::Spawn, session.thread_id);
+    let context = AgentCommunicationContext::new(AgentCommunicationKind::Spawn, session.thread_id)
+        .with_native_key(call_id.clone());
     let spawned_agent = Box::pin(
         session
             .services
@@ -140,6 +141,13 @@ async fn handle_spawn_agent(
     .await
     .map_err(collab_spawn_error)?;
     let new_thread_id = spawned_agent.thread_id;
+    let work_ref = session
+        .services
+        .agent_control
+        .mailbox_work_for_key(session.thread_id, &call_id)
+        .await
+        .map_err(collab_spawn_error)?
+        .map(|work| work.id);
     let agent_snapshot = session
         .services
         .agent_control
@@ -184,6 +192,7 @@ async fn handle_spawn_agent(
     if hide_agent_metadata {
         Ok(SpawnAgentResult {
             agent_id: None,
+            work_ref,
             task_name,
             nickname: None,
             requested_model: args.model.clone(),
@@ -199,6 +208,7 @@ async fn handle_spawn_agent(
     } else {
         Ok(SpawnAgentResult {
             agent_id: Some(new_thread_id.to_string()),
+            work_ref,
             task_name,
             nickname,
             requested_model: args.model.clone(),
@@ -346,6 +356,8 @@ fn validate_spawn_agent_expected_reasoning_effort(
 pub(crate) struct SpawnAgentResult {
     #[serde(skip_serializing_if = "Option::is_none")]
     agent_id: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    work_ref: Option<String>,
     task_name: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     nickname: Option<String>,

@@ -36,6 +36,8 @@ use ratatui::text::Line;
 use ratatui::text::Span;
 use std::collections::HashSet;
 
+pub(crate) mod mailbox_wait;
+
 const COLLAB_PROMPT_PREVIEW_GRAPHEMES: usize = 160;
 const COLLAB_AGENT_ERROR_PREVIEW_GRAPHEMES: usize = 160;
 const COLLAB_AGENT_RESPONSE_PREVIEW_GRAPHEMES: usize = 240;
@@ -431,6 +433,7 @@ pub(crate) fn tool_call_history_cell(
         wake_notifications,
         completion_reason,
         wake_cause,
+        mailbox_wait_report,
         ..
     } = item
     else {
@@ -506,7 +509,12 @@ pub(crate) fn tool_call_history_cell(
         }),
         CollabAgentTool::Wait => {
             if matches!(status, CollabAgentToolCallStatus::InProgress) {
-                Some(waiting_begin(receiver_thread_ids, &mut agent_metadata))
+                Some(match mailbox_wait_report {
+                    Some(report) => mailbox_wait::begin(report),
+                    None => waiting_begin(receiver_thread_ids, &mut agent_metadata),
+                })
+            } else if let Some(report) = mailbox_wait_report {
+                Some(mailbox_wait::end(report))
             } else {
                 Some(waiting_end(
                     receiver_thread_ids,
@@ -1640,6 +1648,7 @@ mod tests {
                 wake_notifications: None,
                 completion_reason: None,
                 wake_cause: None,
+                mailbox_wait_report: None,
             },
             /*cached_spawn_request*/ None,
             |thread_id| metadata_for(thread_id, robie_id, bob_id),
@@ -1668,6 +1677,7 @@ mod tests {
                 wake_notifications: None,
                 completion_reason: None,
                 wake_cause: None,
+                mailbox_wait_report: None,
             },
             /*cached_spawn_request*/ None,
             |thread_id| metadata_for(thread_id, robie_id, bob_id),
@@ -1693,6 +1703,7 @@ mod tests {
                 wake_notifications: None,
                 completion_reason: None,
                 wake_cause: None,
+                mailbox_wait_report: None,
             },
             /*cached_spawn_request*/ None,
             |thread_id| metadata_for(thread_id, robie_id, bob_id),
@@ -1727,6 +1738,7 @@ mod tests {
                 wake_notifications: None,
                 completion_reason: None,
                 wake_cause: None,
+                mailbox_wait_report: None,
             },
             /*cached_spawn_request*/ None,
             |thread_id| metadata_for(thread_id, robie_id, bob_id),
@@ -1755,6 +1767,7 @@ mod tests {
                 wake_notifications: None,
                 completion_reason: None,
                 wake_cause: None,
+                mailbox_wait_report: None,
             },
             /*cached_spawn_request*/ None,
             |thread_id| metadata_for(thread_id, robie_id, bob_id),
@@ -2071,6 +2084,7 @@ mod tests {
                 wake_notifications: None,
                 completion_reason: None,
                 wake_cause: None,
+                mailbox_wait_report: None,
             },
             /*cached_spawn_request*/ None,
             |thread_id| metadata_for(thread_id, robie_id, ThreadId::new()),
@@ -2120,6 +2134,7 @@ mod tests {
                 wake_notifications: None,
                 completion_reason: None,
                 wake_cause: None,
+                mailbox_wait_report: None,
             },
             /*cached_spawn_request*/ None,
             |thread_id| metadata_for(thread_id, robie_id, ThreadId::new()),
@@ -2161,6 +2176,7 @@ mod tests {
             wake_notifications: None,
             completion_reason: None,
             wake_cause: None,
+            mailbox_wait_report: None,
         }
     }
 

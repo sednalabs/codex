@@ -47,6 +47,9 @@ use crate::tools::handlers::multi_agents_spec::WaitAgentTimeoutOptions;
 use crate::tools::handlers::multi_agents_v2::FollowupTaskHandler as FollowupTaskHandlerV2;
 use crate::tools::handlers::multi_agents_v2::InterruptAgentHandler;
 use crate::tools::handlers::multi_agents_v2::ListAgentsHandler as ListAgentsHandlerV2;
+use crate::tools::handlers::multi_agents_v2::MailboxReadHandler;
+use crate::tools::handlers::multi_agents_v2::MailboxSendMessageHandler;
+use crate::tools::handlers::multi_agents_v2::MailboxWaitAgentHandlerV2;
 use crate::tools::handlers::multi_agents_v2::SendMessageHandler as SendMessageHandlerV2;
 use crate::tools::handlers::multi_agents_v2::SpawnAgentHandler as SpawnAgentHandlerV2;
 use crate::tools::handlers::multi_agents_v2::WaitAgentHandler as WaitAgentHandlerV2;
@@ -824,6 +827,7 @@ fn add_collaboration_tools(context: &CoreToolPlanContext<'_>, planned_tools: &mu
                 agent_type_description(turn_context, context.default_agent_type_description);
             let hide_spawn_agent_metadata =
                 turn_context.config.multi_agent_v2.hide_spawn_agent_metadata;
+            let mailbox_enabled = turn_context.features.enabled(Feature::AgentMailbox);
             planned_tools.add_arc(override_tool_exposure(
                 multi_agent_v2_handler(
                     SpawnAgentHandlerV2::new(SpawnAgentToolOptions {
@@ -842,20 +846,40 @@ fn add_collaboration_tools(context: &CoreToolPlanContext<'_>, planned_tools: &mu
                 ),
                 exposure,
             ));
-            planned_tools.add_arc(override_tool_exposure(
-                multi_agent_v2_handler(SendMessageHandlerV2, tool_namespace),
-                exposure,
-            ));
+            if mailbox_enabled {
+                planned_tools.add_arc(override_tool_exposure(
+                    multi_agent_v2_handler(MailboxSendMessageHandler, tool_namespace),
+                    exposure,
+                ));
+            } else {
+                planned_tools.add_arc(override_tool_exposure(
+                    multi_agent_v2_handler(SendMessageHandlerV2, tool_namespace),
+                    exposure,
+                ));
+            }
             planned_tools.add_arc(override_tool_exposure(
                 multi_agent_v2_handler(FollowupTaskHandlerV2, tool_namespace),
                 exposure,
             ));
             if turn_context.config.multi_agent_v2.wait_agent_enabled {
+                if mailbox_enabled {
+                    planned_tools.add_arc(override_tool_exposure(
+                        multi_agent_v2_handler(MailboxWaitAgentHandlerV2, tool_namespace),
+                        exposure,
+                    ));
+                } else {
+                    planned_tools.add_arc(override_tool_exposure(
+                        multi_agent_v2_handler(
+                            WaitAgentHandlerV2::new(context.wait_agent_timeouts),
+                            tool_namespace,
+                        ),
+                        exposure,
+                    ));
+                }
+            }
+            if mailbox_enabled {
                 planned_tools.add_arc(override_tool_exposure(
-                    multi_agent_v2_handler(
-                        WaitAgentHandlerV2::new(context.wait_agent_timeouts),
-                        tool_namespace,
-                    ),
+                    multi_agent_v2_handler(MailboxReadHandler, tool_namespace),
                     exposure,
                 ));
             }

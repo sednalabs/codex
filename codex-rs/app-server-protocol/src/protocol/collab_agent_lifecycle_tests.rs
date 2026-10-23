@@ -537,6 +537,7 @@ fn collab_item(
         wake_notifications: None,
         completion_reason: None,
         wake_cause: None,
+        mailbox_wait_report: None,
     }
 }
 

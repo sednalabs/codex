@@ -1,0 +1,133 @@
+use crate::error::{MailboxError, MailboxResult};
+use crate::store::Mailbox;
+use crate::types::ReturnWhen;
+use codex_protocol::ThreadId;
+use std::collections::{HashMap, HashSet};
+use std::sync::{Arc, Mutex, Weak};
+
+const MAX_ACTIVE_WAITS: usize = 4_096;
+const MAX_PEERS_PER_WAIT: usize = 100;
+const MAX_WAIT_ID_BYTES: usize = 256;
+
+#[derive(Clone)]
+pub(crate) struct ActiveWait {
+    owner: String,
+    peers: Vec<String>,
+    mode: ReturnWhen,
+    has_escape: bool,
+}
+
+/// RAII handle for one transient wait dependency. Dropping it removes only the
+/// exact registration; restarting the process never re-arms persisted waits.
+pub struct WaitRegistration {
+    wait_id: String,
+    waits: Weak<Mutex<HashMap<String, ActiveWait>>>,
+}
+
+impl WaitRegistration {
+    pub fn wait_id(&self) -> &str {
+        &self.wait_id
+    }
+}
+
+impl Drop for WaitRegistration {
+    fn drop(&mut self) {
+        if let Some(waits) = self.waits.upgrade() {
+            let mut waits = lock(&waits);
+            waits.remove(&self.wait_id);
+        }
+    }
+}
+
+impl Mailbox {
+    /// Register only currently active peer dependencies. The caller sets
+    /// `has_escape` for a finite deadline or any already-eligible input.
+    /// A new registration is rejected only when the graph proves it closed.
+    pub fn begin_wait(
+        &self,
+        wait_id: String,
+        owner: ThreadId,
+        peers: Vec<ThreadId>,
+        mode: ReturnWhen,
+        has_escape: bool,
+    ) -> MailboxResult<WaitRegistration> {
+        if wait_id.is_empty() || wait_id.len() > MAX_WAIT_ID_BYTES {
+            return Err(MailboxError::InvalidInput("invalid wait registration ID".into()));
+        }
+        if peers.len() > MAX_PEERS_PER_WAIT {
+            return Err(MailboxError::Backpressure("wait dependency count"));
+        }
+        let peers = peers
+            .into_iter()
+            .map(|peer| peer.to_string())
+            .collect::<Vec<_>>();
+        if peers.iter().collect::<HashSet<_>>().len() != peers.len() {
+            return Err(MailboxError::InvalidInput("duplicate wait dependency".into()));
+        }
+        let mut waits = lock(&self.waits);
+        if waits.contains_key(&wait_id) {
+            return Err(MailboxError::IdempotencyConflict);
+        }
+        if waits.len() >= MAX_ACTIVE_WAITS {
+            return Err(MailboxError::Backpressure("active wait registration count"));
+        }
+        waits.insert(
+            wait_id.clone(),
+            ActiveWait {
+                owner: owner.to_string(),
+                peers,
+                mode,
+                has_escape,
+            },
+        );
+        if is_closed_owner(&waits, &owner.to_string()) {
+            waits.remove(&wait_id);
+            return Err(MailboxError::ClosedPeerCycle);
+        }
+        Ok(WaitRegistration {
+            wait_id,
+            waits: Arc::downgrade(&self.waits),
+        })
+    }
+}
+
+fn is_closed_owner(waits: &HashMap<String, ActiveWait>, owner: &str) -> bool {
+    let mut by_owner: HashMap<&str, Vec<&ActiveWait>> = HashMap::new();
+    for wait in waits.values() {
+        by_owner.entry(wait.owner.as_str()).or_default().push(wait);
+    }
+    let mut closed: HashSet<&str> = by_owner
+        .iter()
+        .filter(|(_, owner_waits)| {
+            owner_waits
+                .iter()
+                .all(|wait| !wait.has_escape && !wait.peers.is_empty())
+        })
+        .map(|(owner, _)| *owner)
+        .collect();
+    loop {
+        let previous = closed.clone();
+        let previous_len = closed.len();
+        closed.retain(|candidate| {
+            let Some(owner_waits) = by_owner.get(candidate) else {
+                return false;
+            };
+            owner_waits.iter().all(|wait| match wait.mode {
+                // Any completes when one alternative is ready, so every peer
+                // must itself be blocked for this waiter to remain trapped.
+                ReturnWhen::Any => wait.peers.iter().all(|peer| previous.contains(peer.as_str())),
+                // All remains blocked while at least one required peer is
+                // blocked; other completed peers do not break the dependency.
+                ReturnWhen::All => wait.peers.iter().any(|peer| previous.contains(peer.as_str())),
+            })
+        });
+        if closed.len() == previous_len {
+            break;
+        }
+    }
+    closed.contains(owner)
+}
+
+fn lock<T>(mutex: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
+    mutex.lock().unwrap_or_else(std::sync::PoisonError::into_inner)
+}

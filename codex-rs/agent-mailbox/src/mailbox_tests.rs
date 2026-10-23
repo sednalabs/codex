@@ -1,9 +1,9 @@
 use crate::{
-    is_provably_closed_peer_cycle, ActivationDecision, ActivationDisposition, Dependency,
-    DependencyMode, DispatchDecision, DispatchState, Mailbox, MailboxError, MessageDraft,
-    MessageKind, NativeWork, ObservationTarget, RequestDisposition, RequestSnapshot, ReturnWhen,
-    Selection, Selector, Snapshot, SnapshotItem, SnapshotState, WorkSnapshot, Continuation,
-    ContinuationState, GoalBinding, Outcome,
+    is_provably_closed_peer_cycle, ActivationDecision, ActivationDisposition, AdmissionReceipt,
+    Continuation, ContinuationState, Dependency, DependencyMode, DispatchDecision, DispatchState,
+    Envelope, GoalBinding, Mailbox, MailboxError, MessageDraft, MessageKind, NativeWork,
+    ObservationTarget, Outcome, RequestDisposition, RequestSnapshot, ReturnWhen, Selection,
+    Selector, Snapshot, SnapshotItem, SnapshotState, TurnOutcomeReceipt, WorkRef, WorkSnapshot,
 };
 use codex_protocol::{
     protocol::{AgentPath, InterAgentCommunication},
@@ -23,12 +23,8 @@ struct TestMailbox {
 async fn test_mailbox() -> TestMailbox {
     let home = tempfile::tempdir().expect("temporary mailbox home");
     let config = SqliteConfig::new_for_testing(home.path().abs());
-    let mailbox = Mailbox::open(&config).await.expect("open test mailbox");
-    TestMailbox {
-        _home: home,
-        config,
-        mailbox,
-    }
+    let mailbox = Mailbox::open(&config).await.expect("open mailbox");
+    TestMailbox { _home: home, config, mailbox }
 }
 
 fn thread_id(index: u64) -> ThreadId {
@@ -38,49 +34,25 @@ fn thread_id(index: u64) -> ThreadId {
 
 fn communication(content: &str) -> InterAgentCommunication {
     InterAgentCommunication::new(
-        AgentPath::root(),
-        AgentPath::root(),
-        Vec::new(),
-        content.to_string(),
-        false,
+        AgentPath::root(), AgentPath::root(), Vec::new(), content.to_string(), false,
     )
 }
 
-fn native_work(
-    issuer: ThreadId,
-    agent: ThreadId,
-    native_key: &str,
-    submission_id: &str,
-    content: &str,
-) -> NativeWork {
+fn native_work(issuer: ThreadId, agent: ThreadId, key: &str, content: &str) -> NativeWork {
     NativeWork {
-        native_key: native_key.to_string(),
-        issuer,
-        agent,
-        submission_id: submission_id.to_string(),
-        input: communication(content),
+        native_key: key.to_string(), issuer, agent,
+        submission_id: format!("submission-{key}"), input: communication(content),
     }
 }
 
-fn message_draft(
-    invocation_key: &str,
-    sender: ThreadId,
-    recipient: ThreadId,
-    kind: MessageKind,
-    content: &str,
+fn draft(
+    key: &str, sender: ThreadId, recipient: ThreadId, kind: MessageKind, content: &str,
     legacy_attention: bool,
 ) -> MessageDraft {
     MessageDraft {
-        invocation_key: invocation_key.to_string(),
-        sender,
-        recipient,
-        communication: communication(content),
-        kind,
-        activate_if_idle: false,
-        work_ref: None,
-        reply_to: None,
-        supersedes: None,
-        legacy_attention,
+        invocation_key: key.to_string(), sender, recipient,
+        communication: communication(content), kind, activate_if_idle: false,
+        work_ref: None, reply_to: None, supersedes: None, legacy_attention,
     }
 }
 
@@ -88,1214 +60,512 @@ fn selection(
     caller: ThreadId,
     agent: Option<ThreadId>,
     selectors: Vec<Selector>,
-    return_when: ReturnWhen,
+    when: ReturnWhen,
 ) -> Selection {
-    Selection {
-        caller,
-        agent,
-        selectors,
-        return_when,
-        limit: 100,
-    }
+    Selection { caller, agent, selectors, return_when: when, limit: 100 }
 }
 
-fn work_item<'a>(snapshot: &'a Snapshot, work_id: &str) -> &'a WorkSnapshot {
-    snapshot
-        .items
-        .iter()
-        .find_map(|item| match item {
-            SnapshotItem::Work(work) if work.work_ref.id == work_id => Some(work),
-            _ => None,
-        })
-        .expect("selected work is present in the snapshot")
+async fn take_snapshot(
+    mailbox: &Mailbox,
+    caller: ThreadId,
+    agent: Option<ThreadId>,
+    selectors: Vec<Selector>,
+    when: ReturnWhen,
+) -> Snapshot {
+    mailbox.snapshot(&selection(caller, agent, selectors, when)).await.unwrap()
 }
 
-fn request_item<'a>(snapshot: &'a Snapshot, request_id: &str) -> &'a RequestSnapshot {
-    snapshot
-        .items
-        .iter()
-        .find_map(|item| match item {
-            SnapshotItem::Request(request) if request.request_id == request_id => Some(request),
-            _ => None,
-        })
-        .expect("selected request is present in the snapshot")
+fn work_item<'a>(snapshot: &'a Snapshot, id: &str) -> &'a WorkSnapshot {
+    snapshot.items.iter().find_map(|item| match item {
+        SnapshotItem::Work(work) if work.work_ref.id == id => Some(work), _ => None,
+    }).expect("selected work is in snapshot")
 }
 
-fn goal_binding(parent: ThreadId, child: ThreadId, generation: u64, turn: &str) -> GoalBinding {
+fn request_item<'a>(snapshot: &'a Snapshot, id: &str) -> &'a RequestSnapshot {
+    snapshot.items.iter().find_map(|item| match item {
+        SnapshotItem::Request(request) if request.request_id == id => Some(request), _ => None,
+    }).expect("selected request is in snapshot")
+}
+
+async fn accept_work(
+    mailbox: &Mailbox,
+    issuer: ThreadId,
+    agent: ThreadId,
+    key: &str,
+    content: &str,
+) -> (WorkRef, String) {
+    let work = mailbox
+        .accept_work(native_work(issuer, agent, key, content))
+        .await
+        .expect("accept work");
+    let input_id = mailbox
+        .accepted_input(&work)
+        .await
+        .expect("read accepted input")
+        .id.expect("accepted input has provider ID").to_string();
+    (work, input_id)
+}
+
+async fn admit(mailbox: &Mailbox, agent: ThreadId, turn: &str, ids: &[String]) -> AdmissionReceipt {
+    mailbox.record_admission(agent, turn, ids).await.expect("record admission")
+}
+
+async fn finish(
+    mailbox: &Mailbox, agent: ThreadId, turn: &str, outcome: Outcome,
+    response: Option<InterAgentCommunication>, continuation: Continuation,
+) -> TurnOutcomeReceipt {
+    mailbox.record_turn_outcome(agent, turn, outcome, response, continuation).await
+        .expect("record turn outcome")
+}
+
+async fn send(mailbox: &Mailbox, message: MessageDraft) -> Envelope {
+    mailbox.accept_message(message).await.expect("accept message")
+}
+
+fn goal_binding(
+    parent: ThreadId,
+    child: ThreadId,
+    generation: u64,
+    source_turn: &str,
+) -> GoalBinding {
     GoalBinding {
-        goal_id: "goal-1".to_string(),
-        parent_thread_id: parent,
-        child_thread_id: child,
-        control_generation: generation,
-        revision: 1,
-        source_turn_id: turn.to_string(),
+        goal_id: "goal-1".to_string(), parent_thread_id: parent, child_thread_id: child,
+        control_generation: generation, revision: 1, source_turn_id: source_turn.to_string(),
+    }
+}
+
+fn dependency(owner: &str, peers: &[&str], mode: DependencyMode) -> Dependency {
+    Dependency {
+        owner: owner.to_string(),
+        peers: peers.iter().map(|peer| (*peer).to_string()).collect(),
+        mode,
     }
 }
 
 #[tokio::test]
-async fn accepted_native_key_retry_preserves_work_and_provider_message_identity() {
+async fn native_retry_dispatch_reopen_and_capture_backpressure_are_safe() {
     let fixture = test_mailbox().await;
-    let issuer = thread_id(1);
-    let agent = thread_id(2);
-    let original = native_work(issuer, agent, "native-1", "submission-1", "do the work");
+    let (issuer, agent) = (thread_id(1), thread_id(2));
+    let original = native_work(issuer, agent, "native-1", "do the work");
+    let work = fixture.mailbox.accept_work(original.clone()).await.unwrap();
+    let captured = fixture.mailbox.accepted_input(&work).await.unwrap();
+    assert!(captured.id.as_ref().unwrap().as_str().starts_with("amsg_"));
+    assert_eq!(fixture.mailbox.accept_work(original).await.unwrap(), work);
+    assert_eq!(fixture.mailbox.accepted_input(&work).await.unwrap(), captured);
 
-    let accepted = fixture
-        .mailbox
-        .accept_work(original.clone())
-        .await
-        .expect("accept native work");
-    let captured_input = fixture
-        .mailbox
-        .accepted_input(&accepted)
-        .await
-        .expect("read captured native input");
-    let captured_id = captured_input
-        .id
-        .as_ref()
-        .expect("accepted input receives a stable ID");
-    assert!(captured_id.as_str().starts_with("amsg_"));
-
-    // A retry after a lost publication reuses both the immutable work reference
-    // and the already-assigned provider item ID.
-    assert_eq!(
-        fixture.mailbox.accept_work(original).await.unwrap(),
-        accepted
-    );
-    assert_eq!(
-        fixture.mailbox.accepted_input(&accepted).await.unwrap(),
-        captured_input
-    );
-
-    let mut conflicting_retry = native_work(issuer, agent, "native-1", "submission-1", "changed");
-    conflicting_retry.input.trigger_turn = true;
+    let mut conflict = native_work(issuer, agent, "native-1", "changed input");
+    conflict.input.trigger_turn = true;
     assert!(matches!(
-        fixture.mailbox.accept_work(conflicting_retry).await,
+        fixture.mailbox.accept_work(conflict).await,
         Err(MailboxError::IdempotencyConflict)
     ));
-
+    assert_eq!(fixture.mailbox.begin_dispatch(&work).await.unwrap(), DispatchDecision::Dispatch);
     assert_eq!(
-        fixture.mailbox.begin_dispatch(&accepted).await.unwrap(),
-        DispatchDecision::Dispatch
-    );
-    assert_eq!(
-        fixture.mailbox.begin_dispatch(&accepted).await.unwrap(),
+        fixture.mailbox.begin_dispatch(&work).await.unwrap(),
         DispatchDecision::RecoveryNeeded
     );
 
-    // Reopening the durable store does not turn an unresolved claim into
-    // permission to send again.
     let reopened = Mailbox::open(&fixture.config).await.unwrap();
-    assert_eq!(
-        reopened.dispatch_state(&accepted).await.unwrap(),
-        DispatchState::Dispatching
-    );
-    assert_eq!(
-        reopened.begin_dispatch(&accepted).await.unwrap(),
-        DispatchDecision::RecoveryNeeded
-    );
-    reopened.mark_dispatched(&accepted).await.unwrap();
-    assert_eq!(
-        reopened.begin_dispatch(&accepted).await.unwrap(),
-        DispatchDecision::AlreadyDispatched
-    );
-}
+    assert_eq!(reopened.dispatch_state(&work).await.unwrap(), DispatchState::Dispatching);
+    assert_eq!(reopened.begin_dispatch(&work).await.unwrap(), DispatchDecision::RecoveryNeeded);
+    reopened.mark_dispatched(&work).await.unwrap();
+    assert_eq!(reopened.begin_dispatch(&work).await.unwrap(), DispatchDecision::AlreadyDispatched);
 
-#[tokio::test]
-async fn admission_is_bound_to_the_exact_input_ids_and_turn() {
-    let fixture = test_mailbox().await;
-    let issuer = thread_id(3);
-    let agent = thread_id(4);
-    let work_a = fixture
-        .mailbox
-        .accept_work(native_work(issuer, agent, "native-a", "submission-a", "a"))
-        .await
-        .unwrap();
-    let work_b = fixture
-        .mailbox
-        .accept_work(native_work(issuer, agent, "native-b", "submission-b", "b"))
-        .await
-        .unwrap();
-    fixture
-        .mailbox
-        .accept_work(native_work(issuer, agent, "native-c", "submission-c", "c"))
-        .await
-        .unwrap();
-    let id_a = fixture
-        .mailbox
-        .accepted_input(&work_a)
-        .await
-        .unwrap()
-        .id
-        .expect("accepted input has an ID")
-        .to_string();
-    let id_b = fixture
-        .mailbox
-        .accepted_input(&work_b)
-        .await
-        .unwrap()
-        .id
-        .expect("accepted input has an ID")
-        .to_string();
-    let work_c = fixture
-        .mailbox
-        .work_for_native_key(issuer, "native-c")
-        .await
-        .unwrap()
-        .expect("third native work was accepted");
-    let id_c = fixture
-        .mailbox
-        .accepted_input(&work_c)
-        .await
-        .unwrap()
-        .id
-        .unwrap()
-        .to_string();
-
-    let receipt = fixture
-        .mailbox
-        .record_admission(agent, "turn-one", &[id_a.clone()])
-        .await
-        .unwrap();
-    assert_eq!(receipt.work_refs, vec![work_a.clone()]);
-    assert!(!receipt.already_recorded);
-
-    let retry = fixture
-        .mailbox
-        .record_admission(agent, "turn-one", &[id_a.clone()])
-        .await
-        .unwrap();
-    assert_eq!(retry.work_refs, receipt.work_refs);
-    assert!(retry.already_recorded);
-
-    let appended = fixture
-        .mailbox
-        .record_admission(agent, "turn-one", &[id_b.clone()])
-        .await
-        .unwrap();
-    assert_eq!(appended.work_refs, vec![work_b.clone()]);
-    assert!(!appended.already_recorded);
-    let covered = fixture
-        .mailbox
-        .record_turn_outcome(
-            agent,
-            "turn-one",
-            Outcome::Completed,
-            None,
-            Continuation::None,
-        )
-        .await
-        .unwrap();
-    assert_eq!(covered.outcomes.len(), 2);
-    assert!(covered.outcomes.iter().any(|item| item.work_ref == work_a));
-    assert!(covered.outcomes.iter().any(|item| item.work_ref == work_b));
-    assert!(covered.outcomes.iter().all(|item| item.work_ref != work_c));
-
+    let mut too_large = native_work(issuer, agent, "too-large", "x");
+    too_large.input.content = "x".repeat(1_000_001);
     assert!(matches!(
-        fixture
-            .mailbox
-            .record_admission(agent, "turn-two", &[id_a])
-            .await,
-        Err(MailboxError::IdempotencyConflict)
-    ));
-    assert!(matches!(
-        fixture
-            .mailbox
-            .record_admission(agent, "turn-one", &[id_c, "amsg_not-admitted".to_string()])
-            .await,
-        Err(MailboxError::ReferenceMismatch)
-    ));
-
-    let too_many = (0..101)
-        .map(|index| format!("amsg-over-limit-{index}"))
-        .collect::<Vec<_>>();
-    assert!(matches!(
-        fixture
-            .mailbox
-            .record_admission(agent, "oversized-turn", &too_many)
-            .await,
+        fixture.mailbox.accept_work(too_large).await,
         Err(MailboxError::Backpressure(_))
     ));
+    assert!(fixture.mailbox.work_for_native_key(issuer, "too-large").await.unwrap().is_none());
 }
 
 #[tokio::test]
-async fn turn_outcome_covers_only_admitted_refs_and_snapshot_is_caller_scoped() {
+async fn admission_is_incremental_but_outcomes_and_snapshots_stay_exactly_scoped() {
     let fixture = test_mailbox().await;
-    let issuer = thread_id(5);
-    let other_issuer = thread_id(6);
-    let agent = thread_id(7);
-    let work_a = fixture
-        .mailbox
-        .accept_work(native_work(issuer, agent, "native-a", "submission-a", "a"))
-        .await
-        .unwrap();
-    let work_b = fixture
-        .mailbox
-        .accept_work(native_work(issuer, agent, "native-b", "submission-b", "b"))
-        .await
-        .unwrap();
-    let id_a = fixture
-        .mailbox
-        .accepted_input(&work_a)
-        .await
-        .unwrap()
-        .id
-        .unwrap()
-        .to_string();
-    let id_b = fixture
-        .mailbox
-        .accepted_input(&work_b)
-        .await
-        .unwrap()
-        .id
-        .unwrap()
-        .to_string();
-    fixture
-        .mailbox
-        .record_admission(agent, "turn-covered", &[id_a, id_b])
-        .await
-        .unwrap();
+    let (issuer, other_issuer, agent) = (thread_id(3), thread_id(4), thread_id(5));
+    let (a, id_a) = accept_work(&fixture.mailbox, issuer, agent, "a", "A").await;
+    let (b, id_b) = accept_work(&fixture.mailbox, issuer, agent, "b", "B").await;
+    let (c, id_c) = accept_work(&fixture.mailbox, issuer, agent, "c", "C").await;
+    assert_eq!(
+        admit(&fixture.mailbox, agent, "turn", &[id_a.clone()]).await.work_refs,
+        vec![a.clone()]
+    );
+    assert!(admit(&fixture.mailbox, agent, "turn", &[id_a.clone()]).await.already_recorded);
+    assert_eq!(
+        admit(&fixture.mailbox, agent, "turn", &[id_b.clone()]).await.work_refs,
+        vec![b.clone()]
+    );
+    assert!(matches!(fixture.mailbox.record_admission(agent, "other-turn", &[id_a.clone()]).await,
+        Err(MailboxError::IdempotencyConflict)));
 
-    // This accepted input arrives after the native execution admitted its
-    // fixed set and must remain pending for a later turn.
-    let unadmitted = fixture
-        .mailbox
-        .accept_work(native_work(issuer, agent, "native-late", "submission-late", "late"))
-        .await
-        .unwrap();
-    let unrelated = fixture
-        .mailbox
-        .accept_work(native_work(
-            other_issuer,
-            agent,
-            "native-other-issuer",
-            "submission-other-issuer",
-            "other issuer history",
-        ))
-        .await
-        .unwrap();
-    fixture
-        .mailbox
-        .record_outcome(
-            &unrelated,
-            Outcome::Completed,
-            None,
-            Continuation::None,
-        )
-        .await
-        .unwrap();
+    // New work after admission remains outside the outcome; unrelated issuer history is hidden.
+    let (late, _) = accept_work(&fixture.mailbox, issuer, agent, "late", "late").await;
+    let (foreign, _) = accept_work(
+        &fixture.mailbox, other_issuer, agent, "foreign", "foreign",
+    ).await;
+    fixture.mailbox.record_outcome(
+        &foreign, Outcome::Completed, None, Continuation::None,
+    ).await.unwrap();
+    let outcomes = finish(
+        &fixture.mailbox, agent, "turn", Outcome::Completed, None, Continuation::None,
+    ).await;
+    assert_eq!(outcomes.outcomes.len(), 2);
+    assert!(outcomes.outcomes.iter().any(|item| item.work_ref == a));
+    assert!(outcomes.outcomes.iter().any(|item| item.work_ref == b));
+    assert!(outcomes.outcomes.iter().all(|item| item.work_ref != c && item.work_ref != late));
 
-    let outcome = fixture
-        .mailbox
-        .record_turn_outcome(
-            agent,
-            "turn-covered",
-            Outcome::Completed,
-            None,
-            Continuation::None,
-        )
-        .await
-        .unwrap();
-    assert_eq!(outcome.outcomes.len(), 2);
-    assert!(outcome.outcomes.iter().any(|item| item.work_ref == work_a));
-    assert!(outcome.outcomes.iter().any(|item| item.work_ref == work_b));
-    assert!(outcome.outcomes.iter().all(|item| item.work_ref != unadmitted));
-
-    let snapshot = fixture
-        .mailbox
-        .snapshot(&selection(
-            issuer,
-            Some(agent),
-            vec![
-                Selector::Work(work_a.id.clone()),
-                Selector::Work(work_b.id.clone()),
-                Selector::Work(unadmitted.id.clone()),
-                Selector::Work(unrelated.id.clone()),
-            ],
-            ReturnWhen::All,
-        ))
-        .await
-        .unwrap();
+    let snapshot = take_snapshot(&fixture.mailbox, issuer, Some(agent), vec![
+        Selector::Work(a.id.clone()), Selector::Work(b.id.clone()), Selector::Work(c.id.clone()),
+        Selector::Work(late.id.clone()), Selector::Work(foreign.id.clone()),
+    ], ReturnWhen::All).await;
     assert_eq!(snapshot.state, SnapshotState::Pending);
-    assert_eq!(snapshot.items.len(), 3);
-    assert!(work_item(&snapshot, &work_a.id).outcome.is_some());
-    assert!(work_item(&snapshot, &work_b.id).outcome.is_some());
-    assert!(work_item(&snapshot, &unadmitted.id).outcome.is_none());
-    assert!(!snapshot
-        .items
-        .iter()
-        .any(|item| matches!(item, SnapshotItem::Work(work) if work.work_ref.id == unrelated.id)));
+    assert_eq!(snapshot.items.len(), 4);
+    assert!(work_item(&snapshot, &a.id).outcome.is_some());
+    assert!(work_item(&snapshot, &b.id).outcome.is_some());
+    assert!(work_item(&snapshot, &c.id).outcome.is_none());
+    assert!(work_item(&snapshot, &late.id).outcome.is_none());
+    assert!(!snapshot.items.iter().any(|item| matches!(
+        item, SnapshotItem::Work(work) if work.work_ref.id == foreign.id
+    )));
+
+    let too_many = (0..101).map(|i| format!("amsg-limit-{i}")).collect::<Vec<_>>();
+    assert!(matches!(fixture.mailbox.record_admission(agent, "over-limit", &too_many).await,
+        Err(MailboxError::Backpressure(_))));
 }
 
 #[tokio::test]
-async fn one_turn_returns_separate_handbacks_to_each_issuer() {
+async fn mixed_issuer_turn_creates_distinct_handbacks() {
     let fixture = test_mailbox().await;
-    let issuer_a = thread_id(8);
-    let issuer_b = thread_id(9);
-    let agent = thread_id(12);
-    let work_a = fixture
-        .mailbox
-        .accept_work(native_work(issuer_a, agent, "native-a", "submission-a", "a"))
-        .await
-        .unwrap();
-    let work_b = fixture
-        .mailbox
-        .accept_work(native_work(issuer_b, agent, "native-b", "submission-b", "b"))
-        .await
-        .unwrap();
-    let id_a = fixture
-        .mailbox
-        .accepted_input(&work_a)
-        .await
-        .unwrap()
-        .id
-        .unwrap()
-        .to_string();
-    let id_b = fixture
-        .mailbox
-        .accepted_input(&work_b)
-        .await
-        .unwrap()
-        .id
-        .unwrap()
-        .to_string();
-    fixture
-        .mailbox
-        .record_admission(agent, "shared-turn", &[id_a, id_b])
-        .await
-        .unwrap();
-
-    let result = fixture
-        .mailbox
-        .record_turn_outcome(
-            agent,
-            "shared-turn",
-            Outcome::Completed,
-            Some(communication("result for both issuers")),
-            Continuation::None,
-        )
-        .await
-        .unwrap();
-    assert_eq!(result.outcomes.len(), 2);
-    let response_a = result
-        .outcomes
-        .iter()
-        .find(|item| item.work_ref == work_a)
-        .and_then(|item| item.response_message_id.as_deref())
-        .expect("issuer A receives its response");
-    let response_b = result
-        .outcomes
-        .iter()
-        .find(|item| item.work_ref == work_b)
-        .and_then(|item| item.response_message_id.as_deref())
-        .expect("issuer B receives its response");
-    assert_ne!(response_a, response_b);
-
-    let handback_a = fixture
-        .mailbox
-        .get_message(issuer_a, response_a)
-        .await
-        .unwrap()
-        .expect("issuer A handback is addressable");
-    let handback_b = fixture
-        .mailbox
-        .get_message(issuer_b, response_b)
-        .await
-        .unwrap()
-        .expect("issuer B handback is addressable");
-    assert_eq!(handback_a.sender, agent);
-    assert_eq!(handback_a.recipient, issuer_a);
-    assert_eq!(handback_b.sender, agent);
-    assert_eq!(handback_b.recipient, issuer_b);
-}
-
-#[tokio::test]
-async fn pending_and_deferred_goal_bindings_settle_only_for_the_exact_generation() {
-    let fixture = test_mailbox().await;
-    let issuer = thread_id(13);
-    let agent = thread_id(14);
-    let work_pending = fixture
-        .mailbox
-        .accept_work(native_work(
-            issuer,
-            agent,
-            "native-pending",
-            "submission-pending",
-            "pending goal work",
-        ))
-        .await
-        .unwrap();
-    let work_deferred = fixture
-        .mailbox
-        .accept_work(native_work(
-            issuer,
-            agent,
-            "native-deferred",
-            "submission-deferred",
-            "deferred goal work",
-        ))
-        .await
-        .unwrap();
-    let binding_pending = goal_binding(issuer, agent, 4, "pending-turn");
-    let binding_deferred = goal_binding(issuer, agent, 5, "deferred-turn");
-    for (work_ref, turn_id, continuation) in [
-        (
-            &work_pending,
-            "pending-turn",
-            Continuation::PendingGoalBinding(binding_pending.clone()),
-        ),
-        (
-            &work_deferred,
-            "deferred-turn",
-            Continuation::Deferred(binding_deferred.clone()),
-        ),
-    ] {
-        let input_id = fixture
-            .mailbox
-            .accepted_input(work_ref)
-            .await
-            .unwrap()
-            .id
-            .unwrap()
-            .to_string();
-        fixture
-            .mailbox
-            .record_admission(agent, turn_id, &[input_id])
-            .await
-            .unwrap();
-        let result = fixture
-            .mailbox
-            .record_turn_outcome(
-                agent,
-                turn_id,
-                Outcome::Completed,
-                None,
-                continuation,
-            )
-            .await
-            .unwrap();
-        assert!(result.outcomes.is_empty());
-        assert_eq!(result.continuation_work, vec![(*work_ref).clone()]);
+    let (issuer_a, issuer_b, agent) = (thread_id(6), thread_id(7), thread_id(8));
+    let (a, id_a) = accept_work(&fixture.mailbox, issuer_a, agent, "multi-a", "A").await;
+    let (b, id_b) = accept_work(&fixture.mailbox, issuer_b, agent, "multi-b", "B").await;
+    admit(&fixture.mailbox, agent, "shared-turn", &[id_a, id_b]).await;
+    let receipt = finish(&fixture.mailbox, agent, "shared-turn", Outcome::Completed,
+        Some(communication("one result")), Continuation::None).await;
+    assert_eq!(receipt.outcomes.len(), 2);
+    let id_a = receipt.outcomes.iter().find(|r| r.work_ref == a)
+        .and_then(|r| r.response_message_id.clone()).unwrap();
+    let id_b = receipt.outcomes.iter().find(|r| r.work_ref == b)
+        .and_then(|r| r.response_message_id.clone()).unwrap();
+    assert_ne!(id_a, id_b);
+    for (issuer, id) in [(issuer_a, id_a), (issuer_b, id_b)] {
+        let message = fixture.mailbox.get_message(issuer, &id).await.unwrap().unwrap();
+        assert_eq!((message.sender, message.recipient), (agent, issuer));
     }
+}
 
-    for (work_ref, expected_state) in [
-        (&work_pending, ContinuationState::PendingGoalBinding),
-        (&work_deferred, ContinuationState::Deferred),
+#[tokio::test]
+async fn pending_deferred_and_terminal_continuations_bind_to_exact_generation() {
+    let fixture = test_mailbox().await;
+    let (issuer, agent) = (thread_id(9), thread_id(10));
+    let (a, id_a) = accept_work(&fixture.mailbox, issuer, agent, "pending", "A").await;
+    let (b, id_b) = accept_work(&fixture.mailbox, issuer, agent, "deferred", "B").await;
+    let bindings = [
+        goal_binding(issuer, agent, 4, "turn-p"),
+        goal_binding(issuer, agent, 5, "turn-d"),
+    ];
+    for (work, id, turn, continuation, state) in [
+        (
+            &a, id_a, "turn-p", Continuation::PendingGoalBinding(bindings[0].clone()),
+            ContinuationState::PendingGoalBinding,
+        ),
+        (
+            &b, id_b, "turn-d", Continuation::Deferred(bindings[1].clone()),
+            ContinuationState::Deferred,
+        ),
     ] {
-        let snapshot = fixture
-            .mailbox
-            .snapshot(&selection(
-                issuer,
-                Some(agent),
-                vec![Selector::Work(work_ref.id.clone())],
-                ReturnWhen::Any,
-            ))
-            .await
-            .unwrap();
-        let item = work_item(&snapshot, &work_ref.id);
+        admit(&fixture.mailbox, agent, turn, &[id]).await;
+        let receipt = finish(
+            &fixture.mailbox, agent, turn, Outcome::Completed, None, continuation,
+        ).await;
+        assert!(receipt.outcomes.is_empty());
+        assert_eq!(receipt.continuation_work, vec![(*work).clone()]);
+        let snapshot = take_snapshot(
+            &fixture.mailbox, issuer, Some(agent), vec![Selector::Work(work.id.clone())],
+            ReturnWhen::Any,
+        ).await;
+        let item = work_item(&snapshot, &work.id);
         assert!(item.outcome.is_none());
-        assert_eq!(item.continuations.len(), 1);
-        assert_eq!(item.continuations[0].state, expected_state);
+        assert_eq!(item.continuations[0].state, state);
     }
+    let mut stale = bindings[0].clone();
+    stale.control_generation += 1;
+    assert!(finish(&fixture.mailbox, agent, "stale-generation", Outcome::Completed, None,
+        Continuation::Terminal(stale)).await.no_matching_work);
+    let still_deferred = take_snapshot(
+        &fixture.mailbox, issuer, Some(agent), vec![Selector::Work(a.id.clone())],
+        ReturnWhen::Any,
+    ).await;
+    assert!(work_item(&still_deferred, &a.id).outcome.is_none());
 
-    let mut stale_generation = binding_pending.clone();
-    stale_generation.control_generation += 1;
-    let stale = fixture
-        .mailbox
-        .record_turn_outcome(
-            agent,
-            "later-turn-stale-generation",
-            Outcome::Completed,
-            None,
-            Continuation::Terminal(stale_generation),
-        )
-        .await
-        .unwrap();
-    assert!(stale.no_matching_work);
-    assert!(fixture
-        .mailbox
-        .snapshot(&selection(
-            issuer,
-            Some(agent),
-            vec![Selector::Work(work_pending.id.clone())],
-            ReturnWhen::Any,
-        ))
-        .await
-        .unwrap()
-        .items
-        .iter()
-        .any(|item| matches!(item, SnapshotItem::Work(work) if work.outcome.is_none())));
-
-    for (work_ref, binding, turn_id) in [
-        (&work_pending, binding_pending, "terminal-pending"),
-        (&work_deferred, binding_deferred, "terminal-deferred"),
+    for (work, binding, turn) in [
+        (&a, bindings[0].clone(), "terminal-p"),
+        (&b, bindings[1].clone(), "terminal-d"),
     ] {
-        let terminal = fixture
-            .mailbox
-            .record_turn_outcome(
-                agent,
-                turn_id,
-                Outcome::Completed,
-                None,
-                Continuation::Terminal(binding.clone()),
-            )
-            .await
-            .unwrap();
-        assert_eq!(terminal.outcomes.len(), 1);
-        let snapshot = fixture
-            .mailbox
-            .snapshot(&selection(
-                issuer,
-                Some(agent),
-                vec![Selector::Work(work_ref.id.clone())],
-                ReturnWhen::Any,
-            ))
-            .await
-            .unwrap();
-        let receipt = work_item(&snapshot, &work_ref.id)
-            .outcome
-            .as_ref()
-            .expect("exact terminal binding settles the old covered work");
-        assert_eq!(receipt.continuation, Continuation::Terminal(binding));
+        let result = finish(&fixture.mailbox, agent, turn, Outcome::Completed, None,
+            Continuation::Terminal(binding.clone())).await;
+        assert_eq!(result.outcomes.len(), 1);
+        let snapshot = take_snapshot(
+            &fixture.mailbox, issuer, Some(agent), vec![Selector::Work(work.id.clone())],
+            ReturnWhen::Any,
+        ).await;
+        assert_eq!(work_item(&snapshot, &work.id).outcome.as_ref().unwrap().continuation,
+            Continuation::Terminal(binding));
     }
 }
 
 #[tokio::test]
-async fn quiet_reply_satisfies_its_exact_request_selector() {
+async fn quiet_reply_and_author_dispositions_settle_only_the_exact_request() {
     let fixture = test_mailbox().await;
-    let issuer = thread_id(15);
-    let agent = thread_id(16);
-    let request = fixture
-        .mailbox
-        .accept_message(message_draft(
-            "decision-request",
-            issuer,
-            agent,
-            MessageKind::Request,
-            "please decide",
-            false,
-        ))
-        .await
-        .unwrap();
-    fixture
-        .mailbox
-        .mark_canonical(agent, &request.id)
-        .await
-        .unwrap();
-
-    let mut reply_draft = message_draft(
-        "decision-reply",
-        agent,
-        issuer,
-        MessageKind::Note,
-        "decision made",
-        false,
-    );
+    let (author, recipient, stranger) = (thread_id(11), thread_id(12), thread_id(13));
+    let request = send(
+        &fixture.mailbox,
+        draft("request", author, recipient, MessageKind::Request, "decide", false),
+    ).await;
+    let (_, input_id) = accept_work(
+        &fixture.mailbox, author, recipient, "unrelated", "other task",
+    ).await;
+    admit(&fixture.mailbox, recipient, "unrelated-turn", &[input_id]).await;
+    finish(
+        &fixture.mailbox, recipient, "unrelated-turn", Outcome::Completed, None,
+        Continuation::None,
+    ).await;
+    let open = take_snapshot(
+        &fixture.mailbox, author, Some(recipient), vec![Selector::Reply(request.id.clone())],
+        ReturnWhen::Any,
+    ).await;
+    assert_eq!(open.state, SnapshotState::Pending);
+    assert_eq!(request_item(&open, &request.id).disposition, RequestDisposition::Open);
+    fixture.mailbox.mark_canonical(recipient, &request.id).await.unwrap();
+    let mut reply_draft = draft("reply", recipient, author, MessageKind::Note, "done", false);
     reply_draft.reply_to = Some(request.id.clone());
-    let reply = fixture
-        .mailbox
-        .accept_message(reply_draft)
-        .await
-        .unwrap();
+    let reply = send(&fixture.mailbox, reply_draft).await;
+    let replied = take_snapshot(
+        &fixture.mailbox, author, Some(recipient), vec![Selector::Reply(request.id.clone())],
+        ReturnWhen::Any,
+    ).await;
+    assert_eq!(replied.state, SnapshotState::AlreadySatisfied);
+    assert_eq!(request_item(&replied, &request.id).disposition, RequestDisposition::Replied);
+    assert_eq!(request_item(&replied, &request.id).reply.as_ref().unwrap().id, reply.id);
 
-    let snapshot = fixture
-        .mailbox
-        .snapshot(&selection(
-            issuer,
-            Some(agent),
-            vec![Selector::Reply(request.id.clone())],
-            ReturnWhen::Any,
-        ))
-        .await
-        .unwrap();
-    assert_eq!(snapshot.state, SnapshotState::AlreadySatisfied);
-    let selected_request = request_item(&snapshot, &request.id);
-    assert_eq!(selected_request.disposition, RequestDisposition::Replied);
-    assert_eq!(
-        selected_request.reply.as_ref().map(|message| message.id.as_str()),
-        Some(reply.id.as_str())
+    let open_request = send(
+        &fixture.mailbox,
+        draft("replace-me", author, recipient, MessageKind::Request, "old", false),
+    ).await;
+    let mut unauthorized = draft(
+        "stranger-replace", stranger, recipient, MessageKind::Request, "no", false,
     );
-    assert!(!reply.legacy_attention);
-}
-
-#[tokio::test]
-async fn unrelated_successful_work_does_not_resolve_an_open_request() {
-    let fixture = test_mailbox().await;
-    let issuer = thread_id(17);
-    let agent = thread_id(18);
-    let request = fixture
-        .mailbox
-        .accept_message(message_draft(
-            "open-request",
-            issuer,
-            agent,
-            MessageKind::Request,
-            "await a separate decision",
-            false,
-        ))
-        .await
-        .unwrap();
-    let work_ref = fixture
-        .mailbox
-        .accept_work(native_work(
-            issuer,
-            agent,
-            "unrelated-success",
-            "unrelated-submission",
-            "complete different work",
-        ))
-        .await
-        .unwrap();
-    let input_id = fixture
-        .mailbox
-        .accepted_input(&work_ref)
-        .await
-        .unwrap()
-        .id
-        .unwrap()
-        .to_string();
-    fixture
-        .mailbox
-        .record_admission(agent, "unrelated-turn", &[input_id])
-        .await
-        .unwrap();
-    fixture
-        .mailbox
-        .record_turn_outcome(
-            agent,
-            "unrelated-turn",
-            Outcome::Completed,
-            None,
-            Continuation::None,
-        )
-        .await
-        .unwrap();
-
-    let snapshot = fixture
-        .mailbox
-        .snapshot(&selection(
-            issuer,
-            Some(agent),
-            vec![Selector::Reply(request.id.clone())],
-            ReturnWhen::Any,
-        ))
-        .await
-        .unwrap();
-    assert_eq!(snapshot.state, SnapshotState::Pending);
-    assert_eq!(request_item(&snapshot, &request.id).disposition, RequestDisposition::Open);
-}
-
-#[tokio::test]
-async fn only_the_request_author_can_supersede_or_withdraw_and_old_selectors_settle() {
-    let fixture = test_mailbox().await;
-    let author = thread_id(19);
-    let recipient = thread_id(22);
-    let stranger = thread_id(23);
-    let request = fixture
-        .mailbox
-        .accept_message(message_draft(
-            "replace-me",
-            author,
-            recipient,
-            MessageKind::Request,
-            "first request",
-            false,
-        ))
-        .await
-        .unwrap();
-
-    let mut unauthorized_replacement = message_draft(
-        "stranger-replacement",
-        stranger,
-        recipient,
-        MessageKind::Request,
-        "not yours to replace",
-        false,
-    );
-    unauthorized_replacement.supersedes = Some(request.id.clone());
+    unauthorized.supersedes = Some(open_request.id.clone());
     assert!(matches!(
-        fixture
-            .mailbox
-            .accept_message(unauthorized_replacement)
-            .await,
+        fixture.mailbox.accept_message(unauthorized).await,
         Err(MailboxError::WrongRecipient)
     ));
-
-    let mut replacement_draft = message_draft(
-        "author-replacement",
-        author,
-        recipient,
-        MessageKind::Request,
-        "updated request",
-        false,
+    let mut replacement_draft = draft(
+        "replacement", author, recipient, MessageKind::Request, "new", false,
     );
-    replacement_draft.supersedes = Some(request.id.clone());
-    let replacement = fixture
-        .mailbox
-        .accept_message(replacement_draft)
-        .await
-        .unwrap();
-    let replaced_snapshot = fixture
-        .mailbox
-        .snapshot(&selection(
-            author,
-            Some(recipient),
-            vec![Selector::Reply(request.id.clone())],
-            ReturnWhen::Any,
-        ))
-        .await
-        .unwrap();
-    assert_eq!(replaced_snapshot.state, SnapshotState::AlreadySatisfied);
-    let old_request = request_item(&replaced_snapshot, &request.id);
-    assert_eq!(old_request.disposition, RequestDisposition::Superseded);
-    assert_eq!(old_request.replacement.as_deref(), Some(replacement.id.as_str()));
+    replacement_draft.supersedes = Some(open_request.id.clone());
+    let replacement = send(&fixture.mailbox, replacement_draft).await;
+    let superseded = take_snapshot(
+        &fixture.mailbox, author, None, vec![Selector::Reply(open_request.id.clone())],
+        ReturnWhen::Any,
+    ).await;
+    assert_eq!(superseded.state, SnapshotState::AlreadySatisfied);
+    let old = request_item(&superseded, &open_request.id);
+    assert_eq!(old.disposition, RequestDisposition::Superseded);
+    assert_eq!(old.replacement.as_deref(), Some(replacement.id.as_str()));
 
-    let withdrawal = fixture
-        .mailbox
-        .accept_message(message_draft(
-            "withdraw-me",
-            author,
-            recipient,
-            MessageKind::Request,
-            "cancel this request",
-            false,
-        ))
-        .await
-        .unwrap();
-    assert!(matches!(
-        fixture
-            .mailbox
-            .withdraw_message(stranger, &withdrawal.id)
-            .await,
-        Err(MailboxError::WrongRecipient)
-    ));
-    fixture
-        .mailbox
-        .withdraw_message(author, &withdrawal.id)
-        .await
-        .unwrap();
-    let withdrawn_snapshot = fixture
-        .mailbox
-        .snapshot(&selection(
-            author,
-            Some(recipient),
-            vec![Selector::Reply(withdrawal.id.clone())],
-            ReturnWhen::Any,
-        ))
-        .await
-        .unwrap();
-    assert_eq!(withdrawn_snapshot.state, SnapshotState::AlreadySatisfied);
-    assert_eq!(
-        request_item(&withdrawn_snapshot, &withdrawal.id).disposition,
-        RequestDisposition::Withdrawn
-    );
+    let withdrawal = send(
+        &fixture.mailbox,
+        draft("withdraw-me", author, recipient, MessageKind::Request, "cancel", false),
+    ).await;
+    assert!(matches!(fixture.mailbox.withdraw_message(stranger, &withdrawal.id).await,
+        Err(MailboxError::WrongRecipient)));
+    fixture.mailbox.withdraw_message(author, &withdrawal.id).await.unwrap();
+    let withdrawn = take_snapshot(
+        &fixture.mailbox, author, None, vec![Selector::Reply(withdrawal.id.clone())],
+        ReturnWhen::Any,
+    ).await;
+    assert_eq!(withdrawn.state, SnapshotState::AlreadySatisfied);
+    assert_eq!(request_item(&withdrawn, &withdrawal.id).disposition, RequestDisposition::Withdrawn);
 }
 
 #[tokio::test]
-async fn progress_coalesces_only_for_the_exact_unadmitted_author_and_work() {
+async fn progress_coalesces_exact_unadmitted_scope_and_closes_at_terminal_outcome() {
     let fixture = test_mailbox().await;
-    let issuer = thread_id(24);
-    let agent = thread_id(25);
-    let work_a = fixture
-        .mailbox
-        .accept_work(native_work(issuer, agent, "progress-a", "submission-a", "a"))
-        .await
-        .unwrap();
-    let work_b = fixture
-        .mailbox
-        .accept_work(native_work(issuer, agent, "progress-b", "submission-b", "b"))
-        .await
-        .unwrap();
-
-    let mut first_draft = message_draft(
-        "progress-first",
-        issuer,
-        agent,
-        MessageKind::Progress,
-        "initial status",
-        false,
-    );
+    let (author, agent) = (thread_id(14), thread_id(15));
+    let (work_a, _) = accept_work(&fixture.mailbox, author, agent, "work-a", "A").await;
+    let (work_b, _) = accept_work(&fixture.mailbox, author, agent, "work-b", "B").await;
+    let mut first_draft = draft("p1", author, agent, MessageKind::Progress, "first", false);
     first_draft.work_ref = Some(work_a.clone());
-    let first = fixture
-        .mailbox
-        .accept_message(first_draft)
-        .await
-        .unwrap();
-    let mut update_draft = message_draft(
-        "progress-update",
-        issuer,
-        agent,
-        MessageKind::Progress,
-        "latest status",
-        false,
-    );
+    let first = send(&fixture.mailbox, first_draft).await;
+    let mut update_draft = draft("p2", author, agent, MessageKind::Progress, "latest", false);
     update_draft.work_ref = Some(work_a.clone());
-    let update = fixture
-        .mailbox
-        .accept_message(update_draft)
-        .await
-        .unwrap();
+    let update = send(&fixture.mailbox, update_draft).await;
     assert_eq!(update.id, first.id);
     assert_eq!(
-        fixture
-            .mailbox
-            .get_message(agent, &first.id)
-            .await
-            .unwrap()
-            .unwrap()
-            .communication
-            .content,
-        "latest status"
+        fixture.mailbox.get_message(agent, &first.id).await.unwrap().unwrap().communication.content,
+        "latest"
     );
 
-    let mut different_author = message_draft(
-        "progress-other-author",
-        issuer,
-        agent,
-        MessageKind::Progress,
-        "different path author",
-        false,
-    );
-    different_author.work_ref = Some(work_a.clone());
-    different_author.communication.author =
-        AgentPath::from_string("/root/child".to_string()).expect("valid author path");
-    let other_author = fixture
-        .mailbox
-        .accept_message(different_author)
-        .await
-        .unwrap();
-    assert_ne!(other_author.id, first.id);
+    let mut other_author = draft("p3", author, agent, MessageKind::Progress, "other path", false);
+    other_author.work_ref = Some(work_a.clone());
+    other_author.communication.author = AgentPath::from_string("/root/child".to_string()).unwrap();
+    assert_ne!(send(&fixture.mailbox, other_author).await.id, first.id);
+    let mut other_path = draft("p-path", author, agent, MessageKind::Progress, "other path", false);
+    other_path.work_ref = Some(work_a.clone());
+    other_path.communication.recipient = AgentPath::from_string("/root/other".to_string()).unwrap();
+    assert_ne!(send(&fixture.mailbox, other_path).await.id, first.id);
+    let mut other_work = draft("p4", author, agent, MessageKind::Progress, "work B", false);
+    other_work.work_ref = Some(work_b);
+    assert_ne!(send(&fixture.mailbox, other_work).await.id, first.id);
 
-    let mut different_work = message_draft(
-        "progress-other-work",
-        issuer,
-        agent,
-        MessageKind::Progress,
-        "different work",
-        false,
-    );
-    different_work.work_ref = Some(work_b);
-    let other_work = fixture
-        .mailbox
-        .accept_message(different_work)
-        .await
-        .unwrap();
-    assert_ne!(other_work.id, first.id);
-
-    // No admission is necessary to coalesce quiet progress, but once its
-    // exact work is terminal the same writer cannot append late progress.
-    fixture
-        .mailbox
-        .record_outcome(&work_a, Outcome::Completed, None, Continuation::None)
-        .await
-        .unwrap();
-    let mut late_progress = message_draft(
-        "progress-after-terminal",
-        issuer,
-        agent,
-        MessageKind::Progress,
-        "too late",
-        false,
-    );
-    late_progress.work_ref = Some(work_a);
+    fixture.mailbox.record_outcome(
+        &work_a, Outcome::Completed, None, Continuation::None,
+    ).await.unwrap();
+    let mut late = draft("p-late", author, agent, MessageKind::Progress, "late", false);
+    late.work_ref = Some(work_a);
     assert!(matches!(
-        fixture.mailbox.accept_message(late_progress).await,
+        fixture.mailbox.accept_message(late).await,
         Err(MailboxError::OutcomeAlreadyRecorded)
     ));
 }
 
 #[tokio::test]
-async fn out_of_order_observation_is_per_item_after_canonical_flush() {
+async fn canonical_outcomes_are_observed_per_item_without_cursor_loss() {
     let fixture = test_mailbox().await;
-    let issuer = thread_id(26);
-    let agent = thread_id(27);
-    let work_a = fixture
-        .mailbox
-        .accept_work(native_work(issuer, agent, "observed-a", "submission-a", "a"))
-        .await
-        .unwrap();
-    let work_b = fixture
-        .mailbox
-        .accept_work(native_work(issuer, agent, "observed-b", "submission-b", "b"))
-        .await
-        .unwrap();
-
-    for (work_ref, turn_id) in [(&work_a, "turn-a"), (&work_b, "turn-b")] {
-        let input_id = fixture
-            .mailbox
-            .accepted_input(work_ref)
-            .await
-            .unwrap()
-            .id
-            .unwrap()
-            .to_string();
-        fixture
-            .mailbox
-            .record_admission(agent, turn_id, &[input_id])
-            .await
-            .unwrap();
-        let result = fixture
-            .mailbox
-            .record_turn_outcome(
-                agent,
-                turn_id,
-                Outcome::Completed,
-                None,
-                Continuation::None,
-            )
-            .await
-            .unwrap();
-        let receipt = result.outcomes.first().expect("one exact outcome");
-        fixture
-            .mailbox
-            .mark_outcome_canonical(agent, &receipt.id)
-            .await
-            .unwrap();
+    let (issuer, agent) = (thread_id(16), thread_id(17));
+    let (a, id_a) = accept_work(&fixture.mailbox, issuer, agent, "observe-a", "A").await;
+    let (b, id_b) = accept_work(&fixture.mailbox, issuer, agent, "observe-b", "B").await;
+    for (work, id, turn) in [(&a, id_a, "turn-a"), (&b, id_b, "turn-b")] {
+        admit(&fixture.mailbox, agent, turn, &[id]).await;
+        let outcome = finish(
+            &fixture.mailbox, agent, turn, Outcome::Completed, None, Continuation::None,
+        ).await;
+        fixture.mailbox.mark_outcome_canonical(agent, &outcome.outcomes[0].id).await.unwrap();
+        assert_eq!(&outcome.outcomes[0].work_ref, work);
     }
-
-    fixture
-        .mailbox
-        .acknowledge_observed(issuer, &[ObservationTarget::Work(work_b.clone())])
-        .await
-        .unwrap();
-    let partially_observed = fixture
-        .mailbox
-        .snapshot(&selection(
-            issuer,
-            Some(agent),
-            vec![
-                Selector::Work(work_a.id.clone()),
-                Selector::Work(work_b.id.clone()),
-            ],
-            ReturnWhen::All,
-        ))
-        .await
-        .unwrap();
-    assert_eq!(partially_observed.state, SnapshotState::Pending);
-    assert!(!work_item(&partially_observed, &work_a.id).observed);
-    assert!(work_item(&partially_observed, &work_b.id).observed);
-    assert!(work_item(&partially_observed, &work_a.id).outcome.is_some());
-    assert!(work_item(&partially_observed, &work_b.id).outcome.is_some());
-
-    fixture
-        .mailbox
-        .acknowledge_observed(issuer, &[ObservationTarget::Work(work_a.clone())])
-        .await
-        .unwrap();
-    let fully_observed = fixture
-        .mailbox
-        .snapshot(&selection(
-            issuer,
-            Some(agent),
-            vec![
-                Selector::Work(work_a.id.clone()),
-                Selector::Work(work_b.id.clone()),
-            ],
-            ReturnWhen::All,
-        ))
-        .await
-        .unwrap();
-    assert_eq!(fully_observed.state, SnapshotState::AlreadySatisfied);
+    fixture.mailbox.acknowledge_observed(
+        issuer, &[ObservationTarget::Work(b.clone())],
+    ).await.unwrap();
+    let selection = selection(
+        issuer, Some(agent),
+        vec![Selector::Work(a.id.clone()), Selector::Work(b.id.clone())],
+        ReturnWhen::All,
+    );
+    let partial = fixture.mailbox.snapshot(&selection).await.unwrap();
+    assert_eq!(partial.state, SnapshotState::Pending);
+    assert!(!work_item(&partial, &a.id).observed);
+    assert!(work_item(&partial, &b.id).observed);
+    assert!(
+        work_item(&partial, &a.id).outcome.is_some()
+            && work_item(&partial, &b.id).outcome.is_some()
+    );
+    fixture.mailbox.acknowledge_observed(issuer, &[ObservationTarget::Work(a)])
+        .await.unwrap();
+    assert_eq!(
+        fixture.mailbox.snapshot(&selection).await.unwrap().state,
+        SnapshotState::AlreadySatisfied
+    );
 }
 
 #[tokio::test]
-async fn default_and_legacy_attention_are_separate_from_quiet_message_delivery() {
+async fn message_kinds_default_to_quiet_delivery_with_legacy_attention_separate() {
     let fixture = test_mailbox().await;
-    let sender = thread_id(10);
-    let recipient = thread_id(11);
+    let (sender, recipient) = (thread_id(18), thread_id(19));
     let kinds = [
-        MessageKind::Note,
-        MessageKind::Progress,
-        MessageKind::Request,
-        MessageKind::Alert,
+        MessageKind::Note, MessageKind::Progress, MessageKind::Request, MessageKind::Alert,
     ];
     assert_eq!(MessageKind::default(), MessageKind::Note);
-
     for kind in kinds {
-        fixture
-            .mailbox
-            .accept_message(message_draft(
-                &format!("quiet-{kind:?}"),
-                sender,
-                recipient,
-                kind,
-                "quiet message",
-                false,
-            ))
-            .await
-            .unwrap();
-        fixture
-            .mailbox
-            .accept_message(message_draft(
-                &format!("legacy-{kind:?}"),
-                sender,
-                recipient,
-                kind,
-                "legacy attention message",
-                true,
-            ))
-            .await
-            .unwrap();
+        send(
+            &fixture.mailbox,
+            draft(&format!("quiet-{kind:?}"), sender, recipient, kind, "quiet", false),
+        ).await;
+        send(
+            &fixture.mailbox,
+            draft(&format!("legacy-{kind:?}"), sender, recipient, kind, "legacy", true),
+        ).await;
     }
-
     let pending = fixture.mailbox.pending(recipient, 20).await.unwrap();
     assert_eq!(pending.len(), 8);
-    for kind in kinds {
-        assert_eq!(pending.iter().filter(|message| message.kind == kind).count(), 2);
-    }
-    assert_eq!(
-        pending.iter().filter(|message| message.legacy_attention).count(),
-        4
-    );
+    for kind in kinds { assert_eq!(pending.iter().filter(|m| m.kind == kind).count(), 2); }
+    assert_eq!(pending.iter().filter(|m| m.legacy_attention).count(), 4);
     assert_eq!(fixture.mailbox.quiet_count(recipient).await.unwrap(), 4);
     assert_eq!(fixture.mailbox.attention(recipient, 20).await.unwrap().len(), 4);
 }
 
 #[tokio::test]
-async fn activation_claim_is_not_reissued_after_a_lost_result() {
+async fn activation_claim_is_single_use_across_a_lost_result() {
     let fixture = test_mailbox().await;
-    let sender = thread_id(20);
-    let recipient = thread_id(21);
-    let message = fixture
-        .mailbox
-        .accept_message(message_draft(
-            "activation-request",
-            sender,
-            recipient,
-            MessageKind::Alert,
-            "activate once",
-            false,
-        ))
-        .await
-        .unwrap();
-
-    assert_eq!(
-        fixture
-            .mailbox
-            .begin_activation(sender, &message.id)
-            .await
-            .unwrap(),
-        ActivationDecision::Activate
-    );
-    assert_eq!(
-        fixture
-            .mailbox
-            .begin_activation(sender, &message.id)
-            .await
-            .unwrap(),
-        ActivationDecision::RecoveryNeeded
-    );
-    fixture
-        .mailbox
-        .record_activation(sender, &message.id, ActivationDisposition::Activated)
-        .await
-        .unwrap();
-    fixture
-        .mailbox
-        .record_activation(sender, &message.id, ActivationDisposition::Activated)
-        .await
-        .unwrap();
-    assert_eq!(
-        fixture
-            .mailbox
-            .begin_activation(sender, &message.id)
-            .await
-            .unwrap(),
-        ActivationDecision::AlreadyDecided(ActivationDisposition::Activated)
-    );
+    let (sender, recipient) = (thread_id(20), thread_id(21));
+    let message = send(
+        &fixture.mailbox,
+        draft("activation", sender, recipient, MessageKind::Alert, "activate", false),
+    ).await;
+    assert_eq!(fixture.mailbox.begin_activation(sender, &message.id).await.unwrap(),
+        ActivationDecision::Activate);
+    assert_eq!(fixture.mailbox.begin_activation(sender, &message.id).await.unwrap(),
+        ActivationDecision::RecoveryNeeded);
+    for _ in 0..2 {
+        fixture.mailbox.record_activation(sender, &message.id, ActivationDisposition::Activated)
+            .await.unwrap();
+    }
+    assert_eq!(fixture.mailbox.begin_activation(sender, &message.id).await.unwrap(),
+        ActivationDecision::AlreadyDecided(ActivationDisposition::Activated));
     assert!(matches!(
-        fixture
-            .mailbox
-            .record_activation(sender, &message.id, ActivationDisposition::Denied)
-            .await,
+        fixture.mailbox.record_activation(sender, &message.id, ActivationDisposition::Denied).await,
         Err(MailboxError::IdempotencyConflict)
     ));
 }
 
-#[tokio::test]
-async fn oversized_native_capture_is_rejected_without_creating_dispatchable_work() {
-    let fixture = test_mailbox().await;
-    let issuer = thread_id(30);
-    let agent = thread_id(31);
-    let mut too_large = native_work(issuer, agent, "too-large", "large-submission", "x");
-    too_large.input.content = "x".repeat(1_000_001);
-
-    assert!(matches!(
-        fixture.mailbox.accept_work(too_large).await,
-        Err(MailboxError::Backpressure(_))
-    ));
-    assert!(fixture
-        .mailbox
-        .work_for_native_key(issuer, "too-large")
-        .await
-        .unwrap()
-        .is_none());
+#[test]
+fn only_closed_any_and_all_peer_cycles_are_provable() {
+    let closed = [
+        dependency("a", &["b", "c"], DependencyMode::Any),
+        dependency("b", &["a"], DependencyMode::All),
+        dependency("c", &["a"], DependencyMode::All),
+        dependency("x", &["y", "z"], DependencyMode::All),
+        dependency("y", &["x"], DependencyMode::Any),
+        dependency("z", &["x"], DependencyMode::Any),
+    ];
+    assert!(is_provably_closed_peer_cycle("a", &closed));
+    assert!(is_provably_closed_peer_cycle("x", &closed));
+    let open = [
+        dependency("a", &["b", "outside"], DependencyMode::Any),
+        dependency("b", &["a"], DependencyMode::All),
+    ];
+    assert!(!is_provably_closed_peer_cycle("a", &open));
+    let open_all = [
+        dependency("x", &["y", "outside"], DependencyMode::All),
+        dependency("y", &["x"], DependencyMode::Any),
+    ];
+    assert!(!is_provably_closed_peer_cycle("x", &open_all));
 }
 
-#[test]
-fn closed_peer_cycles_require_every_join_choice_to_remain_inside_the_cycle() {
-    let any_cycle = [
-        Dependency {
-            owner: "a".to_string(),
-            peers: vec!["b".to_string(), "c".to_string()],
-            mode: DependencyMode::Any,
-        },
-        Dependency {
-            owner: "b".to_string(),
-            peers: vec!["a".to_string()],
-            mode: DependencyMode::All,
-        },
-        Dependency {
-            owner: "c".to_string(),
-            peers: vec!["a".to_string()],
-            mode: DependencyMode::All,
-        },
-    ];
-    assert!(is_provably_closed_peer_cycle("a", &any_cycle));
-
-    let all_cycle = [
-        Dependency {
-            owner: "x".to_string(),
-            peers: vec!["y".to_string(), "z".to_string()],
-            mode: DependencyMode::All,
-        },
-        Dependency {
-            owner: "y".to_string(),
-            peers: vec!["x".to_string()],
-            mode: DependencyMode::Any,
-        },
-        Dependency {
-            owner: "z".to_string(),
-            peers: vec!["x".to_string()],
-            mode: DependencyMode::Any,
-        },
-    ];
-    assert!(is_provably_closed_peer_cycle("x", &all_cycle));
-
-    let with_open_exit = [
-        Dependency {
-            owner: "a".to_string(),
-            peers: vec!["b".to_string(), "not-in-cycle".to_string()],
-            mode: DependencyMode::Any,
-        },
-        Dependency {
-            owner: "b".to_string(),
-            peers: vec!["a".to_string()],
-            mode: DependencyMode::All,
-        },
-    ];
-    assert!(!is_provably_closed_peer_cycle("a", &with_open_exit));
-
-    let all_with_open_exit = [
-        Dependency {
-            owner: "x".to_string(),
-            peers: vec!["y".to_string(), "not-in-cycle".to_string()],
-            mode: DependencyMode::All,
-        },
-        Dependency {
-            owner: "y".to_string(),
-            peers: vec!["x".to_string()],
-            mode: DependencyMode::Any,
-        },
-    ];
-    assert!(!is_provably_closed_peer_cycle("x", &all_with_open_exit));
+#[tokio::test]
+async fn wait_cycle_rejects_only_the_new_registration_and_drop_is_exact() {
+    let fixture = test_mailbox().await;
+    let (owner_a, owner_b) = (thread_id(22), thread_id(23));
+    let wait_a = fixture.mailbox.begin_wait(
+        "wait-a".to_string(), owner_a, vec![owner_b], ReturnWhen::Any, false,
+    ).unwrap();
+    assert_eq!(wait_a.wait_id(), "wait-a");
+    assert!(matches!(fixture.mailbox.begin_wait(
+        "closed-b".to_string(), owner_b, vec![owner_a], ReturnWhen::All, false,
+    ), Err(MailboxError::ClosedPeerCycle)));
+    assert!(matches!(fixture.mailbox.begin_wait(
+        "still-closed-b".to_string(), owner_b, vec![owner_a], ReturnWhen::All, false,
+    ), Err(MailboxError::ClosedPeerCycle)));
+    let escape = fixture.mailbox.begin_wait(
+        "escape-b".to_string(), owner_b, vec![owner_a], ReturnWhen::All, true,
+    ).unwrap();
+    drop(escape);
+    assert!(matches!(fixture.mailbox.begin_wait(
+        "closed-again-b".to_string(), owner_b, vec![owner_a], ReturnWhen::All, false,
+    ), Err(MailboxError::ClosedPeerCycle)));
+    drop(wait_a);
+    assert!(fixture.mailbox.begin_wait(
+        "open-b".to_string(), owner_b, vec![owner_a], ReturnWhen::All, false,
+    ).is_ok());
 }

@@ -345,6 +345,80 @@ pub struct CollabAgentToolCallItem {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[ts(optional)]
     pub wake_cause: Option<AgentWakeCause>,
+    /// Selection-aware mailbox wait state/result. Missing values identify legacy
+    /// history, where the selected join and request identities were not recorded.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub mailbox_wait_report: Option<MailboxWaitReport>,
+}
+
+/// Whether a wait requires any one selected condition or every selected condition.
+#[derive(Debug, Clone, Copy, Default, Deserialize, Serialize, TS, JsonSchema, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum MailboxWaitReturnWhen {
+    #[default]
+    Any,
+    All,
+}
+
+/// Actual outcome that ended a selection-aware mailbox wait.
+#[derive(Debug, Clone, Copy, Deserialize, Serialize, TS, JsonSchema, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum MailboxWakeCause {
+    Result,
+    Reply,
+    Request,
+    Human,
+    Tool,
+    Deadline,
+    Cancel,
+    SubscriptionLoss,
+    RuntimeFault,
+    NoMatchingWork,
+    AlreadySatisfied,
+    Cycle,
+    NeedsAttention,
+}
+
+/// One selected wait condition and its current or terminal state.
+#[derive(Debug, Clone, Deserialize, Serialize, TS, JsonSchema, PartialEq, Eq)]
+pub struct MailboxWaitSelectionItem {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub work_ref: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub message_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub agent: Option<String>,
+    pub status: String,
+}
+
+/// Shared mailbox wait report carried by tool results and collaboration history.
+///
+/// `completion_reason` is absent while the wait is in progress and populated with
+/// the actual wake/result cause when it returns. It is always present in a terminal
+/// wait tool result.
+#[derive(Debug, Clone, Deserialize, Serialize, TS, JsonSchema, PartialEq, Eq)]
+pub struct MailboxWaitReport {
+    pub requested_targets: Vec<String>,
+    pub requested_replies_to: Vec<String>,
+    #[serde(default)]
+    pub return_when: MailboxWaitReturnWhen,
+    pub completed: Vec<MailboxWaitSelectionItem>,
+    pub pending: Vec<MailboxWaitSelectionItem>,
+    #[serde(default)]
+    #[ts(optional = false)]
+    pub completion_reason: Option<MailboxWakeCause>,
+    pub condition_satisfied: bool,
+    pub quiet_count: usize,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub wake_sender: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub wake_ref: Option<String>,
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize, TS, JsonSchema, PartialEq, Eq)]
@@ -873,6 +947,25 @@ mod tests {
     use codex_extension_items::sleep::SleepItem;
     use pretty_assertions::assert_eq;
     use serde_json::json;
+
+    #[test]
+    fn mailbox_wait_report_preserves_in_progress_cause_and_defaults_any_join() {
+        let mut value = json!({
+            "requested_targets": ["work_42"],
+            "requested_replies_to": [],
+            "completed": [],
+            "pending": [{"work_ref": "work_42", "status": "running"}],
+            "condition_satisfied": false,
+            "quiet_count": 2
+        });
+        let report: MailboxWaitReport =
+            serde_json::from_value(value.clone()).expect("decode mailbox wait report");
+        assert_eq!(report.return_when, MailboxWaitReturnWhen::Any);
+        assert_eq!(report.completion_reason, None);
+        value["return_when"] = json!("any");
+        value["completion_reason"] = json!(null);
+        assert_eq!(serde_json::to_value(report).expect("encode active wait"), value);
+    }
 
     #[test]
     fn sleep_extension_item_preserves_type_and_kind() {

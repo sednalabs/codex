@@ -1,57 +1,24 @@
 use crate::error::{MailboxError, MailboxResult};
-use crate::messages::insert_message_tx;
+use crate::outcome_messages::{
+    insert_response_group, response_groups, validate_auto_response_size, ResponseGroup,
+};
+use crate::outcome_store::{
+    outcome_receipt_for, persist_continuation, save_outcome_tx, OutcomeData,
+    MAX_CONTINUATIONS_PER_WORK,
+};
 use crate::store::Mailbox;
 use crate::types::{
-    Continuation, ContinuationReceipt, ContinuationState, GoalBinding, MessageDraft,
-    MessageKind, Outcome, OutcomeReceipt, TurnOutcomeReceipt, WorkRef,
+    Continuation, GoalBinding, Outcome, OutcomeReceipt, TurnOutcomeReceipt, WorkRef,
 };
 use crate::work::{
-    ensure_mailbox_id, exact_work, exact_work_tx, new_mailbox_id, work_ref_from_row,
+    ensure_mailbox_id, exact_work_tx, new_mailbox_id, work_ref_from_row,
 };
 use codex_protocol::protocol::InterAgentCommunication;
-use codex_protocol::{AgentPath, ThreadId};
-use serde::{Deserialize, Serialize};
-use sqlx::{Row, Sqlite, SqlitePool, Transaction};
+use codex_protocol::ThreadId;
+use sqlx::Row;
 
 const MAX_TURN_INPUTS: usize = 100;
 const MAX_KEY_BYTES: usize = 256;
-const MAX_AUTO_RESPONSE_BYTES: usize = 16_384;
-const MAX_RESPONSE_BYTES: usize = 8_192;
-const MAX_CONTINUATIONS_PER_WORK: i64 = 32;
-
-#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
-pub(crate) struct OutcomeData {
-    outcome: Outcome,
-    continuation: Continuation,
-    response: Option<InterAgentCommunication>,
-}
-
-impl OutcomeData {
-    fn new(
-        outcome: Outcome,
-        continuation: Continuation,
-        mut response: Option<InterAgentCommunication>,
-    ) -> Self {
-        if let Some(response) = response.as_mut() {
-            response.id = None;
-        }
-        Self {
-            outcome,
-            continuation,
-            response,
-        }
-    }
-}
-
-struct ResponseGroup {
-    issuer: ThreadId,
-    agent: ThreadId,
-    author: AgentPath,
-    recipient: AgentPath,
-    refs: Vec<WorkRef>,
-    response: Option<InterAgentCommunication>,
-    output_id: Option<String>,
-}
 
 impl Mailbox {
     /// Freeze and record only the work admitted to this native turn. A pending
@@ -381,14 +348,19 @@ impl Mailbox {
         }
         if let Continuation::Terminal(binding) = &continuation {
             let binding_json = serde_json::to_string(binding)?;
-            let unresolved: Option<String> = sqlx::query_scalar(
+            let unresolved = sqlx::query_scalar::<_, String>(
                 "SELECT binding_json FROM mailbox_continuations
-                 WHERE work_id = ? AND state IN ('pending_goal_binding', 'deferred') LIMIT 1",
+                 WHERE work_id = ? AND state IN ('pending_goal_binding', 'deferred')
+                 ORDER BY binding_json LIMIT ?",
             )
             .bind(&work_ref.id)
-            .fetch_optional(&mut *transaction)
+            .bind((MAX_CONTINUATIONS_PER_WORK + 1) as i64)
+            .fetch_all(&mut *transaction)
             .await?;
-            if unresolved.as_deref().is_some_and(|stored| stored != binding_json) {
+            if unresolved.len() > MAX_CONTINUATIONS_PER_WORK as usize {
+                return Err(MailboxError::Backpressure("work continuation count"));
+            }
+            if !unresolved.is_empty() && !unresolved.contains(&binding_json) {
                 return Err(MailboxError::ReferenceMismatch);
             }
         }
@@ -419,267 +391,6 @@ impl Mailbox {
     }
 }
 
-async fn response_groups(
-    transaction: &mut Transaction<'_, Sqlite>,
-    refs: &[WorkRef],
-    response: Option<&InterAgentCommunication>,
-) -> MailboxResult<Vec<ResponseGroup>> {
-    let mut groups: Vec<ResponseGroup> = Vec::new();
-    for work_ref in refs {
-        let row = exact_work_tx(transaction, work_ref).await?;
-        let input: InterAgentCommunication =
-            serde_json::from_str(&row.try_get::<String, _>("input_json")?)?;
-        let group = groups
-            .iter_mut()
-            .find(|group| group.issuer == work_ref.issuer);
-        if let Some(group) = group {
-            if group.agent != work_ref.agent
-                || group.author != input.recipient
-                || group.recipient != input.author
-            {
-                return Err(MailboxError::InvalidInput(
-                    "issuer has inconsistent accepted communication paths".into(),
-                ));
-            }
-            group.refs.push(work_ref.clone());
-        } else {
-            let mut response = response.cloned();
-            if let Some(response) = response.as_mut() {
-                response.author = input.recipient.clone();
-                response.recipient = input.author.clone();
-                response.id = None;
-            }
-            groups.push(ResponseGroup {
-                issuer: work_ref.issuer,
-                agent: work_ref.agent,
-                author: input.recipient,
-                recipient: input.author,
-                refs: vec![work_ref.clone()],
-                response,
-                output_id: None,
-            });
-        }
-    }
-    Ok(groups)
-}
-
-fn validate_auto_response_size(groups: &[ResponseGroup]) -> MailboxResult<()> {
-    let mut total = 0_usize;
-    for group in groups {
-        if let Some(response) = group.response.as_ref() {
-            let bytes = response.content.len() + response.encrypted_content.as_ref().map_or(0, String::len);
-            if bytes > MAX_RESPONSE_BYTES {
-                return Err(MailboxError::Backpressure("response message byte limit"));
-            }
-            total = total.saturating_add(bytes);
-        }
-    }
-    if total > MAX_AUTO_RESPONSE_BYTES {
-        return Err(MailboxError::Backpressure("automatic response aggregate byte limit"));
-    }
-    Ok(())
-}
-
-async fn insert_response_group(
-    transaction: &mut Transaction<'_, Sqlite>,
-    group: &mut ResponseGroup,
-    invocation_key: String,
-    outcome: Outcome,
-) -> MailboxResult<Option<String>> {
-    let Some(mut communication) = group.response.clone() else {
-        return Ok(None);
-    };
-    communication.author = group.author.clone();
-    communication.recipient = group.recipient.clone();
-    communication.id = None;
-    let envelope = insert_message_tx(
-        transaction,
-        MessageDraft {
-            invocation_key,
-            sender: group.agent,
-            recipient: group.issuer,
-            communication,
-            kind: MessageKind::Note,
-            activate_if_idle: false,
-            work_ref: None,
-            reply_to: None,
-            supersedes: None,
-            legacy_attention: outcome == Outcome::NeedsAttention,
-        },
-        None,
-    )
-    .await?;
-    group.output_id = Some(envelope.id.clone());
-    Ok(group.output_id.clone())
-}
-
-async fn persist_continuation(
-    transaction: &mut Transaction<'_, Sqlite>,
-    work_ref: &WorkRef,
-    binding_json: &str,
-    state: &str,
-    outcome: Outcome,
-    source_turn_id: &str,
-    response_message_id: Option<&str>,
-) -> MailboxResult<()> {
-    let exists: Option<i64> = sqlx::query_scalar(
-        "SELECT 1 FROM mailbox_continuations WHERE work_id = ? AND binding_json = ? LIMIT 1",
-    )
-    .bind(&work_ref.id)
-    .bind(binding_json)
-    .fetch_optional(&mut **transaction)
-    .await?;
-    if exists.is_none() {
-        let count: i64 = sqlx::query_scalar(
-            "SELECT COUNT(*) FROM mailbox_continuations WHERE work_id = ?",
-        )
-        .bind(&work_ref.id)
-        .fetch_one(&mut **transaction)
-        .await?;
-        if count >= MAX_CONTINUATIONS_PER_WORK {
-            return Err(MailboxError::Backpressure("work continuation count"));
-        }
-    }
-    sqlx::query(
-        "INSERT INTO mailbox_continuations(
-            work_id, binding_json, state, outcome, source_turn_id, response_message_id
-         ) VALUES (?, ?, ?, ?, ?, ?)
-         ON CONFLICT(work_id, binding_json) DO UPDATE SET
-           state = CASE
-             WHEN mailbox_continuations.state = 'terminal' THEN 'terminal'
-             WHEN excluded.state = 'deferred' THEN 'deferred'
-             ELSE mailbox_continuations.state
-           END,
-           outcome = excluded.outcome,
-           response_message_id = COALESCE(excluded.response_message_id,
-                                          mailbox_continuations.response_message_id)",
-    )
-    .bind(&work_ref.id)
-    .bind(binding_json)
-    .bind(state)
-    .bind(outcome_label(outcome))
-    .bind(source_turn_id)
-    .bind(response_message_id)
-    .execute(&mut **transaction)
-    .await?;
-    Ok(())
-}
-
-pub(crate) async fn save_outcome_tx(
-    transaction: &mut Transaction<'_, Sqlite>,
-    work_ref: &WorkRef,
-    payload: &str,
-    outcome_id: &str,
-    outcome: Outcome,
-) -> MailboxResult<()> {
-    let result = sqlx::query(
-        "UPDATE mailbox_work SET outcome_json = ?, outcome_id = ?
-         WHERE id = ? AND issuer = ? AND agent = ? AND submission_id = ?
-           AND outcome_json IS NULL",
-    )
-    .bind(payload)
-    .bind(outcome_id)
-    .bind(&work_ref.id)
-    .bind(work_ref.issuer.to_string())
-    .bind(work_ref.agent.to_string())
-    .bind(&work_ref.submission_id)
-    .execute(&mut **transaction)
-    .await?;
-    if result.rows_affected() == 0 {
-        return Err(MailboxError::ReferenceMismatch);
-    }
-    if outcome == Outcome::NeedsAttention {
-        sqlx::query(
-            "INSERT INTO mailbox_attention(id, recipient) VALUES (?, ?)
-             ON CONFLICT(id) DO NOTHING",
-        )
-        .bind(format!("attention:{}", work_ref.id))
-        .bind(work_ref.issuer.to_string())
-        .execute(&mut **transaction)
-        .await?;
-    }
-    Ok(())
-}
-
-pub(crate) async fn outcome_receipt_for(
-    pool: &SqlitePool,
-    work_ref: WorkRef,
-    output_id: Option<String>,
-    has_response: bool,
-) -> MailboxResult<OutcomeReceipt> {
-    let row = exact_work(pool, &work_ref).await?;
-    let stored: String = row
-        .try_get::<Option<String>, _>("outcome_json")?
-        .ok_or(MailboxError::ReferenceMismatch)?;
-    let mut data: OutcomeData = serde_json::from_str(&stored)?;
-    let response_message_id = if has_response {
-        output_id.or_else(|| row.try_get::<Option<String>, _>("outcome_id").ok().flatten())
-    } else {
-        None
-    };
-    if let (Some(response), Some(id)) = (data.response.as_mut(), response_message_id.as_ref()) {
-        response.id = Some(codex_protocol::ResponseItemId::from_server(id.clone()));
-    }
-    Ok(OutcomeReceipt {
-        work_ref,
-        id: row.try_get("outcome_id")?,
-        outcome: data.outcome,
-        continuation: data.continuation,
-        response: data.response,
-        response_message_id,
-        canonical: row.try_get::<i64, _>("outcome_canonical")? != 0,
-        observed: row.try_get::<i64, _>("outcome_observed")? != 0,
-    })
-}
-
-pub(crate) async fn stored_outcome_receipt_for(
-    pool: &SqlitePool,
-    work_ref: WorkRef,
-) -> MailboxResult<OutcomeReceipt> {
-    let row = exact_work(pool, &work_ref).await?;
-    let has_response = serde_json::from_str::<OutcomeData>(
-        &row.try_get::<String, _>("outcome_json")?,
-    )?
-    .response
-    .is_some();
-    outcome_receipt_for(pool, work_ref, None, has_response).await
-}
-
-pub(crate) async fn continuation_receipts_for(
-    pool: &SqlitePool,
-    work_ref: &WorkRef,
-) -> MailboxResult<Vec<ContinuationReceipt>> {
-    let rows = sqlx::query(
-        "SELECT binding_json, state, outcome, source_turn_id, response_message_id
-         FROM mailbox_continuations
-         WHERE work_id = ? AND state IN ('pending_goal_binding', 'deferred')
-         ORDER BY source_turn_id LIMIT ?",
-    )
-    .bind(&work_ref.id)
-    .bind((MAX_CONTINUATIONS_PER_WORK + 1) as i64)
-    .fetch_all(pool)
-    .await?;
-    if rows.len() > MAX_CONTINUATIONS_PER_WORK as usize {
-        return Err(MailboxError::Backpressure("work continuation view limit"));
-    }
-    rows.iter()
-        .map(|row| {
-            let state = match row.try_get::<String, _>("state")?.as_str() {
-                "pending_goal_binding" => ContinuationState::PendingGoalBinding,
-                "deferred" => ContinuationState::Deferred,
-                _ => return Err(MailboxError::InvalidInput("stored continuation state".into())),
-            };
-            Ok(ContinuationReceipt {
-                binding: serde_json::from_str(&row.try_get::<String, _>("binding_json")?)?,
-                state,
-                outcome: parse_outcome(row.try_get::<String, _>("outcome")?.as_str())?,
-                source_turn_id: row.try_get("source_turn_id")?,
-                response_message_id: row.try_get("response_message_id")?,
-            })
-        })
-        .collect()
-}
-
 fn is_nonterminal(continuation: &Continuation) -> bool {
     matches!(
         continuation,
@@ -701,25 +412,6 @@ fn continuation_state(continuation: &Continuation) -> &'static str {
         Continuation::PendingGoalBinding(_) => "pending_goal_binding",
         Continuation::Deferred(_) => "deferred",
         _ => "terminal",
-    }
-}
-
-fn outcome_label(outcome: Outcome) -> &'static str {
-    match outcome {
-        Outcome::Completed => "completed",
-        Outcome::Failed => "failed",
-        Outcome::Cancelled => "cancelled",
-        Outcome::NeedsAttention => "needs_attention",
-    }
-}
-
-fn parse_outcome(value: &str) -> MailboxResult<Outcome> {
-    match value {
-        "completed" => Ok(Outcome::Completed),
-        "failed" => Ok(Outcome::Failed),
-        "cancelled" => Ok(Outcome::Cancelled),
-        "needs_attention" => Ok(Outcome::NeedsAttention),
-        _ => Err(MailboxError::InvalidInput("stored continuation outcome".into())),
     }
 }
 

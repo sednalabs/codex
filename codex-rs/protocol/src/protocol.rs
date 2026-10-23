@@ -34,6 +34,7 @@ use crate::dynamic_tools::DynamicToolCallOutputContentItem;
 use crate::dynamic_tools::DynamicToolCallRequest;
 use crate::dynamic_tools::DynamicToolResponse;
 use crate::dynamic_tools::DynamicToolSpec;
+use crate::items::MailboxWaitReport;
 use crate::items::TurnItem;
 use crate::mcp::CallToolResult;
 use crate::mcp::RequestId;
@@ -4637,6 +4638,10 @@ pub struct CollabWaitingBeginEvent {
     pub receiver_agents: Vec<CollabAgentRef>,
     /// ID of the waiting call.
     pub call_id: String,
+    /// Selection-aware wait state when emitted by a mailbox-enabled wait.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub mailbox_wait_report: Option<MailboxWaitReport>,
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize, PartialEq, JsonSchema, TS)]
@@ -4652,6 +4657,10 @@ pub struct CollabWaitingEndEvent {
     pub agent_statuses: Vec<CollabAgentStatusEntry>,
     /// Last known status of the receiver agents reported to the sender agent.
     pub statuses: HashMap<ThreadId, AgentStatus>,
+    /// Selection-aware wait result when emitted by a mailbox-enabled wait.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub mailbox_wait_report: Option<MailboxWaitReport>,
 }
 
 #[derive(Debug, Clone, Copy, Deserialize, Serialize, PartialEq, Eq, Default, JsonSchema, TS)]
@@ -5930,6 +5939,7 @@ mod tests {
                 wake_notifications: None,
                 completion_reason: None,
                 wake_cause: None,
+                mailbox_wait_report: None,
             }),
         };
         let completed = ItemCompletedEvent {
@@ -5952,6 +5962,7 @@ mod tests {
                 wake_notifications: None,
                 completion_reason: None,
                 wake_cause: None,
+                mailbox_wait_report: None,
             }),
         };
 
@@ -6019,6 +6030,7 @@ mod tests {
                 wake_notifications: None,
                 completion_reason: None,
                 wake_cause: None,
+                mailbox_wait_report: None,
             }),
         };
         let historic_legacy_started = historic_started
@@ -6079,6 +6091,7 @@ mod tests {
                 wake_notifications: None,
                 completion_reason: None,
                 wake_cause: None,
+                mailbox_wait_report: None,
             }),
         };
         let current_omitted = ItemStartedEvent {
@@ -6101,6 +6114,7 @@ mod tests {
                 wake_notifications: None,
                 completion_reason: None,
                 wake_cause: None,
+                mailbox_wait_report: None,
             }),
         };
 
