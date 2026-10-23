@@ -193,11 +193,7 @@ fn create_session_with_walker_starter<F>(
     start_walker: F,
 ) -> anyhow::Result<FileSearchSession>
 where
-    F: FnOnce(
-        Arc<SessionInner>,
-        Option<ignore::overrides::Override>,
-        Injector<IndexedEntry>,
-    ),
+    F: FnOnce(Arc<SessionInner>, Option<ignore::overrides::Override>, Injector<IndexedEntry>),
 {
     let FileSearchOptions {
         limit,
@@ -458,8 +454,7 @@ fn walker_worker_with_hook<F>(
     override_matcher: Option<ignore::overrides::Override>,
     injector: Injector<IndexedEntry>,
     after_inject: F,
-)
-where
+) where
     F: Fn() + Clone + Send + Sync + 'static,
 {
     let Some(first_root) = inner.search_directories.first() else {
@@ -930,9 +925,8 @@ mod tests {
 
         let deadline = Instant::now() + Duration::from_secs(5);
         session.update_query("file-0");
-        let gate_reached = gate.wait_until_reached(
-            deadline.saturating_duration_since(Instant::now()),
-        );
+        let gate_reached =
+            gate.wait_until_reached(deadline.saturating_duration_since(Instant::now()));
         assert!(gate_reached, "walker did not reach the initial-entry gate");
 
         let expected_paths = (0..600)
@@ -956,14 +950,19 @@ mod tests {
                 })
             },
         );
-        assert!(partial_match, "matcher did not report a matching partial snapshot");
-
-        gate.release();
-        let completed = reporter.wait_for_complete(
-            deadline.saturating_duration_since(Instant::now()),
+        assert!(
+            partial_match,
+            "matcher did not report a matching partial snapshot"
         );
 
-        assert!(completed, "session did not complete before the shared test deadline");
+        gate.release();
+        let completed =
+            reporter.wait_for_complete(deadline.saturating_duration_since(Instant::now()));
+
+        assert!(
+            completed,
+            "session did not complete before the shared test deadline"
+        );
         let updates = reporter.updates();
         assert!(updates.iter().any(|snapshot| !snapshot.walk_complete));
     }
