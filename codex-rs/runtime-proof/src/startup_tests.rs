@@ -153,7 +153,7 @@ fn acknowledgement_failure_erases_the_installed_signer() {
                 purpose: "work-release".to_string(),
             },
         ]),
-        iat: now,
+        iat: now - 5,
         exp: now + 300,
     };
     let certificate_header = crate::wire::CertificateHeader {
@@ -206,6 +206,7 @@ fn compact_test_certificate(
         "method": claims.method,
         "tool": claims.tool,
         "purpose": claims.purpose,
+        "operations": claims.operations,
         "iat": claims.iat,
         "exp": claims.exp,
     });

@@ -130,7 +130,7 @@ impl<'a, W: Write> Projector<'a, W> {
         let Some(thread_id) = event
             .get("thread_id")
             .and_then(Value::as_str)
-            .filter(|value| is_safe_identifier(value, 128))
+            .filter(|value| is_safe_identifier(value, /*max_len*/ 128))
         else {
             return;
         };
@@ -156,7 +156,7 @@ impl<'a, W: Write> Projector<'a, W> {
         ) else {
             return;
         };
-        if server != "ops" || !is_safe_identifier(item_id, 128) {
+        if server != "ops" || !is_safe_identifier(item_id, /*max_len*/ 128) {
             return;
         }
         let Some(tool) = Tool::parse(tool_name) else {
@@ -256,13 +256,13 @@ impl<'a, W: Write> Projector<'a, W> {
             } else {
                 "unknown"
             };
-            self.emit_outcome(&pending, outcome, None);
+            self.emit_outcome(&pending, outcome, /*details*/ None);
             return;
         }
 
         let status = item.get("status").and_then(Value::as_str);
         if status != Some("completed") {
-            self.emit_outcome(&pending, "unknown", None);
+            self.emit_outcome(&pending, "unknown", /*details*/ None);
             return;
         }
         let structured = item
@@ -278,15 +278,15 @@ impl<'a, W: Write> Projector<'a, W> {
 
     fn emit_current_work(&mut self, pending: &PendingCall, value: Option<&Value>) {
         let Some(value) = value else {
-            self.emit_outcome(pending, "unresolved", None);
+            self.emit_outcome(pending, "unresolved", /*details*/ None);
             return;
         };
         if value.get("work_item_ref").and_then(Value::as_str) != Some(self.work_item_ref) {
-            self.emit_outcome(pending, "unresolved", None);
+            self.emit_outcome(pending, "unresolved", /*details*/ None);
             return;
         }
         let Some(claim) = value.get("current_claim") else {
-            self.emit_outcome(pending, "unresolved", None);
+            self.emit_outcome(pending, "unresolved", /*details*/ None);
             return;
         };
         let updated_at = value
@@ -306,7 +306,7 @@ impl<'a, W: Write> Projector<'a, W> {
                     })),
                 );
             } else {
-                self.emit_outcome(pending, "unresolved", None);
+                self.emit_outcome(pending, "unresolved", /*details*/ None);
             }
             return;
         }
@@ -315,7 +315,7 @@ impl<'a, W: Write> Projector<'a, W> {
             .and_then(Value::as_u64)
             .filter(|value| *value <= ((1_u64 << 53) - 1))
         else {
-            self.emit_outcome(pending, "unresolved", None);
+            self.emit_outcome(pending, "unresolved", /*details*/ None);
             return;
         };
         let Some(instance_id) = claim
@@ -323,7 +323,7 @@ impl<'a, W: Write> Projector<'a, W> {
             .and_then(Value::as_str)
             .and_then(canonical_uuid)
         else {
-            self.emit_outcome(pending, "unresolved", None);
+            self.emit_outcome(pending, "unresolved", /*details*/ None);
             return;
         };
         let Some(principal_id) = claim
@@ -331,16 +331,16 @@ impl<'a, W: Write> Projector<'a, W> {
             .and_then(Value::as_str)
             .and_then(canonical_uuid)
         else {
-            self.emit_outcome(pending, "unresolved", None);
+            self.emit_outcome(pending, "unresolved", /*details*/ None);
             return;
         };
         let released = claim.get("released").and_then(Value::as_bool);
         let Some(released) = released else {
-            self.emit_outcome(pending, "unresolved", None);
+            self.emit_outcome(pending, "unresolved", /*details*/ None);
             return;
         };
         let Some(updated_at) = updated_at else {
-            self.emit_outcome(pending, "unresolved", None);
+            self.emit_outcome(pending, "unresolved", /*details*/ None);
             return;
         };
         let principal_matches = principal_id == self.principal.to_string();
@@ -362,13 +362,13 @@ impl<'a, W: Write> Projector<'a, W> {
 
     fn emit_receipt(&mut self, pending: &PendingCall, value: Option<&Value>) {
         let Some(value) = value else {
-            self.emit_outcome(pending, "unresolved", None);
+            self.emit_outcome(pending, "unresolved", /*details*/ None);
             return;
         };
         if value.get("work_item_ref").and_then(Value::as_str) != Some(self.work_item_ref)
             || value.get("request_id").and_then(Value::as_str) != pending.request_id.as_deref()
         {
-            self.emit_outcome(pending, "unresolved", None);
+            self.emit_outcome(pending, "unresolved", /*details*/ None);
             return;
         }
         if value.is_null() {
@@ -381,7 +381,7 @@ impl<'a, W: Write> Projector<'a, W> {
         }
         let historical = value.get("historical");
         let Some(historical) = historical.filter(|value| !value.is_null()) else {
-            self.emit_outcome(pending, "unresolved", None);
+            self.emit_outcome(pending, "unresolved", /*details*/ None);
             return;
         };
         let generation = historical
@@ -393,11 +393,11 @@ impl<'a, W: Write> Projector<'a, W> {
             .and_then(Value::as_str)
             .and_then(canonical_uuid);
         let Some(generation) = generation else {
-            self.emit_outcome(pending, "unresolved", None);
+            self.emit_outcome(pending, "unresolved", /*details*/ None);
             return;
         };
         let Some(instance_id) = instance_id else {
-            self.emit_outcome(pending, "unresolved", None);
+            self.emit_outcome(pending, "unresolved", /*details*/ None);
             return;
         };
         let outcome = historical
@@ -405,7 +405,7 @@ impl<'a, W: Write> Projector<'a, W> {
             .and_then(Value::as_str)
             .filter(|value| matches!(*value, "claimed" | "released"));
         let Some(outcome) = outcome else {
-            self.emit_outcome(pending, "unresolved", None);
+            self.emit_outcome(pending, "unresolved", /*details*/ None);
             return;
         };
         self.emit_outcome(
@@ -506,7 +506,7 @@ impl<'a, W: Write> Projector<'a, W> {
 
     fn finish(&mut self) {
         for (_, pending) in std::mem::take(&mut self.pending) {
-            self.emit_outcome(&pending, "unknown", None);
+            self.emit_outcome(&pending, "unknown", /*details*/ None);
         }
     }
 
