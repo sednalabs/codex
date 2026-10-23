@@ -238,6 +238,22 @@ fn expected_recipient_must_be_an_exact_jwt_audience_member() {
         )
         .is_err()
     );
+
+    let mut missing_audience = claims();
+    missing_audience
+        .as_object_mut()
+        .expect("synthetic claims are an object")
+        .remove("aud");
+    assert!(
+        validate_token_response(
+            response(missing_audience),
+            &policy,
+            principal,
+            PROJECT_ID,
+            NOW
+        )
+        .is_err()
+    );
 }
 
 #[test]
