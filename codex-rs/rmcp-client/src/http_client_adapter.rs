@@ -87,7 +87,7 @@ pub(crate) enum StreamableHttpClientAdapterError {
 /// Strictly allowlisted transport details safe to include in a surfaced HTTP
 /// failure. Header names alone are not trusted: values must pass validation.
 #[derive(Debug, Default)]
-struct SafeHttpResponseDiagnostics {
+pub(crate) struct SafeHttpResponseDiagnostics {
     cloudflare_ray: Option<String>,
     via_present: bool,
 }
