@@ -1658,14 +1658,27 @@ class RouteSelectionTests(unittest.TestCase):
         )
 
     def test_fork_hosted_local_compile_jobs_keep_bounded_full_build_budget(self) -> None:
-        fork_budget = "${{ github.repository == 'sednalabs/codex' && 120 || 30 }}"
-        for workflow_name, job_name in (("bazel.yml", "clippy"), ("sdk.yml", "sdks")):
+        fork_budget = "${{ github.repository == 'sednalabs/codex' && 180 || 30 }}"
+        for workflow_name, job_name, expected_budget in (
+            ("bazel.yml", "clippy", fork_budget),
+            ("sdk.yml", "sdks", fork_budget),
+            (
+                "bazel.yml",
+                "test",
+                "${{ github.repository == 'sednalabs/codex' && 180 || 120 }}",
+            ),
+            (
+                "bazel.yml",
+                "verify-release-build",
+                "${{ github.repository == 'sednalabs/codex' && 180 || 60 }}",
+            ),
+        ):
             with self.subTest(workflow=workflow_name, job=job_name):
                 payload = load_workflow_payload(
                     REPO_ROOT / ".github/workflows" / workflow_name
                 )
                 job = (payload.get("jobs") or {}).get(job_name) or {}
-                self.assertEqual(job.get("timeout-minutes"), fork_budget)
+                self.assertEqual(job.get("timeout-minutes"), expected_budget)
 
     def test_bazel_windows_native_main_uses_gnullvm_proc_macro_toolchain(self) -> None:
         bazel = load_workflow_payload(REPO_ROOT / ".github/workflows/bazel.yml")
