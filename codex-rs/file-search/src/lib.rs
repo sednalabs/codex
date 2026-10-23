@@ -1,6 +1,8 @@
 use crossbeam_channel::Receiver;
 use crossbeam_channel::Sender;
 use crossbeam_channel::after;
+#[cfg(test)]
+use crossbeam_channel::bounded;
 use crossbeam_channel::never;
 use crossbeam_channel::select;
 use crossbeam_channel::unbounded;
@@ -172,6 +174,31 @@ pub fn create_session(
     reporter: Arc<dyn SessionReporter>,
     cancel_flag: Option<Arc<AtomicBool>>,
 ) -> anyhow::Result<FileSearchSession> {
+    create_session_with_walker_starter(
+        search_directories,
+        options,
+        reporter,
+        cancel_flag,
+        |inner, override_matcher, injector| {
+            thread::spawn(move || walker_worker(inner, override_matcher, injector));
+        },
+    )
+}
+
+fn create_session_with_walker_starter<F>(
+    search_directories: Vec<PathBuf>,
+    options: FileSearchOptions,
+    reporter: Arc<dyn SessionReporter>,
+    cancel_flag: Option<Arc<AtomicBool>>,
+    start_walker: F,
+) -> anyhow::Result<FileSearchSession>
+where
+    F: FnOnce(
+        Arc<SessionInner>,
+        Option<ignore::overrides::Override>,
+        Injector<IndexedEntry>,
+    ),
+{
     let FileSearchOptions {
         limit,
         exclude,
@@ -215,8 +242,7 @@ pub fn create_session(
     let matcher_inner = inner.clone();
     thread::spawn(move || matcher_worker(matcher_inner, work_rx, nucleo));
 
-    let walker_inner = inner.clone();
-    thread::spawn(move || walker_worker(walker_inner, override_matcher, injector));
+    start_walker(inner.clone(), override_matcher, injector);
 
     Ok(FileSearchSession { inner })
 }
@@ -424,6 +450,18 @@ fn walker_worker(
     override_matcher: Option<ignore::overrides::Override>,
     injector: Injector<IndexedEntry>,
 ) {
+    walker_worker_with_hook(inner, override_matcher, injector, || {});
+}
+
+fn walker_worker_with_hook<F>(
+    inner: Arc<SessionInner>,
+    override_matcher: Option<ignore::overrides::Override>,
+    injector: Injector<IndexedEntry>,
+    after_inject: F,
+)
+where
+    F: Fn() + Clone + Send + Sync + 'static,
+{
     let Some(first_root) = inner.search_directories.first() else {
         let _ = inner.work_tx.send(WorkSignal::WalkComplete);
         return;
@@ -463,6 +501,7 @@ fn walker_worker(
         let injector = injector.clone();
         let cancelled = inner.cancelled.clone();
         let shutdown = inner.shutdown.clone();
+        let after_inject = after_inject.clone();
 
         Box::new(move |entry| {
             let entry = match entry {
@@ -487,6 +526,7 @@ fn walker_worker(
                         cols[0] = Utf32String::from(relative_path);
                     },
                 );
+                after_inject();
             }
             n += 1;
             if n >= CHECK_INTERVAL {
@@ -729,6 +769,7 @@ mod tests {
                 |completes| !completes.is_empty(),
             )
         }
+
         fn clear(&self) {
             self.updates.lock().unwrap().clear();
             self.complete_times.lock().unwrap().clear();
@@ -779,6 +820,74 @@ mod tests {
         dir
     }
 
+    struct WalkerGate {
+        reached_tx: Sender<()>,
+        reached_rx: Receiver<()>,
+        release_tx: Sender<()>,
+        release_rx: Receiver<()>,
+    }
+
+    impl WalkerGate {
+        fn new() -> Self {
+            let (reached_tx, reached_rx) = bounded(1);
+            let (release_tx, release_rx) = bounded(1);
+            Self {
+                reached_tx,
+                reached_rx,
+                release_tx,
+                release_rx,
+            }
+        }
+
+        fn pause(&self) {
+            let _ = self.reached_tx.send(());
+            let _ = self.release_rx.recv();
+        }
+
+        fn wait_until_reached(&self, timeout: Duration) -> bool {
+            self.reached_rx.recv_timeout(timeout).is_ok()
+        }
+
+        fn release(&self) {
+            let _ = self.release_tx.try_send(());
+        }
+    }
+
+    struct WalkerGateRelease(Arc<WalkerGate>);
+
+    impl Drop for WalkerGateRelease {
+        fn drop(&mut self) {
+            self.0.release();
+        }
+    }
+
+    fn create_session_with_walker_gate(
+        search_directories: Vec<PathBuf>,
+        options: FileSearchOptions,
+        reporter: Arc<dyn SessionReporter>,
+        gate: Arc<WalkerGate>,
+        pause_after_injected: usize,
+    ) -> anyhow::Result<FileSearchSession> {
+        let injected = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        create_session_with_walker_starter(
+            search_directories,
+            options,
+            reporter,
+            /*cancel_flag*/ None,
+            move |inner, override_matcher, injector| {
+                let gate = gate.clone();
+                let injected = injected.clone();
+                thread::spawn(move || {
+                    walker_worker_with_hook(inner, override_matcher, injector, move || {
+                        if injected.fetch_add(1, Ordering::Relaxed) + 1 == pause_after_injected {
+                            gate.pause();
+                        }
+                    });
+                });
+            },
+        )
+    }
+
     #[test]
     fn session_scanned_file_count_is_monotonic_across_queries() {
         let dir = create_temp_tree(/*file_count*/ 200);
@@ -808,18 +917,53 @@ mod tests {
     fn session_streams_updates_before_walk_complete() {
         let dir = create_temp_tree(/*file_count*/ 600);
         let reporter = Arc::new(RecordingReporter::default());
-        let session = create_session(
+        let gate = Arc::new(WalkerGate::new());
+        let _release_gate = WalkerGateRelease(gate.clone());
+        let session = create_session_with_walker_gate(
             vec![dir.path().to_path_buf()],
             FileSearchOptions::default(),
             reporter.clone(),
-            /*cancel_flag*/ None,
+            gate.clone(),
+            /*pause_after_injected*/ 32,
         )
         .expect("session");
 
+        let deadline = Instant::now() + Duration::from_secs(5);
         session.update_query("file-0");
-        let completed = reporter.wait_for_complete(Duration::from_secs(5));
+        let gate_reached = gate.wait_until_reached(
+            deadline.saturating_duration_since(Instant::now()),
+        );
+        assert!(gate_reached, "walker did not reach the initial-entry gate");
 
-        assert!(completed);
+        let expected_paths = (0..600)
+            .map(|index| format!("file-{index:04}.txt"))
+            .collect::<std::collections::HashSet<_>>();
+        let partial_match = reporter.wait_until(
+            &reporter.updates,
+            &reporter.update_cv,
+            deadline.saturating_duration_since(Instant::now()),
+            |updates| {
+                updates.iter().any(|snapshot| {
+                    snapshot.query == "file-0"
+                        && !snapshot.walk_complete
+                        && snapshot.matches.iter().any(|file_match| {
+                            file_match
+                                .path
+                                .file_name()
+                                .and_then(|name| name.to_str())
+                                .is_some_and(|name| expected_paths.contains(name))
+                        })
+                })
+            },
+        );
+        assert!(partial_match, "matcher did not report a matching partial snapshot");
+
+        gate.release();
+        let completed = reporter.wait_for_complete(
+            deadline.saturating_duration_since(Instant::now()),
+        );
+
+        assert!(completed, "session did not complete before the shared test deadline");
         let updates = reporter.updates();
         assert!(updates.iter().any(|snapshot| !snapshot.walk_complete));
     }
