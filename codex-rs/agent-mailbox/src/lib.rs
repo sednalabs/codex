@@ -28,9 +28,8 @@ pub use types::{
     Continuation, ContinuationReceipt, ContinuationState, Dependency, DependencyMode,
     DispatchDecision, DispatchState, Envelope, GoalBinding, MessageDraft, MessageKind, NativeWork,
     ObservationTarget, Outcome, OutcomeReceipt, PendingPage, RecoveryEvidence, RequestDisposition,
-    RequestSnapshot,
-    ReturnWhen, Selection, Selector, Snapshot, SnapshotItem, SnapshotRequest, SnapshotState,
-    TurnOutcomeReceipt, WorkRef, WorkSnapshot,
+    RequestSnapshot, ReturnWhen, Selection, Selector, Snapshot, SnapshotItem, SnapshotRequest,
+    SnapshotState, TurnOutcomeReceipt, WorkRef, WorkSnapshot,
 };
 pub use wait_graph::InputArrival;
 pub use wait_graph::WaitRegistration;

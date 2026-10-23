@@ -690,7 +690,7 @@ fn mailbox_wait_agent_tool_exposes_unbounded_join_contract_and_structured_result
             .contains("has no effect")
     );
     assert!(description.contains("unbounded event-only wait"));
-    assert!(description.contains("does not satisfy a selected join"));
+    assert!(description.contains("do not satisfy a selected join"));
     let output_schema = output_schema.expect("wait output schema");
     assert_eq!(
         output_schema["required"],
@@ -964,7 +964,7 @@ fn mailbox_send_message_tool_declares_durable_receipt_without_claiming_comprehen
     );
     assert_eq!(
         output_schema["properties"]["activation_disposition"]["enum"],
-        json!(["not_requested", "already_active", "activated", "denied"])
+        json!(["not_requested", "already_active", "activated", "denied", "unknown"])
     );
     assert!(
         output_schema["properties"]["durable_state"]["description"]

@@ -112,7 +112,7 @@ impl Respond for UnadmittedWorkResponder {
             }));
         }
         function_call_response("unadmitted-spawn-response", "unadmitted-spawn", "spawn_agent", json!({
-            "task_name": "unadmitted-worker",
+            "task_name": "unadmitted_worker",
             "message": "fail before provider acceptance of this work",
         }))
     }
@@ -421,7 +421,7 @@ impl Respond for RootMailboxFlowResponder {
             "spawn-call",
             "spawn_agent",
             json!({
-                "task_name": "quick-worker",
+                "task_name": "quick_worker",
                 "message": CHILD_TASK,
             }),
         )
@@ -661,7 +661,7 @@ impl Respond for WaitProbeResponder {
                 "spawn-b-call",
                 "spawn_agent",
                 json!({
-                    "task_name": "unrelated-worker",
+                    "task_name": "unrelated_worker",
                     "message": UNRELATED_CHILD_TASK,
                 }),
             );
@@ -672,7 +672,7 @@ impl Respond for WaitProbeResponder {
             "spawn-a-call",
             "spawn_agent",
             json!({
-                "task_name": "watched-worker",
+                "task_name": "watched_worker",
                 "message": QUIET_CHILD_TASK,
             }),
         )
@@ -1008,6 +1008,9 @@ async fn unadmitted_canonical_message_survives_precreated_failure_and_manual_com
         config.model_provider.supports_websockets = false;
         config.model_provider.stream_max_retries = Some(0);
         config.model_provider.request_max_retries = Some(0);
+        // This fixture supplies a local summarization prompt, not a remote
+        // compaction endpoint. Match the maintained local-compaction fixtures.
+        config.model_provider.name = "OpenAI (test)".to_string();
         config.compact_prompt = Some(COMPACTION_PROMPT.to_string());
     });
     let test = builder.build_with_auto_env(&server).await?;

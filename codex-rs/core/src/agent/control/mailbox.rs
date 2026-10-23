@@ -314,7 +314,10 @@ impl AgentControl {
             .collect())
     }
 
-    pub(crate) async fn mailbox_reconcile_pending_work(&self, work: &WorkSnapshot) -> CodexResult<bool> {
+    pub(crate) async fn mailbox_reconcile_pending_work(
+        &self,
+        work: &WorkSnapshot,
+    ) -> CodexResult<bool> {
         let Some(mailbox) = self.mailbox() else {
             return Ok(false);
         };
@@ -326,23 +329,36 @@ impl AgentControl {
                     || thread.session.input_queue.has_pending_mailbox_items().await
                     || thread.session.input_queue.has_pending_terminal_finalizers()
                     || thread.session.has_outstanding_durable_sleep();
-                let goal_owner = thread.session.services.thread_extension_data
+                let goal_owner = thread
+                    .session
+                    .services
+                    .thread_extension_data
                     .get::<crate::agent::goal_notifications::GoalNotificationStore>()
-                    .and_then(|store| store.snapshot().map(|snapshot| (store.incarnation(), snapshot)));
+                    .and_then(|store| {
+                        store
+                            .snapshot()
+                            .map(|snapshot| (store.incarnation(), snapshot))
+                    });
                 (can_proceed, goal_owner)
             }
             Ok(_) | Err(_) => (false, None),
         };
         let unresolved = work.continuations.iter().find(|continuation| {
-            matches!(continuation.state, ContinuationState::PendingGoalBinding | ContinuationState::Deferred)
+            matches!(
+                continuation.state,
+                ContinuationState::PendingGoalBinding | ContinuationState::Deferred
+            )
         });
         let evidence = if let Some(continuation) = unresolved {
             if goal_owner.as_ref().is_some_and(|(incarnation, snapshot)| {
                 goal_binding_matches_native(&continuation.binding, *incarnation, snapshot)
                     && ((snapshot.status == ThreadGoalStatus::Active
-                        && matches!(snapshot.phase, GoalNotificationPhase::Running
-                        | GoalNotificationPhase::ContinuationPending
-                        | GoalNotificationPhase::DeferredWithOwner))
+                        && matches!(
+                            snapshot.phase,
+                            GoalNotificationPhase::Running
+                                | GoalNotificationPhase::ContinuationPending
+                                | GoalNotificationPhase::DeferredWithOwner
+                        ))
                         || (snapshot.phase == GoalNotificationPhase::ResultReady && can_proceed))
             }) {
                 return Ok(false);
@@ -350,7 +366,9 @@ impl AgentControl {
             // A cold, restarted, replaced, or action-required producer cannot prove custody
             // of this exact old logical continuation. Keep its binding and original refs;
             // return recovery-needed instead of waiting for a producer that cannot advance it.
-            RecoveryEvidence::ContinuationUnowned { binding: continuation.binding.clone() }
+            RecoveryEvidence::ContinuationUnowned {
+                binding: continuation.binding.clone(),
+            }
         } else if can_proceed {
             return Ok(false);
         } else {

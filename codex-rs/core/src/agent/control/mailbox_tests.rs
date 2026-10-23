@@ -7,12 +7,15 @@ use codex_agent_mailbox::Selection;
 use codex_agent_mailbox::Selector;
 use codex_agent_mailbox::SnapshotItem;
 use codex_protocol::AgentPath;
+use codex_utils_absolute_path::test_support::PathExt;
 use pretty_assertions::assert_eq;
 
 #[tokio::test]
 async fn mailbox_shared_control_does_not_capture_stock_invocations() {
     let (session, turn) = crate::session::tests::make_session_and_context().await;
     let mut config = (*turn.config).clone();
+    let sqlite_home = tempfile::tempdir().unwrap();
+    config.sqlite = codex_state::SqliteConfig::new_for_testing(sqlite_home.path().abs());
     config.features.enable(Feature::MultiAgentV2).unwrap();
     config.features.enable(Feature::AgentMailbox).unwrap();
     let control = &session.services.agent_control;
@@ -128,6 +131,8 @@ async fn exact_work_snapshot(mailbox: &Mailbox, work: &WorkRef) -> WorkSnapshot 
 async fn mailbox_goal_terminal_matches_logical_binding_across_native_revisions_and_turns() {
     let (session, turn) = crate::session::tests::make_session_and_context().await;
     let mut config = (*turn.config).clone();
+    let sqlite_home = tempfile::tempdir().unwrap();
+    config.sqlite = codex_state::SqliteConfig::new_for_testing(sqlite_home.path().abs());
     config.features.enable(Feature::MultiAgentV2).unwrap();
     config.features.enable(Feature::AgentMailbox).unwrap();
     let control = &session.services.agent_control;
@@ -169,6 +174,8 @@ async fn mailbox_goal_terminal_matches_logical_binding_across_native_revisions_a
 async fn mailbox_cold_goal_continuation_returns_recovery_needed_without_losing_custody() {
     let (mut session, turn) = crate::session::tests::make_session_and_context().await;
     let mut config = (*turn.config).clone();
+    let sqlite_home = tempfile::tempdir().unwrap();
+    config.sqlite = codex_state::SqliteConfig::new_for_testing(sqlite_home.path().abs());
     config.features.enable(Feature::MultiAgentV2).unwrap();
     config.features.enable(Feature::AgentMailbox).unwrap();
     let manager = crate::ThreadManager::with_models_provider_for_tests(
@@ -209,6 +216,8 @@ async fn mailbox_cold_goal_continuation_returns_recovery_needed_without_losing_c
 async fn mailbox_cold_deferred_handback_uses_loaded_parents_shared_store() {
     let (_session, turn) = crate::session::tests::make_session_and_context().await;
     let mut config = (*turn.config).clone();
+    let sqlite_home = tempfile::tempdir().unwrap();
+    config.sqlite = codex_state::SqliteConfig::new_for_testing(sqlite_home.path().abs());
     config.features.enable(Feature::MultiAgentV2).unwrap();
     config.features.enable(Feature::AgentMailbox).unwrap();
     let manager = crate::ThreadManager::with_models_provider_for_tests(
@@ -216,6 +225,7 @@ async fn mailbox_cold_deferred_handback_uses_loaded_parents_shared_store() {
         config.model_provider.clone(),
     );
     let parent = manager.start_thread(crate::thread_manager::StartThreadOptions::new(config.clone())).await.unwrap();
+    parent.thread.session.set_multi_agent_version_if_unset(MultiAgentVersion::V2);
     let control = &parent.thread.session.services.agent_control;
     control.mailbox_initialize(&config).await.unwrap();
     let mailbox = control.mailbox().unwrap();

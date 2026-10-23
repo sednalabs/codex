@@ -194,14 +194,26 @@ fn goal_binding(
 async fn new_continuation_binding_requires_native_incarnation() {
     let fixture = test_mailbox().await;
     let (issuer, agent) = (thread_id(40), thread_id(41));
-    let (work, input) =
-        accept_work(&fixture.mailbox, issuer, agent, "missing-incarnation", "input").await;
+    let (work, input) = accept_work(
+        &fixture.mailbox,
+        issuer,
+        agent,
+        "missing-incarnation",
+        "input",
+    )
+    .await;
     assert_eq!(
         fixture.mailbox.begin_dispatch(&work).await.unwrap(),
         DispatchDecision::Dispatch
     );
     fixture.mailbox.mark_dispatched(&work).await.unwrap();
-    admit(&fixture.mailbox, agent, "missing-incarnation-turn", &[input]).await;
+    admit(
+        &fixture.mailbox,
+        agent,
+        "missing-incarnation-turn",
+        &[input],
+    )
+    .await;
 
     let mut legacy_binding = goal_binding(issuer, agent, 3, thread_id(42));
     legacy_binding.incarnation = None;
@@ -643,20 +655,20 @@ async fn continuation_binding_survives_deferred_phase_and_later_source_turn() {
     let fixture = test_mailbox().await;
     let (issuer, agent) = (thread_id(46), thread_id(47));
     let binding = goal_binding(issuer, agent, 6, thread_id(48));
-    let (original, original_input) =
-        accept_work(&fixture.mailbox, issuer, agent, "continuation-origin", "origin").await;
+    let (original, original_input) = accept_work(
+        &fixture.mailbox,
+        issuer,
+        agent,
+        "continuation-origin",
+        "origin",
+    )
+    .await;
     assert_eq!(
         fixture.mailbox.begin_dispatch(&original).await.unwrap(),
         DispatchDecision::Dispatch
     );
     fixture.mailbox.mark_dispatched(&original).await.unwrap();
-    admit(
-        &fixture.mailbox,
-        agent,
-        "source-origin",
-        &[original_input],
-    )
-    .await;
+    admit(&fixture.mailbox, agent, "source-origin", &[original_input]).await;
     finish(
         &fixture.mailbox,
         agent,
@@ -703,13 +715,7 @@ async fn continuation_binding_survives_deferred_phase_and_later_source_turn() {
         DispatchDecision::Dispatch
     );
     fixture.mailbox.mark_dispatched(&later_work).await.unwrap();
-    admit(
-        &fixture.mailbox,
-        agent,
-        "source-terminal",
-        &[later_input],
-    )
-    .await;
+    admit(&fixture.mailbox, agent, "source-terminal", &[later_input]).await;
     let terminal = finish(
         &fixture.mailbox,
         agent,
@@ -746,20 +752,20 @@ async fn unowned_continuation_recovery_retains_binding_until_exact_incarnation_t
     let fixture = test_mailbox().await;
     let (issuer, agent) = (thread_id(50), thread_id(51));
     let binding = goal_binding(issuer, agent, 7, thread_id(52));
-    let (original, original_input) =
-        accept_work(&fixture.mailbox, issuer, agent, "pending-continuation", "original").await;
+    let (original, original_input) = accept_work(
+        &fixture.mailbox,
+        issuer,
+        agent,
+        "pending-continuation",
+        "original",
+    )
+    .await;
     assert_eq!(
         fixture.mailbox.begin_dispatch(&original).await.unwrap(),
         DispatchDecision::Dispatch
     );
     fixture.mailbox.mark_dispatched(&original).await.unwrap();
-    admit(
-        &fixture.mailbox,
-        agent,
-        "source-pending",
-        &[original_input],
-    )
-    .await;
+    admit(&fixture.mailbox, agent, "source-pending", &[original_input]).await;
     let pending = finish(
         &fixture.mailbox,
         agent,
@@ -839,7 +845,11 @@ async fn unowned_continuation_recovery_retains_binding_until_exact_incarnation_t
             .unwrap(),
         DispatchDecision::Dispatch
     );
-    fixture.mailbox.mark_dispatched(&wrong_terminal).await.unwrap();
+    fixture
+        .mailbox
+        .mark_dispatched(&wrong_terminal)
+        .await
+        .unwrap();
     admit(
         &fixture.mailbox,
         agent,
@@ -869,7 +879,11 @@ async fn unowned_continuation_recovery_retains_binding_until_exact_incarnation_t
         work_item(&still_recovery_needed, &original.id).dispatch_state,
         DispatchState::RecoveryNeeded
     );
-    assert!(work_item(&still_recovery_needed, &original.id).outcome.is_none());
+    assert!(
+        work_item(&still_recovery_needed, &original.id)
+            .outcome
+            .is_none()
+    );
 
     let (exact_terminal, exact_input) = accept_work(
         &fixture.mailbox,
@@ -887,7 +901,11 @@ async fn unowned_continuation_recovery_retains_binding_until_exact_incarnation_t
             .unwrap(),
         DispatchDecision::Dispatch
     );
-    fixture.mailbox.mark_dispatched(&exact_terminal).await.unwrap();
+    fixture
+        .mailbox
+        .mark_dispatched(&exact_terminal)
+        .await
+        .unwrap();
     admit(
         &fixture.mailbox,
         agent,
@@ -904,7 +922,12 @@ async fn unowned_continuation_recovery_retains_binding_until_exact_incarnation_t
         Continuation::Terminal(binding.clone()),
     )
     .await;
-    assert!(terminal.outcomes.iter().any(|receipt| receipt.work_ref == original));
+    assert!(
+        terminal
+            .outcomes
+            .iter()
+            .any(|receipt| receipt.work_ref == original)
+    );
 
     let settled = take_snapshot(
         &fixture.mailbox,
@@ -918,8 +941,14 @@ async fn unowned_continuation_recovery_retains_binding_until_exact_incarnation_t
     assert_eq!(settled_original.dispatch_state, DispatchState::Dispatched);
     assert!(settled_original.outcome.is_some());
     assert_eq!(settled_original.continuations[0].binding, binding);
-    assert_eq!(settled_original.continuations[0].state, ContinuationState::Terminal);
-    assert_eq!(settled_original.continuations[0].source_turn_id, "source-pending");
+    assert_eq!(
+        settled_original.continuations[0].state,
+        ContinuationState::Terminal
+    );
+    assert_eq!(
+        settled_original.continuations[0].source_turn_id,
+        "source-pending"
+    );
 }
 
 #[tokio::test]
@@ -1696,11 +1725,13 @@ async fn confirmed_execution_and_terminal_capture_supersede_stale_dispatch_recov
         DispatchDecision::Dispatch
     );
     fixture.mailbox.mark_dispatched(&work).await.unwrap();
-    assert!(fixture
-        .mailbox
-        .mark_recovery_needed(&work, RecoveryEvidence::DeliveryUnavailable)
-        .await
-        .unwrap());
+    assert!(
+        fixture
+            .mailbox
+            .mark_recovery_needed(&work, RecoveryEvidence::DeliveryUnavailable)
+            .await
+            .unwrap()
+    );
     assert_eq!(
         fixture.mailbox.dispatch_state(&work).await.unwrap(),
         DispatchState::RecoveryNeeded
@@ -1720,11 +1751,13 @@ async fn confirmed_execution_and_terminal_capture_supersede_stale_dispatch_recov
     )
     .await;
     assert_eq!(terminal.outcomes[0].work_ref, work);
-    assert!(!fixture
-        .mailbox
-        .mark_recovery_needed(&work, RecoveryEvidence::DeliveryUnavailable)
-        .await
-        .unwrap());
+    assert!(
+        !fixture
+            .mailbox
+            .mark_recovery_needed(&work, RecoveryEvidence::DeliveryUnavailable)
+            .await
+            .unwrap()
+    );
     assert_eq!(
         fixture.mailbox.dispatch_state(&work).await.unwrap(),
         DispatchState::Dispatched

@@ -454,6 +454,9 @@ async fn wait_delivers_exact_quiet_reply_and_persists_it_before_observation() {
         })
         .await
         .unwrap();
+    // The replying agent must first have the request in canonical history; reply
+    // admission is intentionally rejected until that exact request is canonical.
+    mailbox.mark_canonical(agent, &request.id).await.unwrap();
     let body = "quiet exact reply body";
     let reply = mailbox
         .accept_message(MessageDraft {

@@ -2162,6 +2162,16 @@ async fn resumed_mailbox_wait_is_durably_interrupted_and_idempotent() {
         rx.try_recv().expect("durable wait start should be published").msg,
         EventMsg::ItemStarted(event) if event.item.id() == call_id
     ));
+    assert!(matches!(
+        rx.try_recv()
+            .expect("durable wait start should publish its legacy companion")
+            .msg,
+        EventMsg::CollabWaitingBegin(event) if event.call_id == call_id
+    ));
+    assert!(
+        rx.try_recv().is_err(),
+        "all start notifications should be consumed before testing terminal publication"
+    );
 
     let InitialHistory::Resumed(resumed) = RolloutRecorder::get_rollout_history(&rollout_path)
         .await

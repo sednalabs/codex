@@ -1,0 +1,14 @@
+---
+source: tui/src/chatwidget/tests/history_replay.rs
+expression: interrupted_lines
+---
+• Mailbox wait returned: interrupted
+  └ Join condition: any
+    Targets: worker-A, work_17
+    Replies to: msg_request
+    Pending worker-A: running
+    Pending work_17: pending
+    Pending reviewer · msg_request: awaiting_reply
+    Condition satisfied: no
+    Completion reason: interrupted
+    Quiet count: 5

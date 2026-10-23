@@ -1,0 +1,12 @@
+---
+source: tui/src/chatwidget/tests/app_server.rs
+expression: updated_lines
+---
+• Waiting for all of 3 selected conditions
+  └ Join condition: all
+    Targets: Ada, work_42
+    Replies to: msg_request
+    Completed Ada: completed
+    Completed work_42: completed
+    Pending Robie · msg_request: awaiting_reply
+    Quiet count: 4
