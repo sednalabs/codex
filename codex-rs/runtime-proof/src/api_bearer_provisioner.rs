@@ -911,22 +911,6 @@ fn validate_fixed_parent(parent: &Path) -> Result<()> {
     Ok(())
 }
 
-fn replace_bearer_source(path: &Path, credential: &[u8]) -> Result<()> {
-    const FIXED_PARENT: &str = "/run/credstore";
-    const FIXED_NAME: &str = "ops-api-bearer";
-    if path != Path::new(BEARER_SOURCE_PATH) || path.parent() != Some(Path::new(FIXED_PARENT)) {
-        bail!("Ops API credential target is not the fixed systemd input");
-    }
-    validate_fixed_parent(Path::new(FIXED_PARENT))?;
-
-    let parent = open_fixed_directory(Path::new(FIXED_PARENT))?;
-    validate_credential_store_directory(&parent, /*expected_owner*/ 0)?;
-
-    let _lock = lock_credential_store(&parent, /*expected_owner*/ 0)?;
-    let destination = std::ffi::CString::new(FIXED_NAME)?;
-    atomic_replace_credential_at(&parent, &destination, credential, /*expected_owner*/ 0)
-}
-
 /// Removes the volatile source only when it still contains the exact bearer
 /// that systemd copied into this unit's private credential directory.
 pub(crate) fn cleanup_loaded_bearer_source(credentials_directory: &Path) -> Result<()> {
@@ -1119,7 +1103,7 @@ fn lock_credential_store_until(
         let busy = error
             .raw_os_error()
             .is_some_and(|code| code == libc::EWOULDBLOCK || code == libc::EAGAIN);
-        if !busy || deadline.map_or(true, |deadline| Instant::now() >= deadline) {
+        if !busy || deadline.is_none_or(|deadline| Instant::now() >= deadline) {
             return Err(error.into());
         }
         std::thread::sleep(Duration::from_millis(10));
@@ -1288,13 +1272,6 @@ mod tests {
                 .wait()
                 .expect("wait for wrong-name decryption")
                 .success()
-        );
-    }
-
-    #[test]
-    fn bearer_source_requires_exact_fixed_path() {
-        assert!(
-            replace_bearer_source(Path::new("/tmp/ops-api-bearer"), b"synthetic-token").is_err()
         );
     }
 

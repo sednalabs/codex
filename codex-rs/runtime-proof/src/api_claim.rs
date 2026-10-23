@@ -319,12 +319,22 @@ pub(crate) fn send_claim(
         client,
         API_RECIPIENT,
         bearer,
-        project_id,
-        request_id,
-        certificate,
-        proof,
-        body,
+        ClaimSubmission {
+            project_id,
+            request_id,
+            certificate,
+            proof,
+            body,
+        },
     )
+}
+
+struct ClaimSubmission<'a> {
+    project_id: u64,
+    request_id: Uuid,
+    certificate: &'a str,
+    proof: &'a str,
+    body: &'a Value,
 }
 
 fn validate_claim_receipt(response_body: &[u8], expected_work_item_ref: &str) -> Result<()> {
@@ -458,23 +468,20 @@ async fn send_claim_to_async(
     client: &HttpClient,
     recipient: &str,
     bearer: &SecretString,
-    project_id: u64,
-    request_id: Uuid,
-    certificate: &str,
-    proof: &str,
-    body: &Value,
+    submission: ClaimSubmission<'_>,
 ) -> Result<()> {
-    let expected_work_item_ref = body
+    let expected_work_item_ref = submission
+        .body
         .get("work_item_ref")
         .and_then(Value::as_str)
         .ok_or_else(|| anyhow::anyhow!("fixed Ops API claim body has no work item reference"))?;
-    let body = Zeroizing::new(serde_json::to_vec(body)?);
+    let body = Zeroizing::new(serde_json::to_vec(submission.body)?);
     if body.len() > MAX_REQUEST_BYTES {
         bail!("fixed Ops API claim body exceeds its size limit");
     }
     let proof_envelope = URL_SAFE_NO_PAD.encode(serde_json::to_vec(&wire::ProofEnvelope {
-        certificate,
-        proof,
+        certificate: submission.certificate,
+        proof: submission.proof,
     })?);
     let mut authorization = Zeroizing::new(String::with_capacity(bearer.0.len() + 7));
     authorization.push_str("Bearer ");
@@ -484,7 +491,7 @@ async fn send_claim_to_async(
         .header("authorization", authorization.as_str())
         .header("content-type", "application/json")
         .header("x-ops-runtime-proof", proof_envelope)
-        .header("x-ops-request-id", request_id.to_string())
+        .header("x-ops-request-id", submission.request_id.to_string())
         .body(body.as_slice().to_vec())
         .timeout(REQUEST_TIMEOUT);
     let claim_recorded = match request.send().await {
@@ -530,9 +537,9 @@ async fn send_claim_to_async(
         client,
         recipient,
         bearer,
-        project_id,
+        submission.project_id,
         expected_work_item_ref,
-        request_id,
+        submission.request_id,
     )
     .await
     {
@@ -550,26 +557,13 @@ fn send_claim_to(
     client: &HttpClient,
     recipient: &str,
     bearer: &SecretString,
-    project_id: u64,
-    request_id: Uuid,
-    certificate: &str,
-    proof: &str,
-    body: &Value,
+    submission: ClaimSubmission<'_>,
 ) -> Result<()> {
     let runtime = tokio::runtime::Builder::new_current_thread()
         .enable_all()
         .build()
         .map_err(|_| anyhow::anyhow!("build fixed Ops API runtime"))?;
-    runtime.block_on(send_claim_to_async(
-        client,
-        recipient,
-        bearer,
-        project_id,
-        request_id,
-        certificate,
-        proof,
-        body,
-    ))
+    runtime.block_on(send_claim_to_async(client, recipient, bearer, submission))
 }
 
 pub(crate) fn unix_seconds() -> Result<i64> {
