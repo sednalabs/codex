@@ -302,7 +302,25 @@ async fn conpty_ctrl_c_interrupts_powershell_foreground_child() -> anyhow::Resul
     let Some(program) = find_powershell() else {
         return Ok(());
     };
-    let args = vec!["-NoLogo".to_string(), "-NoProfile".to_string()];
+    // Bazel starts Windows test processes in a new process group with Ctrl-C
+    // disabled, and children inherit that setting. Restore it only inside this
+    // fixture's shell, not process-globally in the parallel test harness.
+    let restore_ctrl_c = r#"
+Add-Type -Namespace CodexPtyTests -Name ConsoleControl -MemberDefinition '
+[System.Runtime.InteropServices.DllImport("kernel32.dll", SetLastError = true)]
+public static extern bool SetConsoleCtrlHandler(System.IntPtr handler, bool add);
+'
+if (-not [CodexPtyTests.ConsoleControl]::SetConsoleCtrlHandler([IntPtr]::Zero, $false)) {
+    throw "SetConsoleCtrlHandler failed: $([System.Runtime.InteropServices.Marshal]::GetLastWin32Error())"
+}
+"#;
+    let args = vec![
+        "-NoLogo".to_string(),
+        "-NoProfile".to_string(),
+        "-NoExit".to_string(),
+        "-Command".to_string(),
+        format!("{restore_ctrl_c}\n[Console]::WriteLine('{SHELL_READY_MARKER}')"),
+    ];
     let env: HashMap<String, String> = std::env::vars().collect();
     let spawned = spawn_pty_process(
         &program,
@@ -316,6 +334,12 @@ async fn conpty_ctrl_c_interrupts_powershell_foreground_child() -> anyhow::Resul
     .await?;
     let (session, mut output_rx, exit_rx) = combine_spawned_output(spawned);
     let writer = session.writer_sender();
+    wait_for_output_contains(
+        &mut output_rx,
+        SHELL_READY_MARKER,
+        /*timeout_ms*/ 10_000,
+    )
+    .await?;
     writer.send(b"ping.exe -4 -t localhost\n".to_vec()).await?;
     wait_for_output_contains(&mut output_rx, "127.0.0.1", /*timeout_ms*/ 10_000).await?;
 
