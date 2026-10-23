@@ -8,7 +8,11 @@ const SUBJECT: &str = "6d69c7fb-b1b5-43ef-8eb7-496dd0dc184d";
 fn access_token(subject: &str, refresh: Option<&str>) -> OAuthAccessToken {
     let claims = serde_json::json!({ "sub": subject });
     let payload = URL_SAFE_NO_PAD.encode(serde_json::to_vec(&claims).unwrap());
-    OAuthAccessToken::for_test(format!("e30.{payload}.signature"), refresh, 1_900_000_000)
+    OAuthAccessToken::for_test(
+        format!("e30.{payload}.signature"),
+        refresh,
+        /*expires_at*/ 1_900_000_000,
+    )
 }
 
 fn stored_profile(refresh_token: &str) -> StoredApiRefreshProfile {
