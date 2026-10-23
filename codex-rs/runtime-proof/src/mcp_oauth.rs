@@ -51,7 +51,6 @@ pub(crate) struct McpAccessToken {
 }
 
 #[derive(Deserialize)]
-#[serde(deny_unknown_fields)]
 struct TokenEndpointResponse {
     access_token: SecretString,
     token_type: String,
