@@ -16,6 +16,7 @@ use ed25519_dalek::Signer as _;
 use ed25519_dalek::SigningKey;
 use serde::Deserialize;
 use serde_json::Value;
+use std::io::Write as _;
 use std::time::Duration;
 use uuid::Uuid;
 use zeroize::Zeroizing;
@@ -315,7 +316,9 @@ pub(crate) fn send_claim(
     proof: &str,
     body: &Value,
 ) -> Result<()> {
-    send_claim_to(
+    let mut journal = std::io::stderr().lock();
+    send_claim_to_with_correlation(
+        &mut journal,
         client,
         API_RECIPIENT,
         bearer,
@@ -327,6 +330,23 @@ pub(crate) fn send_claim(
             body,
         },
     )
+}
+
+fn send_claim_to_with_correlation(
+    journal: &mut impl std::io::Write,
+    client: &HttpClient,
+    recipient: &str,
+    bearer: &SecretString,
+    submission: ClaimSubmission<'_>,
+) -> Result<()> {
+    writeln!(
+        journal,
+        "runtime-proof claim request_id={}",
+        submission.request_id
+    )
+    .and_then(|()| journal.flush())
+    .map_err(|_| anyhow::anyhow!("write claim request correlation to service journal"))?;
+    send_claim_to(client, recipient, bearer, submission)
 }
 
 struct ClaimSubmission<'a> {
