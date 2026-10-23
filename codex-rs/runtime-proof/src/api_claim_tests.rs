@@ -2,6 +2,7 @@ use super::*;
 use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 use ed25519_dalek::Verifier as _;
 use std::io::Read as _;
+use std::io::Write as _;
 use std::net::TcpListener;
 use std::net::TcpStream;
 use std::sync::Arc;
