@@ -16,7 +16,6 @@ use ed25519_dalek::Signer as _;
 use ed25519_dalek::SigningKey;
 use serde::Deserialize;
 use serde_json::Value;
-use std::io::Write as _;
 use std::time::Duration;
 use uuid::Uuid;
 use zeroize::Zeroizing;
