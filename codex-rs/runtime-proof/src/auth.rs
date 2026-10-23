@@ -250,29 +250,50 @@ pub(crate) fn validate_raw_config(config: &[u8], server: &str, recipient: &str) 
         .and_then(toml::Value::as_table)
         .context("protected runtime config does not contain the selected MCP server")?;
     let selected_url_matches = selected.get("url").and_then(toml::Value::as_str) == Some(recipient);
-    let claim_tool_is_explicitly_approved = selected
+    let tools_are_explicitly_approved = selected
         .get("tools")
         .and_then(toml::Value::as_table)
         .is_some_and(|tools| {
-            tools.len() == 1
-                && tools
-                    .get("work_item_claim")
-                    .and_then(toml::Value::as_table)
-                    .is_some_and(|claim| {
-                        claim.len() == 1
-                            && claim.get("approval_mode").and_then(toml::Value::as_str)
-                                == Some("approve")
-                    })
+            let expected = [
+                "work_item_claim",
+                "work_item_current_work",
+                "work_item_execution_receipt_read",
+                "work_item_release",
+            ];
+            tools.len() == expected.len()
+                && expected.iter().all(|name| {
+                    tools
+                        .get(*name)
+                        .and_then(toml::Value::as_table)
+                        .is_some_and(|tool| {
+                            tool.len() == 1
+                                && tool.get("approval_mode").and_then(toml::Value::as_str)
+                                    == Some("approve")
+                        })
+                })
+        });
+    let enabled_tools_are_exact = selected
+        .get("enabled_tools")
+        .and_then(toml::Value::as_array)
+        .is_some_and(|tools| {
+            let expected = [
+                "work_item_claim",
+                "work_item_current_work",
+                "work_item_execution_receipt_read",
+                "work_item_release",
+            ];
+            tools.len() == expected.len()
+                && expected
+                    .iter()
+                    .enumerate()
+                    .all(|(index, tool)| tools[index].as_str() == Some(*tool))
         });
     let fixed_claim_profile = server == "ops"
         && mcp_servers.len() == 1
         && selected.len() == 4
         && selected.get("required").and_then(toml::Value::as_bool) == Some(true)
-        && selected
-            .get("enabled_tools")
-            .and_then(toml::Value::as_array)
-            .is_some_and(|tools| tools.len() == 1 && tools[0].as_str() == Some("work_item_claim"))
-        && claim_tool_is_explicitly_approved;
+        && enabled_tools_are_exact
+        && tools_are_explicitly_approved;
     if !selected_url_matches || !fixed_claim_profile {
         bail!("protected runtime MCP config contains unadmitted settings");
     }
@@ -421,6 +442,17 @@ pub fn is_protected_mcp_target(server: &str, recipient: &str) -> Result<bool> {
     } else {
         Ok(false)
     }
+}
+
+pub fn is_protected_mcp_read_tool(server: &str, recipient: &str, tool: &str) -> Result<bool> {
+    Ok(is_protected_mcp_target(server, recipient)? && is_proofless_read_tool_name(tool))
+}
+
+fn is_proofless_read_tool_name(tool: &str) -> bool {
+    matches!(
+        tool,
+        "work_item_current_work" | "work_item_execution_receipt_read"
+    )
 }
 
 pub fn protected_mcp_target() -> Result<Option<(String, String)>> {

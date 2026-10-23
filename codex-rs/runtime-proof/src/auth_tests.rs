@@ -4,6 +4,7 @@ use super::BootstrapAuth;
 use super::McpRedactionContext;
 use super::clear_auth_state;
 use super::failed_target_match;
+use super::is_proofless_read_tool_name;
 use super::protected_mcp_target_from_store;
 use super::validate_raw_config;
 use pretty_assertions::assert_eq;
@@ -15,20 +16,29 @@ use std::thread;
 use zeroize::Zeroizing;
 
 #[test]
-fn protected_runtime_config_is_exactly_claim_only() {
+fn only_current_work_and_exact_receipt_reads_are_proofless() {
+    assert!(is_proofless_read_tool_name("work_item_current_work"));
+    assert!(is_proofless_read_tool_name(
+        "work_item_execution_receipt_read"
+    ));
+    assert!(!is_proofless_read_tool_name("work_item_claim"));
+    assert!(!is_proofless_read_tool_name("work_item_release"));
+    assert!(!is_proofless_read_tool_name("work_item_update"));
+}
+
+#[test]
+fn protected_runtime_config_is_exactly_native_lifecycle_only() {
     let recipient = "http://127.0.0.1:12345/mcp";
     let pinned_only = format!(
         "model_provider = \"openai\"\ncli_auth_credentials_store = \"ephemeral\"\n\n[mcp_servers.ops]\nurl = \"{recipient}\"\n"
     );
-    let claim_only_config = format!(
-        "model_provider = \"openai\"\ncli_auth_credentials_store = \"ephemeral\"\n\n[mcp_servers.ops]\nurl = \"{recipient}\"\nrequired = true\nenabled_tools = [\"work_item_claim\"]\n\n[mcp_servers.ops.tools.work_item_claim]\napproval_mode = \"approve\"\n"
-    );
+    let claim_only_config = fixed_config(recipient);
 
     assert!(validate_raw_config(pinned_only.as_bytes(), "ops", recipient,).is_err());
     assert!(validate_raw_config(claim_only_config.as_bytes(), "ops", recipient,).is_ok());
 
     let extra_tool = format!(
-        "model_provider = \"openai\"\ncli_auth_credentials_store = \"ephemeral\"\n\n[mcp_servers.ops]\nurl = \"{recipient}\"\nrequired = true\nenabled_tools = [\"work_item_claim\"]\n\n[mcp_servers.ops.tools.work_item_claim]\napproval_mode = \"approve\"\n\n[mcp_servers.ops.tools.other]\napproval_mode = \"approve\"\n"
+        "{claim_only_config}\n[mcp_servers.ops.tools.other]\napproval_mode = \"approve\"\n"
     );
     assert!(validate_raw_config(extra_tool.as_bytes(), "ops", recipient,).is_err());
 
@@ -43,6 +53,12 @@ fn protected_runtime_config_is_exactly_claim_only() {
     assert!(validate_raw_config(unapproved_tool_list.as_bytes(), "ops", recipient,).is_err());
 
     assert!(validate_raw_config(claim_only_config.as_bytes(), "other", recipient,).is_err());
+}
+
+fn fixed_config(recipient: &str) -> String {
+    format!(
+        "model_provider = \"openai\"\ncli_auth_credentials_store = \"ephemeral\"\napproval_policy = \"never\"\n\n[mcp_servers.ops]\nurl = {recipient:?}\nrequired = true\nenabled_tools = [\"work_item_claim\", \"work_item_current_work\", \"work_item_execution_receipt_read\", \"work_item_release\"]\n\n[mcp_servers.ops.tools.work_item_claim]\napproval_mode = \"approve\"\n\n[mcp_servers.ops.tools.work_item_current_work]\napproval_mode = \"approve\"\n\n[mcp_servers.ops.tools.work_item_execution_receipt_read]\napproval_mode = \"approve\"\n\n[mcp_servers.ops.tools.work_item_release]\napproval_mode = \"approve\"\n"
+    )
 }
 
 #[test]

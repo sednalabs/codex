@@ -47,6 +47,26 @@ use tracing::Level;
 use tracing_subscriber::fmt::format::FmtSpan;
 use tracing_test::internal::MockWriter;
 
+#[test]
+fn protected_error_projection_does_not_classify_unwrapped_remote_errors() {
+    let unwrapped_error =
+        anyhow::Error::new(rmcp::service::ServiceError::McpError(rmcp::ErrorData::new(
+            rmcp::model::ErrorCode::INTERNAL_ERROR,
+            codex_runtime_proof::HOLDER_CONFLICT_MESSAGE,
+            Some(serde_json::json!({
+                "code": codex_runtime_proof::HOLDER_CONFLICT_ERROR_CODE
+            })),
+        )));
+    assert_eq!(
+        protected_mcp_call_error_message(&unwrapped_error, "ops", "work_item_claim"),
+        "protected runtime proof MCP call failed"
+    );
+    assert_eq!(
+        protected_mcp_call_error_message(&unwrapped_error, "ops", "work_item_release"),
+        "protected runtime proof MCP call failed"
+    );
+}
+
 fn annotations(
     read_only: Option<bool>,
     destructive: Option<bool>,

@@ -67,7 +67,8 @@ fn signed_api_certificate(runtime_seed: &[u8; 32], runtime_incarnation: Uuid) ->
         mcp_server: None,
         method: "POST".to_string(),
         tool: None,
-        purpose: "work-claim".to_string(),
+        purpose: Some("work-claim".to_string()),
+        operations: None,
         iat: 100,
         exp: 140,
     };
@@ -292,7 +293,8 @@ fn api_precondition_and_proof_bind_the_exact_final_body_without_mcp_fields() {
         mcp_server: None,
         method: "POST".to_string(),
         tool: None,
-        purpose: "work-claim".to_string(),
+        purpose: Some("work-claim".to_string()),
+        operations: None,
         iat: 100,
         exp: 140,
     };

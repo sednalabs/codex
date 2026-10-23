@@ -456,7 +456,7 @@ async fn handle_approved_mcp_tool_call(
                 }
                 let empty_arguments = JsonValue::Null;
                 let proof_parameters = rewritten_arguments.as_ref().unwrap_or(&empty_arguments);
-                let proof = codex_runtime_proof::sign_claim_proof(
+                let proof = codex_runtime_proof::sign_protected_mcp_proof(
                     &sess.execution_nonce,
                     &sess.thread_id.to_string(),
                     &server,
@@ -464,7 +464,17 @@ async fn handle_approved_mcp_tool_call(
                     &tool_name,
                     proof_parameters,
                 )?;
-                if protected_call && proof.is_none() {
+                let protected_read_without_proof = if protected_call {
+                    codex_runtime_proof::is_protected_mcp_read_tool(
+                        &server,
+                        transport_url.as_deref().unwrap_or_default(),
+                        &tool_name,
+                    )
+                    .map_err(anyhow::Error::msg)?
+                } else {
+                    false
+                };
+                if protected_call && proof.is_none() && !protected_read_without_proof {
                     anyhow::bail!(
                         "protected MCP operation is outside its issuer-bound claim scope"
                     );
@@ -482,7 +492,7 @@ async fn handle_approved_mcp_tool_call(
             .await
             .map_err(|error| {
                 if protected_call {
-                    "protected runtime proof MCP call failed".to_string()
+                    protected_mcp_call_error_message(&error, &server, &tool_name)
                 } else {
                     format!("tool call error: {error:?}")
                 }
@@ -548,6 +558,19 @@ async fn handle_approved_mcp_tool_call(
     HandledMcpToolCall {
         result: CallToolResult::from_result(result),
         tool_input,
+    }
+}
+
+fn protected_mcp_call_error_message(error: &anyhow::Error, server: &str, tool: &str) -> String {
+    let is_holder_conflict = server == "ops"
+        && tool == "work_item_claim"
+        && error
+            .chain()
+            .any(codex_rmcp_client::is_ops_holder_conflict_error);
+    if is_holder_conflict {
+        codex_runtime_proof::HOLDER_CONFLICT_MESSAGE.to_string()
+    } else {
+        "protected runtime proof MCP call failed".to_string()
     }
 }
 

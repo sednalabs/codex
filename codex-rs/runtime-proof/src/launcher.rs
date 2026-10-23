@@ -45,6 +45,7 @@ use std::process::Child;
 use std::process::Command;
 use std::process::ExitStatus;
 use std::process::Stdio;
+use std::thread;
 use std::time::Duration;
 use std::time::Instant;
 use std::time::SystemTime;
@@ -62,7 +63,7 @@ const MCP_CLIENT_SECRET_CREDENTIAL: &str = "ops-mcp-client-secret";
 const RUNTIME_DIRECTORY: &str = "/run/codex-runtime-proof";
 const PROVIDER_RECIPIENT: &str = "https://chatgpt.com/backend-api/codex";
 const MCP_SERVER: &str = "ops";
-const MCP_TOOL: &str = "work_item_claim";
+const MCP_MUTATION_TOOLS: [&str; 2] = ["work_item_claim", "work_item_release"];
 const BOOTSTRAP_FD: RawFd = 3;
 const AUTH_FD: RawFd = 4;
 const CHILD_SOURCE_FD_MIN: RawFd = 32;
@@ -72,6 +73,7 @@ const MAX_PROVIDER_AUTH_BYTES: usize = 24 * 1024;
 const MAX_MCP_CLIENT_SECRET_BYTES: usize = 4096;
 const MAX_EXECUTABLE_BYTES: u64 = 2 * 1024 * 1024 * 1024;
 const ACK_TIMEOUT: Duration = Duration::from_secs(60);
+const OUTPUT_DRAIN_GRACE: Duration = Duration::from_millis(100);
 const READINESS_PACKET: &[u8; 4] = b"ACK1";
 
 /// Root-owned policy for one fixed Work-task execution.
@@ -424,6 +426,33 @@ fn run_mcp(
         &run_directory,
         target,
     )?;
+    let stdout = child
+        .stdout
+        .take()
+        .context("fixed codex-dev task has no JSON event stream")?;
+    let (output_finished_tx, output_finished_rx) = std::sync::mpsc::sync_channel(1);
+    let work_item_ref = policy.work_item_ref.clone();
+    let principal = policy.principal;
+    let output_reader = match thread::Builder::new()
+        .name("runtime-proof-json-projection".to_string())
+        .spawn(move || {
+            let stderr = std::io::stderr();
+            let mut writer = stderr.lock();
+            crate::outcome_projection::project_child_stdout(
+                stdout,
+                &work_item_ref,
+                principal,
+                &mut writer,
+            );
+            drop(writer);
+            let _ = output_finished_tx.send(());
+        }) {
+        Ok(reader) => reader,
+        Err(error) => {
+            terminate_child_group(&mut child);
+            return Err(error).context("start fixed task outcome projection");
+        }
+    };
     drop(bootstrap_child);
     drop(auth_child);
     drop(executable_source);
@@ -445,6 +474,18 @@ fn run_mcp(
     );
     if result.is_err() {
         terminate_child_group(&mut child);
+    }
+    if output_finished_rx.recv_timeout(OUTPUT_DRAIN_GRACE).is_ok() {
+        let _ = output_reader.join();
+    } else {
+        // A blocked journal write or inherited stdout descriptor cannot delay
+        // child teardown or the launcher's normal return past this grace. Do
+        // not return the supervision error here: the binary's error reporter
+        // takes stderr's global lock, which the detached projector may hold.
+        // Exit nonzero without a diagnostic; the missing projection remains
+        // unknown to the caller.
+        drop(output_reader);
+        return Ok(1);
     }
     result
 }
@@ -492,7 +533,8 @@ fn run_http_claim(
         mcp_server: None,
         method: "POST".to_string(),
         tool: None,
-        purpose: "work-claim".to_string(),
+        purpose: Some("work-claim".to_string()),
+        operations: None,
         iat: issued_at,
         exp: expires_at,
     };
@@ -838,7 +880,7 @@ fn prepare_run_directory(
 
 fn render_codex_config(mcp_recipient: &str) -> String {
     format!(
-        "model_provider = \"openai\"\ncli_auth_credentials_store = \"ephemeral\"\napproval_policy = \"never\"\n\n[mcp_servers.ops]\nurl = {mcp_recipient:?}\nrequired = true\nenabled_tools = [\"work_item_claim\"]\n\n[mcp_servers.ops.tools.work_item_claim]\napproval_mode = \"approve\"\n"
+        "model_provider = \"openai\"\ncli_auth_credentials_store = \"ephemeral\"\napproval_policy = \"never\"\n\n[mcp_servers.ops]\nurl = {mcp_recipient:?}\nrequired = true\nenabled_tools = [\"work_item_claim\", \"work_item_current_work\", \"work_item_execution_receipt_read\", \"work_item_release\"]\n\n[mcp_servers.ops.tools.work_item_claim]\napproval_mode = \"approve\"\n\n[mcp_servers.ops.tools.work_item_current_work]\napproval_mode = \"approve\"\n\n[mcp_servers.ops.tools.work_item_execution_receipt_read]\napproval_mode = \"approve\"\n\n[mcp_servers.ops.tools.work_item_release]\napproval_mode = \"approve\"\n"
     )
 }
 
@@ -886,7 +928,7 @@ fn spawn_verified_child(
         .env("OPS_RUNTIME_BOOTSTRAP_FD", BOOTSTRAP_FD.to_string())
         .env("OPS_RUNTIME_AUTH_FD", AUTH_FD.to_string())
         .stdin(Stdio::piped())
-        .stdout(Stdio::null())
+        .stdout(Stdio::piped())
         .stderr(Stdio::null());
 
     let runtime_uid = target.runtime_uid;
@@ -969,7 +1011,7 @@ fn supervise_child(
         task_deadline_for_expiry(expires_at, policy_expires_at, policy_task_deadline)?;
 
     let claims = wire::CertificateClaims {
-        version: 1,
+        version: 2,
         runtime_public_key: URL_SAFE_NO_PAD.encode(
             SigningKey::from_bytes(&runtime_seed)
                 .verifying_key()
@@ -985,8 +1027,18 @@ fn supervise_child(
         recipient: target.mcp_recipient.clone(),
         mcp_server: Some(MCP_SERVER.to_string()),
         method: "tools/call".to_string(),
-        tool: Some(MCP_TOOL.to_string()),
-        purpose: "work-claim".to_string(),
+        tool: None,
+        purpose: None,
+        operations: Some(vec![
+            wire::ProtectedOperation {
+                tool: MCP_MUTATION_TOOLS[0].to_string(),
+                purpose: "work-claim".to_string(),
+            },
+            wire::ProtectedOperation {
+                tool: MCP_MUTATION_TOOLS[1].to_string(),
+                purpose: "work-release".to_string(),
+            },
+        ]),
         iat: now,
         exp: expires_at,
     };
@@ -1522,7 +1574,7 @@ fn exit_code(status: ExitStatus) -> i32 {
 
 fn issue_task_prompt(policy: &LauncherPolicy, target: &McpLaunchConfig) -> String {
     format!(
-        "The only authorized operation in this execution is claiming Work item {} in project {} as principal {}. Follow the fixed task instruction below and stop after this task.\n\n{}",
+        "Only the fixed Ops operations work_item_current_work, work_item_claim, work_item_release, and work_item_execution_receipt_read are enabled for Work item {} in project {} as principal {}. Claims and releases require a fresh current-work precondition and a new UUID request_id. A missing or null exact-request receipt is unresolved; do not treat it as proof of no effect or replay the operation. Follow the fixed task instruction below and stop after this task.\n\n{}",
         policy.work_item_ref, policy.project_id, policy.principal, target.task_prompt
     )
 }

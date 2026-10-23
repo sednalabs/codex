@@ -262,6 +262,33 @@ enum ClientOperationError {
     Timeout { label: String, duration: Duration },
 }
 
+/// Returns true only for the fixed Agent Ops active-holder rejection carried
+/// by the remote MCP error response. This keeps the closed discriminator
+/// available to callers without exposing arbitrary remote error contents.
+pub fn is_ops_holder_conflict_error(error: &(dyn std::error::Error + 'static)) -> bool {
+    let Some(error) = error.downcast_ref::<ClientOperationError>() else {
+        return false;
+    };
+    let service_error = match error {
+        ClientOperationError::Service(error)
+        | ClientOperationError::UncertainService { source: error }
+        | ClientOperationError::ExpiredSessionUncertain { source: error } => error,
+        _ => return false,
+    };
+    let rmcp::service::ServiceError::McpError(error) = service_error else {
+        return false;
+    };
+    error.code == rmcp::model::ErrorCode::INTERNAL_ERROR
+        && error.message.as_ref()
+            == "work_item_execution.holder_conflict: another active execution holds this work item."
+        && error
+            .data
+            .as_ref()
+            .and_then(|data| data.get("code"))
+            .and_then(serde_json::Value::as_str)
+            == Some("work_item_execution.holder_conflict")
+}
+
 fn remaining_operation_timeout(
     label: &str,
     timeout: Option<Duration>,
@@ -1862,6 +1889,30 @@ mod tests {
         };
 
         assert_eq!(error.to_string(), "timed out awaiting tools/list after 30s");
+    }
+
+    #[test]
+    fn ops_holder_conflict_classifier_matches_real_service_operation_wrapper() {
+        let error = ClientOperationError::Service(rmcp::service::ServiceError::McpError(
+            rmcp::ErrorData::new(
+                rmcp::model::ErrorCode::INTERNAL_ERROR,
+                "work_item_execution.holder_conflict: another active execution holds this work item.",
+                Some(serde_json::json!({
+                    "code": "work_item_execution.holder_conflict",
+                    "request_id": "44444444-4444-4444-8444-444444444444"
+                })),
+            ),
+        ));
+        assert!(is_ops_holder_conflict_error(&error));
+
+        let wrong_code = ClientOperationError::Service(rmcp::service::ServiceError::McpError(
+            rmcp::ErrorData::new(
+                rmcp::model::ErrorCode::INTERNAL_ERROR,
+                "work_item_execution.holder_conflict: another active execution holds this work item.",
+                Some(serde_json::json!({"code": "other"})),
+            ),
+        ));
+        assert!(!is_ops_holder_conflict_error(&wrong_code));
     }
 
     #[test]
