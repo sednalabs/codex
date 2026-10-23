@@ -155,11 +155,11 @@ fn response_and_jwt_claims_must_bind_to_the_fixed_identity_contract() {
         ),
         ("azp", serde_json::json!("other-client")),
         ("client_id", serde_json::json!("other-client")),
+        ("aud", serde_json::json!(["https://mcp.example/", 17])),
         (
             "aud",
-            serde_json::json!(["https://mcp.example/", "https://other.example/"]),
+            serde_json::json!("https://mcp.example/ https://other.example/"),
         ),
-        ("aud", serde_json::json!(["https://mcp.example/", 17])),
         ("scope", serde_json::json!("ops:write ops:admin")),
         ("scope", serde_json::json!(["ops:write", 17])),
         ("project_id", serde_json::json!(18)),
@@ -189,6 +189,52 @@ fn response_and_jwt_claims_must_bind_to_the_fixed_identity_contract() {
             Uuid::parse_str(PRINCIPAL).unwrap(),
             PROJECT_ID,
             NOW,
+        )
+        .is_err()
+    );
+}
+
+#[test]
+fn expected_recipient_must_be_an_exact_jwt_audience_member() {
+    let policy = fixed_policy();
+    let principal = Uuid::parse_str(PRINCIPAL).unwrap();
+
+    let mut array_audience = claims();
+    array_audience["aud"] =
+        serde_json::json!(["ops-mcp-service", "ops-mcp", "https://mcp.example/"]);
+    assert!(
+        validate_token_response(
+            response(array_audience),
+            &policy,
+            principal,
+            PROJECT_ID,
+            NOW
+        )
+        .is_ok()
+    );
+
+    let mut string_audience = claims();
+    string_audience["aud"] = serde_json::json!("https://mcp.example/");
+    assert!(
+        validate_token_response(
+            response(string_audience),
+            &policy,
+            principal,
+            PROJECT_ID,
+            NOW
+        )
+        .is_ok()
+    );
+
+    let mut unrelated_audience = claims();
+    unrelated_audience["aud"] = serde_json::json!(["ops-api", "ops-das"]);
+    assert!(
+        validate_token_response(
+            response(unrelated_audience),
+            &policy,
+            principal,
+            PROJECT_ID,
+            NOW
         )
         .is_err()
     );
