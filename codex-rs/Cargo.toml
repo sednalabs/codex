@@ -4,6 +4,7 @@ members = [
     "analytics",
     "agent-graph-store",
     "agent-identity",
+    "agent-mailbox",
     "android-computer-use",
     "backend-client",
     "browser-computer-use",
@@ -147,6 +148,7 @@ app_test_support = { path = "app-server/tests/common" }
 codex-analytics = { path = "analytics" }
 codex-agent-graph-store = { path = "agent-graph-store" }
 codex-agent-identity = { path = "agent-identity" }
+codex-agent-mailbox = { path = "agent-mailbox" }
 codex-ansi-escape = { path = "ansi-escape" }
 codex-android-computer-use = { path = "android-computer-use" }
 codex-api = { path = "codex-api" }

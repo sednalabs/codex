@@ -1997,6 +1997,23 @@ dependencies = [
 ]
 
 [[package]]
+name = "codex-agent-mailbox"
+version = "0.0.0"
+dependencies = [
+ "codex-protocol",
+ "codex-state",
+ "codex-utils-absolute-path",
+ "pretty_assertions",
+ "serde",
+ "serde_json",
+ "sqlx",
+ "tempfile",
+ "thiserror 2.0.19",
+ "tokio",
+ "uuid",
+]
+
+[[package]]
 name = "codex-analytics"
 version = "0.0.0"
 dependencies = [
@@ -2800,6 +2817,7 @@ dependencies = [
  "chrono",
  "clap",
  "codex-agent-graph-store",
+ "codex-agent-mailbox",
  "codex-analytics",
  "codex-api",
  "codex-app-server-protocol",
