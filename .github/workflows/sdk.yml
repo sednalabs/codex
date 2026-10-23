@@ -96,7 +96,7 @@ jobs:
 
       - name: Build codex with Bazel
         env:
-          BUILDBUDDY_API_KEY: ${{ secrets.BUILDBUDDY_API_KEY }}
+          BUILDBUDDY_API_KEY: ${{ github.repository != 'sednalabs/codex' && secrets.BUILDBUDDY_API_KEY || '' }}
         shell: bash
         run: |
           set -euo pipefail

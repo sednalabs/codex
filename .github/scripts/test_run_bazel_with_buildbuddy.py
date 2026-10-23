@@ -54,7 +54,13 @@ class RunBazelWithBuildBuddyTest(unittest.TestCase):
             "BUILDBUDDY_API_KEY: ${{ github.repository != 'sednalabs/codex' "
             "&& secrets.BUILDBUDDY_API_KEY || '' }}"
         )
-        for workflow in ("bazel.yml", "rust-ci-full.yml", "v8-canary.yml"):
+        for workflow in (
+            "bazel.yml",
+            "native-windows-bazel-health.yml",
+            "rust-ci-full.yml",
+            "sdk.yml",
+            "v8-canary.yml",
+        ):
             with self.subTest(workflow=workflow):
                 source = (workflow_root / workflow).read_text(encoding="utf-8")
                 assignments = [

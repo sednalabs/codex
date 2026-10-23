@@ -1692,6 +1692,14 @@ class RouteSelectionTests(unittest.TestCase):
             native_test_run,
         )
         self.assertIn("--local_test_jobs=1", native_test_run)
+        self.assertIn(
+            '[[ "${GITHUB_REPOSITORY:-}" == "sednalabs/codex" '
+            '&& -z "${BUILDBUDDY_API_KEY:-}" ]]',
+            native_test_run,
+        )
+        self.assertIn(
+            "bazel_test_args+=(--host_platform=//:local_windows)", native_test_run
+        )
 
         module_bazel = (REPO_ROOT / "MODULE.bazel").read_text(encoding="utf-8")
         self.assertIn(
