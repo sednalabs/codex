@@ -7,7 +7,6 @@ use std::sync::atomic::Ordering;
 use codex_core::GoalNotificationBinding;
 use codex_core::GoalNotificationClassification;
 use codex_core::GoalNotificationPhase;
-use codex_core::GoalNotificationSnapshot;
 use codex_core::GoalNotificationStore;
 use codex_core::GoalNotificationTurnToken;
 use codex_core::ThreadManager;
@@ -259,7 +258,7 @@ impl GoalRuntimeHandle {
                 let snapshot = self.inner.notification_store.snapshot();
                 if snapshot
                     .as_ref()
-                    .map_or(true, |snapshot| snapshot.binding.goal_id == *goal_id)
+                    .is_none_or(|snapshot| snapshot.binding.goal_id == *goal_id)
                 {
                     return Ok(());
                 }
