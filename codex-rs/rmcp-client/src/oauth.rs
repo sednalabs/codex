@@ -83,7 +83,6 @@ use tokio::sync::Mutex;
 
 use codex_utils_home_dir::find_codex_home;
 
-pub use self::api_profile::delete_fixed_ops_api_refresh_credential;
 pub use self::api_profile::perform_fixed_ops_api_access_token_with_refresh;
 pub(crate) use self::resolved_store::ResolvedOAuthCredentialStore;
 pub(crate) use self::resolved_store::ResolvedOAuthTokens;
