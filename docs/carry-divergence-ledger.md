@@ -3902,6 +3902,7 @@ The unit uses `KillMode=control-group` and a finite stop timeout to clean up
 descendants, and masks `/home`, `/root` and `/run/user` rather than exposing
 host user auth stores to the root service or its child. The normal `codex-dev`
 entrypoint remains user-owned and unchanged.
+The ordinary MCP launcher also tags failures at its existing fixed boundaries: policy, credential setup, runtime setup, OAuth, signer, child start, bootstrap, prompt, and child exit. The journal receives only that closed phase label; underlying error text remains suppressed, and untagged failures retain the generic failed-closed line. These stages narrow diagnosis without claiming that a protected operation did or did not take effect.
 
 The same launcher also has a closed HTTP target for the maintained App claim
 route. It measures its own running ELF before reading credentials, signs the

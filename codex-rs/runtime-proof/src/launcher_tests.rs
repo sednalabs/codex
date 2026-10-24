@@ -1,4 +1,5 @@
 use super::*;
+use anyhow::Context as _;
 use ed25519_dalek::Signature;
 use ed25519_dalek::Verifier as _;
 use pretty_assertions::assert_eq;
@@ -60,6 +61,17 @@ fn api_bearer_provisioning_failure_exposes_only_a_fixed_stage() {
     );
     assert_eq!(
         safe_provisioning_failure_detail(&anyhow::anyhow!("sensitive internal detail")),
+        None
+    );
+}
+
+#[test]
+fn mcp_failure_stage_exposes_only_a_closed_phase() {
+    let error = anyhow::anyhow!("private failure detail").context(McpFailureStage::OAuth);
+
+    assert_eq!(safe_mcp_failure_stage(&error), Some("oauth"));
+    assert_eq!(
+        safe_mcp_failure_stage(&anyhow::anyhow!("MCP launcher failure stage: oauth")),
         None
     );
 }

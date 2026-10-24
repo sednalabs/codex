@@ -55,9 +55,9 @@ claim/release, keeps current-work and exact-request receipt reads on ordinary
 bearer authorization, and projects only bounded canonical primary-thread
 outcomes to the launcher's existing journal path. Its focused regressions cover
 closed tool configuration, claim/release proof binding, exact holder-conflict
-classification, payload redaction, child-event exclusion, and overlong-line
-draining. Protected package installation and natural first use remain separate
-acceptance steps.
+classification, payload redaction, child-event exclusion, overlong-line draining,
+and closed MCP launcher failure-stage projection. Protected package installation
+and natural first use remain separate acceptance steps.
 
 ## Core default path
 
