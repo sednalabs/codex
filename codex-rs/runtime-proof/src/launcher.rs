@@ -156,8 +156,7 @@ pub fn run() -> Result<i32> {
         .context(McpFailureStage::Policy)?;
     validate_policy(&policy).context(McpFailureStage::Policy)?;
 
-    let credential_directory =
-        credential_directory().context(McpFailureStage::CredentialSetup)?;
+    let credential_directory = credential_directory().context(McpFailureStage::CredentialSetup)?;
     match &policy.target {
         LauncherTarget::Mcp(target) => run_mcp(&policy, target, &credential_directory),
         LauncherTarget::Http(target) => {
@@ -451,8 +450,8 @@ fn run_mcp(
     target: &McpLaunchConfig,
     credential_directory: &Path,
 ) -> Result<i32> {
-    let runtime_directory = validate_runtime_directory(target.runtime_gid)
-        .context(McpFailureStage::RuntimeSetup)?;
+    let runtime_directory =
+        validate_runtime_directory(target.runtime_gid).context(McpFailureStage::RuntimeSetup)?;
     let working_directory = validate_working_directory(
         &target.working_directory,
         target.runtime_uid,
@@ -467,8 +466,8 @@ fn run_mcp(
     let (bootstrap_parent, bootstrap_child) =
         seqpacket_pair().context(McpFailureStage::RuntimeSetup)?;
     let (auth_parent, auth_child) = seqpacket_pair().context(McpFailureStage::RuntimeSetup)?;
-    let bootstrap_source = duplicate_high(bootstrap_child.as_raw_fd())
-        .context(McpFailureStage::RuntimeSetup)?;
+    let bootstrap_source =
+        duplicate_high(bootstrap_child.as_raw_fd()).context(McpFailureStage::RuntimeSetup)?;
     let auth_source =
         duplicate_high(auth_child.as_raw_fd()).context(McpFailureStage::RuntimeSetup)?;
     let executable_source =
@@ -1073,12 +1072,9 @@ fn supervise_child(
     let (expires_at, execution_lease_seconds) =
         effective_expiry(now, policy_expires_at, mcp_access_token.expires_at)
             .context(McpFailureStage::Signer)?;
-    let task_deadline = task_deadline_for_expiry(
-        expires_at,
-        policy_expires_at,
-        policy_task_deadline,
-    )
-    .context(McpFailureStage::Signer)?;
+    let task_deadline =
+        task_deadline_for_expiry(expires_at, policy_expires_at, policy_task_deadline)
+            .context(McpFailureStage::Signer)?;
 
     let claims = wire::CertificateClaims {
         version: 2,
@@ -1112,8 +1108,8 @@ fn supervise_child(
         iat: now,
         exp: expires_at,
     };
-    let certificate = issue_certificate(&claims, &issuer_seed, policy)
-        .context(McpFailureStage::Signer)?;
+    let certificate =
+        issue_certificate(&claims, &issuer_seed, policy).context(McpFailureStage::Signer)?;
     drop(issuer_seed);
     let certificate_sha256 = wire::certificate_digest(certificate.as_bytes());
     validate_live_credentials(&provider, &mcp_access_token.bearer, expires_at)
@@ -1142,12 +1138,14 @@ fn supervise_child(
         )
     };
     if auth_packet.len() > 32 * 1024 {
-        return Err(anyhow!("protected runtime auth frame exceeds its size limit"))
-            .context(McpFailureStage::Bootstrap);
+        return Err(anyhow!(
+            "protected runtime auth frame exceeds its size limit"
+        ))
+        .context(McpFailureStage::Bootstrap);
     }
 
-    let bootstrap_packet = make_bootstrap_packet(&certificate, &runtime_seed)
-        .context(McpFailureStage::Signer)?;
+    let bootstrap_packet =
+        make_bootstrap_packet(&certificate, &runtime_seed).context(McpFailureStage::Signer)?;
     send_packet(bootstrap_socket, &bootstrap_packet).context(McpFailureStage::Bootstrap)?;
     drop(bootstrap_packet);
     drop(runtime_seed);
@@ -1156,8 +1154,10 @@ fn supervise_child(
     let ack_timeout = ACK_TIMEOUT.min(task_deadline.saturating_duration_since(Instant::now()));
     receive_ack(bootstrap_socket, ack_timeout).context(McpFailureStage::Bootstrap)?;
     if Instant::now() >= task_deadline {
-        return Err(anyhow!("protected runtime expired before task execution started"))
-            .context(McpFailureStage::Bootstrap);
+        return Err(anyhow!(
+            "protected runtime expired before task execution started"
+        ))
+        .context(McpFailureStage::Bootstrap);
     }
     if let Some(mut stdin) = child.stdin.take() {
         let prompt = make_prompt(policy, target).context(McpFailureStage::ChildPrompt)?;
