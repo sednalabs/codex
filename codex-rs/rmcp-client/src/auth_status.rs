@@ -40,6 +40,10 @@ impl OAuthDiscoveryTimeout {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct StreamableHttpOAuthDiscovery {
+    pub token_endpoint: Option<String>,
+    pub issuer: Option<String>,
+    pub device_authorization_endpoint: Option<String>,
+    pub grant_types_supported: Option<Vec<String>>,
     pub scopes_supported: Option<Vec<String>>,
     pub callback_mode: McpOAuthCallbackMode,
 }
@@ -270,8 +274,30 @@ async fn discover_streamable_http_oauth_with_manager(
             let metadata = resolution.metadata;
             let callback_mode =
                 callback_mode(&metadata).unwrap_or(McpOAuthCallbackMode::CallbackSpecific);
+            let token_endpoint = Some(metadata.token_endpoint.clone());
+            let issuer = metadata.issuer.clone();
+            let device_authorization_endpoint = metadata
+                .additional_fields
+                .get("device_authorization_endpoint")
+                .and_then(serde_json::Value::as_str)
+                .map(str::to_string);
+            let grant_types_supported = metadata
+                .additional_fields
+                .get("grant_types_supported")
+                .and_then(serde_json::Value::as_array)
+                .map(|grant_types| {
+                    grant_types
+                        .iter()
+                        .filter_map(serde_json::Value::as_str)
+                        .map(str::to_string)
+                        .collect()
+                });
             authorization_manager.set_metadata(metadata);
             Ok(Some(StreamableHttpOAuthDiscovery {
+                token_endpoint,
+                issuer,
+                device_authorization_endpoint,
+                grant_types_supported,
                 callback_mode,
                 // Prefer the initial challenge's scopes, falling back to resource metadata.
                 scopes_supported: normalize_scopes(
@@ -704,6 +730,10 @@ mod tests {
         assert_eq!(
             discovery,
             StreamableHttpOAuthDiscovery {
+                token_endpoint: Some("https://example.com/token".to_string()),
+                issuer: Some(format!("{}/mcp", server.url.trim_end_matches("/mcp"))),
+                device_authorization_endpoint: None,
+                grant_types_supported: None,
                 scopes_supported: None,
                 callback_mode: McpOAuthCallbackMode::IssuerBound,
             }
@@ -735,9 +765,53 @@ mod tests {
         assert_eq!(
             discovery,
             StreamableHttpOAuthDiscovery {
+                token_endpoint: Some("https://example.com/token".to_string()),
+                issuer: None,
+                device_authorization_endpoint: None,
+                grant_types_supported: None,
                 scopes_supported: None,
                 callback_mode: McpOAuthCallbackMode::CallbackSpecific,
             }
+        );
+    }
+
+    #[tokio::test]
+    async fn device_authorization_metadata_is_exposed_for_cli_validation() {
+        let server = spawn_oauth_discovery_server(serde_json::json!({
+            "authorization_endpoint": "https://issuer.example/authorize",
+            "token_endpoint": "https://issuer.example/token",
+            "device_authorization_endpoint": "https://issuer.example/device",
+            "grant_types_supported": ["authorization_code", "urn:ietf:params:oauth:grant-type:device_code"],
+        }))
+        .await;
+
+        let discovery = discover_streamable_http_oauth(
+            &server.url,
+            /*http_headers*/ None,
+            /*env_http_headers*/ None,
+            test_http_client().await,
+            OAuthDiscoveryTimeout::LOCAL,
+            StreamableHttpRedirectMode::Legacy,
+        )
+        .await
+        .expect("discovery should succeed")
+        .expect("oauth support should be detected");
+
+        assert_eq!(
+            discovery.device_authorization_endpoint.as_deref(),
+            Some("https://issuer.example/device")
+        );
+        assert_eq!(
+            discovery.token_endpoint.as_deref(),
+            Some("https://issuer.example/token")
+        );
+        assert!(discovery.issuer.is_some());
+        assert_eq!(
+            discovery.grant_types_supported,
+            Some(vec![
+                "authorization_code".to_string(),
+                "urn:ietf:params:oauth:grant-type:device_code".to_string()
+            ])
         );
     }
 
