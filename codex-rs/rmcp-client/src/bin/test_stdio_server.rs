@@ -247,6 +247,7 @@ impl TestToolServer {
             "properties": {
                 "sleep_before_ms": { "type": "number" },
                 "sleep_after_ms": { "type": "number" },
+                "report_pipe_targets": { "type": "boolean" },
                 "barrier": {
                     "type": "object",
                     "properties": {
@@ -273,7 +274,11 @@ impl TestToolServer {
         let output_schema: JsonObject = serde_json::from_value(json!({
             "type": "object",
             "properties": {
-                "result": { "type": "string" }
+                "result": { "type": "string" },
+                "pipe_targets": {
+                    "type": "array",
+                    "items": { "type": "string" }
+                }
             },
             "required": ["result"],
             "additionalProperties": false
@@ -416,6 +421,8 @@ struct SyncArgs {
     sleep_before_ms: Option<u64>,
     #[serde(default)]
     sleep_after_ms: Option<u64>,
+    #[serde(default)]
+    report_pipe_targets: bool,
     #[serde(default)]
     barrier: Option<SyncBarrierArgs>,
 }
@@ -803,7 +810,34 @@ impl TestToolServer {
             sleep(Duration::from_millis(delay)).await;
         }
 
-        Ok(Self::structured_result(json!({ "result": "ok" })))
+        let mut result = json!({ "result": "ok" });
+        if args.report_pipe_targets {
+            result["pipe_targets"] = json!(Self::stdio_pipe_targets());
+        }
+        Ok(Self::structured_result(result))
+    }
+
+    fn stdio_pipe_targets() -> Vec<String> {
+        #[cfg(target_os = "linux")]
+        let targets = {
+            let mut targets = Vec::new();
+            if let Ok(entries) = std::fs::read_dir("/proc/self/fd") {
+                for entry in entries.flatten() {
+                    let Ok(target) = std::fs::read_link(entry.path()) else {
+                        continue;
+                    };
+                    let target = target.to_string_lossy();
+                    if target.starts_with("pipe:[") {
+                        targets.push(target.into_owned());
+                    }
+                }
+            }
+            targets
+        };
+        #[cfg(not(target_os = "linux"))]
+        let targets: Vec<String> = Vec::new();
+
+        targets
     }
 
     fn structured_result(value: serde_json::Value) -> CallToolResult {
