@@ -98,7 +98,7 @@ fn api_bearer_consistency_is_bound_to_issuer_audience_subject_scope_and_expiry()
         "iss": API_ISSUER,
         "aud": API_AUDIENCE,
         "sub": principal.to_string(),
-        "scope": API_SCOPE,
+        "scope": "ops:read ops:write",
         "exp": now + 60,
     });
     let valid = validate_bearer(jwt(valid_claims.clone()), principal, now)
@@ -114,7 +114,7 @@ fn api_bearer_consistency_is_bound_to_issuer_audience_subject_scope_and_expiry()
             "https://ops-mcp.grantmatler.com/mcp",
         ],
         "sub": principal.to_string(),
-        "scope": API_SCOPE,
+        "scope": "ops:read ops:write",
         "exp": now + 60,
     });
     assert!(
@@ -168,7 +168,7 @@ fn api_bearer_provisioning_validates_profile_without_activating_a_claim_policy()
         "iss": API_ISSUER,
         "aud": API_AUDIENCE,
         "sub": principal.to_string(),
-        "scope": API_SCOPE,
+        "scope": "ops:read ops:write",
         "exp": now + 60,
     }));
 
@@ -206,7 +206,7 @@ fn api_bearer_rejects_inconsistent_scope_claims() {
         "iss": API_ISSUER,
         "aud": API_AUDIENCE,
         "sub": principal.to_string(),
-        "scope": API_SCOPE,
+        "scope": "ops:read ops:write",
         "scp": "ops:read",
         "exp": now + 60,
     });

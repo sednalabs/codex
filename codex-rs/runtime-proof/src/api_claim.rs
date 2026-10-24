@@ -26,7 +26,8 @@ const API_EXECUTION_RECEIPT_ROUTE: &str = "/v0/work-items/execution-receipt/read
 pub(crate) const API_PROVIDER: &str = "agent-ops-api-claim-client";
 const API_ISSUER: &str = "https://auth.grantmatler.com/realms/agent-ops";
 const API_AUDIENCE: &str = "ops-api";
-pub(crate) const API_SCOPE: &str = "ops:read ops:write";
+const API_READ_SCOPE: &str = "ops:read";
+const API_WRITE_SCOPE: &str = "ops:write";
 pub(crate) const API_BEARER_CREDENTIAL: &str = "ops-api-bearer";
 pub(crate) const API_BEARER_MAX_BYTES: usize = 16 * 1024;
 pub(crate) const API_BEARER_CREDENTIAL_MAX_BYTES: usize = API_BEARER_MAX_BYTES + 256;
@@ -110,8 +111,8 @@ fn exact_api_scope_set<'a>(scopes: impl Iterator<Item = &'a str>) -> bool {
     for scope in scopes {
         count += 1;
         match scope {
-            "ops:read" if !saw_read => saw_read = true,
-            "ops:write" if !saw_write => saw_write = true,
+            API_READ_SCOPE if !saw_read => saw_read = true,
+            API_WRITE_SCOPE if !saw_write => saw_write = true,
             _ => return false,
         }
     }
