@@ -358,8 +358,7 @@ pub fn safe_provisioning_failure_detail(error: &anyhow::Error) -> Option<&str> {
 /// Returns only a fixed phase label for an ordinary native MCP launcher error.
 pub fn safe_mcp_failure_stage(error: &anyhow::Error) -> Option<&'static str> {
     error
-        .chain()
-        .find_map(|cause| cause.downcast_ref::<McpFailureStage>())
+        .downcast_ref::<McpFailureStage>()
         .map(McpFailureStage::as_str)
 }
 
