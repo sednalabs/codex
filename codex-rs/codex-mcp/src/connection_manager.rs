@@ -124,7 +124,13 @@ impl McpServerConnection {
 
 impl Drop for McpServerConnection {
     fn drop(&mut self) {
+        let client = self.client.clone();
         self.client.cancel();
+        if let Ok(runtime) = tokio::runtime::Handle::try_current() {
+            std::mem::drop(runtime.spawn(async move {
+                client.shutdown().await;
+            }));
+        }
     }
 }
 

@@ -3931,6 +3931,43 @@
         "codex-rs/config/src/mcp_types.rs"
       ],
       "extraction_target": "upstream per-server MCP protocol configuration"
+    },
+    {
+      "id": "mcp-retired-stdio-runtime-cleanup",
+      "title": "Retired stdio MCP runtime cleanup",
+      "status": "live",
+      "category": "mcp",
+      "surface_type": "stdio-runtime-lifecycle",
+      "surface": [
+        "retired MCP runtime ownership",
+        "stdio child and pipe cleanup"
+      ],
+      "files": [
+        "codex-rs/codex-mcp/src/connection_manager.rs",
+        "codex-rs/codex-mcp/src/runtime.rs",
+        "codex-rs/core/tests/suite/mcp_refresh_cleanup.rs",
+        "codex-rs/rmcp-client/src/bin/test_stdio_server.rs",
+        "justfile"
+      ],
+      "behavior": "Superseded or ended stdio MCP runtimes stop accepting new bindings and asynchronously shut down after in-flight bindings release ownership, reaping the child and releasing its stdio pipes.",
+      "upstream_equivalent": false,
+      "introduced_in": {
+        "carry_commit": "007d199d7543eaa333d622eb07c608fa28f019ba",
+        "upstream_commit": null
+      },
+      "guardrail_lane": "codex.mcp-tool-exposure-targeted",
+      "tests": [
+        "refresh_reaps_superseded_mcp_server_after_in_flight_call_finishes"
+      ],
+      "owner": "downstream",
+      "notes": "Keep in-flight calls live while retiring their runtime. Preserve this carry until upstream provides equivalent asynchronous retirement that releases ownership only after calls finish and shuts down stdio children and pipes.",
+      "upstreamability_tier": "upstream-pr",
+      "boundary_type": "mcp-runtime-lifecycle",
+      "hotspot_files": [
+        "codex-rs/codex-mcp/src/connection_manager.rs",
+        "codex-rs/codex-mcp/src/runtime.rs"
+      ],
+      "extraction_target": "upstream stdio MCP runtime retirement and child cleanup"
     }
   ],
   "superseded_hunks": [

@@ -2920,6 +2920,23 @@ bundles during upstream sync merely because they once shared this carry entry.
   `codex-rs/config/src/mcp_types.rs`, and
   `codex-rs/core/src/config/edit/document_helpers.rs`.
 
+### Retired stdio MCP Runtime Cleanup
+
+- Replacing or ending a stdio MCP runtime prevents new bindings while keeping
+  already-bound calls on their live connection. Once in-flight ownership ends,
+  asynchronous shutdown reaps the child and releases its stdio pipes.
+- `refresh_reaps_superseded_mcp_server_after_in_flight_call_finishes` proves
+  calls finish before the superseded child and pipe ownership are released in
+  the hosted `codex.mcp-tool-exposure-targeted` lane.
+- Preserve this carry until upstream provides equivalent retirement and child
+  teardown without interrupting in-flight calls.
+- Primary files:
+  - `codex-rs/codex-mcp/src/connection_manager.rs`
+  - `codex-rs/codex-mcp/src/runtime.rs`
+  - `codex-rs/core/tests/suite/mcp_refresh_cleanup.rs`
+  - `codex-rs/rmcp-client/src/bin/test_stdio_server.rs`
+  - `justfile`
+
 ### 2026-07-23 Upstream Integration Boundaries
 
 - Upstream `4462b9deef` adds default-on
