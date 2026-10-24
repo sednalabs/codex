@@ -7,6 +7,8 @@ use crate::codex_thread::ThreadConfigSnapshot;
 use crate::config::Config;
 use crate::session::new_submission_id;
 use crate::thread_manager::ThreadManagerState;
+use codex_agent_mailbox::DispatchDecision;
+use codex_agent_mailbox::WorkRef;
 use codex_protocol::ThreadId;
 use codex_protocol::error::CodexErr;
 use codex_protocol::error::Result as CodexResult;
@@ -26,6 +28,12 @@ pub(crate) struct PreparedV2AgentDelivery {
     /// Initial spawn delivery temporarily owns exact-child metadata before the publication CAS
     /// makes that metadata parent-visible through the registry.
     metadata_is_published: bool,
+}
+
+struct RecordedSubmission {
+    id: String,
+    work: Option<WorkRef>,
+    dispatch: DispatchDecision,
 }
 
 impl AgentControl {
@@ -215,12 +223,42 @@ impl PreparedV2AgentDelivery {
             .await
     }
 
-    fn record_submission(
+    async fn record_submission(
         &self,
-        communication: &InterAgentCommunication,
+        communication: &mut InterAgentCommunication,
         context: &AgentCommunicationContext,
-    ) -> String {
-        let submission_id = new_submission_id();
+        recipient_config: Option<&Config>,
+    ) -> CodexResult<RecordedSubmission> {
+        let mut submission_id = new_submission_id();
+        let accepted = if let Some(recipient_config) = recipient_config {
+            self.control
+                .mailbox_accept_native_submission(
+                    self.agent_id,
+                    context,
+                    communication,
+                    &mut submission_id,
+                    recipient_config,
+                )
+                .await?
+        } else if context.native_key.is_some() {
+            return Err(CodexErr::UnsupportedOperation(format!(
+                "cannot verify the resolved configuration for mailbox recipient {}; the original input was not submitted",
+                self.agent_id
+            )));
+        } else {
+            None
+        };
+        let (work, dispatch) = accepted
+            .map_or((None, DispatchDecision::Dispatch), |(work, decision)| {
+                (Some(work), decision)
+            });
+        if dispatch != DispatchDecision::Dispatch {
+            return Ok(RecordedSubmission {
+                id: submission_id,
+                work,
+                dispatch,
+            });
+        }
         let op = Op::InterAgentCommunication {
             communication: communication.clone(),
         };
@@ -229,7 +267,11 @@ impl PreparedV2AgentDelivery {
             let emit = crate::agent_communication::emit_agent_communication_send;
             emit(&submission_id, context, communication, self.agent_id);
         }
-        submission_id
+        Ok(RecordedSubmission {
+            id: submission_id,
+            work,
+            dispatch,
+        })
     }
 
     pub(crate) async fn config_snapshot(&self) -> CodexResult<ThreadConfigSnapshot> {
@@ -256,7 +298,7 @@ impl PreparedV2AgentDelivery {
 
     pub(super) fn send_after_capacity_check(
         mut self,
-        communication: InterAgentCommunication,
+        mut communication: InterAgentCommunication,
         context: AgentCommunicationContext,
         interrupt: bool,
     ) -> futures::future::BoxFuture<'static, CodexResult<String>> {
@@ -284,29 +326,83 @@ impl PreparedV2AgentDelivery {
                     if !thread.is_running() {
                         return Err(CodexErr::InternalAgentDied);
                     }
+                    let recipient_config = thread.session.get_config().await;
+                    self.control
+                        .mailbox_require_native_recipient_compatible(
+                            self.agent_id,
+                            &context,
+                            &communication,
+                            &recipient_config,
+                            self.metadata.agent_role.as_deref(),
+                        )
+                        .await?;
+                    let submission = self
+                        .record_submission(&mut communication, &context, Some(&recipient_config))
+                        .await?;
+                    match submission.dispatch {
+                        DispatchDecision::AlreadyDispatched => return Ok(submission.id),
+                        DispatchDecision::RecoveryNeeded => {
+                            return Err(CodexErr::UnsupportedOperation(format!(
+                                "accepted work {} requires native recovery; its original input is retained and was not resent",
+                                submission
+                                    .work
+                                    .as_ref()
+                                    .map(|work| work.id.as_str())
+                                    .unwrap_or("unknown")
+                            )));
+                        }
+                        DispatchDecision::Dispatch => {}
+                    }
                     if interrupt {
                         self.state
                             .record_submitted_op(self.agent_id, &Op::Interrupt);
                         thread.session.interrupt_task().await;
                     }
-                    let submission_id = self.record_submission(&communication, &context);
                     let send = crate::session::inter_agent_communication;
-                    send(&thread.session, submission_id.clone(), communication).await;
-                    return Ok(submission_id);
+                    send(&thread.session, submission.id.clone(), communication).await;
+                    if let Some(work) = &submission.work {
+                        self.control.mailbox_dispatched(work).await?;
+                    }
+                    return Ok(submission.id);
                 }
             }
             if communication.trigger_turn {
                 return Err(CodexErr::ThreadNotFound(self.agent_id));
             }
-            let submission_id = self.record_submission(&communication, &context);
+            if context.native_key.is_some() {
+                return Err(CodexErr::UnsupportedOperation(format!(
+                    "cannot verify the resolved configuration for mailbox recipient {}; the original input was not submitted",
+                    self.agent_id
+                )));
+            }
+            let submission = self
+                .record_submission(&mut communication, &context, /*recipient_config*/ None)
+                .await?;
+            match submission.dispatch {
+                DispatchDecision::AlreadyDispatched => return Ok(submission.id),
+                DispatchDecision::RecoveryNeeded => {
+                    return Err(CodexErr::UnsupportedOperation(format!(
+                        "accepted work {} requires native recovery; its original input is retained and was not resent",
+                        submission
+                            .work
+                            .as_ref()
+                            .map(|work| work.id.as_str())
+                            .unwrap_or("unknown")
+                    )));
+                }
+                DispatchDecision::Dispatch => {}
+            }
             let sequence = self.lifecycle.next_cold_mailbox_sequence();
             self.lifecycle.push_cold_mail(ColdMailboxItem {
-                receive_id: Some(submission_id.clone()),
+                receive_id: Some(submission.id.clone()),
                 communication,
                 sequence: Some(sequence),
                 enqueued_at_ms: Some(crate::session::input_queue::current_time_ms()),
             });
-            Ok(submission_id)
+            if let Some(work) = &submission.work {
+                self.control.mailbox_dispatched(work).await?;
+            }
+            Ok(submission.id)
         })
     }
 }

@@ -123,6 +123,7 @@ async fn handle_spawn_agent(
                 wake_notifications: None,
                 completion_reason: None,
                 wake_cause: None,
+                mailbox_wait_report: None,
             }),
         )
         .await;
@@ -217,6 +218,7 @@ async fn handle_spawn_agent(
                 wake_notifications: None,
                 completion_reason: None,
                 wake_cause: None,
+                mailbox_wait_report: None,
             }),
         )
         .await;

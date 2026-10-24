@@ -1549,7 +1549,6 @@ mod tests {
     use super::LazyRemoteExecServerClient;
     use crate::EnvironmentObservedStatus;
     use crate::ProcessId;
-    #[cfg(not(windows))]
     use crate::client_api::DEFAULT_REMOTE_EXEC_SERVER_INITIALIZE_TIMEOUT;
     use crate::client_api::ExecServerTransportParams;
     use crate::client_api::RemoteExecServerConnectArgs;
@@ -1852,7 +1851,8 @@ mod tests {
                 cwd: None,
             },
             client_name: "stdio-test-client".to_string(),
-            initialize_timeout: Duration::from_secs(1),
+            // This verifies the handshake, not cold PowerShell startup latency.
+            initialize_timeout: DEFAULT_REMOTE_EXEC_SERVER_INITIALIZE_TIMEOUT,
             resume_session_id: None,
         })
         .await

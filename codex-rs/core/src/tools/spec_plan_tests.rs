@@ -180,6 +180,247 @@ impl ToolPlanProbe {
     }
 }
 
+fn namespace_function<'a>(
+    plan: &'a ToolPlanProbe,
+    namespace_name: &str,
+    tool_name: &str,
+) -> &'a ResponsesApiTool {
+    let ToolSpec::Namespace(namespace) = plan.visible_spec(namespace_name) else {
+        panic!("expected {namespace_name} namespace");
+    };
+    namespace
+        .tools
+        .iter()
+        .find_map(|tool| match tool {
+            ResponsesApiNamespaceTool::Function(tool) if tool.name == tool_name => Some(tool),
+            ResponsesApiNamespaceTool::Function(_) => None,
+        })
+        .unwrap_or_else(|| panic!("expected {tool_name} in {namespace_name} namespace"))
+}
+
+fn assert_mailbox_namespace_schema(plan: &ToolPlanProbe, namespace_name: &str) {
+    let send_message = namespace_function(plan, namespace_name, "send_message");
+    let send_properties = send_message
+        .parameters
+        .properties
+        .as_ref()
+        .expect("send_message object parameters");
+    assert_eq!(
+        send_properties["message"].encrypted,
+        Some(true),
+        "encrypted message marker must survive model exposure"
+    );
+    assert_eq!(
+        send_properties["kind"].enum_values.as_ref(),
+        Some(&vec![
+            json!("note"),
+            json!("progress"),
+            json!("request"),
+            json!("alert")
+        ])
+    );
+    assert!(!send_properties.contains_key("interrupt"));
+    for property in [
+        "work_ref",
+        "reply_to",
+        "supersedes",
+        "activate_if_idle",
+        "wake_wait",
+    ] {
+        assert!(
+            send_properties.contains_key(property),
+            "missing `{property}`"
+        );
+    }
+    let send_output = send_message
+        .output_schema
+        .as_ref()
+        .expect("send_message output schema");
+    assert_eq!(
+        send_output["required"],
+        json!(["message_id", "durable_state", "activation_disposition"])
+    );
+    assert_eq!(
+        send_output["properties"]["activation_disposition"]["enum"],
+        json!([
+            "not_requested",
+            "already_active",
+            "activated",
+            "denied",
+            "unknown"
+        ])
+    );
+    assert!(
+        send_output["properties"]["durable_state"]["description"]
+            .as_str()
+            .expect("durable receipt description")
+            .contains("not establish that the recipient read or understood it")
+    );
+
+    let wait_agent = namespace_function(plan, namespace_name, "wait_agent");
+    let wait_properties = wait_agent
+        .parameters
+        .properties
+        .as_ref()
+        .expect("wait_agent object parameters");
+    assert!(wait_properties.contains_key("targets"));
+    assert!(wait_properties.contains_key("replies_to"));
+    assert!(wait_properties.contains_key("timeout_ms"));
+    assert!(wait_properties.contains_key("native_event_wait"));
+    assert!(wait_agent.parameters.required.is_none());
+    assert!(
+        wait_properties["targets"]
+            .description
+            .as_deref()
+            .expect("target selection description")
+            .contains("Omit both `targets` and `replies_to`")
+    );
+    assert!(
+        wait_properties["targets"]
+            .description
+            .as_deref()
+            .expect("target selection description")
+            .contains("caller-issued unsurfaced work or new attention")
+    );
+    assert_eq!(
+        wait_properties["return_when"].enum_values.as_ref(),
+        Some(&vec![json!("any"), json!("all")])
+    );
+    assert_eq!(
+        wait_properties["timeout_ms"].schema_type,
+        Some(codex_tools::JsonSchemaType::Single(
+            codex_tools::JsonSchemaPrimitiveType::Integer
+        ))
+    );
+    assert!(
+        wait_properties["timeout_ms"]
+            .description
+            .as_deref()
+            .expect("timeout description")
+            .contains("unbounded event-only wait")
+    );
+    let wait_output = wait_agent
+        .output_schema
+        .as_ref()
+        .expect("wait_agent output schema");
+    for selector_list in ["requestedTargets", "requestedRepliesTo"] {
+        assert_eq!(
+            wait_output["properties"][selector_list]["maxItems"],
+            json!(crate::tools::handlers::multi_agents_spec::MAX_MAILBOX_WAIT_SELECTORS)
+        );
+        assert_eq!(
+            wait_output["properties"][selector_list]["items"]["maxLength"],
+            json!(crate::tools::handlers::multi_agents_spec::MAX_MAILBOX_WAIT_SELECTOR_BYTES)
+        );
+    }
+    assert!(
+        wait_output["required"]
+            .as_array()
+            .expect("wait result required fields")
+            .contains(&json!("returnWhen"))
+    );
+    assert_eq!(
+        wait_output["properties"]["returnWhen"]["enum"],
+        json!(["any", "all"])
+    );
+    assert!(
+        wait_output["properties"]
+            .get("conditionSatisfied")
+            .is_some()
+    );
+    assert!(wait_output["properties"].get("quietCount").is_some());
+    assert_eq!(
+        wait_output["properties"]["completed"]["items"]["required"],
+        json!(["status"])
+    );
+    assert_eq!(
+        wait_output["properties"]["pending"]["items"]["required"],
+        json!(["status"])
+    );
+    for result_list in ["completed", "pending"] {
+        for field in ["workRef", "messageId", "agent", "status"] {
+            assert!(
+                wait_output["properties"][result_list]["items"]["properties"]
+                    .get(field)
+                    .is_some()
+            );
+        }
+    }
+    assert_eq!(
+        wait_output["properties"]["completionReason"]["enum"],
+        json!([
+            "result",
+            "reply",
+            "request",
+            "human",
+            "tool",
+            "deadline",
+            "cancel",
+            "interrupted",
+            "subscription_loss",
+            "runtime_fault",
+            "no_matching_work",
+            "already_satisfied",
+            "cycle",
+            "needs_attention"
+        ])
+    );
+
+    let mailbox_read = namespace_function(plan, namespace_name, "mailbox_read");
+    let read_properties = mailbox_read
+        .parameters
+        .properties
+        .as_ref()
+        .expect("mailbox_read object parameters");
+    assert!(read_properties.contains_key("cursor"));
+    assert!(read_properties.contains_key("limit"));
+    assert_eq!(
+        read_properties["limit"].schema_type,
+        Some(codex_tools::JsonSchemaType::Single(
+            codex_tools::JsonSchemaPrimitiveType::Integer
+        ))
+    );
+    assert!(
+        read_properties["limit"]
+            .description
+            .as_deref()
+            .expect("mailbox page limit description")
+            .contains("capped at 100")
+    );
+    assert_eq!(
+        mailbox_read
+            .output_schema
+            .as_ref()
+            .expect("mailbox_read output schema")["required"],
+        json!(["messages", "next_cursor", "quiet_count"])
+    );
+    let read_item = &mailbox_read
+        .output_schema
+        .as_ref()
+        .expect("mailbox_read output schema")["properties"]["messages"]["items"];
+    assert_eq!(
+        read_item["required"],
+        json!(["message_id", "sender", "kind", "canonical_delivered"])
+    );
+    assert!(read_item["properties"].get("message").is_none());
+
+    for tool_name in ["spawn_agent", "followup_task"] {
+        let tool = namespace_function(plan, namespace_name, tool_name);
+        let output = tool.output_schema.as_ref().expect("agent result schema");
+        assert_eq!(output["properties"]["work_ref"]["type"], json!("string"));
+        assert_eq!(
+            output["properties"]["dispatch_state"]["enum"],
+            json!(["accepted", "dispatching", "dispatched", "recovery_needed"])
+        );
+        assert!(
+            !output["required"]
+                .as_array()
+                .expect("required result fields")
+                .contains(&json!("work_ref"))
+        );
+    }
+}
+
 async fn probe_with(
     configure_turn: impl FnOnce(&mut TurnContext),
     inputs: ToolPlanInputs,
@@ -1578,6 +1819,105 @@ async fn multi_agent_v2_message_schemas_are_encrypted() {
             Some(true)
         );
     }
+}
+
+#[tokio::test]
+async fn mailbox_schemas_survive_ordinary_namespaced_and_code_mode_exposure() {
+    let ordinary = probe(|turn| {
+        set_features(turn, &[Feature::MultiAgentV2, Feature::AgentMailbox]);
+        update_config(turn, |config| {
+            config.multi_agent_v2.tool_namespace = Some("agents".to_string());
+        });
+    })
+    .await;
+    ordinary.assert_visible_contains(&["agents"]);
+    for tool_name in ["send_message", "wait_agent", "mailbox_read"] {
+        assert!(
+            ordinary
+                .namespace_function_names("agents")
+                .iter()
+                .any(|name| name == tool_name),
+            "expected {tool_name} in the ordinary namespaced mailbox surface"
+        );
+    }
+    assert_mailbox_namespace_schema(&ordinary, "agents");
+
+    let code_mode = probe(|turn| {
+        set_features(
+            turn,
+            &[
+                Feature::CodeMode,
+                Feature::CodeModeOnly,
+                Feature::MultiAgentV2,
+                Feature::AgentMailbox,
+            ],
+        );
+        update_config(turn, |config| {
+            config.multi_agent_v2.non_code_mode_only = true;
+            config.multi_agent_v2.tool_namespace = Some("agents".to_string());
+        });
+    })
+    .await;
+    code_mode.assert_visible_contains(&["exec", "agents"]);
+    assert_mailbox_namespace_schema(&code_mode, "agents");
+}
+
+#[tokio::test]
+async fn mailbox_feature_disabled_keeps_legacy_v2_message_and_wait_schemas() {
+    let plan = probe(|turn| {
+        set_feature(turn, Feature::MultiAgentV2, /*enabled*/ true);
+    })
+    .await;
+    let ToolSpec::Namespace(namespace) = plan.visible_spec(MULTI_AGENT_V2_NAMESPACE) else {
+        panic!("expected {MULTI_AGENT_V2_NAMESPACE} namespace");
+    };
+    assert!(
+        !plan
+            .namespace_function_names(MULTI_AGENT_V2_NAMESPACE)
+            .iter()
+            .any(|name| name == "mailbox_read")
+    );
+    let send_message = namespace
+        .tools
+        .iter()
+        .find_map(|tool| match tool {
+            ResponsesApiNamespaceTool::Function(tool) if tool.name == "send_message" => Some(tool),
+            ResponsesApiNamespaceTool::Function(_) => None,
+        })
+        .expect("legacy send_message schema");
+    let send_properties = send_message
+        .parameters
+        .properties
+        .as_ref()
+        .expect("send_message object parameters");
+    assert!(send_properties.contains_key("interrupt"));
+    assert!(!send_properties.contains_key("kind"));
+
+    let wait_agent = namespace
+        .tools
+        .iter()
+        .find_map(|tool| match tool {
+            ResponsesApiNamespaceTool::Function(tool) if tool.name == "wait_agent" => Some(tool),
+            ResponsesApiNamespaceTool::Function(_) => None,
+        })
+        .expect("legacy wait_agent schema");
+    let wait_properties = wait_agent
+        .parameters
+        .properties
+        .as_ref()
+        .expect("wait_agent object parameters");
+    assert!(wait_properties.contains_key("native_event_wait"));
+    assert!(!wait_properties.contains_key("replies_to"));
+    let wait_output = wait_agent
+        .output_schema
+        .as_ref()
+        .expect("legacy wait output schema");
+    assert!(wait_output["properties"].get("requested_ids").is_some());
+    assert!(
+        wait_output["properties"]
+            .get("condition_satisfied")
+            .is_none()
+    );
 }
 
 #[tokio::test]

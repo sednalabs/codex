@@ -88,7 +88,7 @@ print_bazel_test_log_tails() {
   local testlogs_dir
 
   local -a bazel_info_args=(info)
-  if [[ -n "${BUILDBUDDY_API_KEY:-}" ]]; then
+  if [[ -n "${BUILDBUDDY_API_KEY:-}" || "$ci_config" == "ci-bazel" ]]; then
     # `bazel info` needs the same CI config as the failed test invocation so
     # platform-specific output roots match. On Windows, omitting `ci-windows`
     # would point at `local_windows-fastbuild` even when the test ran with the
@@ -141,7 +141,20 @@ print_bazel_test_log_tails() {
     if [[ -f "$test_log" ]]; then
       tail -n 200 "$test_log"
     else
-      echo "Missing test log: $test_log"
+      # A build failure can interrupt a sharded target before its final test.log
+      # exists. Retain the failed attempt evidence already written by Bazel.
+      local found_attempt=0
+      local attempt_log
+      for attempt_log in "${testlogs_dir}/${rel_path}"/shard_*_of_*/test_attempts/attempt_*.log; do
+        if [[ -f "$attempt_log" ]]; then
+          found_attempt=1
+          echo "Bazel sharded attempt log: ${attempt_log}"
+          tail -n 200 "$attempt_log"
+        fi
+      done
+      if [[ $found_attempt -eq 0 ]]; then
+        echo "Missing test log: $test_log"
+      fi
     fi
     echo "::endgroup::"
   done
@@ -377,6 +390,12 @@ if [[ "${RUNNER_OS:-}" == "Windows" ]]; then
   post_config_bazel_args+=("--test_env=PATH=${CODEX_BAZEL_WINDOWS_PATH}")
 fi
 
+if [[ -z "${BUILDBUDDY_API_KEY:-}" && "${GITHUB_ACTIONS:-}" == "true" && "${GITHUB_REPOSITORY:-}" == "sednalabs/codex" && "${RUNNER_ENVIRONMENT:-}" == "github-hosted" ]]; then
+  # This entry point omits remote configs when keyless, so the Python fallback
+  # cannot infer that it must retain the shared lean, hosted-local CI settings.
+  ci_config=ci-bazel
+fi
+
 bazel_console_log="$(mktemp)"
 trap 'rm -f "$bazel_console_log"' EXIT
 
@@ -386,6 +405,10 @@ if [[ -n "${BUILDBUDDY_API_KEY:-}" ]]; then
   bazel_run_args+=("--config=${ci_config}")
 else
   echo "BuildBuddy API key is not available; using local Bazel configuration."
+  if [[ "$ci_config" == "ci-bazel" ]]; then
+    echo "Retaining shared hosted-local CI settings: --config=ci-bazel"
+    bazel_run_args+=(--config=ci-bazel)
+  fi
 fi
 if (( ${#bazel_args[@]} > 1 )); then
   # Explicit caller flags must follow rc configs so workflow-level safety and

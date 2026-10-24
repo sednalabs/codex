@@ -453,6 +453,9 @@ mod tests {
     use codex_protocol::AgentPath;
     use codex_protocol::models::FunctionCallOutputBody;
     use codex_protocol::models::FunctionCallOutputPayload;
+    use codex_protocol::protocol::EventMsg;
+    use codex_protocol::protocol::Op;
+    use codex_protocol::protocol::TurnCompleteEvent;
     use codex_tools::ToolName;
     use pretty_assertions::assert_eq;
     use tokio::sync::Notify;
@@ -1182,7 +1185,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn configured_v2_spawn_cancellation_after_initial_delivery_returns_published_result()
+    async fn configured_v2_mailbox_spawn_fast_completion_cancellation_retry_reuses_native_work()
     -> anyhow::Result<()> {
         let (mut session, mut turn_context) =
             crate::session::tests::make_session_and_context().await;
@@ -1191,6 +1194,37 @@ mod tests {
             .features
             .enable(Feature::MultiAgentV2)
             .expect("test config should enable MultiAgentV2");
+        config
+            .features
+            .enable(Feature::AgentMailbox)
+            .expect("test config should enable AgentMailbox");
+        let role_home = tempfile::tempdir()?;
+        let disabled_role_path = role_home.path().join("mailbox_disabled.toml");
+        tokio::fs::write(
+            &disabled_role_path,
+            "[features]\nmulti_agent_v2 = true\nagent_mailbox = false\n",
+        )
+        .await?;
+        config.agent_roles.insert(
+            "mailbox_disabled".to_string(),
+            crate::config::AgentRoleConfig {
+                config_file: Some(disabled_role_path),
+                ..Default::default()
+            },
+        );
+        let enabled_role_path = role_home.path().join("mailbox_enabled.toml");
+        tokio::fs::write(
+            &enabled_role_path,
+            "[features]\nmulti_agent_v2 = true\nagent_mailbox = true\n",
+        )
+        .await?;
+        config.agent_roles.insert(
+            "mailbox_enabled".to_string(),
+            crate::config::AgentRoleConfig {
+                config_file: Some(enabled_role_path.clone()),
+                ..Default::default()
+            },
+        );
         config.multi_agent_v2.hide_spawn_agent_metadata = false;
         config.multi_agent_v2.tool_namespace = Some("profile_agents".to_string());
         turn_context.multi_agent_version = config.multi_agent_version_from_features();
@@ -1201,10 +1235,15 @@ mod tests {
             built_in_model_providers(/*openai_base_url*/ None)["openai"].clone(),
         );
         let root = manager
-            .start_thread(StartThreadOptions::new(config))
+            .start_thread(StartThreadOptions::new(config.clone()))
             .await
             .expect("root thread should start");
         session.services.agent_control = manager.agent_control();
+        session
+            .services
+            .agent_control
+            .mailbox_initialize(&config)
+            .await?;
         session.thread_id = root.thread_id;
         let (initial_delivery_finished, resume_spawn) = session
             .services
@@ -1231,23 +1270,64 @@ mod tests {
         ));
         let tracker = Arc::new(tokio::sync::Mutex::new(TurnDiffTracker::new()));
         let runtime = ToolCallRuntime::new(router, Arc::clone(&session), step_context, tracker);
-        let cancellation_token = CancellationToken::new();
-        let mut response_task = tokio::spawn(
-            runtime.handle_tool_call(
+        let thread_ids_before_rejection = manager.list_thread_ids().await;
+        let rejected_response = runtime
+            .clone()
+            .handle_tool_call(
                 ToolCall {
                     tool_name: ToolName::namespaced("profile_agents", "spawn_agent"),
-                    call_id: "call-1".to_string(),
+                    call_id: "disabled-role".to_string(),
                     payload: ToolPayload::Function {
                         arguments: serde_json::json!({
-                            "message": "delivery owns this child",
-                            "task_name": "delivery_owned_worker",
+                            "message": "must not be submitted",
+                            "task_name": "disabled_worker",
+                            "agent_type": "mailbox_disabled",
                             "fork_turns": "none"
                         })
                         .to_string(),
                     },
                 },
-                cancellation_token.clone(),
-            ),
+                CancellationToken::new(),
+            )
+            .await?;
+        let ResponseInputItem::FunctionCallOutput { output, .. } = rejected_response else {
+            anyhow::bail!("incompatible role rejection should return a function output");
+        };
+        assert_eq!(output.success, Some(false));
+        let FunctionCallOutputBody::Text(rejection) = output.body else {
+            anyhow::bail!("incompatible role rejection should be text");
+        };
+        assert!(rejection.contains("agent_mailbox"), "{rejection}");
+        assert!(rejection.contains("mailbox_disabled"), "{rejection}");
+        assert_eq!(manager.list_thread_ids().await, thread_ids_before_rejection);
+        assert!(
+            session
+                .services
+                .agent_control
+                .mailbox_work_for_key(session.thread_id, "disabled-role")
+                .await?
+                .is_none(),
+            "a rejected resolved role must not accept tracked native work"
+        );
+        assert!(created_threads.try_recv().is_err());
+        let spawn_call = || ToolCall {
+            tool_name: ToolName::namespaced("profile_agents", "spawn_agent"),
+            call_id: "call-1".to_string(),
+            payload: ToolPayload::Function {
+                arguments: serde_json::json!({
+                    "message": "delivery owns this child",
+                    "task_name": "delivery_owned_worker",
+                    "agent_type": "mailbox_enabled",
+                    "fork_turns": "none"
+                })
+                .to_string(),
+            },
+        };
+        let cancellation_token = CancellationToken::new();
+        let mut response_task = tokio::spawn(
+            runtime
+                .clone()
+                .handle_tool_call(spawn_call(), cancellation_token.clone()),
         );
 
         let child_thread_id =
@@ -1267,10 +1347,67 @@ mod tests {
             created_threads.try_recv().is_err(),
             "initial configured-V2 delivery must not notify parent-visible creation"
         );
+        let accepted_work = session
+            .services
+            .agent_control
+            .mailbox_work_for_key(session.thread_id, "call-1")
+            .await?
+            .expect("the actual configured-V2 handler must durably accept native spawn work");
+        let mailbox = session
+            .services
+            .agent_control
+            .mailbox()
+            .expect("AgentMailbox should be initialized for the actual runtime");
+        let accepted_input = mailbox
+            .accepted_input(&accepted_work)
+            .await
+            .expect("accepted work should retain its original native input");
+        let accepted_input_id = accepted_input
+            .id
+            .as_ref()
+            .expect("accepted native input should carry an amsg_ ID")
+            .to_string();
+        assert!(accepted_input_id.starts_with("amsg_"));
+        let accepted_work_id = accepted_work.id.clone();
+
+        // Exercise the fast-completion edge while the real handler is paused before publication.
+        let child = manager
+            .get_thread(child_thread_id)
+            .await
+            .expect("provisional configured-V2 child should remain manager-owned");
+        let terminal_turn = child.session.new_default_turn().await;
+        child
+            .session
+            .send_event(
+                terminal_turn.as_ref(),
+                EventMsg::TurnComplete(TurnCompleteEvent {
+                    turn_id: terminal_turn.sub_id.clone(),
+                    started_at: None,
+                    last_agent_message: Some("finished before publication".to_string()),
+                    compaction_events_in_turn: 0,
+                    final_model: None,
+                    model_snapshot: None,
+                    provider_usage: None,
+                    error: None,
+                    completed_at: None,
+                    duration_ms: None,
+                    time_to_first_token_ms: None,
+                }),
+            )
+            .await;
         let initial_delivery_count = manager
             .captured_ops()
             .iter()
-            .filter(|(thread_id, _)| *thread_id == child_thread_id)
+            .filter(|(thread_id, op)| {
+                *thread_id == child_thread_id
+                    && matches!(
+                        op,
+                        Op::InterAgentCommunication { communication }
+                            if communication.id == accepted_input.id
+                                && communication.encrypted_content == accepted_input.encrypted_content
+                                && communication.trigger_turn
+                    )
+            })
             .count();
         assert_eq!(
             initial_delivery_count, 1,
@@ -1315,6 +1452,17 @@ mod tests {
             !message.contains("aborted by user"),
             "delivery ownership must preserve the configured-V2 result instead of a false abort: {message}"
         );
+        let first_result: serde_json::Value = serde_json::from_str(&message)?;
+        let first_agent_id = first_result["agent_id"]
+            .as_str()
+            .expect("configured-V2 spawn result should expose the published child ID");
+        assert_eq!(first_agent_id, child_thread_id.to_string());
+        assert_eq!(
+            first_result["work_ref"].as_str(),
+            Some(accepted_work_id.as_str()),
+            "the tool result should publish the exact accepted native work reference"
+        );
+        assert_eq!(first_result["dispatch_state"], "dispatched");
         assert!(
             session
                 .services
@@ -1329,6 +1477,74 @@ mod tests {
                 .await
                 .expect("published configured-V2 child should notify once"),
             child_thread_id
+        );
+        assert!(
+            created_threads.try_recv().is_err(),
+            "the original publication should be the only child-created notification"
+        );
+
+        // A same-call retry models a tool result lost after acceptance/publication. It must
+        // resolve the retained work, not provision another child or send the input again.
+        // Resolving the old request must also survive its role file becoming unavailable.
+        tokio::fs::remove_file(&enabled_role_path).await?;
+        let retry_response = tokio::time::timeout(
+            Duration::from_secs(5),
+            runtime.handle_tool_call(spawn_call(), CancellationToken::new()),
+        )
+        .await
+        .expect("retrying a lost tool publication should resolve the accepted work")?;
+        let ResponseInputItem::FunctionCallOutput { output, .. } = retry_response else {
+            anyhow::bail!("configured-V2 retry should return a function output");
+        };
+        assert_eq!(output.success, Some(true));
+        let FunctionCallOutputBody::Text(retry_message) = output.body else {
+            anyhow::bail!("configured-V2 retry output should be text");
+        };
+        let retry_result: serde_json::Value = serde_json::from_str(&retry_message)?;
+        assert_eq!(retry_result["agent_id"].as_str(), Some(first_agent_id));
+        assert_eq!(
+            retry_result["dispatch_state"],
+            first_result["dispatch_state"]
+        );
+        assert_eq!(
+            retry_result["work_ref"].as_str(),
+            Some(accepted_work_id.as_str()),
+            "same-call retry must return the original durable work reference"
+        );
+        assert_eq!(
+            session
+                .services
+                .agent_control
+                .mailbox_work_for_key(session.thread_id, "call-1")
+                .await?,
+            Some(accepted_work.clone()),
+            "same-call retry must resolve the original accepted child"
+        );
+        assert_eq!(
+            mailbox.accepted_input(&accepted_work).await?,
+            accepted_input,
+            "same-call retry must preserve the original accepted native input"
+        );
+        let redelivery_count = manager
+            .captured_ops()
+            .iter()
+            .filter(|(thread_id, op)| {
+                *thread_id == child_thread_id
+                    && matches!(
+                        op,
+                        Op::InterAgentCommunication { communication }
+                            if communication.id.as_ref().is_some_and(|id| id.as_str() == accepted_input_id)
+                                && communication.trigger_turn
+                    )
+            })
+            .count();
+        assert_eq!(
+            redelivery_count, 1,
+            "same-call retry after caller cancellation must not resend accepted native input"
+        );
+        assert!(
+            created_threads.try_recv().is_err(),
+            "same-call retry must not create a replacement child"
         );
 
         Ok(())

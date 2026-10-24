@@ -2876,6 +2876,7 @@ fn core_turn_item_into_thread_item_converts_supported_variants() {
         wake_notifications: None,
         completion_reason: None,
         wake_cause: None,
+        mailbox_wait_report: None,
     });
 
     assert_eq!(
@@ -2905,6 +2906,7 @@ fn core_turn_item_into_thread_item_converts_supported_variants() {
             wake_notifications: None,
             completion_reason: None,
             wake_cause: None,
+            mailbox_wait_report: None,
         }
     );
 
@@ -2924,6 +2926,7 @@ fn core_turn_item_into_thread_item_converts_supported_variants() {
         wake_notifications: None,
         completion_reason: None,
         wake_cause: None,
+        mailbox_wait_report: None,
     });
 
     assert_eq!(
@@ -2947,6 +2950,7 @@ fn core_turn_item_into_thread_item_converts_supported_variants() {
             wake_notifications: None,
             completion_reason: None,
             wake_cause: None,
+            mailbox_wait_report: None,
         }
     );
 
@@ -3157,6 +3161,7 @@ fn v1_omitted_spawn_identity_sentinels_do_not_become_requested_identity() {
         wake_notifications: None,
         completion_reason: None,
         wake_cause: None,
+        mailbox_wait_report: None,
     });
 
     assert_eq!(
@@ -3178,6 +3183,7 @@ fn v1_omitted_spawn_identity_sentinels_do_not_become_requested_identity() {
             wake_notifications: None,
             completion_reason: None,
             wake_cause: None,
+            mailbox_wait_report: None,
         }
     );
 }
@@ -3201,6 +3207,7 @@ fn v1_model_only_spawn_does_not_invent_requested_effort() {
         wake_notifications: None,
         completion_reason: None,
         wake_cause: None,
+        mailbox_wait_report: None,
     });
 
     assert_eq!(
@@ -3222,6 +3229,7 @@ fn v1_model_only_spawn_does_not_invent_requested_effort() {
             wake_notifications: None,
             completion_reason: None,
             wake_cause: None,
+            mailbox_wait_report: None,
         }
     );
 }

@@ -65,7 +65,7 @@ impl SessionTask for RegularTask {
         .await;
         let prewarmed_client_session = match prewarmed_client_session {
             SessionStartupPrewarmResolution::Cancelled => {
-                run_hooks_and_record_inputs(&sess, &ctx, &input).await;
+                run_hooks_and_record_inputs(&sess, &ctx, &input).await?;
                 return Ok(None);
             }
             SessionStartupPrewarmResolution::Unavailable { .. } => None,

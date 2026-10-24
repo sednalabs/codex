@@ -1012,7 +1012,7 @@ class RouteSelectionTests(unittest.TestCase):
             ]
         )
         self.assertEqual(recipe.count("cargo nextest run"), 4)
-        self.assertEqual(recipe.count("RUST_MIN_STACK="), 4)
+        self.assertEqual(recipe.count("RUST_MIN_STACK="), 6)
         self.assertEqual(recipe.count("--no-tests=fail"), 4)
         for test_name in (
             "agent::control::residency::tests::"
@@ -1598,6 +1598,25 @@ class RouteSelectionTests(unittest.TestCase):
         self.assertIn("--jobs=96", clippy_run)
         self.assertIn("--loading_phase_threads=8", clippy_run)
 
+    def test_bazel_windows_clippy_fork_uses_native_host(self) -> None:
+        payload = load_workflow_payload(REPO_ROOT / ".github/workflows/bazel.yml")
+        clippy_steps = ((payload.get("jobs") or {}).get("clippy") or {}).get("steps") or []
+        clippy_run = next(
+            step
+            for step in clippy_steps
+            if step.get("name") == "bazel build --config=clippy lint targets"
+        ).get("run") or ""
+        fork_no_key_condition = (
+            '[[ "${GITHUB_REPOSITORY:-}" == "sednalabs/codex" '
+            '&& -z "${BUILDBUDDY_API_KEY:-}" ]]'
+        )
+        self.assertIn('[[ "${RUNNER_OS}" == "Windows" ]]', clippy_run)
+        self.assertIn(fork_no_key_condition, clippy_run)
+        self.assertIn(
+            "bazel_clippy_args+=(--host_platform=//:local_windows)", clippy_run
+        )
+        self.assertEqual(clippy_run.count("--host_platform=//:local_windows"), 1)
+
     def test_bazel_windows_tests_serialize_host_global_policy_state(self) -> None:
         payload = load_workflow_payload(REPO_ROOT / ".github/workflows/bazel.yml")
         windows_steps = (
@@ -1608,6 +1627,92 @@ class RouteSelectionTests(unittest.TestCase):
             step for step in windows_steps if step.get("name") == "bazel test shard"
         ).get("run") or ""
         self.assertIn("--local_test_jobs=1", windows_test_run)
+        self.assertIn(
+            '[[ "${GITHUB_REPOSITORY:-}" == "sednalabs/codex" '
+            '&& -z "${BUILDBUDDY_API_KEY:-}" ]]',
+            windows_test_run,
+        )
+        self.assertIn(
+            "bazel_test_args+=(--host_platform=//:local_windows)", windows_test_run
+        )
+
+    def test_bazel_windows_release_build_fork_uses_gnullvm_host(self) -> None:
+        payload = load_workflow_payload(REPO_ROOT / ".github/workflows/bazel.yml")
+        release_steps = (
+            ((payload.get("jobs") or {}).get("verify-release-build") or {}).get("steps")
+            or []
+        )
+        release_run = next(
+            step
+            for step in release_steps
+            if step.get("name") == "bazel build verify-release-build targets"
+        ).get("run") or ""
+        fork_no_key_windows_condition = (
+            '[[ "${RUNNER_OS}" == "Windows" '
+            '&& "${GITHUB_REPOSITORY:-}" == "sednalabs/codex" '
+            '&& -z "${BUILDBUDDY_API_KEY:-}" ]]'
+        )
+        self.assertIn(fork_no_key_windows_condition, release_run)
+        self.assertIn(
+            "bazel_build_args+=(--host_platform=//:local_windows)", release_run
+        )
+
+    def test_fork_hosted_local_compile_jobs_keep_bounded_full_build_budget(self) -> None:
+        fork_budget = "${{ github.repository == 'sednalabs/codex' && 360 || 30 }}"
+        for workflow_name, job_name, expected_budget in (
+            ("bazel.yml", "clippy", fork_budget),
+            ("sdk.yml", "sdks", fork_budget),
+            (
+                "bazel.yml",
+                "test",
+                "${{ github.repository == 'sednalabs/codex' && 360 || 120 }}",
+            ),
+            (
+                "bazel.yml",
+                "verify-release-build",
+                "${{ github.repository == 'sednalabs/codex' && 360 || 60 }}",
+            ),
+        ):
+            with self.subTest(workflow=workflow_name, job=job_name):
+                payload = load_workflow_payload(
+                    REPO_ROOT / ".github/workflows" / workflow_name
+                )
+                job = (payload.get("jobs") or {}).get(job_name) or {}
+                self.assertEqual(job.get("timeout-minutes"), expected_budget)
+
+    def test_fork_hosted_linux_bazel_tests_prepare_user_namespaces(self) -> None:
+        payload = load_workflow_payload(REPO_ROOT / ".github/workflows/bazel.yml")
+        steps = ((payload.get("jobs") or {}).get("test") or {}).get("steps") or []
+        prepare_step = next(
+            step
+            for step in steps
+            if step.get("name") == "Enable user namespaces for hosted Linux sandbox tests"
+        )
+        self.assertEqual(
+            prepare_step.get("if"),
+            "${{ github.repository == 'sednalabs/codex' && runner.os == 'Linux' "
+            "&& runner.environment == 'github-hosted' }}",
+        )
+        self.assertEqual(prepare_step.get("shell"), "bash")
+        prepare_run = prepare_step.get("run") or ""
+        self.assertIn("sudo sysctl -w kernel.unprivileged_userns_clone=1", prepare_run)
+        self.assertIn(
+            "if sudo sysctl -n kernel.apparmor_restrict_unprivileged_userns "
+            ">/dev/null 2>&1; then",
+            prepare_run,
+        )
+        self.assertIn(
+            "sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0",
+            prepare_run,
+        )
+        self.assertLess(
+            steps.index(prepare_step),
+            next(
+                index
+                for index, step in enumerate(steps)
+                if step.get("name") == "bazel test //..."
+            ),
+        )
 
     def test_bazel_windows_native_main_uses_gnullvm_proc_macro_toolchain(self) -> None:
         bazel = load_workflow_payload(REPO_ROOT / ".github/workflows/bazel.yml")
@@ -1665,6 +1770,14 @@ class RouteSelectionTests(unittest.TestCase):
             native_test_run,
         )
         self.assertIn("--local_test_jobs=1", native_test_run)
+        self.assertIn(
+            '[[ "${GITHUB_REPOSITORY:-}" == "sednalabs/codex" '
+            '&& -z "${BUILDBUDDY_API_KEY:-}" ]]',
+            native_test_run,
+        )
+        self.assertIn(
+            "bazel_test_args+=(--host_platform=//:local_windows)", native_test_run
+        )
 
         module_bazel = (REPO_ROOT / "MODULE.bazel").read_text(encoding="utf-8")
         self.assertIn(
@@ -2041,6 +2154,33 @@ class RouteSelectionTests(unittest.TestCase):
                     env={**os.environ, "NEEDS_JSON": json.dumps(needs)},
                 )
                 self.assertEqual(proc.returncode, 0, proc.stderr)
+
+    def test_fork_hosted_linux_bazel_reclaims_only_unused_image_sdk(self) -> None:
+        payload = load_workflow_payload(
+            REPO_ROOT / ".github/actions/setup-bazel-ci/action.yml"
+        )
+        steps = (payload.get("runs") or {}).get("steps") or []
+        cleanup = next(
+            step
+            for step in steps
+            if step.get("name") == "Reclaim unused hosted Linux Android SDK"
+        )
+        self.assertEqual(
+            cleanup.get("if"),
+            "${{ github.repository == 'sednalabs/codex' && runner.os == 'Linux' "
+            "&& runner.environment == 'github-hosted' }}",
+        )
+        self.assertEqual(cleanup.get("shell"), "bash")
+        script = cleanup.get("run") or ""
+        self.assertIn("realpath /usr/local/lib/android", script)
+        removal_commands = [
+            line.strip()
+            for line in script.splitlines()
+            if line.strip().startswith("sudo rm ")
+        ]
+        self.assertEqual(removal_commands, ["sudo rm -rf -- /usr/local/lib/android"])
+        setup_bazel = next(step for step in steps if step.get("name") == "Set up Bazel")
+        self.assertLess(steps.index(cleanup), steps.index(setup_bazel))
 
     def test_bazel_cache_writes_are_limited_to_trusted_post_merge_pushes(self) -> None:
         setup_action = load_workflow_payload(REPO_ROOT / ".github/actions/setup-bazel-ci/action.yml")
@@ -4872,6 +5012,63 @@ class ValidationPlanScriptTests(unittest.TestCase):
         self.assertIn('"notarized": False', macos_stage_script)
         self.assertNotIn("${{ needs.metadata.outputs.display_ref }}", macos_stage_script)
 
+    def test_sedna_branch_preview_version_preserves_one_metadata_separator(self) -> None:
+        metadata_step = workflow_step_by_name(
+            REPO_ROOT / ".github/workflows/sedna-branch-build.yml",
+            "metadata",
+            "Compute preview version",
+        )
+        script = metadata_step.get("run") or ""
+        git_fixture = """
+git() {
+  case "$1" in
+    rev-parse) printf '%s\\n' deadbeef ;;
+    tag) printf '%s\\n' "${PREVIEW_TEST_TAG}" ;;
+    *) return 2 ;;
+  esac
+}
+"""
+        cases = (
+            ("", "0.0.0-sedna.0+ci.42.gdeadbeef"),
+            ("v1.2.3-sedna.4", "1.2.3-sedna.4+ci.42.gdeadbeef"),
+            (
+                "v0.146.0-alpha.8-sedna.10",
+                "0.146.0-alpha.8-sedna.10+ci.42.gdeadbeef",
+            ),
+            (
+                "v0.146.0-alpha.8-sedna.10+upstream.8593",
+                "0.146.0-alpha.8-sedna.10+upstream.8593.ci.42.gdeadbeef",
+            ),
+        )
+        commit = "deadbeef" + "0" * 32
+        for tag, expected in cases:
+            with self.subTest(tag=tag), tempfile.TemporaryDirectory() as tmpdir:
+                output_path = Path(tmpdir) / "github-output"
+                proc = subprocess.run(
+                    ["bash", "-c", git_fixture + script],
+                    check=False,
+                    capture_output=True,
+                    text=True,
+                    env={
+                        **os.environ,
+                        "PREVIEW_TEST_TAG": tag,
+                        "GITHUB_OUTPUT": str(output_path),
+                        "GITHUB_RUN_NUMBER": "42",
+                        "CHECKOUT_REF": commit,
+                        "DISPLAY_REF": "feature/preview",
+                        "HOST_ONLY": "false",
+                        "PLATFORM": "linux-x86_64",
+                    },
+                )
+                self.assertEqual(proc.returncode, 0, proc.stderr)
+                outputs = parse_github_output_file(output_path)
+                self.assertEqual(outputs["preview_version"], expected)
+                self.assertEqual(outputs["preview_version"].count("+"), 1)
+                self.assertEqual(outputs["checkout_ref"], commit)
+                self.assertEqual(
+                    outputs["artifact_name"], "sedna-branch-feature-preview-deadbeef"
+                )
+
     def test_sedna_branch_build_host_only_command_has_valid_shell_syntax(self) -> None:
         workflow_path = REPO_ROOT / ".github/workflows/sedna-branch-build.yml"
         payload = load_workflow_payload(workflow_path)
@@ -5541,7 +5738,7 @@ class ValidationPlanScriptTests(unittest.TestCase):
         multi_agent_recipe = "\n".join(
             recipes["core-multi-agent-orchestration-targeted"]
         )
-        self.assertEqual(multi_agent_recipe.count("RUST_MIN_STACK="), 4)
+        self.assertEqual(multi_agent_recipe.count("RUST_MIN_STACK="), 6)
 
         blocking_waits_core_recipe = "\n".join(
             recipes["blocking-waits-core-targeted"]

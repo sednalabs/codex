@@ -319,6 +319,7 @@ impl CollabAgentToolCallItem {
                 receiver_thread_ids: self.receiver_thread_ids.clone(),
                 receiver_agents: self.receiver_agents.clone(),
                 call_id: self.id.clone(),
+                mailbox_wait_report: self.mailbox_wait_report.clone(),
             })),
             CollabAgentTool::CloseAgent => receiver_thread_id.map(|receiver_thread_id| {
                 EventMsg::CollabCloseBegin(CollabCloseBeginEvent {
@@ -399,6 +400,7 @@ impl CollabAgentToolCallItem {
                     })
                     .collect(),
                 statuses: self.agents_states.clone(),
+                mailbox_wait_report: self.mailbox_wait_report.clone(),
             })),
             CollabAgentTool::CloseAgent => receiver_thread_id.map(|receiver_thread_id| {
                 let (receiver_agent_nickname, receiver_agent_role) =

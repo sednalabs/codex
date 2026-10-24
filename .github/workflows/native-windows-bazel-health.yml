@@ -129,7 +129,7 @@ jobs:
       - name: bazel test //...
         id: native_bazel_test
         env:
-          BUILDBUDDY_API_KEY: ${{ secrets.BUILDBUDDY_API_KEY }}
+          BUILDBUDDY_API_KEY: ${{ github.repository != 'sednalabs/codex' && secrets.BUILDBUDDY_API_KEY || '' }}
         shell: bash
         run: |
           bazel_targets=(
@@ -154,6 +154,10 @@ jobs:
             --build_metadata=COMMIT_SHA=${GITHUB_SHA}
             --build_metadata=TAG_windows_native_main=true
           )
+          if [[ "${GITHUB_REPOSITORY:-}" == "sednalabs/codex" && -z "${BUILDBUDDY_API_KEY:-}" ]]; then
+            # Match the fork's hosted-local gnullvm test and clippy host.
+            bazel_test_args+=(--host_platform=//:local_windows)
+          fi
 
           ./.github/scripts/run-bazel-ci.sh \
             --print-failed-action-summary \

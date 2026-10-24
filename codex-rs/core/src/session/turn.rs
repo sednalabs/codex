@@ -106,6 +106,7 @@ use codex_protocol::protocol::AgentReasoningSectionBreakEvent;
 use codex_protocol::protocol::CodexErrorInfo;
 use codex_protocol::protocol::ErrorEvent;
 use codex_protocol::protocol::EventMsg;
+use codex_protocol::protocol::MultiAgentVersion;
 use codex_protocol::protocol::PlanDeltaEvent;
 use codex_protocol::protocol::RawResponseCompletedEvent;
 use codex_protocol::protocol::ReasoningContentDeltaEvent;
@@ -181,7 +182,7 @@ pub(crate) async fn run_turn(
             return Err(err);
         }
         if matches!(err.details(), CodexErrorDetails::TurnAborted) {
-            run_hooks_and_record_inputs(&sess, &turn_context, &input).await;
+            run_hooks_and_record_inputs(&sess, &turn_context, &input).await?;
             return Err(err);
         }
         let error = err.to_codex_protocol_error();
@@ -198,7 +199,7 @@ pub(crate) async fn run_turn(
     {
         Ok(step_context) => step_context,
         Err(err) if matches!(err.details(), CodexErrorDetails::TurnAborted) => {
-            run_hooks_and_record_inputs(&sess, &turn_context, &input).await;
+            run_hooks_and_record_inputs(&sess, &turn_context, &input).await?;
             return Err(err);
         }
         Err(err) => return Err(err),
@@ -224,7 +225,8 @@ pub(crate) async fn run_turn(
         return Ok(None);
     }
     let mut can_drain_pending_input = input.is_empty();
-    if run_hooks_and_record_inputs(&sess, &turn_context, &input).await {
+    let should_stop = run_hooks_and_record_inputs(&sess, &turn_context, &input).await?;
+    if should_stop {
         return Ok(None);
     }
 
@@ -269,7 +271,8 @@ pub(crate) async fn run_turn(
             Vec::new()
         };
 
-        if run_hooks_and_record_inputs(&sess, &turn_context, &pending_input).await {
+        let should_stop = run_hooks_and_record_inputs(&sess, &turn_context, &pending_input).await?;
+        if should_stop {
             break;
         }
 
@@ -300,6 +303,21 @@ pub(crate) async fn run_turn(
             world_state = sess
                 .record_step_world_state_if_changed(&world_state, step_context.as_ref())
                 .await;
+
+            let mailbox_enabled_for_turn = turn_context.multi_agent_version
+                == MultiAgentVersion::V2
+                && turn_context.config.features.enabled(Feature::AgentMailbox);
+            if mailbox_enabled_for_turn {
+                for communication in sess
+                    .services
+                    .agent_control
+                    .mailbox_automatic_inputs(sess.thread_id, &turn_context.sub_id)
+                    .await?
+                {
+                    sess.record_inter_agent_communication(&turn_context, communication)
+                        .await?;
+                }
+            }
 
             // Construct the input that we will send to the model.
             let sampling_request_input: Vec<ResponseItem> = async {
@@ -592,7 +610,7 @@ pub(crate) async fn run_hooks_and_record_inputs(
     sess: &Arc<Session>,
     turn_context: &Arc<TurnContext>,
     input: &[TurnInput],
-) -> bool {
+) -> CodexResult<bool> {
     let mut blocked_input = false;
     let mut accepted_user_input = false;
     for input_item in input {
@@ -610,10 +628,10 @@ pub(crate) async fn run_hooks_and_record_inputs(
                 input_item.clone(),
                 hook_outcome.additional_contexts,
             )
-            .await;
+            .await?;
         }
     }
-    blocked_input && !accepted_user_input
+    Ok(blocked_input && !accepted_user_input)
 }
 
 #[instrument(level = "trace", skip_all)]
@@ -2225,7 +2243,40 @@ async fn try_run_sampling_request(
         record_turn_ttft_metric(&turn_context, &event).await;
 
         match event {
-            ResponseEvent::Created => {}
+            ResponseEvent::Created => {
+                // ResponseEvent::Created is the provider's accepted-response boundary. In
+                // particular, WebSocket stream construction only queues a send task; marking
+                // admission earlier would let compaction drop mail when setup/send is rejected.
+                if turn_context.multi_agent_version == MultiAgentVersion::V2
+                    && turn_context.config.features.enabled(Feature::AgentMailbox)
+                {
+                    let mailbox_message_ids = prompt
+                        .input
+                        .iter()
+                        .filter_map(|item| match item {
+                            ResponseItem::AgentMessage { id: Some(id), .. } if !id.is_empty() => {
+                                Some(id.clone())
+                            }
+                            _ => None,
+                        })
+                        .collect::<HashSet<_>>()
+                        .into_iter()
+                        .collect::<Vec<_>>();
+                    if !mailbox_message_ids.is_empty()
+                        && let Err(error) = sess
+                            .services
+                            .agent_control
+                            .mailbox_record_admission(
+                                sess.thread_id,
+                                &turn_context.sub_id,
+                                &mailbox_message_ids,
+                            )
+                            .await
+                    {
+                        break Err(error);
+                    }
+                }
+            }
             ResponseEvent::OutputItemDone(mut item) => {
                 assign_missing_streamed_response_item_id(&mut item, active_item.as_ref());
                 if let Some((_, mut consumer)) = active_tool_argument_diff_consumer.take()

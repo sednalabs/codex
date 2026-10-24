@@ -8641,6 +8641,142 @@
       "title": "LogoutAccountResponse",
       "type": "object"
     },
+    "MailboxWaitReport": {
+      "description": "Shared mailbox wait report carried by tool results and collaboration history.\n\n`completion_reason` is null while the wait is in progress and populated with\nthe actual wake/result cause when it returns. It is always present in a terminal\nwait tool result.",
+      "properties": {
+        "completed": {
+          "items": {
+            "$ref": "#/definitions/MailboxWaitSelectionItem"
+          },
+          "type": "array"
+        },
+        "completionReason": {
+          "anyOf": [
+            {
+              "$ref": "#/definitions/MailboxWakeCause"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "conditionSatisfied": {
+          "type": "boolean"
+        },
+        "pending": {
+          "items": {
+            "$ref": "#/definitions/MailboxWaitSelectionItem"
+          },
+          "type": "array"
+        },
+        "quietCount": {
+          "format": "uint",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "requestedRepliesTo": {
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "requestedTargets": {
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "returnWhen": {
+          "$ref": "#/definitions/MailboxWaitReturnWhen",
+          "default": "any"
+        },
+        "wakeRef": {
+          "default": null,
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "wakeSender": {
+          "default": null,
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "requestedTargets",
+        "requestedRepliesTo",
+        "completed",
+        "pending",
+        "conditionSatisfied",
+        "quietCount"
+      ],
+      "type": "object"
+    },
+    "MailboxWaitReturnWhen": {
+      "description": "Whether a wait requires any one selected condition or every selected condition.",
+      "enum": [
+        "any",
+        "all"
+      ],
+      "type": "string"
+    },
+    "MailboxWaitSelectionItem": {
+      "description": "One selected wait condition and its current or terminal state.",
+      "properties": {
+        "agent": {
+          "default": null,
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "messageId": {
+          "default": null,
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "status": {
+          "type": "string"
+        },
+        "workRef": {
+          "default": null,
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "status"
+      ],
+      "type": "object"
+    },
+    "MailboxWakeCause": {
+      "description": "Actual outcome that ended a selection-aware mailbox wait.",
+      "enum": [
+        "result",
+        "reply",
+        "request",
+        "human",
+        "tool",
+        "deadline",
+        "cancel",
+        "interrupted",
+        "subscription_loss",
+        "runtime_fault",
+        "no_matching_work",
+        "already_satisfied",
+        "cycle",
+        "needs_attention"
+      ],
+      "type": "string"
+    },
     "ManagedHooksRequirements": {
       "properties": {
         "PermissionRequest": {
@@ -16800,6 +16936,17 @@
             "id": {
               "description": "Unique identifier for this collab tool call.",
               "type": "string"
+            },
+            "mailboxWaitReport": {
+              "anyOf": [
+                {
+                  "$ref": "#/definitions/MailboxWaitReport"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Selection-aware mailbox wait state/result, when reported by the producer."
             },
             "model": {
               "description": "Established model alias for a spawned-agent lifecycle item.\n\nOn spawn start, this is the caller-requested model. On a terminal spawn item, this is the observed effective model. An unknown terminal effective model is null.",

@@ -269,6 +269,7 @@ impl Handler {
                     wake_notifications: None,
                     completion_reason: None,
                     wake_cause: None,
+                    mailbox_wait_report: None,
                 }),
             )
             .await;
@@ -1049,6 +1050,7 @@ async fn emit_wait_completion(
                 wake_notifications: (!notifications.is_empty()).then_some(notifications),
                 completion_reason: Some(completion_reason),
                 wake_cause,
+                mailbox_wait_report: None,
             }),
         )
         .await;

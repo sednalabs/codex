@@ -15,6 +15,10 @@ use crate::tools::tool_runtime_capabilities::ToolRuntimeCapabilities;
 use crate::tools::tool_runtime_capabilities::registered_tool_runtime_capabilities;
 
 pub const MULTI_AGENT_V1_NAMESPACE: &str = "multi_agent_v1";
+pub(crate) const MAX_MAILBOX_WAIT_SELECTORS: usize = 100;
+pub(crate) const MAX_MAILBOX_WAIT_SELECTOR_BYTES: usize = 512;
+pub(crate) const MAX_MAILBOX_WAIT_SELECTOR_TOTAL_BYTES: usize = 8_192;
+pub(crate) const MAX_MAILBOX_WAIT_REPORT_BYTES: usize = 32_768;
 const MULTI_AGENT_V1_NAMESPACE_DESCRIPTION: &str = "Tools for spawning and managing sub-agents.";
 
 const SPAWN_AGENT_INHERITED_MODEL_GUIDANCE: &str = "Spawned agents inherit your current model by default. Omit `model` to use that preferred default; set `model` only when an explicit override is needed.";
@@ -188,6 +192,85 @@ pub fn create_send_input_tool_v1() -> ToolSpec {
     })
 }
 
+pub fn create_mailbox_send_message_tool() -> ToolSpec {
+    let properties = BTreeMap::from([
+        (
+            "target".to_string(),
+            JsonSchema::string(Some(
+                "Relative or canonical task name to message (from spawn_agent).".to_string(),
+            )),
+        ),
+        (
+            "message".to_string(),
+            JsonSchema::string(Some(
+                "Message text to queue on the target agent.".to_string(),
+            ))
+            .with_encrypted(),
+        ),
+        (
+            "kind".to_string(),
+            JsonSchema::string_enum(
+                vec![
+                    Value::String("note".to_string()),
+                    Value::String("progress".to_string()),
+                    Value::String("request".to_string()),
+                    Value::String("alert".to_string()),
+                ],
+                Some("Message kind. Defaults to `note`. When supplied, this field is authoritative over legacy `wake_wait`.".to_string()),
+            ),
+        ),
+        (
+            "work_ref".to_string(),
+            JsonSchema::string(Some(
+                "Exact immutable accepted work reference (a `work_*` id) associated with this message, when applicable."
+                    .to_string(),
+            )),
+        ),
+        (
+            "reply_to".to_string(),
+            JsonSchema::string(Some(
+                "Message id this intentionally final response replies to. Progress messages cannot set `reply_to`."
+                    .to_string(),
+            )),
+        ),
+        (
+            "supersedes".to_string(),
+            JsonSchema::string(Some(
+                "Exact message id authored by this sender that this message supersedes."
+                    .to_string(),
+            )),
+        ),
+        (
+            "activate_if_idle".to_string(),
+            JsonSchema::boolean(Some(
+                "Opt in to activating the target only if it is idle. This never interrupts active work."
+                    .to_string(),
+            )),
+        ),
+        (
+            "wake_wait".to_string(),
+            JsonSchema::boolean(Some(
+                "Legacy one-shot attention request when `kind` is omitted. Ignored when `kind` is supplied; does not force an interrupt."
+                    .to_string(),
+            )),
+        ),
+    ]);
+
+    ToolSpec::Function(ResponsesApiTool {
+        name: "send_message".to_string(),
+        description: "Queue a durable message for an existing agent in this agent tree. Messages are accepted independently of whether the target is active; `activate_if_idle` opts into starting an idle target and never interrupts active work. Use `reply_to` only for an intentional final response, not progress. The receipt confirms durable acceptance, not reading, acknowledgement, or comprehension."
+            .to_string(),
+        strict: false,
+        defer_loading: None,
+        parameters: JsonSchema::object(
+            properties,
+            Some(vec!["target".to_string(), "message".to_string()]),
+            Some(false.into()),
+        ),
+        output_schema: Some(mailbox_send_message_output_schema()),
+    })
+}
+
 pub fn create_send_message_tool() -> ToolSpec {
     let properties = BTreeMap::from([
         (
@@ -224,6 +307,34 @@ pub fn create_send_message_tool() -> ToolSpec {
             Some(false.into()),
         ),
         output_schema: Some(send_message_output_schema()),
+    })
+}
+
+pub fn create_mailbox_read_tool() -> ToolSpec {
+    let properties = BTreeMap::from([
+        (
+            "cursor".to_string(),
+            JsonSchema::string(Some(
+                "Opaque cursor returned by the previous page. Omit to read the first page."
+                    .to_string(),
+            )),
+        ),
+        (
+            "limit".to_string(),
+            JsonSchema::integer(Some(
+                "Maximum messages to return. Defaults to 20 and is capped at 100.".to_string(),
+            )),
+        ),
+    ]);
+
+    ToolSpec::Function(ResponsesApiTool {
+        name: "mailbox_read".to_string(),
+        description: "Read a bounded page of message metadata addressed to the current agent. Message bodies are appended through canonical conversation history rather than duplicated in this JSON result. Continue with `next_cursor`."
+            .to_string(),
+        strict: false,
+        defer_loading: None,
+        parameters: JsonSchema::object(properties, /*required*/ None, Some(false.into())),
+        output_schema: Some(mailbox_read_output_schema()),
     })
 }
 
@@ -298,6 +409,17 @@ pub fn create_wait_agent_tool_v1(options: WaitAgentTimeoutOptions) -> ToolSpec {
             parameters: wait_agent_tool_parameters_v1(options),
             output_schema: Some(wait_output_schema_v1()),
         })],
+    })
+}
+
+pub fn create_mailbox_wait_agent_tool() -> ToolSpec {
+    ToolSpec::Function(ResponsesApiTool {
+        name: "wait_agent".to_string(),
+        description: mailbox_wait_agent_description(),
+        strict: false,
+        defer_loading: None,
+        parameters: mailbox_wait_agent_tool_parameters(),
+        output_schema: Some(mailbox_wait_output_schema()),
     })
 }
 
@@ -503,6 +625,21 @@ fn spawn_agent_output_schema_v2(hide_agent_metadata: bool) -> Value {
             }),
         ),
         (
+            "work_ref".to_string(),
+            json!({
+                "type": "string",
+                "description": "Immutable accepted work reference assigned to the spawned agent."
+            }),
+        ),
+        (
+            "dispatch_state".to_string(),
+            json!({
+                "type": "string",
+                "enum": ["accepted", "dispatching", "dispatched", "recovery_needed"],
+                "description": "Native dispatch custody for the original work. Uncertain or incompatible dispatch is retained, not resent."
+            }),
+        ),
+        (
             "requested_model".to_string(),
             json!({
                 "type": "string",
@@ -572,6 +709,15 @@ fn followup_task_output_schema() -> Value {
                 "type": "string",
                 "description": "Canonical task name of the agent receiving the follow-up."
             },
+            "work_ref": {
+                "type": "string",
+                "description": "Immutable accepted work reference assigned to the follow-up."
+            },
+            "dispatch_state": {
+                "type": "string",
+                "enum": ["accepted", "dispatching", "dispatched", "recovery_needed"],
+                "description": "Native dispatch custody for the original work. Uncertain dispatch is not resent."
+            },
             "recipient_task_name": {
                 "type": "string",
                 "description": "Explicit canonical task name of the recipient; the effective_* fields below describe this recipient, not the sending agent."
@@ -582,11 +728,11 @@ fn followup_task_output_schema() -> Value {
                 "description": "Identity scope for the effective_* fields in this receipt."
             },
             "effective_model": {
-                "type": "string",
+                "type": ["string", "null"],
                 "description": "Effective model retained by the recipient agent for the follow-up turn."
             },
             "effective_model_provider_id": {
-                "type": "string",
+                "type": ["string", "null"],
                 "description": "Effective model provider retained by the recipient agent for the follow-up turn."
             },
             "effective_reasoning_effort": {
@@ -621,6 +767,38 @@ fn send_input_output_schema() -> Value {
             }
         },
         "required": ["submission_id"],
+        "additionalProperties": false
+    })
+}
+
+fn mailbox_send_message_output_schema() -> Value {
+    json!({
+        "type": "object",
+        "properties": {
+            "message_id": {
+                "type": "string",
+                "description": "Stable id for the durably accepted mailbox message."
+            },
+            "durable_state": {
+                "type": "string",
+                "enum": ["accepted"],
+                "description": "The message was durably accepted for delivery. This does not establish that the recipient read or understood it."
+            },
+            "activation_disposition": {
+                "type": "string",
+                "enum": ["not_requested", "already_active", "activated", "denied", "unknown"],
+                "description": "Disposition of separately requested idle activation. Message acceptance is durable even when activation is denied or unknown; do not resend the message."
+            },
+            "activation_reason": {
+                "type": ["string", "null"],
+                "description": "Safe reason when activation was denied or its result could not be established."
+            },
+            "recipient_task_name": {
+                "type": "string",
+                "description": "Canonical native task name addressed by the accepted message."
+            }
+        },
+        "required": ["message_id", "durable_state", "activation_disposition"],
         "additionalProperties": false
     })
 }
@@ -674,6 +852,42 @@ fn send_message_output_schema() -> Value {
             "effective_reasoning_effort",
             "effective_service_tier"
         ],
+        "additionalProperties": false
+    })
+}
+
+fn mailbox_read_output_schema() -> Value {
+    json!({
+        "type": "object",
+        "properties": {
+            "messages": {
+                "type": "array",
+                "items": {
+                    "type": "object",
+                    "properties": {
+                        "message_id": { "type": "string" },
+                        "sender": { "type": "string" },
+                        "kind": { "type": "string", "enum": ["note", "progress", "request", "alert"] },
+                        "work_ref": { "type": ["string", "null"] },
+                        "reply_to": { "type": ["string", "null"] },
+                        "supersedes": { "type": ["string", "null"] },
+                        "canonical_delivered": { "type": "boolean" }
+                    },
+                    "required": ["message_id", "sender", "kind", "canonical_delivered"],
+                    "additionalProperties": false
+                },
+                "description": "Messages in this page; body content is not duplicated in the JSON result."
+            },
+            "next_cursor": {
+                "type": ["string", "null"],
+                "description": "Opaque cursor for the next page, or null when there are no more messages."
+            },
+            "quiet_count": {
+                "type": "integer",
+                "description": "Number of routine messages safely quieted rather than duplicated into the model-visible result."
+            }
+        },
+        "required": ["messages", "next_cursor", "quiet_count"],
         "additionalProperties": false
     })
 }
@@ -872,6 +1086,85 @@ fn wait_output_schema_v1() -> Value {
             }
         },
         "required": ["status", "timed_out"],
+        "additionalProperties": false
+    })
+}
+
+fn mailbox_wait_output_schema() -> Value {
+    json!({
+        "type": "object",
+        "properties": {
+            "requestedTargets": {
+                "type": "array",
+                "items": { "type": "string", "maxLength": MAX_MAILBOX_WAIT_SELECTOR_BYTES },
+                "maxItems": MAX_MAILBOX_WAIT_SELECTORS,
+                "description": "Agent names or exact native work references requested by the wait call."
+            },
+            "requestedRepliesTo": {
+                "type": "array",
+                "items": { "type": "string", "maxLength": MAX_MAILBOX_WAIT_SELECTOR_BYTES },
+                "maxItems": MAX_MAILBOX_WAIT_SELECTORS,
+                "description": "Request message ids requested by the wait call."
+            },
+            "returnWhen": {
+                "type": "string",
+                "enum": ["any", "all"],
+                "description": "Whether any one selected condition or every selected condition must complete."
+            },
+            "completed": {
+                "type": "array",
+                "items": {
+                    "type": "object",
+                    "properties": {
+                        "workRef": { "type": ["string", "null"] },
+                        "messageId": { "type": ["string", "null"] },
+                        "agent": { "type": ["string", "null"] },
+                        "status": { "type": "string" }
+                    },
+                    "required": ["status"],
+                    "description": "Structured selected result for a completed native work or reply join.",
+                    "additionalProperties": false
+                },
+                "description": "Requested targets or replies whose join condition completed, with their result records."
+            },
+            "pending": {
+                "type": "array",
+                "items": {
+                    "type": "object",
+                    "properties": {
+                        "workRef": { "type": ["string", "null"] },
+                        "messageId": { "type": ["string", "null"] },
+                        "agent": { "type": ["string", "null"] },
+                        "status": { "type": "string" }
+                    },
+                    "required": ["status"],
+                    "additionalProperties": false
+                },
+                "description": "Requested targets or replies still pending when the wait returned."
+            },
+            "completionReason": {
+                "type": "string",
+                "enum": ["result", "reply", "request", "human", "tool", "deadline", "cancel", "interrupted", "subscription_loss", "runtime_fault", "no_matching_work", "already_satisfied", "cycle", "needs_attention"],
+                "description": "Actual reason the wait returned. Attention and interruption do not themselves satisfy an outstanding join."
+            },
+            "conditionSatisfied": {
+                "type": "boolean",
+                "description": "Whether the requested any/all join condition was satisfied."
+            },
+            "quietCount": {
+                "type": "integer",
+                "description": "Global retained quiet-message backlog for this recipient, not a per-wait filtered count. This metadata does not consume hidden message bodies."
+            },
+            "wakeSender": {
+                "type": ["string", "null"],
+                "description": "Safe sender identity metadata for a wake, when applicable."
+            },
+            "wakeRef": {
+                "type": ["string", "null"],
+                "description": "Safe reference metadata for a wake, when applicable."
+            }
+        },
+        "required": ["requestedTargets", "requestedRepliesTo", "returnWhen", "completed", "pending", "completionReason", "conditionSatisfied", "quietCount"],
         "additionalProperties": false
     })
 }
@@ -1313,6 +1606,67 @@ fn wait_agent_tool_parameters_v1(options: WaitAgentTimeoutOptions) -> JsonSchema
     )
 }
 
+fn mailbox_wait_agent_tool_parameters() -> JsonSchema {
+    let properties = BTreeMap::from([
+        (
+            "targets".to_string(),
+            JsonSchema::array(
+                JsonSchema::string(Some(format!(
+                    "Agent name or exact work reference, at most {MAX_MAILBOX_WAIT_SELECTOR_BYTES} UTF-8 bytes."
+                ))),
+                Some(
+                    "Optional names of agents in this tree or exact native work references (for example, `work_...`). Pass multiple targets to wait for whichever completes first unless `return_when` is `all`. Omit both `targets` and `replies_to` to wait for caller-issued unsurfaced work or new attention. If `replies_to` is provided, omitted `targets` adds no work joins. An explicit empty selection returns `no_matching_work`. Without a timeout this wait is unbounded."
+                        .to_string(),
+                ),
+            ),
+        ),
+        (
+            "replies_to".to_string(),
+            JsonSchema::array(
+                JsonSchema::string(Some(format!(
+                    "Request message id, at most {MAX_MAILBOX_WAIT_SELECTOR_BYTES} UTF-8 bytes."
+                ))),
+                Some(
+                    "Optional request message ids whose intentional final replies should satisfy this wait."
+                        .to_string(),
+                ),
+            ),
+        ),
+        (
+            "timeout_ms".to_string(),
+            JsonSchema::integer(Some(
+                "Optional timeout in milliseconds. Omit for an unbounded event-only wait; no short timeout is applied implicitly."
+                    .to_string(),
+            )),
+        ),
+        (
+            "return_when".to_string(),
+            JsonSchema::string_enum(
+                vec![
+                    serde_json::Value::String("any".to_string()),
+                    serde_json::Value::String("all".to_string()),
+                ],
+                Some("Whether all requested joins must complete or any one may complete the wait. Defaults to `any`.".to_string()),
+            ),
+        ),
+        (
+            "native_event_wait".to_string(),
+            JsonSchema::boolean(Some(
+                "Legacy compatibility field; accepted but has no effect. Omit it."
+                    .to_string(),
+            )),
+        ),
+    ]);
+
+    JsonSchema::object(properties, /*required*/ None, Some(false.into()))
+}
+
+fn mailbox_wait_agent_description() -> String {
+    format!(
+        "Use this for blocking coordination within the current agent tree while awaiting agent, native work, or request-reply completion. Omit targets and `replies_to` to wait for caller-issued unsurfaced work or new attention; such attention, human/tool interrupts, and ordinary request notifications do not satisfy a selected join. `return_when` defaults to `any`; `all` requires every selected join to complete. A selected failure, cancellation, or needs-attention state may return early and is reported as the actual cause. Omit `timeout_ms` for an unbounded event-only wait. Results report requested, completed, and pending joins; no matching work returns an empty result rather than polling. At most {MAX_MAILBOX_WAIT_SELECTORS} selectors and resolved joins are accepted, each selector is at most {MAX_MAILBOX_WAIT_SELECTOR_BYTES} UTF-8 bytes, and their combined content is at most {MAX_MAILBOX_WAIT_SELECTOR_TOTAL_BYTES} bytes. Reports are limited to {MAX_MAILBOX_WAIT_REPORT_BYTES} serialized bytes; choose fewer exact references if a selection exceeds this bound."
+    )
+}
+
 fn wait_agent_tool_parameters_v2(
     options: WaitAgentTimeoutOptions,
     capabilities: ToolRuntimeCapabilities,
@@ -1345,8 +1699,8 @@ fn wait_agent_tool_parameters_v2(
             "return_when".to_string(),
             JsonSchema::string_enum(
                 vec![
-                    serde_json::Value::String("any".to_string()),
-                    serde_json::Value::String("all".to_string()),
+                    Value::String("any".to_string()),
+                    Value::String("all".to_string()),
                 ],
                 Some("Whether the wait completes when any requested agent reaches terminal status or only after all requested agents are terminal.".to_string()),
             ),

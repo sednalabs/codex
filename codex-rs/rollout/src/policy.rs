@@ -1,6 +1,8 @@
 use crate::protocol::EventMsg;
 use crate::protocol::RolloutItem;
 use codex_extension_items::ExtensionItem;
+use codex_protocol::items::CollabAgentTool;
+use codex_protocol::items::CollabAgentToolCallStatus;
 use codex_protocol::items::TurnItem;
 use codex_protocol::models::ResponseItem;
 use codex_protocol::protocol::ThreadHistoryMode;
@@ -89,7 +91,19 @@ pub fn should_persist_event_msg(ev: &EventMsg, history_mode: ThreadHistoryMode) 
         EventMsg::ItemCompleted(event) => {
             // Paginated rollouts store TurnItems.
             // Legacy rollouts keep only items with no raw ResponseItem or legacy equivalent.
+            // Typed mailbox terminal reports must survive legacy rollout filtering.
             matches!(history_mode, ThreadHistoryMode::Paginated)
+                || matches!(
+                    &event.item,
+                    TurnItem::CollabAgentToolCall(call)
+                        if call.tool == CollabAgentTool::Wait
+                            && matches!(
+                                call.status,
+                                CollabAgentToolCallStatus::Completed
+                                    | CollabAgentToolCallStatus::Failed
+                            )
+                            && call.mailbox_wait_report.is_some()
+                )
                 || matches!(
                     event.item,
                     TurnItem::Plan(_) | TurnItem::Extension(ExtensionItem::Sleep(_))
@@ -169,7 +183,6 @@ pub fn should_persist_event_msg(ev: &EventMsg, history_mode: ThreadHistoryMode) 
         | EventMsg::PlanUpdate(_)
         | EventMsg::ShutdownComplete
         | EventMsg::DeprecationNotice(_)
-        | EventMsg::ItemStarted(_)
         | EventMsg::HookStarted(_)
         | EventMsg::HookCompleted(_)
         | EventMsg::AgentMessageContentDelta(_)
@@ -183,5 +196,16 @@ pub fn should_persist_event_msg(ev: &EventMsg, history_mode: ThreadHistoryMode) 
         | EventMsg::CollabCloseBegin(_)
         | EventMsg::CollabResumeBegin(_)
         | EventMsg::Unknown => false,
+        EventMsg::ItemStarted(event) => matches!(
+            &event.item,
+            TurnItem::CollabAgentToolCall(call)
+                if call.tool == CollabAgentTool::Wait
+                    && call.status == CollabAgentToolCallStatus::InProgress
+                    && call.mailbox_wait_report.is_some()
+        ),
     }
 }
+
+#[cfg(test)]
+#[path = "policy_tests.rs"]
+mod tests;
