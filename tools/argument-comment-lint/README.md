@@ -59,11 +59,12 @@ create_openai_url(None, 3);
 Install the required tooling once:
 
 ```bash
-cargo install --locked cargo-dylint dylint-link
-rustup toolchain install nightly-2025-09-18 \
+rustup toolchain install nightly-2026-08-20 \
   --component llvm-tools-preview \
   --component rustc-dev \
   --component rust-src
+rustup run nightly-2026-08-20 cargo install --locked \
+  cargo-dylint@6.1.0 dylint-link@6.1.0
 ```
 
 Run the lint crate tests:
@@ -148,10 +149,6 @@ wrapper runs cover test-only call sites by default. The Bazel entrypoints use
 `tools/argument-comment-lint/list-bazel-targets.sh` to add the internal
 manual `*-unit-tests-bin` Rust targets explicitly, so inline `#[cfg(test)]`
 call sites are covered without pulling in unrelated manual release targets.
-They also exclude `codex-rs/v8-poc` from the repo-wide lint target list because
-that proof-of-concept pulls the full native V8/ICU graph into cold hosted
-frontier lint runs. V8 buildability remains covered by the normal build/test
-workflows.
 
 Repo runs also promote `argument_comment_mismatch` and
 `uncommented_anonymous_literal_argument` to errors by default:

@@ -1,28 +1,24 @@
 #![cfg(target_os = "windows")]
 
+use super::WindowsSandboxSessionRequest;
 use super::spawn_windows_sandbox_session_elevated_for_permission_profile;
+use super::spawn_windows_sandbox_session_for_level;
 use super::spawn_windows_sandbox_session_legacy;
 use crate::WindowsSandboxCancellationToken;
-use crate::acl::path_mask_allows;
 use crate::ipc_framed::Message;
 use crate::ipc_framed::decode_bytes;
 use crate::ipc_framed::read_frame;
-use crate::resolved_permissions::ResolvedWindowsSandboxPermissions;
 use crate::run_windows_sandbox_capture;
-use crate::spawn_prep::legacy_session_capability_roots;
-use crate::spawn_prep::root_capability_sids;
-use crate::token::get_current_token_for_restriction;
-use crate::winutil::string_from_sid_bytes;
-use crate::winutil::to_wide;
-use anyhow::Result;
 use base64::Engine;
 use base64::engine::general_purpose::STANDARD as BASE64;
+use codex_protocol::config_types::WindowsSandboxLevel;
 use codex_protocol::models::PermissionProfile;
 use codex_utils_absolute_path::AbsolutePathBuf;
 use codex_utils_pty::ProcessDriver;
+use codex_utils_pty::ProcessSignal;
+use codex_windows_sandbox_test_support::WindowsSandboxAccountTestGuard;
 use pretty_assertions::assert_eq;
 use std::collections::HashMap;
-use std::ffi::c_void;
 use std::fs;
 use std::fs::OpenOptions;
 use std::io::Seek;
@@ -45,36 +41,17 @@ use tokio::sync::broadcast;
 use tokio::sync::mpsc;
 use tokio::sync::oneshot;
 use tokio::time::timeout;
-use windows_sys::Win32::Foundation::CloseHandle;
-use windows_sys::Win32::Foundation::ERROR_SUCCESS;
-use windows_sys::Win32::Foundation::GetLastError;
-use windows_sys::Win32::Foundation::HLOCAL;
-use windows_sys::Win32::Foundation::LocalFree;
 use windows_sys::Win32::Foundation::WAIT_FAILED;
 use windows_sys::Win32::Foundation::WAIT_OBJECT_0;
 use windows_sys::Win32::Foundation::WAIT_TIMEOUT;
-use windows_sys::Win32::Security::ACL;
-use windows_sys::Win32::Security::Authorization::ConvertStringSecurityDescriptorToSecurityDescriptorW;
-use windows_sys::Win32::Security::Authorization::SDDL_REVISION_1;
-use windows_sys::Win32::Security::Authorization::SE_FILE_OBJECT;
-use windows_sys::Win32::Security::Authorization::SetNamedSecurityInfoW;
-use windows_sys::Win32::Security::CopySid;
-use windows_sys::Win32::Security::DACL_SECURITY_INFORMATION;
-use windows_sys::Win32::Security::GetLengthSid;
-use windows_sys::Win32::Security::GetSecurityDescriptorDacl;
-use windows_sys::Win32::Security::GetTokenInformation;
-use windows_sys::Win32::Security::PROTECTED_DACL_SECURITY_INFORMATION;
-use windows_sys::Win32::Security::TOKEN_USER;
-use windows_sys::Win32::Security::TokenUser;
-use windows_sys::Win32::Storage::FileSystem::DELETE;
-use windows_sys::Win32::Storage::FileSystem::FILE_ALL_ACCESS;
-use windows_sys::Win32::Storage::FileSystem::FILE_DELETE_CHILD;
 use windows_sys::Win32::System::Threading::OpenProcess;
 use windows_sys::Win32::System::Threading::PROCESS_SYNCHRONIZE;
 use windows_sys::Win32::System::Threading::WaitForSingleObject;
 
 static TEST_HOME_COUNTER: AtomicU64 = AtomicU64::new(0);
 static LEGACY_PROCESS_TEST_LOCK: Mutex<()> = Mutex::new(());
+
+const ASSERT_NO_CONSOLE: &str = r#"Add-Type -ErrorAction Stop 'using System; using System.Runtime.InteropServices; public class ConsoleProbe { [DllImport("kernel32.dll")] public static extern IntPtr GetConsoleWindow(); }'; if ([ConsoleProbe]::GetConsoleWindow() -ne [IntPtr]::Zero) { throw 'piped sandbox process unexpectedly has a console' };"#;
 
 fn legacy_process_test_guard() -> MutexGuard<'static, ()> {
     LEGACY_PROCESS_TEST_LOCK
@@ -112,117 +89,6 @@ fn sandbox_home(name: &str) -> TempDir {
     let _ = fs::remove_dir_all(&path);
     fs::create_dir_all(&path).expect("create sandbox home");
     tempfile::TempDir::new_in(&path).expect("create sandbox home tempdir")
-}
-
-fn current_user_sid() -> Result<Vec<u8>> {
-    unsafe {
-        let token = get_current_token_for_restriction()?;
-        let result = (|| {
-            let mut needed = 0;
-            GetTokenInformation(token, TokenUser, std::ptr::null_mut(), 0, &mut needed);
-            anyhow::ensure!(needed >= std::mem::size_of::<TOKEN_USER>() as u32);
-
-            let mut token_user_bytes = vec![0; needed as usize];
-            let ok = GetTokenInformation(
-                token,
-                TokenUser,
-                token_user_bytes.as_mut_ptr() as *mut c_void,
-                needed,
-                &mut needed,
-            );
-            anyhow::ensure!(
-                ok != 0,
-                "GetTokenInformation(TokenUser) failed: {}",
-                GetLastError()
-            );
-            let token_user =
-                std::ptr::read_unaligned(token_user_bytes.as_ptr() as *const TOKEN_USER);
-            let sid_len = GetLengthSid(token_user.User.Sid);
-            anyhow::ensure!(sid_len != 0, "GetLengthSid failed: {}", GetLastError());
-
-            let mut sid = vec![0; sid_len as usize];
-            let copied = CopySid(
-                sid_len,
-                sid.as_mut_ptr() as *mut c_void,
-                token_user.User.Sid,
-            );
-            anyhow::ensure!(copied != 0, "CopySid failed: {}", GetLastError());
-            Ok(sid)
-        })();
-        let _ = CloseHandle(token);
-        result
-    }
-}
-
-fn replace_with_restrictive_test_dacl(path: &Path, current_user_sid: &[u8]) -> Result<()> {
-    let current_user_sid = string_from_sid_bytes(current_user_sid).map_err(anyhow::Error::msg)?;
-    let sddl = to_wide(format!(
-        "D:P(A;OICI;FA;;;SY)(A;OICI;FA;;;{current_user_sid})"
-    ));
-    unsafe {
-        let mut security_descriptor = std::ptr::null_mut();
-        let converted = ConvertStringSecurityDescriptorToSecurityDescriptorW(
-            sddl.as_ptr(),
-            SDDL_REVISION_1,
-            &mut security_descriptor,
-            std::ptr::null_mut(),
-        );
-        anyhow::ensure!(
-            converted != 0,
-            "ConvertStringSecurityDescriptorToSecurityDescriptorW failed: {}",
-            GetLastError()
-        );
-
-        let result = (|| {
-            let mut dacl_present = 0;
-            let mut dacl_defaulted = 0;
-            let mut dacl: *mut ACL = std::ptr::null_mut();
-            let found = GetSecurityDescriptorDacl(
-                security_descriptor,
-                &mut dacl_present,
-                &mut dacl,
-                &mut dacl_defaulted,
-            );
-            anyhow::ensure!(found != 0 && dacl_present != 0 && !dacl.is_null());
-
-            let mut path_wide = to_wide(path);
-            let status = SetNamedSecurityInfoW(
-                path_wide.as_mut_ptr(),
-                SE_FILE_OBJECT,
-                DACL_SECURITY_INFORMATION | PROTECTED_DACL_SECURITY_INFORMATION,
-                std::ptr::null_mut(),
-                std::ptr::null_mut(),
-                dacl,
-                std::ptr::null_mut(),
-            );
-            anyhow::ensure!(
-                status == ERROR_SUCCESS,
-                "SetNamedSecurityInfoW failed: {status}"
-            );
-            Ok(())
-        })();
-        let _ = LocalFree(security_descriptor as HLOCAL);
-        result
-    }
-}
-
-fn declared_windows_test_root(name: &str) -> (TempDir, Vec<u8>) {
-    let base = std::env::var_os("TEST_TMPDIR")
-        .map(PathBuf::from)
-        .unwrap_or_else(|| {
-            // Outside Bazel, use Windows' process temp directory. The unique
-            // child is ACL-normalized before any test fixtures are created.
-            std::env::temp_dir()
-        });
-    fs::create_dir_all(&base).expect("create declared Windows test temp base");
-    let test_root = tempfile::Builder::new()
-        .prefix(&format!("codex-{name}-"))
-        .tempdir_in(base)
-        .expect("create declared Windows test root");
-    let current_user_sid = current_user_sid().expect("resolve current test user SID");
-    replace_with_restrictive_test_dacl(test_root.path(), &current_user_sid)
-        .expect("normalize test root DACL");
-    (test_root, current_user_sid)
 }
 
 fn sandbox_log(codex_home: &Path) -> String {
@@ -272,7 +138,7 @@ fn wait_for_path(path: &Path, timeout: Duration) -> bool {
 
 fn open_process_for_wait(pid: u32) -> std::io::Result<OwnedHandle> {
     let handle = unsafe { OpenProcess(PROCESS_SYNCHRONIZE, 0, pid) };
-    if handle == 0 {
+    if handle.is_null() {
         return Err(std::io::Error::last_os_error());
     }
     Ok(unsafe { OwnedHandle::from_raw_handle(handle as _) })
@@ -362,6 +228,42 @@ async fn collect_stdout_and_exit(
 }
 
 #[test]
+fn restricted_token_rejects_managed_network_before_spawn() {
+    current_thread_runtime().block_on(async {
+        let cwd = sandbox_cwd();
+        let codex_home = sandbox_home("restricted-token-managed-network");
+        let permission_profile = PermissionProfile::workspace_write();
+        let error = spawn_windows_sandbox_session_for_level(WindowsSandboxSessionRequest {
+            permission_profile: &permission_profile,
+            workspace_roots: &[],
+            codex_home: codex_home.path(),
+            command: Vec::new(),
+            cwd: cwd.as_path(),
+            env_map: HashMap::new(),
+            windows_sandbox_level: WindowsSandboxLevel::RestrictedToken,
+            proxy_enforced: true,
+            network_proxy_restricting_sid: None,
+            proxy_settings_mode: crate::WindowsSandboxProxySettingsMode::Preserve,
+            timeout_ms: None,
+            read_roots_override: None,
+            read_roots_include_platform_defaults: false,
+            write_roots_override: None,
+            deny_read_paths_override: &[],
+            deny_write_paths_override: &[],
+            tty: false,
+            stdin_open: false,
+        })
+        .await
+        .expect_err("managed networking must fail before spawning an unelevated sandbox");
+
+        assert_eq!(
+            error.to_string(),
+            "managed networking requires the elevated Windows sandbox backend"
+        );
+    });
+}
+
+#[test]
 fn legacy_non_tty_cmd_emits_output() {
     let _guard = legacy_process_test_guard();
     let runtime = current_thread_runtime();
@@ -381,12 +283,11 @@ fn legacy_non_tty_cmd_emits_output() {
             ],
             cwd.as_path(),
             HashMap::new(),
-            /*timeout_ms*/ Some(5_000),
-            /*additional_deny_read_paths*/ &[],
-            /*additional_deny_write_paths*/ &[],
+            Some(5_000),
+            &[],
+            &[],
             /*tty*/ false,
             /*stdin_open*/ false,
-            /*use_private_desktop*/ true,
         )
         .await
         .expect("spawn legacy non-tty cmd session");
@@ -402,6 +303,8 @@ fn legacy_non_tty_cmd_emits_output() {
 
 #[test]
 fn elevated_non_tty_cmd_forwards_env_output_and_exit() {
+    let _account_guard =
+        WindowsSandboxAccountTestGuard::acquire().expect("lock Windows sandbox test accounts");
     let _guard = legacy_process_test_guard();
     let runtime = current_thread_runtime();
     runtime.block_on(async move {
@@ -434,15 +337,73 @@ fn elevated_non_tty_cmd_forwards_env_output_and_exit() {
             &[],
             /*tty*/ false,
             /*stdin_open*/ false,
-            /*use_private_desktop*/ true,
         )
         .await
-        .expect("spawn elevated non-tty cmd session");
+        .unwrap_or_else(|err| {
+            panic!(
+                "spawn elevated non-tty cmd session: {err:#}\nsandbox log:\n{}",
+                sandbox_log(codex_home.path())
+            )
+        });
         let (stdout, exit_code) =
             collect_stdout_and_exit(spawned, codex_home.path(), Duration::from_secs(10)).await;
         let stdout = String::from_utf8_lossy(&stdout);
         assert_eq!(exit_code, 23, "stdout={stdout:?}");
         assert!(stdout.contains("ELEVATED-ENV-OK"), "stdout={stdout:?}");
+    });
+}
+
+#[test]
+#[ignore = "requires this test binary in an installed test MSIX, launched with package identity, CODEX_WINDOWS_REGISTERED_CORE=1, and CODEX_HOME provisioned by that package's service in a disposable Windows VM"]
+fn registered_non_tty_cmd_forwards_env_output_and_exit() {
+    assert!(
+        crate::registered_core_requested(),
+        "registered Core opt-in is required"
+    );
+    let codex_home = PathBuf::from(std::env::var_os("CODEX_HOME").expect("fixture CODEX_HOME"));
+    assert!(
+        crate::app_package::registered_setup_is_ready(&codex_home)
+            .expect("validate the installed package and service receipt"),
+        "the test process must have package identity and completed service setup",
+    );
+    let cwd = tempfile::tempdir().expect("isolated command workspace");
+    current_thread_runtime().block_on(async {
+        let mut env_map: HashMap<String, String> = std::env::vars().collect();
+        env_map.insert("CODEX_REGISTERED_TEST".into(), "REGISTERED-ENV-OK".into());
+        let spawned = spawn_windows_sandbox_session_elevated_for_permission_profile(
+            &PermissionProfile::workspace_write(),
+            workspace_roots_for(cwd.path()).as_slice(),
+            &codex_home,
+            vec![
+                "C:\\Windows\\System32\\cmd.exe".into(),
+                "/d".into(),
+                "/c".into(),
+                "echo %CODEX_REGISTERED_TEST%& exit /b 23".into(),
+            ],
+            cwd.path(),
+            env_map,
+            /*proxy_enforced*/ false,
+            /*network_proxy_restricting_sid*/ None,
+            Some(5_000),
+            /*read_roots_override*/ None,
+            /*read_roots_include_platform_defaults*/ true,
+            /*write_roots_override*/ None,
+            &[],
+            &[],
+            /*tty*/ false,
+            /*stdin_open*/ false,
+        )
+        .await
+        .expect("launch through the service-recorded alias and authenticated pipes");
+        let (stdout, exit_code) =
+            collect_stdout_and_exit(spawned, &codex_home, Duration::from_secs(10)).await;
+        assert_eq!(
+            (
+                String::from_utf8(stdout).expect("command output"),
+                exit_code
+            ),
+            ("REGISTERED-ENV-OK\r\n".to_owned(), 23),
+        );
     });
 }
 
@@ -468,12 +429,11 @@ fn legacy_non_tty_cmd_rejects_deny_read_overrides() {
             ],
             cwd.as_path(),
             HashMap::new(),
-            /*timeout_ms*/ Some(5_000),
-            /*additional_deny_read_paths*/ std::slice::from_ref(&secret_path),
-            /*additional_deny_write_paths*/ &[],
+            Some(5_000),
+            std::slice::from_ref(&secret_path),
+            &[],
             /*tty*/ false,
             /*stdin_open*/ false,
-            /*use_private_desktop*/ true,
         )
         .await
         .expect_err("legacy deny-read should require the elevated backend");
@@ -486,7 +446,7 @@ fn legacy_non_tty_cmd_rejects_deny_read_overrides() {
 }
 
 #[test]
-fn legacy_non_tty_powershell_emits_output() {
+fn legacy_non_tty_powershell_interrupt_terminates_process() {
     let Some(pwsh) = pwsh_path() else {
         return;
     };
@@ -505,26 +465,54 @@ fn legacy_non_tty_powershell_emits_output() {
                 pwsh.display().to_string(),
                 "-NoProfile".to_string(),
                 "-Command".to_string(),
-                "Write-Output LEGACY-NONTTY-DIRECT".to_string(),
+                format!("{ASSERT_NO_CONSOLE} Write-Output LEGACY-NONTTY-DIRECT; [System.Threading.ManualResetEvent]::new($false).WaitOne()"),
             ],
             cwd.as_path(),
             HashMap::new(),
-            /*timeout_ms*/ Some(5_000),
-            /*additional_deny_read_paths*/ &[],
-            /*additional_deny_write_paths*/ &[],
+            /*timeout_ms*/ None,
+            &[],
+            &[],
             /*tty*/ false,
             /*stdin_open*/ false,
-            /*use_private_desktop*/ true,
-        )
+            )
         .await
         .expect("spawn legacy non-tty powershell session");
         println!("pwsh spawn returned");
-        let (stdout, exit_code) =
-            collect_stdout_and_exit(spawned, codex_home.path(), Duration::from_secs(10)).await;
-        println!("pwsh collect returned exit_code={exit_code}");
-        let stdout = String::from_utf8_lossy(&stdout);
-        assert_eq!(exit_code, 0, "stdout={stdout:?}");
-        assert!(stdout.contains("LEGACY-NONTTY-DIRECT"), "stdout={stdout:?}");
+        let codex_utils_pty::SpawnedProcess {
+            session,
+            mut stdout_rx,
+            stderr_rx: _stderr_rx,
+            exit_rx,
+        } = spawned;
+        timeout(Duration::from_secs(5), async {
+            let mut stdout = Vec::new();
+            while let Some(chunk) = stdout_rx.recv().await {
+                stdout.extend(chunk);
+                if String::from_utf8_lossy(&stdout).contains("LEGACY-NONTTY-DIRECT") {
+                    return;
+                }
+            }
+            panic!(
+                "PowerShell exited before emitting its readiness marker\n{}",
+                sandbox_log(codex_home.path())
+            );
+        })
+        .await
+        .unwrap_or_else(|_| {
+            panic!(
+                "timed out waiting for PowerShell readiness marker\n{}",
+                sandbox_log(codex_home.path())
+            )
+        });
+
+        session
+            .signal(ProcessSignal::Interrupt)
+            .expect("interrupt should terminate the restricted-token process job");
+        let exit_code = timeout(Duration::from_secs(5), exit_rx)
+            .await
+            .unwrap_or_else(|_| panic!("timed out waiting for exit\n{}", sandbox_log(codex_home.path())))
+            .expect("interrupted process should report an exit code");
+        assert_eq!(exit_code, 1);
     });
 }
 
@@ -546,6 +534,7 @@ fn finish_driver_spawn_keeps_stdin_open_when_requested() {
                 terminator: None,
                 writer_handle: None,
                 resizer: None,
+                tty: false,
             },
             /*stdin_open*/ true,
         );
@@ -578,6 +567,7 @@ fn finish_driver_spawn_closes_stdin_when_not_requested() {
                 terminator: None,
                 writer_handle: None,
                 resizer: None,
+                tty: false,
             },
             /*stdin_open*/ false,
         );
@@ -623,7 +613,7 @@ fn runner_stdin_writer_sends_close_stdin_after_input_eof() {
         drop(writer_tx);
         writer_handle.await.expect("join stdin writer");
 
-        let frames = wait_for_frame_count(&frames_path, /*expected_frames*/ 2);
+        let frames = wait_for_frame_count(&frames_path, 2);
 
         match &frames[0] {
             Message::Stdin { payload } => {
@@ -662,7 +652,7 @@ fn runner_resizer_sends_resize_frame() {
         })
         .expect("send resize frame");
 
-        let frames = wait_for_frame_count(&frames_path, /*expected_frames*/ 1);
+        let frames = wait_for_frame_count(&frames_path, 1);
         match &frames[0] {
             Message::Resize { payload } => {
                 assert_eq!(payload.rows, 45);
@@ -696,7 +686,7 @@ fn legacy_capture_emits_output_and_preserves_descendant_after_normal_exit() {
         powershell_literal(&ready_marker),
     );
     let parent_command = format!(
-        "Write-Output LEGACY-CAPTURE-DIRECT; {}",
+        "{ASSERT_NO_CONSOLE} Write-Output LEGACY-CAPTURE-DIRECT; {}",
         start_powershell_child(&pwsh, codex_home.path(), &descendant_command, &parent_tail,),
     );
     let permission_profile = PermissionProfile::workspace_write();
@@ -714,7 +704,6 @@ fn legacy_capture_emits_output_and_preserves_descendant_after_normal_exit() {
         HashMap::new(),
         Some(10_000),
         /*cancellation*/ None,
-        /*use_private_desktop*/ true,
     )
     .expect("run legacy capture powershell");
     let descendant_pid = fs::read_to_string(&ready_marker)
@@ -745,16 +734,12 @@ fn legacy_capture_emits_output_and_preserves_descendant_after_normal_exit() {
 }
 
 #[test]
-fn legacy_write_restricted_deletion_limitation_is_explicit() {
-    let Some(pwsh) = pwsh_path() else {
-        eprintln!("skipping deletion characterization: PowerShell 7 is not installed");
-        return;
-    };
+fn legacy_workspace_write_delete_is_limited_to_writable_roots() {
     let _guard = legacy_process_test_guard();
     let runtime = current_thread_runtime();
     runtime.block_on(async move {
-        let (test_root, mut current_user_sid) =
-            declared_windows_test_root("legacy-delete-writable-roots");
+        // Keep writable roots out of USERPROFILE exclusions such as AppData.
+        let test_root = TempDir::new_in(sandbox_cwd()).expect("create legacy delete test root");
         let codex_home = sandbox_home("legacy-delete-writable-roots");
         let workspace = test_root.path().join("workspace");
         let temp_root = test_root.path().join("temp");
@@ -774,6 +759,21 @@ fn legacy_write_restricted_deletion_limitation_is_explicit() {
         fs::write(&temp_file, "temp").expect("seed TEMP file");
         fs::write(&tmp_file, "tmp").expect("seed TMP file");
         fs::write(&outside_file, "outside").expect("seed outside file");
+
+        let script = workspace.join("delete-fixtures.cmd");
+        fs::write(
+            &script,
+            concat!(
+                "@echo off\r\n",
+                "del /f /q \"%WORKSPACE_DELETE%\"\r\n",
+                "del /f /q \"%TEMP_DELETE%\"\r\n",
+                "del /f /q \"%TMP_DELETE%\"\r\n",
+                "del /f /q \"%OUTSIDE_DELETE%\"\r\n",
+                "rmdir \"%PROTECTED_GIT_DIR%\"\r\n",
+                "exit /b 0\r\n",
+            ),
+        )
+        .expect("write delete script");
 
         let env_map = HashMap::from([
             ("TEMP".to_string(), temp_root.to_string_lossy().into_owned()),
@@ -801,80 +801,15 @@ fn legacy_write_restricted_deletion_limitation_is_explicit() {
         ]);
 
         let permission_profile = PermissionProfile::workspace_write();
-        let permissions =
-            ResolvedWindowsSandboxPermissions::try_from_permission_profile_for_workspace_roots(
-                &permission_profile,
-                workspace_roots_for(workspace.as_path()).as_slice(),
-            )
-            .expect("resolve legacy delete permissions");
-        let capability_roots = legacy_session_capability_roots(
-            &permissions,
-            workspace.as_path(),
-            &env_map,
-            codex_home.path(),
-        );
-        let capability_sids = root_capability_sids(
-            codex_home.path(),
-            workspace.as_path(),
-            capability_roots,
-        )
-        .expect("resolve legacy delete capability SIDs");
-        let user_sid = current_user_sid.as_mut_ptr() as *mut c_void;
-        assert_eq!(
-            (
-                path_mask_allows(
-                    test_root.path(),
-                    &[user_sid],
-                    FILE_ALL_ACCESS,
-                    /*require_all_bits*/ true,
-                )
-                .expect("read normalized test root DACL"),
-                capability_sids.iter().all(|capability| {
-                    !path_mask_allows(
-                        &outside_file,
-                        &[capability.sid.as_ptr()],
-                        DELETE,
-                        /*require_all_bits*/ false,
-                    )
-                    .expect("read outside file DACL")
-                }),
-                capability_sids.iter().all(|capability| {
-                    !path_mask_allows(
-                        &outside_root,
-                        &[capability.sid.as_ptr()],
-                        FILE_DELETE_CHILD,
-                        /*require_all_bits*/ false,
-                    )
-                    .expect("read outside directory DACL")
-                }),
-            ),
-            (true, true, true),
-            "test fixture must grant its owner full control without granting deletion authority to sandbox capability SIDs"
-        );
         let spawned = spawn_windows_sandbox_session_legacy(
             &permission_profile,
             workspace_roots_for(workspace.as_path()).as_slice(),
             codex_home.path(),
             vec![
-                pwsh.display().to_string(),
-                "-NoLogo".to_string(),
-                "-NoProfile".to_string(),
-                "-NonInteractive".to_string(),
-                "-Command".to_string(),
-                concat!(
-                    "Remove-Item -LiteralPath $env:WORKSPACE_DELETE -Force ",
-                    "-ErrorAction SilentlyContinue; ",
-                    "Remove-Item -LiteralPath $env:TEMP_DELETE -Force ",
-                    "-ErrorAction SilentlyContinue; ",
-                    "Remove-Item -LiteralPath $env:TMP_DELETE -Force ",
-                    "-ErrorAction SilentlyContinue; ",
-                    "Remove-Item -LiteralPath $env:OUTSIDE_DELETE -Force ",
-                    "-ErrorAction SilentlyContinue; ",
-                    "Remove-Item -LiteralPath $env:PROTECTED_GIT_DIR -Recurse -Force ",
-                    "-ErrorAction SilentlyContinue; ",
-                    "exit 0",
-                )
-                .to_string(),
+                "C:\\Windows\\System32\\cmd.exe".to_string(),
+                "/d".to_string(),
+                "/c".to_string(),
+                script.display().to_string(),
             ],
             workspace.as_path(),
             env_map,
@@ -883,7 +818,6 @@ fn legacy_write_restricted_deletion_limitation_is_explicit() {
             &[],
             /*tty*/ false,
             /*stdin_open*/ false,
-            /*use_private_desktop*/ true,
         )
         .await
         .expect("spawn legacy delete session");
@@ -892,10 +826,6 @@ fn legacy_write_restricted_deletion_limitation_is_explicit() {
                 .await;
         let stdout = String::from_utf8_lossy(&stdout);
 
-        // WRITE_RESTRICTED does not apply restricting SIDs to standalone
-        // DELETE/FILE_DELETE_CHILD checks. Keep this normalized fixture as a
-        // characterization until launch dependencies have explicit capability
-        // read access and the legacy token can safely use full restriction.
         assert_eq!(
             (
                 exit_code,
@@ -905,7 +835,7 @@ fn legacy_write_restricted_deletion_limitation_is_explicit() {
                 fs::read_to_string(&outside_file).ok(),
                 protected_git_dir.is_dir(),
             ),
-            (0, false, false, false, None, false),
+            (0, false, false, false, Some("outside".to_string()), true),
             "stdout={stdout:?}\n{}",
             sandbox_log(codex_home.path())
         );
@@ -969,7 +899,6 @@ fn legacy_capture_cancellation_terminates_descendants_without_timeout() {
         HashMap::new(),
         Some(30_000),
         /*cancellation*/ Some(cancellation),
-        /*use_private_desktop*/ true,
     )
     .expect("run legacy capture powershell with cancellation");
 
@@ -1052,7 +981,6 @@ async fn assert_legacy_tty_descendant_lifecycle(
         &[],
         /*tty*/ true,
         /*stdin_open*/ false,
-        /*use_private_desktop*/ true,
     )
     .await
     .expect("spawn legacy sandbox ConPTY lifecycle test");
@@ -1131,12 +1059,11 @@ fn legacy_tty_powershell_emits_output_and_accepts_input() {
             ],
             cwd.as_path(),
             HashMap::new(),
-            /*timeout_ms*/ Some(10_000),
-            /*additional_deny_read_paths*/ &[],
-            /*additional_deny_write_paths*/ &[],
+            Some(10_000),
+            &[],
+            &[],
             /*tty*/ true,
             /*stdin_open*/ true,
-            /*use_private_desktop*/ true,
         )
         .await
         .expect("spawn legacy tty powershell session");
@@ -1161,7 +1088,6 @@ fn legacy_tty_powershell_emits_output_and_accepts_input() {
         assert!(stdout.contains("second"), "stdout={stdout:?}");
     });
 }
-
 #[test]
 #[ignore = "TODO: legacy ConPTY cmd.exe exits with STATUS_DLL_INIT_FAILED in CI"]
 fn legacy_tty_cmd_emits_output_and_accepts_input() {
@@ -1182,70 +1108,15 @@ fn legacy_tty_cmd_emits_output_and_accepts_input() {
             ],
             cwd.as_path(),
             HashMap::new(),
-            /*timeout_ms*/ Some(10_000),
-            /*additional_deny_read_paths*/ &[],
-            /*additional_deny_write_paths*/ &[],
+            Some(10_000),
+            &[],
+            &[],
             /*tty*/ true,
             /*stdin_open*/ true,
-            /*use_private_desktop*/ true,
         )
         .await
         .expect("spawn legacy tty cmd session");
         println!("tty cmd spawn returned");
-
-        let writer = spawned.session.writer_sender();
-        writer
-            .send(b"echo second\n".to_vec())
-            .await
-            .expect("send second command");
-        writer
-            .send(b"exit\n".to_vec())
-            .await
-            .expect("send exit command");
-        spawned.session.close_stdin();
-
-        let (stdout, exit_code) =
-            collect_stdout_and_exit(spawned, codex_home.path(), Duration::from_secs(15)).await;
-        let stdout = String::from_utf8_lossy(&stdout);
-        assert_eq!(exit_code, 0, "stdout={stdout:?}");
-        assert!(stdout.contains("ready"), "stdout={stdout:?}");
-        assert!(stdout.contains("second"), "stdout={stdout:?}");
-    });
-}
-
-#[test]
-#[ignore = "TODO: legacy ConPTY cmd.exe exits with STATUS_DLL_INIT_FAILED in CI"]
-fn legacy_tty_cmd_default_desktop_emits_output_and_accepts_input() {
-    let runtime = current_thread_runtime();
-    runtime.block_on(async move {
-        let cwd = sandbox_cwd();
-        let codex_home = sandbox_home("legacy-tty-cmd-default-desktop");
-        println!(
-            "tty cmd default desktop codex_home={}",
-            codex_home.path().display()
-        );
-        let permission_profile = PermissionProfile::workspace_write();
-        let spawned = spawn_windows_sandbox_session_legacy(
-            &permission_profile,
-            workspace_roots_for(cwd.as_path()).as_slice(),
-            codex_home.path(),
-            vec![
-                "C:\\Windows\\System32\\cmd.exe".to_string(),
-                "/K".to_string(),
-                "echo ready".to_string(),
-            ],
-            cwd.as_path(),
-            HashMap::new(),
-            /*timeout_ms*/ Some(10_000),
-            /*additional_deny_read_paths*/ &[],
-            /*additional_deny_write_paths*/ &[],
-            /*tty*/ true,
-            /*stdin_open*/ true,
-            /*use_private_desktop*/ false,
-        )
-        .await
-        .expect("spawn legacy tty cmd session");
-        println!("tty cmd default desktop spawn returned");
 
         let writer = spawned.session.writer_sender();
         writer

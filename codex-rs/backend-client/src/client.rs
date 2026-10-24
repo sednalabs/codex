@@ -12,8 +12,10 @@ use anyhow::Result;
 use codex_api::SharedAuthProvider;
 use codex_http_client::ClientRouteClass;
 use codex_http_client::HttpClientFactory;
+use codex_http_client::OutboundProxyPolicy;
+use codex_http_client::RequestBuilder;
 use codex_http_client::RouteAwareClientPool;
-use codex_http_client::RouteAwareRequestBuilder;
+use codex_http_client::RouteAwareRequestError;
 use codex_login::CodexAuth;
 use codex_login::default_client::get_codex_user_agent;
 use codex_protocol::account::PlanType as AccountPlanType;
@@ -33,11 +35,25 @@ use http::header::USER_AGENT;
 use serde::Serialize;
 use serde::de::DeserializeOwned;
 use std::fmt;
+use std::time::Duration;
 
+pub(crate) mod analytics;
+mod chatgpt_turn_cost;
+pub(crate) mod plan_history;
+pub(crate) mod profile;
 mod rate_limit_resets;
+pub(crate) mod task_usage;
+mod thread_usage;
+pub(crate) mod turn_usage;
+
+pub use chatgpt_turn_cost::ChatgptThreadTurnCosts;
+pub use chatgpt_turn_cost::ChatgptTurnCost;
+pub use thread_usage::ThreadUsage;
+pub use thread_usage::ThreadUsageBreakdownGroup;
 
 #[derive(Debug)]
 pub enum RequestError {
+    Policy(codex_http_client::NetworkPolicyDenied),
     UnexpectedStatus {
         method: String,
         url: String,
@@ -52,7 +68,7 @@ impl RequestError {
     pub fn status(&self) -> Option<StatusCode> {
         match self {
             Self::UnexpectedStatus { status, .. } => Some(*status),
-            Self::Other(_) => None,
+            Self::Policy(_) | Self::Other(_) => None,
         }
     }
 
@@ -64,6 +80,7 @@ impl RequestError {
 impl fmt::Display for RequestError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
+            Self::Policy(denied) => denied.fmt(f),
             Self::UnexpectedStatus {
                 method,
                 url,
@@ -82,6 +99,7 @@ impl fmt::Display for RequestError {
 impl std::error::Error for RequestError {
     fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
         match self {
+            Self::Policy(denied) => Some(denied),
             Self::UnexpectedStatus { .. } => None,
             Self::Other(err) => Some(err.as_ref()),
         }
@@ -91,6 +109,20 @@ impl std::error::Error for RequestError {
 impl From<anyhow::Error> for RequestError {
     fn from(err: anyhow::Error) -> Self {
         Self::Other(err)
+    }
+}
+
+impl From<codex_http_client::HttpError> for RequestError {
+    fn from(error: codex_http_client::HttpError) -> Self {
+        match error {
+            codex_http_client::HttpError::Policy(denied) => Self::Policy(denied),
+            error @ (codex_http_client::HttpError::Request(_)
+            | codex_http_client::HttpError::Route(_)
+            | codex_http_client::HttpError::Build(_)
+            | codex_http_client::HttpError::UnsupportedRedirectScheme(_)
+            | codex_http_client::HttpError::TooManyRedirects
+            | codex_http_client::HttpError::Timeout) => Self::Other(error.into()),
+        }
     }
 }
 
@@ -133,6 +165,7 @@ pub struct Client {
     chatgpt_account_id: Option<String>,
     chatgpt_account_is_fedramp: bool,
     path_style: PathStyle,
+    config_server_base_url: Option<String>,
 }
 
 impl fmt::Debug for Client {
@@ -153,7 +186,43 @@ impl fmt::Debug for Client {
 
 impl Client {
     pub fn new(base_url: impl Into<String>, http_client_factory: HttpClientFactory) -> Self {
-        let mut base_url = base_url.into();
+        let http = RouteAwareClientPool::with_chatgpt_cloudflare_cookies_without_request_logging(
+            http_client_factory,
+            ClientRouteClass::Api,
+        );
+        Self::with_http(base_url.into(), http)
+    }
+
+    /// Creates a client that never forwards its credentials to a redirect destination.
+    pub fn new_without_redirects(
+        base_url: impl Into<String>,
+        http_client_factory: HttpClientFactory,
+    ) -> Self {
+        let http =
+            RouteAwareClientPool::with_chatgpt_cloudflare_cookies_without_redirects_or_request_logging(
+                http_client_factory,
+                ClientRouteClass::Api,
+            );
+        Self::with_http(base_url.into(), http)
+    }
+
+    pub fn for_config_endpoint(
+        base_url: impl Into<String>,
+        http_client_factory: HttpClientFactory,
+    ) -> Self {
+        let base_url = base_url.into();
+        let mut client = Self::with_http(
+            base_url.clone(),
+            RouteAwareClientPool::new_without_redirects_or_request_logging(
+                http_client_factory,
+                ClientRouteClass::Api,
+            ),
+        );
+        client.config_server_base_url = Some(base_url);
+        client
+    }
+
+    fn with_http(mut base_url: String, http: RouteAwareClientPool) -> Self {
         // Normalize common ChatGPT hostnames to include /backend-api so we hit the WHAM paths.
         // Also trim trailing slashes for consistent URL building.
         while base_url.ends_with('/') {
@@ -165,10 +234,6 @@ impl Client {
         {
             base_url = format!("{base_url}/backend-api");
         }
-        let http = RouteAwareClientPool::with_chatgpt_cloudflare_cookies_without_request_logging(
-            http_client_factory,
-            ClientRouteClass::Api,
-        );
         let path_style = PathStyle::from_base_url(&base_url);
         Self {
             base_url,
@@ -178,6 +243,7 @@ impl Client {
             chatgpt_account_id: None,
             chatgpt_account_is_fedramp: false,
             path_style,
+            config_server_base_url: None,
         }
     }
 
@@ -194,6 +260,12 @@ impl Client {
     pub fn with_auth_provider(mut self, auth: SharedAuthProvider) -> Self {
         self.auth_provider = auth;
         self
+    }
+
+    pub fn with_bearer_token(self, token: String) -> Self {
+        self.with_auth_provider(std::sync::Arc::new(
+            codex_model_provider::BearerAuthProvider::new(token),
+        ))
     }
 
     pub fn with_user_agent(mut self, ua: impl Into<String>) -> Self {
@@ -218,14 +290,14 @@ impl Client {
         self
     }
 
-    fn headers(&self) -> HeaderMap {
+    fn headers(&self) -> Result<HeaderMap> {
         let mut h = HeaderMap::new();
         if let Some(ua) = &self.user_agent {
             h.insert(USER_AGENT, ua.clone());
         } else {
             h.insert(USER_AGENT, HeaderValue::from_static("codex-cli"));
         }
-        self.auth_provider.add_auth_headers(&mut h);
+        self.auth_provider.add_auth_headers(&mut h)?;
         if let Some(acc) = &self.chatgpt_account_id
             && let Ok(name) = HeaderName::from_bytes(b"ChatGPT-Account-Id")
             && let Ok(hv) = HeaderValue::from_str(acc)
@@ -237,16 +309,16 @@ impl Client {
         {
             h.insert(name, HeaderValue::from_static("true"));
         }
-        h
+        Ok(h)
     }
 
-    fn request(&self, method: Method, url: &str) -> RouteAwareRequestBuilder {
+    fn request(&self, method: Method, url: &str) -> RequestBuilder {
         self.http.request(method, url)
     }
 
     async fn exec_request(
         &self,
-        req: RouteAwareRequestBuilder,
+        req: RequestBuilder,
         method: &str,
         url: &str,
     ) -> Result<(String, String)> {
@@ -258,7 +330,7 @@ impl Client {
             .and_then(|v| v.to_str().ok())
             .unwrap_or("")
             .to_string();
-        let body = res.text().await.unwrap_or_default();
+        let body = res.text().await.map_err(anyhow::Error::from)?;
         if !status.is_success() {
             anyhow::bail!("{method} {url} failed: {status}; content-type={ct}; body={body}");
         }
@@ -267,11 +339,11 @@ impl Client {
 
     async fn exec_request_detailed(
         &self,
-        req: RouteAwareRequestBuilder,
+        req: RequestBuilder,
         method: &str,
         url: &str,
     ) -> std::result::Result<(String, String), RequestError> {
-        let res = req.send().await.map_err(anyhow::Error::from)?;
+        let res = req.send().await?;
         let status = res.status();
         let content_type = res
             .headers()
@@ -279,7 +351,7 @@ impl Client {
             .and_then(|v| v.to_str().ok())
             .unwrap_or("")
             .to_string();
-        let body = res.text().await.unwrap_or_default();
+        let body = res.text().await?;
         if !status.is_success() {
             return Err(RequestError::UnexpectedStatus {
                 method: method.to_string(),
@@ -290,6 +362,41 @@ impl Client {
             });
         }
         Ok((body, content_type))
+    }
+
+    async fn exec_bootstrap_get(
+        &self,
+        url: &str,
+    ) -> std::result::Result<(String, String), RequestError> {
+        let request = self.request(Method::GET, url).headers(self.headers()?);
+        if !self.http.allows_system_proxy_fallback() {
+            return self.exec_request_detailed(request, "GET", url).await;
+        }
+
+        // Bound the complete GET, including its body, to leave time for proxy discovery and retry
+        // within the cloud loader's startup budget. GETs are safe to retry after a response timeout.
+        match tokio::time::timeout(
+            Duration::from_secs(5),
+            self.exec_request_detailed(request, "GET", url),
+        )
+        .await
+        {
+            Ok(Err(RequestError::Other(error)))
+                if error
+                    .downcast_ref::<RouteAwareRequestError>()
+                    .is_some_and(|error| {
+                        error.is_connect() || error.is_timeout() || error.is_request()
+                    }) => {}
+            Err(_) => {}
+            Ok(response) => return response,
+        }
+
+        let http = self
+            .http
+            .clone()
+            .with_outbound_proxy_policy(OutboundProxyPolicy::RespectSystemProxy);
+        let request = http.get(url).headers(self.headers()?);
+        self.exec_request_detailed(request, "GET", url).await
     }
 
     fn decode_json<T: DeserializeOwned>(&self, url: &str, ct: &str, body: &str) -> Result<T> {
@@ -314,19 +421,21 @@ impl Client {
         Ok(self.get_rate_limits_with_reset_credits().await?.rate_limits)
     }
 
-    pub async fn get_accounts_check(&self) -> Result<AccountsCheckResponse> {
+    pub async fn get_accounts_check(
+        &self,
+    ) -> std::result::Result<AccountsCheckResponse, RequestError> {
         let url = match self.path_style {
             PathStyle::CodexApi => format!("{}/api/codex/accounts/check", self.base_url),
             PathStyle::ChatGptApi => format!("{}/wham/accounts/check", self.base_url),
         };
-        let req = self.request(Method::GET, &url).headers(self.headers());
-        let (body, ct) = self.exec_request(req, "GET", &url).await?;
-        self.decode_json(&url, &ct, &body)
+        let (body, _) = self.exec_bootstrap_get(&url).await?;
+        serde_json::from_str(&body)
+            .map_err(|_| RequestError::Other(anyhow::anyhow!("Invalid accounts response.")))
     }
 
     pub async fn get_token_usage_profile(&self) -> Result<TokenUsageProfile> {
         let url = self.token_usage_profile_url();
-        let req = self.request(Method::GET, &url).headers(self.headers());
+        let req = self.request(Method::GET, &url).headers(self.headers()?);
         let (body, ct) = self.exec_request(req, "GET", &url).await?;
         self.decode_json(&url, &ct, &body)
     }
@@ -345,7 +454,7 @@ impl Client {
         let url = self.send_add_credits_nudge_email_url();
         let req = self
             .request(Method::POST, &url)
-            .headers(self.headers())
+            .headers(self.headers()?)
             .header(CONTENT_TYPE, HeaderValue::from_static("application/json"))
             .json(&SendAddCreditsNudgeEmailRequest { credit_type });
         self.exec_request_detailed(req, "POST", &url).await?;
@@ -360,7 +469,7 @@ impl Client {
         cursor: Option<&str>,
     ) -> Result<PaginatedListTaskListItem> {
         let url = self.list_tasks_url(limit, task_filter, environment_id, cursor)?;
-        let req = self.request(Method::GET, &url).headers(self.headers());
+        let req = self.request(Method::GET, &url).headers(self.headers()?);
         let (body, ct) = self.exec_request(req, "GET", &url).await?;
         self.decode_json::<PaginatedListTaskListItem>(&url, &ct, &body)
     }
@@ -412,7 +521,7 @@ impl Client {
             PathStyle::CodexApi => format!("{}/api/codex/tasks/{}", self.base_url, task_id),
             PathStyle::ChatGptApi => format!("{}/wham/tasks/{}", self.base_url, task_id),
         };
-        let req = self.request(Method::GET, &url).headers(self.headers());
+        let req = self.request(Method::GET, &url).headers(self.headers()?);
         let (body, ct) = self.exec_request(req, "GET", &url).await?;
         let parsed: CodeTaskDetailsResponse = self.decode_json(&url, &ct, &body)?;
         Ok((parsed, body, ct))
@@ -433,26 +542,33 @@ impl Client {
                 self.base_url, task_id, turn_id
             ),
         };
-        let req = self.request(Method::GET, &url).headers(self.headers());
+        let req = self.request(Method::GET, &url).headers(self.headers()?);
         let (body, ct) = self.exec_request(req, "GET", &url).await?;
         self.decode_json::<TurnAttemptsSiblingTurnsResponse>(&url, &ct, &body)
     }
 
-    /// Fetch the selected cloud-managed config bundle from codex-backend.
-    ///
     /// `GET /api/codex/config/bundle` (Codex API style) or
-    /// `GET /wham/config/bundle` (ChatGPT backend-api style).
+    /// `GET /wham/config/bundle` (ChatGPT backend-api style), or
+    /// `GET /codex/config/bundle` beneath a custom config server's base URL.
     pub async fn get_config_bundle(
         &self,
     ) -> std::result::Result<ConfigBundleResponse, RequestError> {
-        let url = match self.path_style {
-            PathStyle::CodexApi => format!("{}/api/codex/config/bundle", self.base_url),
-            PathStyle::ChatGptApi => format!("{}/wham/config/bundle", self.base_url),
-        };
-        let req = self.request(Method::GET, &url).headers(self.headers());
-        let (body, ct) = self.exec_request_detailed(req, "GET", &url).await?;
+        let url = self.config_bundle_url();
+        let (body, ct) = self.exec_bootstrap_get(&url).await?;
         self.decode_json::<ConfigBundleResponse>(&url, &ct, &body)
             .map_err(RequestError::from)
+    }
+
+    /// Returns the normalized discovery endpoint used by this client.
+    pub fn config_bundle_url(&self) -> String {
+        if let Some(base_url) = &self.config_server_base_url {
+            let base_url = base_url.strip_suffix('/').unwrap_or(base_url);
+            return format!("{base_url}/codex/config/bundle");
+        }
+        match self.path_style {
+            PathStyle::CodexApi => format!("{}/api/codex/config/bundle", self.base_url),
+            PathStyle::ChatGptApi => format!("{}/wham/config/bundle", self.base_url),
+        }
     }
 
     /// Fetch authenticated Codex user settings from the active backend route.
@@ -465,7 +581,7 @@ impl Client {
         let url = self.user_settings_url();
         let req = self
             .request(Method::GET, &url)
-            .headers(self.headers())
+            .headers(self.headers()?)
             .header(
                 CACHE_CONTROL,
                 HeaderValue::from_static("no-cache, no-store"),
@@ -481,7 +597,7 @@ impl Client {
         let url = self.workspace_messages_url();
         let req = self
             .request(Method::GET, &url)
-            .headers(self.headers())
+            .headers(self.headers()?)
             .header(CACHE_CONTROL, HeaderValue::from_static("no-store"));
         let (body, ct) = self.exec_request_detailed(req, "GET", &url).await?;
         self.decode_json::<CodexWorkspaceMessagesResponse>(&url, &ct, &body)
@@ -497,7 +613,7 @@ impl Client {
         };
         let req = self
             .request(Method::POST, &url)
-            .headers(self.headers())
+            .headers(self.headers()?)
             .header(CONTENT_TYPE, HeaderValue::from_static("application/json"))
             .json(&request_body);
         let (body, ct) = self.exec_request(req, "POST", &url).await?;
@@ -541,19 +657,28 @@ impl Client {
             rate_limit_reached_type,
         )];
         if let Some(additional) = payload.additional_rate_limits.flatten() {
-            snapshots.extend(additional.into_iter().map(|details| {
-                Self::make_rate_limit_snapshot(
-                    Some(details.metered_feature),
-                    Some(details.limit_name),
-                    details.rate_limit.flatten().map(|rate_limit| *rate_limit),
-                    /*credits*/ None,
-                    /*spend_control*/ None,
-                    plan_type,
-                    /*rate_limit_reached_type*/ None,
-                )
-            }));
+            snapshots.extend(
+                additional
+                    .into_iter()
+                    .map(|details| Self::make_additional_rate_limit_snapshot(details, plan_type)),
+            );
         }
         snapshots
+    }
+
+    fn make_additional_rate_limit_snapshot(
+        details: codex_backend_openapi_models::models::AdditionalRateLimitDetails,
+        plan_type: Option<AccountPlanType>,
+    ) -> RateLimitSnapshot {
+        Self::make_rate_limit_snapshot(
+            Some(details.metered_feature),
+            Some(details.limit_name),
+            details.rate_limit.flatten().map(|rate_limit| *rate_limit),
+            /*credits*/ None,
+            /*spend_control*/ None,
+            plan_type,
+            /*rate_limit_reached_type*/ None,
+        )
     }
 
     fn make_rate_limit_snapshot(
@@ -579,6 +704,7 @@ impl Client {
         RateLimitSnapshot {
             limit_id,
             limit_name,
+            normal_model_slug: None,
             primary,
             secondary,
             credits: Self::map_credits(credits),
@@ -684,17 +810,28 @@ impl Client {
             crate::types::PlanType::Plus => AccountPlanType::Plus,
             crate::types::PlanType::Pro => AccountPlanType::Pro,
             crate::types::PlanType::ProLite => AccountPlanType::ProLite,
+            crate::types::PlanType::ProMax => AccountPlanType::ProMax,
             crate::types::PlanType::Team => AccountPlanType::Team,
+            crate::types::PlanType::SelfServeBusinessProLite => {
+                AccountPlanType::SelfServeBusinessProLite
+            }
             crate::types::PlanType::SelfServeBusinessUsageBased => {
                 AccountPlanType::SelfServeBusinessUsageBased
             }
             crate::types::PlanType::Business => AccountPlanType::Business,
             crate::types::PlanType::Ent26 => AccountPlanType::Ent26,
+            crate::types::PlanType::EnterpriseCbpAutomation => {
+                AccountPlanType::EnterpriseCbpAutomation
+            }
             crate::types::PlanType::EnterpriseCbpUsageBased => {
                 AccountPlanType::EnterpriseCbpUsageBased
             }
             crate::types::PlanType::Enterprise => AccountPlanType::Enterprise,
             crate::types::PlanType::Edu | crate::types::PlanType::Education => AccountPlanType::Edu,
+            crate::types::PlanType::EduPlus => AccountPlanType::EduPlus,
+            crate::types::PlanType::EduPro => AccountPlanType::EduPro,
+            crate::types::PlanType::Sci => AccountPlanType::Sci,
+            crate::types::PlanType::SciPlus => AccountPlanType::SciPlus,
             crate::types::PlanType::Guest
             | crate::types::PlanType::FreeWorkspace
             | crate::types::PlanType::Quorum
@@ -732,7 +869,14 @@ mod tests {
     use wiremock::matchers::path;
 
     #[test]
-    fn map_plan_type_supports_usage_based_business_variants() {
+    fn map_plan_type_supports_business_variants() {
+        let business_prolite =
+            serde_json::from_str::<crate::types::PlanType>("\"self_serve_business_prolite\"")
+                .expect("business ProLite should deserialize");
+        assert_eq!(
+            Client::map_plan_type(business_prolite),
+            AccountPlanType::SelfServeBusinessProLite
+        );
         assert_eq!(
             Client::map_plan_type(crate::types::PlanType::SelfServeBusinessUsageBased),
             AccountPlanType::SelfServeBusinessUsageBased
@@ -740,6 +884,10 @@ mod tests {
         assert_eq!(
             Client::map_plan_type(crate::types::PlanType::EnterpriseCbpUsageBased),
             AccountPlanType::EnterpriseCbpUsageBased
+        );
+        assert_eq!(
+            Client::map_plan_type(crate::types::PlanType::EnterpriseCbpAutomation),
+            AccountPlanType::EnterpriseCbpAutomation
         );
         let ent26 = serde_json::from_str::<crate::types::PlanType>("\"ent26\"")
             .expect("ent26 backend plan should deserialize");
@@ -910,6 +1058,7 @@ mod tests {
             RateLimitSnapshot {
                 limit_id: Some("codex_other".to_string()),
                 limit_name: Some("codex_other".to_string()),
+                normal_model_slug: None,
                 primary: Some(RateLimitWindow {
                     used_percent: 90.0,
                     window_minutes: Some(60),
@@ -925,6 +1074,7 @@ mod tests {
             RateLimitSnapshot {
                 limit_id: Some("codex".to_string()),
                 limit_name: Some("codex".to_string()),
+                normal_model_slug: None,
                 primary: Some(RateLimitWindow {
                     used_percent: 10.0,
                     window_minutes: Some(60),
@@ -1132,7 +1282,7 @@ mod tests {
             &auth,
             HttpClientFactory::new(codex_http_client::OutboundProxyPolicy::ReqwestDefault),
         );
-        let headers = client.headers();
+        let headers = client.headers().unwrap();
 
         assert_eq!(
             [
@@ -1159,6 +1309,7 @@ mod tests {
             chatgpt_account_id: None,
             chatgpt_account_is_fedramp: false,
             path_style,
+            config_server_base_url: None,
         }
     }
 }

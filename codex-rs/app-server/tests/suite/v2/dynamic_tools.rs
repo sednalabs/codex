@@ -10,6 +10,9 @@ use codex_app_server_protocol::DynamicToolCallOutputContentItem;
 use codex_app_server_protocol::DynamicToolCallParams;
 use codex_app_server_protocol::DynamicToolCallResponse;
 use codex_app_server_protocol::DynamicToolCallStatus;
+use codex_app_server_protocol::DynamicToolFunctionSpec;
+use codex_app_server_protocol::DynamicToolNamespaceSpec;
+use codex_app_server_protocol::DynamicToolNamespaceTool;
 use codex_app_server_protocol::DynamicToolSpec;
 use codex_app_server_protocol::ItemCompletedNotification;
 use codex_app_server_protocol::ItemStartedNotification;
@@ -27,6 +30,7 @@ use codex_protocol::models::DEFAULT_IMAGE_DETAIL;
 use codex_protocol::models::FunctionCallOutputBody;
 use codex_protocol::models::FunctionCallOutputContentItem;
 use codex_protocol::models::FunctionCallOutputPayload;
+use codex_protocol::models::ImageReference;
 use codex_protocol::openai_models::InputModality;
 use core_test_support::load_default_config_for_test;
 use core_test_support::responses;
@@ -51,9 +55,8 @@ const DEFAULT_READ_TIMEOUT: Duration = Duration::from_secs(60);
 #[cfg(not(any(target_os = "macos", windows)))]
 const DEFAULT_READ_TIMEOUT: Duration = Duration::from_secs(10);
 
-/// Ensures dynamic tool specs are serialized into the model request payload.
 #[tokio::test]
-async fn thread_start_injects_dynamic_tools_into_model_requests() -> Result<()> {
+async fn thread_start_normalizes_legacy_dynamic_tools_into_model_request() -> Result<()> {
     let responses = vec![create_final_assistant_message_sse_response("Done")?];
     let server = create_mock_responses_server_sequence_unchecked(responses).await;
 
@@ -67,118 +70,45 @@ async fn thread_start_injects_dynamic_tools_into_model_requests() -> Result<()> 
         .await?;
     timeout(DEFAULT_READ_TIMEOUT, mcp.initialize()).await??;
 
-    // Use a minimal JSON schema so we can assert the tool payload round-trips.
-    let input_schema = json!({
+    let visible_schema = json!({
         "type": "object",
         "properties": {
-            "city": { "type": "string" }
+            "ticket_id": { "type": "string" }
         },
-        "required": ["city"],
+        "required": ["ticket_id"],
         "additionalProperties": false,
     });
-    let dynamic_tool = DynamicToolSpec {
-        namespace: None,
-        name: "demo_tool".to_string(),
-        description: "Demo dynamic tool".to_string(),
-        input_schema: input_schema.clone(),
-        defer_loading: false,
-        persist_on_resume: true,
-        capability: None,
-    };
-
-    // Thread start injects dynamic tools into the thread's tool registry.
     let thread_req = mcp
-        .send_thread_start_request(ThreadStartParams {
-            dynamic_tools: Some(vec![dynamic_tool.clone()]),
-            ..Default::default()
-        })
-        .await?;
-    let thread_resp: JSONRPCResponse = timeout(
-        DEFAULT_READ_TIMEOUT,
-        mcp.read_stream_until_response_message(RequestId::Integer(thread_req)),
-    )
-    .await??;
-    let ThreadStartResponse { thread, .. } = to_response::<ThreadStartResponse>(thread_resp)?;
-
-    // Start a turn so a model request is issued.
-    let turn_req = mcp
-        .send_turn_start_request(TurnStartParams {
-            thread_id: thread.id.clone(),
-            client_user_message_id: None,
-            input: vec![V2UserInput::Text {
-                text: "Hello".to_string(),
-                text_elements: Vec::new(),
-            }],
-            ..Default::default()
-        })
-        .await?;
-    let turn_resp: JSONRPCResponse = timeout(
-        DEFAULT_READ_TIMEOUT,
-        mcp.read_stream_until_response_message(RequestId::Integer(turn_req)),
-    )
-    .await??;
-    let _turn: TurnStartResponse = to_response::<TurnStartResponse>(turn_resp)?;
-
-    timeout(
-        DEFAULT_READ_TIMEOUT,
-        mcp.read_stream_until_notification_message("turn/completed"),
-    )
-    .await??;
-
-    // Inspect the captured model request to assert the tool spec made it through.
-    let bodies = responses_bodies(&server).await?;
-    let body = bodies
-        .first()
-        .context("expected at least one responses request")?;
-    let tool = find_tool(body, &dynamic_tool.name)
-        .context("expected dynamic tool to be injected into request")?;
-
-    assert_eq!(
-        tool.get("description"),
-        Some(&Value::String(dynamic_tool.description.clone()))
-    );
-    assert_eq!(tool.get("parameters"), Some(&input_schema));
-
-    Ok(())
-}
-
-#[tokio::test]
-async fn thread_start_keeps_hidden_dynamic_tools_out_of_model_requests() -> Result<()> {
-    let responses = vec![create_final_assistant_message_sse_response("Done")?];
-    let server = create_mock_responses_server_sequence_unchecked(responses).await;
-
-    let codex_home = TempDir::new()?;
-    MockResponsesConfig::new(&server.uri()).write(codex_home.path())?;
-
-    let mut mcp = TestAppServer::builder()
-        .with_codex_home(codex_home.path())
-        .without_auto_env()
-        .build()
-        .await?;
-    timeout(DEFAULT_READ_TIMEOUT, mcp.initialize()).await??;
-
-    let dynamic_tool = DynamicToolSpec {
-        namespace: Some("codex_app".to_string()),
-        name: "hidden_tool".to_string(),
-        description: "Hidden dynamic tool".to_string(),
-        input_schema: json!({
-            "type": "object",
-            "properties": {
-                "city": { "type": "string" }
-            },
-            "required": ["city"],
-            "additionalProperties": false,
-        }),
-        defer_loading: true,
-        persist_on_resume: true,
-        capability: None,
-    };
-
-    let thread_req = mcp
-        .send_thread_start_request(ThreadStartParams {
-            dynamic_tools: Some(vec![dynamic_tool.clone()]),
-            ..Default::default()
-        })
+        .send_raw_request(
+            "thread/start",
+            Some(json!({
+                "dynamicTools": [
+                    {
+                        "name": "lookup_ticket",
+                        "description": "Look up a ticket",
+                        "inputSchema": visible_schema,
+                    },
+                    {
+                        "namespace": "legacy_app",
+                        "name": "lookup_status",
+                        "description": "Look up a ticket status",
+                        "inputSchema": visible_schema,
+                        "exposeToContext": true
+                    },
+                    {
+                        "namespace": "legacy_app",
+                        "name": "update_ticket",
+                        "description": "Update a ticket",
+                        "inputSchema": {
+                            "type": "object",
+                            "properties": {},
+                            "additionalProperties": false
+                        },
+                        "exposeToContext": false
+                    }
+                ]
+            })),
+        )
         .await?;
     let thread_resp: JSONRPCResponse = timeout(
         DEFAULT_READ_TIMEOUT,
@@ -192,7 +122,7 @@ async fn thread_start_keeps_hidden_dynamic_tools_out_of_model_requests() -> Resu
             thread_id: thread.id,
             client_user_message_id: None,
             input: vec![V2UserInput::Text {
-                text: "Hello".to_string(),
+                text: "Look up the ticket".to_string(),
                 text_elements: Vec::new(),
             }],
             ..Default::default()
@@ -204,7 +134,6 @@ async fn thread_start_keeps_hidden_dynamic_tools_out_of_model_requests() -> Resu
     )
     .await??;
     let _turn: TurnStartResponse = to_response::<TurnStartResponse>(turn_resp)?;
-
     timeout(
         DEFAULT_READ_TIMEOUT,
         mcp.read_stream_until_notification_message("turn/completed"),
@@ -212,11 +141,34 @@ async fn thread_start_keeps_hidden_dynamic_tools_out_of_model_requests() -> Resu
     .await??;
 
     let bodies = responses_bodies(&server).await?;
-    assert!(
-        bodies
-            .iter()
-            .all(|body| find_tool(body, &dynamic_tool.name).is_none()),
-        "hidden dynamic tool should not be sent to the model"
+    let function =
+        find_tool(&bodies[0], "lookup_ticket").context("expected normalized legacy function")?;
+    assert_eq!(
+        function,
+        &json!({
+            "type": "function",
+            "name": "lookup_ticket",
+            "description": "Look up a ticket",
+            "strict": false,
+            "parameters": visible_schema,
+        })
+    );
+    let namespace =
+        find_tool(&bodies[0], "legacy_app").context("expected normalized legacy namespace")?;
+    assert_eq!(
+        namespace,
+        &json!({
+            "type": "namespace",
+            "name": "legacy_app",
+            "description": "Tools in the legacy_app namespace.",
+            "tools": [{
+                "type": "function",
+                "name": "lookup_status",
+                "description": "Look up a ticket status",
+                "strict": false,
+                "parameters": visible_schema,
+            }],
+        })
     );
 
     Ok(())
@@ -235,8 +187,7 @@ async fn thread_start_rejects_hidden_dynamic_tools_without_namespace() -> Result
         .await?;
     timeout(DEFAULT_READ_TIMEOUT, mcp.initialize()).await??;
 
-    let dynamic_tool = DynamicToolSpec {
-        namespace: None,
+    let dynamic_tool = DynamicToolSpec::Function(DynamicToolFunctionSpec {
         name: "hidden_tool".to_string(),
         description: "Hidden dynamic tool".to_string(),
         input_schema: json!({
@@ -245,9 +196,7 @@ async fn thread_start_rejects_hidden_dynamic_tools_without_namespace() -> Result
             "additionalProperties": false,
         }),
         defer_loading: true,
-        persist_on_resume: true,
-        capability: None,
-    };
+    });
 
     let thread_req = mcp
         .send_thread_start_request_with_auto_env(ThreadStartParams {
@@ -268,7 +217,7 @@ async fn thread_start_rejects_hidden_dynamic_tools_without_namespace() -> Result
 }
 
 #[tokio::test]
-async fn thread_start_rejects_dynamic_tools_not_supported_by_responses() -> Result<()> {
+async fn thread_start_rejects_invalid_dynamic_tool_inputs() -> Result<()> {
     let server = MockServer::start().await;
 
     let codex_home = TempDir::new()?;
@@ -281,34 +230,109 @@ async fn thread_start_rejects_dynamic_tools_not_supported_by_responses() -> Resu
         .await?;
     timeout(DEFAULT_READ_TIMEOUT, mcp.initialize()).await??;
 
-    let dynamic_tool = DynamicToolSpec {
-        namespace: Some("codex.app".to_string()),
-        name: "lookup.ticket".to_string(),
-        description: "Invalid dynamic tool".to_string(),
-        input_schema: json!({
-            "type": "object",
-            "properties": {},
-            "additionalProperties": false,
-        }),
-        defer_loading: false,
-        persist_on_resume: true,
-        capability: None,
-    };
-
-    let thread_req = mcp
-        .send_thread_start_request(ThreadStartParams {
-            dynamic_tools: Some(vec![dynamic_tool]),
-            ..Default::default()
-        })
-        .await?;
-    let error = timeout(
-        DEFAULT_READ_TIMEOUT,
-        mcp.read_stream_until_error_message(RequestId::Integer(thread_req)),
-    )
-    .await??;
-    assert_eq!(error.error.code, -32600);
-    assert!(error.error.message.contains("Responses API"));
-    assert!(error.error.message.contains("lookup.ticket"));
+    for (dynamic_tools, expected_error) in [
+        (
+            json!([
+                {
+                    "type": "function",
+                    "name": "canonical_tool",
+                    "description": "Canonical tool",
+                    "inputSchema": {
+                        "type": "object",
+                        "properties": {}
+                    }
+                },
+                {
+                    "namespace": "legacy_app",
+                    "name": "legacy_tool",
+                    "description": "Legacy tool",
+                    "inputSchema": {
+                        "type": "object",
+                        "properties": {}
+                    }
+                }
+            ]),
+            "either canonical or legacy format",
+        ),
+        (
+            json!([{
+                "type": "namespace",
+                "name": "canonical_namespace",
+                "description": "Canonical namespace",
+                "tools": [{
+                    "type": "function",
+                    "name": "legacy_visibility_tool",
+                    "description": "Uses a legacy visibility field",
+                    "inputSchema": {
+                        "type": "object",
+                        "properties": {}
+                    },
+                    "exposeToContext": false
+                }]
+            }]),
+            "either canonical or legacy format",
+        ),
+        (
+            json!([{
+                "type": "namespace",
+                "name": "empty_namespace",
+                "description": "Contains no tools",
+                "tools": []
+            }]),
+            "must contain at least one tool",
+        ),
+        (
+            json!([
+                {
+                    "type": "namespace",
+                    "name": "duplicate_namespace",
+                    "description": "First namespace",
+                    "tools": [{
+                        "type": "function",
+                        "name": "first_tool",
+                        "description": "First tool",
+                        "inputSchema": {
+                            "type": "object",
+                            "properties": {}
+                        }
+                    }]
+                },
+                {
+                    "type": "namespace",
+                    "name": "duplicate_namespace",
+                    "description": "Second namespace",
+                    "tools": [{
+                        "type": "function",
+                        "name": "second_tool",
+                        "description": "Second tool",
+                        "inputSchema": {
+                            "type": "object",
+                            "properties": {}
+                        }
+                    }]
+                }
+            ]),
+            "duplicate dynamic tool namespace",
+        ),
+    ] {
+        let thread_req = mcp
+            .send_raw_request(
+                "thread/start",
+                Some(json!({ "dynamicTools": dynamic_tools })),
+            )
+            .await?;
+        let error = timeout(
+            DEFAULT_READ_TIMEOUT,
+            mcp.read_stream_until_error_message(RequestId::Integer(thread_req)),
+        )
+        .await??;
+        assert_eq!(error.error.code, -32600);
+        assert!(
+            error.error.message.contains(expected_error),
+            "unexpected error: {}",
+            error.error.message
+        );
+    }
 
     Ok(())
 }
@@ -351,22 +375,41 @@ async fn dynamic_tool_call_round_trip_sends_text_content_items_to_model() -> Res
         .await?;
     timeout(DEFAULT_READ_TIMEOUT, mcp.initialize()).await??;
 
-    let dynamic_tool = DynamicToolSpec {
-        namespace: Some(tool_namespace.to_string()),
-        name: tool_name.to_string(),
-        description: "Demo dynamic tool".to_string(),
-        input_schema: json!({
-            "type": "object",
-            "properties": {
-                "city": { "type": "string" }
-            },
-            "required": ["city"],
-            "additionalProperties": false,
-        }),
-        defer_loading: false,
-        persist_on_resume: true,
-        capability: None,
-    };
+    let input_schema = json!({
+        "type": "object",
+        "properties": {
+            "city": { "type": "string" }
+        },
+        "required": ["city"],
+        "additionalProperties": false,
+    });
+    let status_schema = json!({
+        "type": "object",
+        "properties": {
+            "ticket_id": { "type": "string" }
+        },
+        "required": ["ticket_id"],
+        "additionalProperties": false,
+    });
+    let namespace_description = "Demo namespace tools";
+    let dynamic_tool = DynamicToolSpec::Namespace(DynamicToolNamespaceSpec {
+        name: tool_namespace.to_string(),
+        description: namespace_description.to_string(),
+        tools: vec![
+            DynamicToolNamespaceTool::Function(DynamicToolFunctionSpec {
+                name: tool_name.to_string(),
+                description: "Demo dynamic tool".to_string(),
+                input_schema: input_schema.clone(),
+                defer_loading: false,
+            }),
+            DynamicToolNamespaceTool::Function(DynamicToolFunctionSpec {
+                name: "lookup_status".to_string(),
+                description: "Look up ticket status".to_string(),
+                input_schema: status_schema.clone(),
+                defer_loading: false,
+            }),
+        ],
+    });
 
     let thread_req = mcp
         .send_thread_start_request_with_auto_env(ThreadStartParams {
@@ -495,6 +538,32 @@ async fn dynamic_tool_call_round_trip_sends_text_content_items_to_model() -> Res
     .await??;
 
     let bodies = responses_bodies(&server).await?;
+    let namespace = find_tool(&bodies[0], tool_namespace)
+        .context("expected explicit dynamic tool namespace in first request")?;
+    assert_eq!(
+        namespace,
+        &json!({
+            "type": "namespace",
+            "name": tool_namespace,
+            "description": namespace_description,
+            "tools": [
+                {
+                    "type": "function",
+                    "name": tool_name,
+                    "description": "Demo dynamic tool",
+                    "strict": false,
+                    "parameters": input_schema,
+                },
+                {
+                    "type": "function",
+                    "name": "lookup_status",
+                    "description": "Look up ticket status",
+                    "strict": false,
+                    "parameters": status_schema,
+                },
+            ],
+        })
+    );
     let payload = bodies
         .iter()
         .find_map(|body| function_call_output_payload(body, call_id))
@@ -533,7 +602,7 @@ async fn start_function_dynamic_tool_call(call_id: &str) -> Result<PendingDynami
     let mut model_info =
         codex_core::test_support::construct_model_info_offline("mock-model", &config);
     model_info.input_modalities.push(InputModality::Audio);
-    write_models_cache_with_models(codex_home.path(), vec![model_info])?;
+    write_models_cache_with_models(codex_home.path(), vec![model_info]).await?;
 
     let mut mcp = TestAppServer::builder()
         .with_codex_home(codex_home.path())
@@ -541,8 +610,7 @@ async fn start_function_dynamic_tool_call(call_id: &str) -> Result<PendingDynami
         .await?;
     timeout(DEFAULT_READ_TIMEOUT, mcp.initialize()).await??;
 
-    let dynamic_tool = DynamicToolSpec {
-        namespace: None,
+    let dynamic_tool = DynamicToolSpec::Function(DynamicToolFunctionSpec {
         name: tool_name.to_string(),
         description: "Demo dynamic tool".to_string(),
         input_schema: json!({
@@ -554,9 +622,7 @@ async fn start_function_dynamic_tool_call(call_id: &str) -> Result<PendingDynami
             "additionalProperties": false,
         }),
         defer_loading: false,
-        persist_on_resume: true,
-        capability: None,
-    };
+    });
 
     let thread_req = mcp
         .send_thread_start_request_with_auto_env(ThreadStartParams {
@@ -640,7 +706,6 @@ async fn dynamic_tool_call_round_trip_handles_content_items() -> Result<()> {
         },
         DynamicToolCallOutputContentItem::InputImage {
             image_url: TINY_PNG_DATA_URL.to_string(),
-            detail: None,
         },
         DynamicToolCallOutputContentItem::InputAudio {
             audio_url: INLINE_AUDIO_DATA_URL.to_string(),
@@ -651,7 +716,9 @@ async fn dynamic_tool_call_round_trip_handles_content_items() -> Result<()> {
             text: "dynamic-ok".to_string(),
         },
         FunctionCallOutputContentItem::InputImage {
-            image_url: TINY_PNG_DATA_URL.to_string(),
+            image: ImageReference::Inline {
+                image_url: TINY_PNG_DATA_URL.to_string(),
+            },
             detail: Some(DEFAULT_IMAGE_DETAIL),
         },
         FunctionCallOutputContentItem::InputAudio {
@@ -686,7 +753,6 @@ async fn dynamic_tool_call_round_trip_handles_content_items() -> Result<()> {
             },
             DynamicToolCallOutputContentItem::InputImage {
                 image_url: TINY_PNG_DATA_URL.to_string(),
-                detail: None,
             },
             DynamicToolCallOutputContentItem::InputAudio {
                 audio_url: INLINE_AUDIO_DATA_URL.to_string(),
@@ -755,7 +821,6 @@ async fn dynamic_tool_remote_image_response_becomes_model_visible_error() -> Res
     let response = DynamicToolCallResponse {
         content_items: vec![DynamicToolCallOutputContentItem::InputImage {
             image_url: "https://example.com/tool.png".to_string(),
-            detail: None,
         }],
         success: true,
     };

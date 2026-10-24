@@ -30,6 +30,10 @@ use std::collections::HashMap;
 use tempfile::TempDir;
 use tokio::time::timeout;
 
+use super::analytics::captured_analytics_events;
+use super::analytics::mount_analytics_capture;
+use super::analytics::wait_for_analytics_event;
+
 // Bazel CI can spend tens of seconds starting app-server subprocesses or
 // processing turn RPCs under load.
 const DEFAULT_READ_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(60);
@@ -69,8 +73,17 @@ async fn turn_start_forwards_client_metadata_to_responses_request_v2() -> Result
         timeout(DEFAULT_READ_TIMEOUT, mcp.read_response(thread_req)).await??;
 
     let client_metadata = HashMap::from([
+        (
+            "parent_response_id".to_string(),
+            "client-correlation".to_string(),
+        ),
         ("fiber_run_id".to_string(), "fiber-start-123".to_string()),
         ("origin".to_string(), "gaas".to_string()),
+        (
+            "context_window_id".to_string(),
+            "client-supplied".to_string(),
+        ),
+        ("turn_trigger".to_string(), "client-supplied".to_string()),
     ]);
     let turn_req = mcp
         .send_turn_start_request(TurnStartParams {
@@ -80,6 +93,7 @@ async fn turn_start_forwards_client_metadata_to_responses_request_v2() -> Result
                 text: "Hello".to_string(),
                 text_elements: Vec::new(),
             }],
+            turn_trigger: Some("user".to_string()),
             responsesapi_client_metadata: Some(client_metadata.clone()),
             ..Default::default()
         })
@@ -99,15 +113,36 @@ async fn turn_start_forwards_client_metadata_to_responses_request_v2() -> Result
         .as_deref()
         .map(parse_json_header)
         .expect("x-codex-turn-metadata header should be present");
+    let body = request.body_json();
+    let body_turn_metadata = parse_json_header(
+        body["client_metadata"]["x-codex-turn-metadata"]
+            .as_str()
+            .expect("turn metadata"),
+    );
+    assert_eq!(
+        (
+            metadata["parent_response_id"].as_str(),
+            body_turn_metadata["parent_response_id"].as_str(),
+            body["client_metadata"].get("parent_response_id"),
+        ),
+        (Some("client-correlation"), Some("client-correlation"), None),
+    );
     assert_eq!(metadata["fiber_run_id"].as_str(), Some("fiber-start-123"));
     assert_eq!(metadata["origin"].as_str(), Some("gaas"));
     assert_eq!(metadata["thread_source"].as_str(), Some("automation"));
+    assert_eq!(metadata["turn_trigger"].as_str(), Some("user"));
     assert_eq!(metadata["turn_id"].as_str(), Some(turn.id.as_str()));
     assert!(metadata.get("installation_id").is_some());
     assert!(metadata.get("session_id").is_some());
     assert_eq!(
         metadata["window_id"].as_str(),
         request.header("x-codex-window-id").as_deref()
+    );
+    assert_eq!(metadata["window_number"].as_u64(), Some(0));
+    assert!(
+        metadata["context_window_id"]
+            .as_str()
+            .is_some_and(|window_id| uuid::Uuid::parse_str(window_id).is_ok())
     );
 
     Ok(())
@@ -181,6 +216,7 @@ async fn turn_start_sends_fork_lineage_in_turn_metadata_for_thread_fork_v2() -> 
         metadata["forked_from_thread_id"].as_str(),
         Some(source_thread_id.as_str())
     );
+    assert!(metadata.get("forked_from_ordinal_exclusive").is_none());
     assert_eq!(metadata["thread_id"].as_str(), Some(thread.id.as_str()));
     assert_eq!(metadata["turn_id"].as_str(), Some(turn.id.as_str()));
 
@@ -292,6 +328,8 @@ async fn turn_start_sends_nested_subagent_lineage_after_cold_thread_resume_v2() 
         &server,
         responses::sse(vec![
             responses::ev_response_created("resp-1"),
+            responses::ev_web_search_call_added_partial("resumed-search", "in_progress"),
+            responses::ev_web_search_call_done("resumed-search", "completed", "test query"),
             responses::ev_assistant_message("msg-1", "Done"),
             responses::ev_completed("resp-1"),
         ]),
@@ -300,8 +338,10 @@ async fn turn_start_sends_nested_subagent_lineage_after_cold_thread_resume_v2() 
 
     let codex_home = TempDir::new()?;
     MockResponsesConfig::new(&server.uri())
+        .with_root_config(&format!("chatgpt_base_url = \"{}\"", server.uri()))
         .with_provider_config("supports_websockets = false")
         .write(codex_home.path())?;
+    mount_analytics_capture(&server, codex_home.path()).await?;
 
     let root_thread_id = CoreThreadId::new();
     let root_thread_id_str = root_thread_id.to_string();
@@ -379,11 +419,42 @@ async fn turn_start_sends_nested_subagent_lineage_after_cold_thread_resume_v2() 
     assert_eq!(metadata["turn_id"].as_str(), Some(turn.id.as_str()));
     assert!(metadata.get("forked_from_thread_id").is_none());
 
+    let turn_event =
+        wait_for_analytics_event(&server, DEFAULT_READ_TIMEOUT, "codex_turn_event").await?;
+    let params = &turn_event["event_params"];
+    assert_eq!(
+        (
+            params["total_tool_call_count"].as_u64(),
+            params["web_search_count"].as_u64()
+        ),
+        (Some(1), Some(1))
+    );
+    timeout(DEFAULT_READ_TIMEOUT, mcp.shutdown_gracefully()).await??;
+    let events = captured_analytics_events(&server).await;
+    let count = |event_type: &str| {
+        events
+            .iter()
+            .filter(|event| {
+                event["event_type"] == event_type
+                    && event["event_params"]["thread_id"] == thread.id
+                    && event["event_params"]["turn_id"] == turn.id
+            })
+            .count()
+    };
+    assert_eq!(
+        (count("codex_turn_event"), count("codex_web_search_event")),
+        (1, 1)
+    );
+
     Ok(())
 }
 
+#[test_case::test_case(false; "replacement")]
+#[test_case::test_case(true; "patch")]
 #[tokio::test]
-async fn turn_steer_updates_client_metadata_on_follow_up_responses_request_v2() -> Result<()> {
+async fn turn_steer_updates_client_metadata_on_follow_up_responses_request_v2(
+    patch_steer: bool,
+) -> Result<()> {
     skip_if_no_network!(Ok(()));
 
     let codex_home = TempDir::new()?;
@@ -404,8 +475,10 @@ async fn turn_steer_updates_client_metadata_on_follow_up_responses_request_v2() 
         responses::mount_response_sequence(&server, vec![first_response, second_response]).await;
 
     MockResponsesConfig::new(&server.uri())
+        .with_root_config(&format!("chatgpt_base_url = \"{}\"", server.uri()))
         .with_provider_config("supports_websockets = false")
         .write(codex_home.path())?;
+    mount_analytics_capture(&server, codex_home.path()).await?;
 
     let mut mcp = TestAppServer::builder()
         .with_codex_home(codex_home.path())
@@ -418,8 +491,15 @@ async fn turn_steer_updates_client_metadata_on_follow_up_responses_request_v2() 
     let ThreadStartResponse { thread, .. } =
         timeout(DEFAULT_READ_TIMEOUT, mcp.read_response(thread_req)).await??;
 
-    let start_metadata =
-        HashMap::from([("fiber_run_id".to_string(), "fiber-start-123".to_string())]);
+    let start_metadata = HashMap::from([
+        ("fiber_run_id".to_string(), "fiber-start-123".to_string()),
+        ("source".to_string(), "snapshot-source".to_string()),
+        ("start_only".to_string(), "start-value".to_string()),
+        (
+            "misalignment_override".to_string(),
+            r#"{"review_target":"RB._~:-opaque"}"#.to_string(),
+        ),
+    ]);
     let turn_req = mcp
         .send_turn_start_request(TurnStartParams {
             thread_id: thread.id.clone(),
@@ -428,7 +508,12 @@ async fn turn_steer_updates_client_metadata_on_follow_up_responses_request_v2() 
                 text: "Run sleep".to_string(),
                 text_elements: Vec::new(),
             }],
-            responsesapi_client_metadata: Some(start_metadata.clone()),
+            turn_trigger: Some("user".to_string()),
+            responsesapi_client_metadata: Some(start_metadata),
+            responsesapi_client_metadata_patch: Some(HashMap::from([(
+                "source".to_string(),
+                "initial-source".to_string(),
+            )])),
             ..Default::default()
         })
         .await?;
@@ -446,7 +531,17 @@ async fn turn_steer_updates_client_metadata_on_follow_up_responses_request_v2() 
     let steer_metadata = HashMap::from([
         ("fiber_run_id".to_string(), "fiber-steer-456".to_string()),
         ("origin".to_string(), "gaas".to_string()),
+        ("source".to_string(), "steer-source".to_string()),
+        (
+            "misalignment_override".to_string(),
+            r#"{"review_target":"RC"}"#.to_string(),
+        ),
     ]);
+    let (responsesapi_client_metadata, responsesapi_client_metadata_patch) = if patch_steer {
+        (None, Some(steer_metadata))
+    } else {
+        (Some(steer_metadata), None)
+    };
     let steer_req = mcp
         .send_turn_steer_request(TurnSteerParams {
             thread_id: thread.id.clone(),
@@ -455,7 +550,8 @@ async fn turn_steer_updates_client_metadata_on_follow_up_responses_request_v2() 
                 text: "Focus on the failure".to_string(),
                 text_elements: Vec::new(),
             }],
-            responsesapi_client_metadata: Some(steer_metadata.clone()),
+            responsesapi_client_metadata,
+            responsesapi_client_metadata_patch,
             additional_context: None,
             expected_turn_id: turn_id.clone(),
         })
@@ -481,6 +577,8 @@ async fn turn_steer_updates_client_metadata_on_follow_up_responses_request_v2() 
         Some("fiber-start-123")
     );
     assert_eq!(first_metadata["turn_id"].as_str(), Some(turn_id.as_str()));
+    assert_eq!(first_metadata["turn_trigger"].as_str(), Some("user"));
+    assert_eq!(first_metadata["source"].as_str(), Some("initial-source"));
 
     let second_metadata = requests[1]
         .header("x-codex-turn-metadata")
@@ -493,6 +591,25 @@ async fn turn_steer_updates_client_metadata_on_follow_up_responses_request_v2() 
     );
     assert_eq!(second_metadata["origin"].as_str(), Some("gaas"));
     assert_eq!(second_metadata["turn_id"].as_str(), Some(turn_id.as_str()));
+    assert_eq!(second_metadata["turn_trigger"].as_str(), Some("user"));
+    assert_eq!(second_metadata["source"].as_str(), Some("steer-source"));
+    assert_eq!(
+        second_metadata["start_only"].as_str(),
+        patch_steer.then_some("start-value")
+    );
+    assert_eq!(
+        second_metadata["misalignment_override"],
+        first_metadata["misalignment_override"],
+    );
+
+    let event = wait_for_analytics_event(&server, DEFAULT_READ_TIMEOUT, "codex_turn_event").await?;
+    assert_eq!(
+        (
+            event["event_params"]["turn_trigger"].as_str(),
+            event["event_params"]["codex_turn_source"].as_str(),
+        ),
+        (Some("user"), Some("steer-source"))
+    );
 
     Ok(())
 }
@@ -535,6 +652,10 @@ async fn turn_start_forwards_client_metadata_to_responses_websocket_request_body
         timeout(DEFAULT_READ_TIMEOUT, mcp.read_response(thread_req)).await??;
 
     let client_metadata = HashMap::from([
+        (
+            "parent_response_id".to_string(),
+            "client-correlation".to_string(),
+        ),
         ("fiber_run_id".to_string(), "fiber-start-123".to_string()),
         ("origin".to_string(), "gaas".to_string()),
     ]);
@@ -546,6 +667,7 @@ async fn turn_start_forwards_client_metadata_to_responses_websocket_request_body
                 text: "Hello".to_string(),
                 text_elements: Vec::new(),
             }],
+            turn_trigger: Some("user".to_string()),
             responsesapi_client_metadata: Some(client_metadata),
             ..Default::default()
         })
@@ -571,19 +693,33 @@ async fn turn_start_forwards_client_metadata_to_responses_websocket_request_body
     assert_eq!(warmup["type"].as_str(), Some("response.create"));
     assert_eq!(warmup["generate"].as_bool(), Some(false));
     assert_eq!(request["type"].as_str(), Some("response.create"));
+    assert_eq!(request["previous_response_id"].as_str(), Some("warm-1"));
 
     let metadata = request["client_metadata"]["x-codex-turn-metadata"]
         .as_str()
         .map(parse_json_header)
         .expect("websocket x-codex-turn-metadata client metadata should be present");
+    assert_eq!(
+        (
+            metadata["parent_response_id"].as_str(),
+            request["client_metadata"].get("parent_response_id"),
+        ),
+        (Some("client-correlation"), None),
+    );
     assert_eq!(metadata["fiber_run_id"].as_str(), Some("fiber-start-123"));
     assert_eq!(metadata["origin"].as_str(), Some("gaas"));
     assert_eq!(metadata["thread_source"].as_str(), Some("automation"));
+    assert_eq!(metadata["turn_trigger"].as_str(), Some("user"));
     assert_eq!(metadata["turn_id"].as_str(), Some(turn.id.as_str()));
     assert!(metadata.get("session_id").is_some());
     assert_eq!(
         metadata["window_id"].as_str(),
         request["client_metadata"]["x-codex-window-id"].as_str()
+    );
+    assert!(
+        metadata["context_window_id"]
+            .as_str()
+            .is_some_and(|window_id| uuid::Uuid::parse_str(window_id).is_ok())
     );
 
     websocket_server.shutdown().await;

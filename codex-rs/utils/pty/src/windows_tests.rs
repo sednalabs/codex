@@ -5,20 +5,95 @@ use super::wait_for_output_contains;
 use crate::TerminalSize;
 use crate::spawn_pipe_process_no_stdin;
 use crate::spawn_pty_process;
+use pretty_assertions::assert_eq;
 use std::collections::HashMap;
+use std::os::windows::io::AsRawHandle;
+use std::os::windows::io::FromRawHandle;
+use std::os::windows::io::OwnedHandle;
+use std::os::windows::process::CommandExt;
 use std::path::Path;
+use std::process::Stdio;
 use std::time::Duration;
+use tokio::io::AsyncBufReadExt;
+use tokio::io::AsyncWriteExt;
+use tokio::io::BufReader;
+use tokio::process::Command;
+use winapi::um::jobapi::IsProcessInJob;
+use winapi::um::processthreadsapi::OpenProcess;
+use winapi::um::winnt::PROCESS_QUERY_LIMITED_INFORMATION;
 
 const READY_MARKER: &str = "__CODEX_CHILD_READY__";
-const SHELL_READY_MARKER: &str = "__CODEX_SHELL_READY__";
 const VALUE_MARKER: &str = "__CODEX_CHILD_VALUE__";
 
+#[tokio::test]
+async fn piped_child_has_no_console_with_or_without_job_containment() -> anyhow::Result<()> {
+    // Nextest itself can run without a visible console. Re-execute this test
+    // detached, like app-server-daemon, so children cannot inherit its console.
+    if std::env::var_os("CODEX_PTY_DETACHED_CONSOLE_PROBE").is_none() {
+        let output = std::process::Command::new(std::env::current_exe()?)
+            .args([
+                "--exact",
+                "tests::windows_tests::piped_child_has_no_console_with_or_without_job_containment",
+                "--nocapture",
+            ])
+            .env("CODEX_PTY_DETACHED_CONSOLE_PROBE", "1")
+            .creation_flags(winapi::um::winbase::DETACHED_PROCESS)
+            .output()?;
+        anyhow::ensure!(
+            output.status.success(),
+            "detached probe failed:\n{}\n{}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr),
+        );
+        return Ok(());
+    }
+    let Some(python) = find_python() else {
+        eprintln!("python not found; skipping Windows pipe console test");
+        return Ok(());
+    };
+    let job = crate::JobObject::create_without_breakaway()?;
+    for containment in [None, Some(&job)] {
+        let mut command = crate::Command::new(&python);
+        command.envs(std::env::vars()).args([
+            "-u",
+            "-c",
+            "import ctypes,sys; print(ctypes.windll.kernel32.GetConsoleWindow()); print(sys.stdin.readline().strip())",
+        ]);
+        if let Some(job) = containment {
+            command.prepare_suspended_spawn(job);
+        }
+        let mut child = command.spawn()?;
+        if let Some(job) = containment {
+            let pid = child
+                .id()
+                .ok_or_else(|| anyhow::anyhow!("missing child pid"))?;
+            anyhow::ensure!(job.assign_and_resume_process(pid)?, "job assignment failed");
+        }
+        child
+            .stdin
+            .as_mut()
+            .unwrap()
+            .write_all(b"stdio works\n")
+            .await?;
+        let output =
+            tokio::time::timeout(Duration::from_secs(10), child.wait_with_output()).await??;
+        assert!(
+            output.status.success(),
+            "{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        assert_eq!(
+            String::from_utf8(output.stdout)?.replace("\r\n", "\n"),
+            "0\nstdio works\n"
+        );
+    }
+    Ok(())
+}
 struct WindowsShell {
     name: &'static str,
     program: String,
     args: Vec<String>,
     child_command: String,
-    ready_marker: Option<&'static str>,
 }
 
 fn find_powershell() -> Option<String> {
@@ -90,7 +165,7 @@ async fn assert_terminate_kills_descendant(
             env,
             /*arg0*/ &None,
             TerminalSize::default(),
-            &[],
+            crate::ChildFds::Inherited(&[]),
         )
         .await?
     };
@@ -146,7 +221,7 @@ async fn assert_normal_exit_preserves_descendant(
             env,
             /*arg0*/ &None,
             TerminalSize::default(),
-            &[],
+            crate::ChildFds::Inherited(&[]),
         )
         .await?
     };
@@ -186,6 +261,113 @@ async fn normal_exit_preserves_descendants_for_pipe_and_conpty() -> anyhow::Resu
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn contained_spawn_owns_immediate_descendant() -> anyhow::Result<()> {
+    let Some(python) = find_python() else {
+        eprintln!("python not found; skipping Windows contained-spawn test");
+        return Ok(());
+    };
+
+    let mut command = Command::new(&python);
+    command
+        .args([
+            "-u",
+            "-c",
+            "import subprocess,sys; child=subprocess.Popen([sys.executable,'-c','import time; time.sleep(60)']); print(child.pid,flush=True); child.wait()",
+        ])
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null());
+
+    let job = crate::JobObject::create()?;
+    let mut root = job.spawn_contained(&mut command)?;
+    let stdout = root
+        .stdout
+        .take()
+        .ok_or_else(|| anyhow::anyhow!("missing contained process stdout"))?;
+    let mut stdout = BufReader::new(stdout);
+    let mut child_pid = String::new();
+    tokio::time::timeout(Duration::from_secs(10), stdout.read_line(&mut child_pid)).await??;
+    let child_pid: u32 = child_pid.trim().parse()?;
+
+    let process = unsafe { OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, 0, child_pid) };
+    anyhow::ensure!(!process.is_null(), "failed to open immediate child process");
+    let process = unsafe { OwnedHandle::from_raw_handle(process.cast()) };
+    let mut in_job = 0;
+    let checked = unsafe {
+        IsProcessInJob(
+            process.as_raw_handle().cast(),
+            job.as_raw_handle().cast(),
+            &mut in_job,
+        )
+    };
+    anyhow::ensure!(checked != 0, "failed to inspect child Job Object");
+    anyhow::ensure!(in_job != 0, "immediate child escaped its Job Object");
+
+    job.terminate()?;
+    tokio::time::timeout(Duration::from_secs(10), root.wait()).await??;
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn rejected_job_assignment_resumes_existing_job_member() -> anyhow::Result<()> {
+    let Some(python) = find_python() else {
+        eprintln!("python not found; skipping Windows nested-job fallback test");
+        return Ok(());
+    };
+
+    let owning_job = crate::JobObject::create()?;
+    let rejected_job = crate::JobObject::create_without_breakaway()?;
+    let mut occupied_command = Command::new(&python);
+    occupied_command
+        .args(["-c", "import time; time.sleep(60)"])
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null());
+    let mut existing_member = rejected_job.spawn_contained(&mut occupied_command)?;
+
+    let mut command = Command::new(&python);
+    command
+        .args([
+            "-u",
+            "-c",
+            "import time; print('resumed',flush=True); time.sleep(60)",
+        ])
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null());
+    rejected_job.prepare_suspended_spawn(&mut command);
+    let mut root = command.spawn()?;
+    let process_handle = root
+        .raw_handle()
+        .ok_or_else(|| anyhow::anyhow!("missing suspended process handle"))?;
+    owning_job.assign_process(process_handle)?;
+    let process_id = root
+        .id()
+        .ok_or_else(|| anyhow::anyhow!("missing suspended process id"))?;
+
+    assert!(
+        !rejected_job.assign_and_resume_process(process_id)?,
+        "unrelated nested job unexpectedly accepted the process"
+    );
+    let stdout = root
+        .stdout
+        .take()
+        .ok_or_else(|| anyhow::anyhow!("missing resumed process stdout"))?;
+    let mut stdout = BufReader::new(stdout);
+    let mut marker = String::new();
+    tokio::time::timeout(Duration::from_secs(10), stdout.read_line(&mut marker)).await??;
+    assert_eq!(marker.trim(), "resumed");
+
+    let process_handle = crate::JobObject::open_process_handle(process_id)?;
+    crate::JobObject::terminate_process_handle(&process_handle)?;
+    rejected_job.terminate()?;
+    let status = tokio::time::timeout(Duration::from_secs(10), root.wait()).await??;
+    assert_eq!(status.code(), Some(1));
+    tokio::time::timeout(Duration::from_secs(10), existing_member.wait()).await??;
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn conpty_delivers_input_to_foreground_children() -> anyhow::Result<()> {
     let Some(python) = find_python() else {
         eprintln!("python not found; skipping ConPTY input test");
@@ -194,49 +376,20 @@ async fn conpty_delivers_input_to_foreground_children() -> anyhow::Result<()> {
     let code = format!(
         "print('__CODEX_CHILD_'+'READY__', flush=True); value=input(); print('{VALUE_MARKER}'+value.encode('utf-8').hex(), flush=True)"
     );
-    // Keep the submitted foreground command short enough that PowerShell's
-    // line editor cannot leave it partially entered under ConPTY.  The
-    // command still starts the same foreground Python child, while the test
-    // script carries the input/output assertions above.
-    let script_path = std::env::temp_dir().join(format!(
-        "codex-conpty-foreground-{}-{}.py",
-        std::process::id(),
-        std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)?
-            .as_nanos()
-    ));
-    std::fs::write(&script_path, &code)?;
-    let script_path = script_path.to_string_lossy().into_owned();
     let expected = "cafeé 漢字";
     let expected_marker = format!("{VALUE_MARKER}{}", utf8_hex(expected));
     let mut shells = vec![WindowsShell {
         name: "cmd",
         program: std::env::var("COMSPEC").unwrap_or_else(|_| "cmd.exe".to_string()),
         args: vec!["/D".to_string(), "/Q".to_string()],
-        child_command: format!(
-            "\"{}\" -u \"{}\"",
-            python.replace('"', "\"\""),
-            script_path.replace('"', "\"\"")
-        ),
-        ready_marker: None,
+        child_command: format!("\"{}\" -u -c \"{code}\"", python.replace('"', "\"\"")),
     }];
     if let Some(program) = find_powershell() {
         shells.push(WindowsShell {
             name: "PowerShell",
             program,
-            args: vec![
-                "-NoLogo".to_string(),
-                "-NoProfile".to_string(),
-                "-NoExit".to_string(),
-                "-Command".to_string(),
-                format!("[Console]::WriteLine('{SHELL_READY_MARKER}')"),
-            ],
-            child_command: format!(
-                "& '{}' -u '{}'",
-                python.replace('\'', "''"),
-                script_path.replace('\'', "''")
-            ),
-            ready_marker: Some(SHELL_READY_MARKER),
+            args: vec!["-NoLogo".to_string(), "-NoProfile".to_string()],
+            child_command: format!("& '{}' -u -c \"{code}\"", python.replace('\'', "''")),
         });
     }
     let env: HashMap<String, String> = std::env::vars().collect();
@@ -249,18 +402,11 @@ async fn conpty_delivers_input_to_foreground_children() -> anyhow::Result<()> {
             &env,
             /*arg0*/ &None,
             TerminalSize::default(),
-            &[],
+            crate::ChildFds::Inherited(&[]),
         )
         .await?;
         let (session, mut output_rx, exit_rx) = combine_spawned_output(spawned);
         let writer = session.writer_sender();
-        if let Some(marker) = shell.ready_marker {
-            wait_for_output_contains(&mut output_rx, marker, /*timeout_ms*/ 10_000)
-                .await
-                .map_err(|err| {
-                    anyhow::anyhow!("{} shell did not become ready: {err}", shell.name)
-                })?;
-        }
         writer
             .send(format!("{}\n", shell.child_command).into_bytes())
             .await?;
@@ -292,8 +438,6 @@ async fn conpty_delivers_input_to_foreground_children() -> anyhow::Result<()> {
         );
     }
 
-    std::fs::remove_file(script_path)?;
-
     Ok(())
 }
 
@@ -311,7 +455,7 @@ async fn conpty_ctrl_c_interrupts_powershell_foreground_child() -> anyhow::Resul
         &env,
         /*arg0*/ &None,
         TerminalSize::default(),
-        &[],
+        crate::ChildFds::Inherited(&[]),
     )
     .await?;
     let (session, mut output_rx, exit_rx) = combine_spawned_output(spawned);

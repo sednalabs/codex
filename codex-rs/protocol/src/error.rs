@@ -7,17 +7,22 @@ use crate::exec_output::ExecToolCallOutput;
 use crate::network_policy::NetworkPolicyDecisionPayload;
 use crate::protocol::CodexErrorInfo;
 use crate::protocol::ErrorEvent;
+use crate::protocol::MisalignmentErrorDetails;
 use crate::protocol::RateLimitReachedType;
 use crate::protocol::RateLimitSnapshot;
+use crate::protocol::TokenUsage;
 use crate::protocol::TruncationPolicy;
 use chrono::DateTime;
 use chrono::Datelike;
 use chrono::Local;
 use chrono::Utc;
 use codex_async_utils::CancelErr;
+use codex_async_utils::backoff;
+use codex_http_client::HttpError;
+use codex_http_client::RetryAfter;
 use codex_utils_string::truncate_middle_chars;
 use codex_utils_string::truncate_middle_with_token_budget;
-use reqwest::StatusCode;
+use http::StatusCode;
 use serde_json;
 use std::fmt;
 use std::io;
@@ -25,6 +30,10 @@ use std::time::Duration;
 use strum_macros::EnumDiscriminants;
 use thiserror::Error;
 use tokio::task::JoinError;
+
+#[path = "agent_error.rs"]
+mod agent;
+pub use agent::AgentErrorContext;
 
 pub type Result<T> = std::result::Result<T, CodexErr>;
 
@@ -66,34 +75,32 @@ pub enum SandboxErr {
     LandlockRestrict,
 }
 
-/// Narrow source marker carried with an error until the host records its evidence.
-///
-/// This marker does not establish provider, account, quota, or model identity. It only records
-/// that the API bridge recognized the exact HTTP usage-limit response shape.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum CodexErrSource {
-    /// The API bridge decoded an HTTP 429 with `error.type == "usage_limit_reached"`.
-    RecognizedHttpUsageLimit,
-}
-
 pub struct CodexErr {
     details: CodexErrorDetails,
-    retry_delay: Option<Duration>,
-    source: Option<CodexErrSource>,
+    retry_after: Option<RetryAfter>,
+    agent_context: Option<AgentErrorContext>,
+}
+
+/// A terminal response that stopped before the model finished, with any reported usage.
+/// Content-filter retries and explicit interruptions have separate handling.
+#[derive(Debug, Error, PartialEq, Eq)]
+#[error("Incomplete response returned, reason: {reason}")]
+pub struct ResponseIncompleteError {
+    pub reason: String,
+    pub response_id: Option<String>,
+    pub token_usage: Option<TokenUsage>,
 }
 
 /// The semantic category and diagnostic payload for a [`CodexErr`].
 #[derive(Error, Debug, EnumDiscriminants)]
 #[strum_discriminants(name(CodexErrKind))]
-#[strum_discriminants(derive(serde::Serialize))]
+#[strum_discriminants(derive(serde::Serialize, strum_macros::IntoStaticStr))]
+#[strum_discriminants(strum(serialize_all = "snake_case"))]
 #[strum_discriminants(serde(rename_all = "snake_case"))]
 #[strum_discriminants(doc = "The payload-free semantic category used for analytics.")]
 pub enum CodexErrorDetails {
     #[error("turn aborted. Something went wrong? Hit `/feedback` to report the issue.")]
     TurnAborted,
-
-    #[error("automatic turn context changed before provider request")]
-    AutomaticTurnContextChanged,
 
     #[error("shared rollout token budget exhausted")]
     SessionBudgetExceeded,
@@ -104,6 +111,17 @@ pub enum CodexErrorDetails {
     /// The Session loop treats this as a transient error and will automatically retry the turn.
     #[error("stream disconnected before completion: {0}")]
     Stream(String),
+    /// A response stopped by the content filter. Sampling retries need developer guidance.
+    #[error(
+        "stream disconnected before completion: Incomplete response returned, reason: content_filter"
+    )]
+    ContentFilter,
+    #[error(transparent)]
+    ResponseIncomplete(Box<ResponseIncompleteError>),
+    /// A retryable upstream rate limit received inside the response stream.
+    #[error("rate limit exceeded: {0}")]
+    RateLimitExceeded(String),
+    // The iOS input-limit classifier matches this message's ASCII prefix.
     #[error(
         "Codex ran out of room in the model's context window. Start a new thread or clear earlier history before retrying."
     )]
@@ -133,6 +151,16 @@ pub enum CodexErrorDetails {
     /// Invalid request.
     #[error("{0}")]
     InvalidRequest(String),
+    #[error("{message}")]
+    ModelNotFound {
+        message: String,
+        status: Option<StatusCode>,
+    },
+    #[error("{message}")]
+    InvalidPrompt { message: String },
+    /// Multiple registered tools share the same effective name.
+    #[error("duplicate tool: {0}")]
+    ToolCollision(String),
     /// Invalid image.
     #[error("Image poisoning")]
     InvalidImageRequest(),
@@ -140,8 +168,17 @@ pub enum CodexErrorDetails {
     UsageLimitReached(UsageLimitReachedError),
     #[error("Selected model is at capacity. Please try a different model.")]
     ServerOverloaded,
+    #[error("Flex capacity unavailable.")]
+    FlexUnavailable,
     #[error("{message}")]
     CyberPolicy { message: String },
+    #[error("{message}")]
+    BioPolicy { message: String },
+    #[error("{message}")]
+    MisalignmentPolicyViolation {
+        message: String,
+        misalignment: Option<MisalignmentErrorDetails>,
+    },
     #[error("{0}")]
     ResponseStreamFailed(ResponseStreamFailed),
     #[error("{0}")]
@@ -152,7 +189,7 @@ pub enum CodexErrorDetails {
         "To use Codex with your ChatGPT plan, upgrade to Plus: https://chatgpt.com/explore/plus."
     )]
     UsageNotIncluded,
-    #[error("We're currently experiencing high demand, which may cause temporary errors.")]
+    #[error("We’re currently experiencing high demand, which may cause temporary errors.")]
     InternalServerError,
     /// Retry limit exceeded.
     #[error("{0}")]
@@ -169,6 +206,9 @@ pub enum CodexErrorDetails {
     UnsupportedOperation(String),
     #[error("{0}")]
     RefreshTokenFailed(RefreshTokenFailedError),
+    /// Gateway credentials require user action before requests can resume.
+    #[error("{0}")]
+    GatewayLoginRequired(String),
     #[error("Fatal error: {0}")]
     Fatal(String),
     // -----------------------------------------------------------------
@@ -202,7 +242,7 @@ impl fmt::Debug for CodexErr {
             CodexErrorDetails::Stream(message) => formatter
                 .debug_tuple("Stream")
                 .field(message)
-                .field(&self.retry_delay)
+                .field(&self.server_retry_delay())
                 .finish(),
             details => fmt::Debug::fmt(details, formatter),
         }
@@ -225,8 +265,8 @@ impl From<CodexErrorDetails> for CodexErr {
     fn from(details: CodexErrorDetails) -> Self {
         Self {
             details,
-            retry_delay: None,
-            source: None,
+            retry_after: None,
+            agent_context: None,
         }
     }
 }
@@ -290,8 +330,8 @@ macro_rules! codex_err_unit_constructors {
             #[allow(non_upper_case_globals)]
             pub const $variant: Self = Self {
                 details: CodexErrorDetails::$variant,
-                retry_delay: None,
-                source: None,
+                retry_after: None,
+                agent_context: None,
             };
         )*
     };
@@ -315,7 +355,6 @@ macro_rules! codex_err_tuple_constructors {
 impl CodexErr {
     codex_err_unit_constructors!(
         TurnAborted,
-        AutomaticTurnContextChanged,
         SessionBudgetExceeded,
         ContextWindowExceeded,
         SessionConfiguredNotFirstEvent,
@@ -367,32 +406,18 @@ impl CodexErr {
         details.into()
     }
 
-    /// Returns the narrow source marker, if one was preserved by the producer.
-    pub fn codex_source(&self) -> Option<CodexErrSource> {
-        self.source
-    }
-
-    /// Constructs a usage-limit error with in-process parser provenance.
-    ///
-    /// The marker is diagnostic data only; it is not an admission, retry, or security
-    /// capability.
-    pub fn recognized_http_usage_limit(error: UsageLimitReachedError) -> Self {
-        Self {
-            details: CodexErrorDetails::UsageLimitReached(error),
-            retry_delay: None,
-            source: Some(CodexErrSource::RecognizedHttpUsageLimit),
-        }
-    }
-
     /// Returns the semantic failure and its diagnostic payload.
     pub fn details(&self) -> &CodexErrorDetails {
         &self.details
     }
 
-    pub fn is_retryable(&self) -> bool {
+    /// Returns the delay before the given retry attempt, or `None` for a terminal error.
+    ///
+    /// The first retry is attempt one. Retryable errors use server advice when available and
+    /// otherwise use exponential backoff with jitter. Callers enforce their own retry budgets.
+    pub fn retry_delay(&self, retry_count: u64) -> Option<Duration> {
         match self.details() {
             CodexErrorDetails::TurnAborted
-            | CodexErrorDetails::AutomaticTurnContextChanged
             | CodexErrorDetails::SessionBudgetExceeded
             | CodexErrorDetails::Interrupted
             | CodexErrorDetails::EnvVar(_)
@@ -401,20 +426,31 @@ impl CodexErr {
             | CodexErrorDetails::QuotaExceeded
             | CodexErrorDetails::InvalidImageRequest()
             | CodexErrorDetails::InvalidRequest(_)
+            | CodexErrorDetails::ResponseIncomplete(_)
+            | CodexErrorDetails::ModelNotFound { .. }
+            | CodexErrorDetails::InvalidPrompt { .. }
+            | CodexErrorDetails::ToolCollision(_)
             | CodexErrorDetails::RefreshTokenFailed(_)
+            | CodexErrorDetails::GatewayLoginRequired(_)
             | CodexErrorDetails::UnsupportedOperation(_)
             | CodexErrorDetails::Sandbox(_)
             | CodexErrorDetails::LandlockSandboxExecutableNotProvided
-            | CodexErrorDetails::RetryLimit(_)
             | CodexErrorDetails::ContextWindowExceeded
             | CodexErrorDetails::ThreadNotFound(_)
             | CodexErrorDetails::AgentLimitReached { .. }
             | CodexErrorDetails::Spawn
             | CodexErrorDetails::SessionConfiguredNotFirstEvent
             | CodexErrorDetails::UsageLimitReached(_)
-            | CodexErrorDetails::ServerOverloaded
-            | CodexErrorDetails::CyberPolicy { .. } => false,
+            | CodexErrorDetails::FlexUnavailable
+            | CodexErrorDetails::CyberPolicy { .. }
+            | CodexErrorDetails::BioPolicy { .. }
+            | CodexErrorDetails::MisalignmentPolicyViolation { .. } => None,
+            CodexErrorDetails::ServerOverloaded | CodexErrorDetails::RetryLimit(_) => {
+                self.server_retry_delay()
+            }
             CodexErrorDetails::Stream(..)
+            | CodexErrorDetails::ContentFilter
+            | CodexErrorDetails::RateLimitExceeded(_)
             | CodexErrorDetails::Timeout
             | CodexErrorDetails::RequestTimeout
             | CodexErrorDetails::UnexpectedStatus(_)
@@ -424,18 +460,29 @@ impl CodexErr {
             | CodexErrorDetails::InternalAgentDied
             | CodexErrorDetails::Io(_)
             | CodexErrorDetails::Json(_)
-            | CodexErrorDetails::TokioJoin(_) => true,
+            | CodexErrorDetails::TokioJoin(_) => Some(
+                self.server_retry_delay()
+                    .unwrap_or_else(|| backoff(retry_count)),
+            ),
             #[cfg(target_os = "linux")]
-            CodexErrorDetails::LandlockRuleset(_) | CodexErrorDetails::LandlockPathFd(_) => false,
+            CodexErrorDetails::LandlockRuleset(_) | CodexErrorDetails::LandlockPathFd(_) => None,
         }
     }
 
-    pub fn retry_delay(&self) -> Option<Duration> {
-        self.retry_delay
+    /// Returns the original server-advised instant for callers that pass the error on.
+    pub fn retry_after(&self) -> Option<RetryAfter> {
+        self.retry_after
     }
 
-    pub fn with_retry_delay(mut self, retry_delay: Duration) -> Self {
-        self.retry_delay = Some(retry_delay);
+    /// Returns the remaining server-advised delay without applying local retry policy.
+    /// Expired advice stays present as zero instead of falling back to a local delay.
+    pub fn server_retry_delay(&self) -> Option<Duration> {
+        self.retry_after.map(RetryAfter::remaining_delay)
+    }
+
+    /// Retains an already captured server deadline without restarting it.
+    pub fn with_retry_after(mut self, retry_after: RetryAfter) -> Self {
+        self.retry_after = Some(retry_after);
         self
     }
 
@@ -451,24 +498,33 @@ impl CodexErr {
         match &self.details {
             CodexErrorDetails::ContextWindowExceeded => CodexErrorInfo::ContextWindowExceeded,
             CodexErrorDetails::SessionBudgetExceeded => CodexErrorInfo::SessionBudgetExceeded,
+            CodexErrorDetails::RateLimitExceeded(_) => CodexErrorInfo::RateLimitExceeded,
             CodexErrorDetails::UsageLimitReached(_)
             | CodexErrorDetails::QuotaExceeded
             | CodexErrorDetails::UsageNotIncluded => CodexErrorInfo::UsageLimitExceeded,
             CodexErrorDetails::ServerOverloaded => CodexErrorInfo::ServerOverloaded,
+            CodexErrorDetails::FlexUnavailable => CodexErrorInfo::FlexUnavailable,
             CodexErrorDetails::CyberPolicy { .. } => CodexErrorInfo::CyberPolicy,
+            CodexErrorDetails::BioPolicy { .. } => CodexErrorInfo::BioPolicy,
+            CodexErrorDetails::ModelNotFound { .. } => CodexErrorInfo::ModelNotFound,
+            CodexErrorDetails::InvalidPrompt { .. } => CodexErrorInfo::InvalidPrompt,
+            CodexErrorDetails::MisalignmentPolicyViolation { .. } => {
+                CodexErrorInfo::MisalignmentPolicyViolation
+            }
             CodexErrorDetails::RetryLimit(_) => CodexErrorInfo::ResponseTooManyFailedAttempts {
                 http_status_code: self.http_status_code_value(),
             },
-            CodexErrorDetails::ConnectionFailed(_) => CodexErrorInfo::HttpConnectionFailed {
-                http_status_code: self.http_status_code_value(),
-            },
+            CodexErrorDetails::ConnectionFailed(_) | CodexErrorDetails::UnexpectedStatus(_) => {
+                CodexErrorInfo::HttpConnectionFailed {
+                    http_status_code: self.http_status_code_value(),
+                }
+            }
             CodexErrorDetails::ResponseStreamFailed(_) => {
                 CodexErrorInfo::ResponseStreamConnectionFailed {
                     http_status_code: self.http_status_code_value(),
                 }
             }
             CodexErrorDetails::RefreshTokenFailed(_) => CodexErrorInfo::Unauthorized,
-            CodexErrorDetails::AutomaticTurnContextChanged => CodexErrorInfo::Unauthorized,
             CodexErrorDetails::SessionConfiguredNotFirstEvent
             | CodexErrorDetails::InternalServerError
             | CodexErrorDetails::InternalAgentDied => CodexErrorInfo::InternalServerError,
@@ -489,11 +545,19 @@ impl CodexErr {
         ErrorEvent {
             message,
             codex_error_info: Some(self.to_codex_protocol_error()),
+            misalignment: match &self.details {
+                CodexErrorDetails::MisalignmentPolicyViolation { misalignment, .. } => {
+                    misalignment.clone()
+                }
+                _ => None,
+            },
         }
     }
 
     pub fn http_status_code_value(&self) -> Option<u16> {
         let http_status_code = match &self.details {
+            CodexErrorDetails::FlexUnavailable => Some(StatusCode::TOO_MANY_REQUESTS),
+            CodexErrorDetails::ModelNotFound { status, .. } => *status,
             CodexErrorDetails::RetryLimit(err) => Some(err.status),
             CodexErrorDetails::UnexpectedStatus(err) => Some(err.status),
             CodexErrorDetails::ConnectionFailed(err) => err.source.status(),
@@ -506,7 +570,7 @@ impl CodexErr {
 
 #[derive(Debug)]
 pub struct ConnectionFailedError {
-    pub source: reqwest::Error,
+    pub source: HttpError,
 }
 
 impl std::fmt::Display for ConnectionFailedError {
@@ -517,7 +581,7 @@ impl std::fmt::Display for ConnectionFailedError {
 
 #[derive(Debug)]
 pub struct ResponseStreamFailed {
-    pub source: reqwest::Error,
+    pub source: HttpError,
     pub request_id: Option<String>,
 }
 
@@ -653,6 +717,8 @@ impl std::fmt::Display for RetryLimitReachedError {
 pub struct UsageLimitReachedError {
     pub plan_type: Option<PlanType>,
     pub resets_at: Option<DateTime<Utc>>,
+    /// Server-selected window responsible for the limit, in minutes.
+    pub limit_window_minutes: Option<u16>,
     pub rate_limits: Option<Box<RateLimitSnapshot>>,
     pub promo_message: Option<String>,
     pub rate_limit_reached_type: Option<RateLimitReachedType>,
@@ -660,6 +726,8 @@ pub struct UsageLimitReachedError {
 
 impl std::fmt::Display for UsageLimitReachedError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        // Reserve is a fallback for exhausted ordinary usage, so keep the standard
+        // promo/plan recovery copy below instead of suggesting another model.
         if let Some(limit_name) = self
             .rate_limits
             .as_ref()
@@ -667,10 +735,11 @@ impl std::fmt::Display for UsageLimitReachedError {
             .map(str::trim)
             .filter(|name| !name.is_empty())
             && !limit_name.eq_ignore_ascii_case("codex")
+            && !limit_name.eq_ignore_ascii_case("gpt-reserve")
         {
             return write!(
                 f,
-                "You've hit your usage limit for {limit_name}. Switch to another model now,{}",
+                "You’ve hit your usage limit for {limit_name}. Switch to another model now,{}",
                 retry_suffix_after_or(self.resets_at.as_ref())
             );
         }
@@ -710,45 +779,52 @@ impl std::fmt::Display for UsageLimitReachedError {
         if let Some(promo_message) = &self.promo_message {
             return write!(
                 f,
-                "You've hit your usage limit. {promo_message},{}",
+                "You’ve hit your usage limit. {promo_message},{}",
                 retry_suffix_after_or(self.resets_at.as_ref())
             );
         }
 
         let message = match self.plan_type.as_ref() {
             Some(PlanType::Known(KnownPlan::Plus)) => format!(
-                "You've hit your usage limit. Upgrade to Pro (https://chatgpt.com/explore/pro), visit https://chatgpt.com/codex/settings/usage to purchase more credits{}",
+                "You’ve hit your usage limit. Upgrade to Pro (https://chatgpt.com/explore/pro), visit https://chatgpt.com/settings/usage to purchase more credits{}",
                 retry_suffix_after_or(self.resets_at.as_ref())
             ),
             Some(PlanType::Known(
                 KnownPlan::Team
+                | KnownPlan::SelfServeBusinessProLite
                 | KnownPlan::SelfServeBusinessUsageBased
                 | KnownPlan::Business
                 | KnownPlan::Ent26
-                | KnownPlan::EnterpriseCbpUsageBased,
+                | KnownPlan::EnterpriseCbpAutomation
+                | KnownPlan::EnterpriseCbpUsageBased
+                | KnownPlan::Sci
+                | KnownPlan::SciPlus,
             )) => {
                 format!(
-                    "You've hit your usage limit. To get more access now, send a request to your admin{}",
+                    "You’ve hit your usage limit. To get more access now, send a request to your admin{}",
                     retry_suffix_after_or(self.resets_at.as_ref())
                 )
             }
             Some(PlanType::Known(KnownPlan::Free)) | Some(PlanType::Known(KnownPlan::Go)) => {
                 format!(
-                    "You've hit your usage limit. Upgrade to Plus to continue using Codex (https://chatgpt.com/explore/plus),{}",
+                    "You’ve hit your usage limit. Upgrade to Plus to continue using Codex (https://chatgpt.com/explore/plus),{}",
                     retry_suffix_after_or(self.resets_at.as_ref())
                 )
             }
-            Some(PlanType::Known(KnownPlan::Pro | KnownPlan::ProLite)) => format!(
-                "You've hit your usage limit. Visit https://chatgpt.com/codex/settings/usage to purchase more credits{}",
-                retry_suffix_after_or(self.resets_at.as_ref())
-            ),
-            Some(PlanType::Known(KnownPlan::Enterprise))
-            | Some(PlanType::Known(KnownPlan::Edu)) => format!(
-                "You've hit your usage limit.{}",
+            Some(PlanType::Known(KnownPlan::Pro | KnownPlan::ProLite | KnownPlan::ProMax)) => {
+                format!(
+                    "You’ve hit your usage limit. Visit https://chatgpt.com/settings/usage to purchase more credits{}",
+                    retry_suffix_after_or(self.resets_at.as_ref())
+                )
+            }
+            Some(PlanType::Known(
+                KnownPlan::Enterprise | KnownPlan::Edu | KnownPlan::EduPlus | KnownPlan::EduPro,
+            )) => format!(
+                "You’ve hit your usage limit.{}",
                 retry_suffix(self.resets_at.as_ref())
             ),
             Some(PlanType::Unknown(_)) | None => format!(
-                "You've hit your usage limit.{}",
+                "You’ve hit your usage limit.{}",
                 retry_suffix(self.resets_at.as_ref())
             ),
         };

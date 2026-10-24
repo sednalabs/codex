@@ -12,6 +12,7 @@ use codex_protocol::models::PermissionProfile;
 use codex_protocol::protocol::AskForApproval;
 use codex_rmcp_client::InProcessTransportFactory;
 use codex_rmcp_client::RmcpClient;
+use codex_utils_absolute_path::AbsolutePathBuf;
 use futures::FutureExt;
 use pretty_assertions::assert_eq;
 use rmcp::model::JsonObject;
@@ -22,9 +23,9 @@ use tokio::sync::Notify;
 use super::McpBinding;
 use super::PreparedMcpCall;
 use crate::binding_clients::McpBindingClients;
+use crate::client_tool_catalog::ClientToolCatalog;
 use crate::connection_manager::McpConnectionSet;
 use crate::rmcp_client::ManagedClient;
-use crate::rmcp_client::ToolCatalogueSnapshot;
 use crate::server::McpServerMetadata;
 use crate::server::McpServerOrigin;
 use crate::tools::ToolInfo;
@@ -47,7 +48,7 @@ impl InProcessTransportFactory for TestInProcessTransportFactory {
 struct TestStep {
     step: Arc<McpBinding>,
     client: Arc<RmcpClient>,
-    tool_catalog_revision: Arc<tokio::sync::RwLock<u64>>,
+    tool_catalog: Arc<ClientToolCatalog>,
 }
 
 async fn test_step(
@@ -77,7 +78,13 @@ async fn test_step(
             .await
             .expect("create in-process MCP client"),
     );
+    let tool_catalog = Arc::new(ClientToolCatalog::new(
+        vec![tool.clone()],
+        /*meta*/ None,
+        /*updates*/ None,
+    ));
     let managed_client = Arc::new(ManagedClient {
+        _auth_change_notifications: None,
         client: Arc::clone(&client),
         server_info: McpServerInfo {
             name: label.to_string(),
@@ -87,25 +94,18 @@ async fn test_step(
             icons: None,
             website_url: None,
         },
-        tool_catalogue: Arc::new(arc_swap::ArcSwap::from_pointee(ToolCatalogueSnapshot {
-            observed_generation: 0,
-            tools: vec![tool.clone()],
-        })),
-        tool_refresh_lock: Arc::new(tokio::sync::Semaphore::new(1)),
-        server_name: label.to_string(),
-        is_codex_apps_mcp_server: false,
+        tool_catalog: Arc::clone(&tool_catalog),
         tool_timeout: None,
         server_instructions: None,
         server_supports_sandbox_state_meta_capability: supports_sandbox_state_meta,
+        client_supports_network_policy_meta_capability: false,
         codex_apps_tools_cache_context: None,
-        tool_catalog_cache_context: None,
     });
-    let clients = Arc::new(McpBindingClients::new(
-        HashMap::from([(SERVER_NAME.to_string(), Arc::clone(&managed_client))]),
-        [SERVER_NAME.to_string()].into_iter().collect(),
-    ));
+    let clients = Arc::new(McpBindingClients::new(HashMap::from([(
+        SERVER_NAME.to_string(),
+        Arc::clone(&managed_client),
+    )])));
     let connections = Arc::new(McpConnectionSet::empty(/*prefix_mcp_tool_names*/ true));
-    let tool_catalog_revision = Arc::new(tokio::sync::RwLock::new(0));
     let mut config = crate::mcp::tests::test_mcp_config(std::env::temp_dir());
     if label == "old" {
         config.approval_policy = Constrained::allow_any(AskForApproval::Never);
@@ -113,13 +113,18 @@ async fn test_step(
     } else {
         config.approvals_reviewer = ApprovalsReviewer::AutoReview;
     }
+    config
+        .server_permission_profiles
+        .insert(SERVER_NAME.to_string(), config.permission_profile.clone());
+    config
+        .environment_use_mxc
+        .insert(format!("{label}-environment"), label == "new");
     let config = Arc::new(config);
     let prepared = PreparedMcpCall::new(
         Arc::clone(&connections),
         managed_client,
         Arc::clone(&config),
-        /*catalog_revision*/ 0,
-        Arc::clone(&tool_catalog_revision),
+        tool_catalog.read(Arc::new).await,
         tool.clone(),
         McpServerMetadata {
             environment_id: format!("{label}-environment"),
@@ -133,7 +138,8 @@ async fn test_step(
         },
         Some(format!("{label}-plugin")),
         label == "old",
-    );
+    )
+    .expect("test call should retain its thread-owned permission profile");
     let calls = HashMap::from([((SERVER_NAME.to_string(), TOOL_NAME.to_string()), prepared)]);
 
     TestStep {
@@ -146,7 +152,7 @@ async fn test_step(
             calls,
         )),
         client,
-        tool_catalog_revision,
+        tool_catalog,
     }
 }
 
@@ -221,21 +227,28 @@ async fn prepared_call_keeps_captured_connection_and_authority_after_refresh() -
     assert_eq!(
         (
             old_call.config().approval_policy.value(),
-            &old_call.config().permission_profile,
+            old_call.permission_profile(),
             old_call.config().approvals_reviewer,
+            old_call.config().environment_use_mxc.get("old-environment"),
         ),
         (
             AskForApproval::Never,
             &PermissionProfile::Disabled,
             ApprovalsReviewer::User,
+            Some(&false),
         )
     );
     assert_eq!(
         (
             new_call.config().approval_policy.value(),
             new_call.config().approvals_reviewer,
+            new_call.config().environment_use_mxc.get("new-environment"),
         ),
-        (AskForApproval::OnRequest, ApprovalsReviewer::AutoReview)
+        (
+            AskForApproval::OnRequest,
+            ApprovalsReviewer::AutoReview,
+            Some(&true)
+        )
     );
 
     drop(old.step);
@@ -277,6 +290,7 @@ async fn prepared_call_does_not_reroute_after_captured_connection_closes() {
         .call(
             Some(serde_json::json!({"query": "codex"})),
             /*meta*/ None,
+            /*timeout*/ None,
         )
         .await
         .expect_err("a call bound to a closed connection must fail");
@@ -299,12 +313,19 @@ async fn prepared_call_is_rejected_after_catalog_refresh() {
         .prepare_call(SERVER_NAME, TOOL_NAME)
         .expect("step should prepare the advertised tool");
 
-    *step.tool_catalog_revision.write().await += 1;
+    step.tool_catalog
+        .refresh(
+            || async { Ok((step.step.tools().to_vec(), None, ())) },
+            |_, _, ()| {},
+        )
+        .await
+        .expect("refresh tool catalog");
 
     let error = prepared
         .call(
             Some(serde_json::json!({"query": "codex"})),
             /*meta*/ None,
+            /*timeout*/ None,
         )
         .await
         .expect_err("a call from an older catalog must be rejected");
@@ -326,12 +347,18 @@ async fn stale_prepared_call_does_not_run_preparation() {
         .step
         .prepare_call(SERVER_NAME, TOOL_NAME)
         .expect("step should prepare the advertised tool");
-    *step.tool_catalog_revision.write().await += 1;
+    step.tool_catalog
+        .refresh(
+            || async { Ok((step.step.tools().to_vec(), None, ())) },
+            |_, _, ()| {},
+        )
+        .await
+        .expect("refresh tool catalog");
     let prepared_side_effect_ran = Arc::new(AtomicBool::new(false));
     let marker = Arc::clone(&prepared_side_effect_ran);
 
     prepared
-        .call_with_preparation(|| async move {
+        .call_with_preparation(/*requested_timeout*/ None, || async move {
             marker.store(true, Ordering::SeqCst);
             Ok((None, None))
         })
@@ -359,7 +386,7 @@ async fn preparation_holds_catalog_authority_until_it_finishes() {
     let finish = Arc::clone(&finish_preparation);
     let call = tokio::spawn(async move {
         prepared
-            .call_with_preparation(|| async move {
+            .call_with_preparation(/*requested_timeout*/ None, || async move {
                 started.notify_one();
                 finish.notified().await;
                 Err(anyhow::anyhow!("stop after preparation"))
@@ -368,13 +395,129 @@ async fn preparation_holds_catalog_authority_until_it_finishes() {
     });
 
     preparation_started.notified().await;
+    let refresh = step.tool_catalog.refresh(
+        || async { Ok((step.step.tools().to_vec(), None, ())) },
+        |_, _, ()| {},
+    );
+    tokio::pin!(refresh);
     assert!(
-        step.tool_catalog_revision.try_write().is_err(),
+        futures::poll!(&mut refresh).is_pending(),
         "catalog replacement must wait for irreversible call preparation"
     );
     finish_preparation.notify_one();
     call.await
         .expect("call task should finish")
         .expect_err("the test preparation should stop the call");
-    assert!(step.tool_catalog_revision.try_write().is_ok());
+    refresh
+        .await
+        .expect("catalog refresh should finish after preparation");
+}
+
+#[tokio::test]
+async fn sandbox_executable_requires_local_stdio_and_a_full_cli() -> anyhow::Result<()> {
+    #[cfg(unix)]
+    use std::os::unix::ffi::OsStrExt;
+
+    let step = test_step(
+        "old",
+        AppToolApproval::Approve,
+        /*supports_sandbox_state_meta*/ true,
+    )
+    .await;
+    let call = step
+        .step
+        .prepare_call(SERVER_NAME, TOOL_NAME)
+        .expect("prepared call");
+    // Use a probe-capable CLI so remote/HTTP exclusions cannot pass merely
+    // because the supplied executable lacks the sandbox capability.
+    let executable = codex_utils_cargo_bin::cargo_bin("codex")?;
+    for (server, runtime_environment, path, expected) in [
+        (
+            serde_json::json!({"command": "mcp"}),
+            "local",
+            Some(executable.clone()),
+            Some(AbsolutePathBuf::from_absolute_path_checked(&executable)?),
+        ),
+        // The Rust test harness accepts `sandbox --help`, but must not be
+        // advertised as a sandbox launcher: it lacks `--sandbox-state-json`.
+        (
+            serde_json::json!({"command": "mcp"}),
+            "local",
+            Some(std::env::current_exe()?),
+            None,
+        ),
+        (serde_json::json!({"command": "mcp"}), "local", None, None),
+        #[cfg(unix)]
+        (
+            serde_json::json!({"command": "mcp"}),
+            "local",
+            Some(std::ffi::OsStr::from_bytes(b"/non-utf8-\xff/codex").into()),
+            None,
+        ),
+        (
+            serde_json::json!({"command": "mcp"}),
+            "local",
+            Some("codex".into()),
+            None,
+        ),
+        (
+            serde_json::json!({"command": "mcp", "environment_id": "remote"}),
+            "remote",
+            Some(executable.clone()),
+            None,
+        ),
+        (
+            serde_json::json!({"command": "mcp"}),
+            "remote",
+            Some(executable.clone()),
+            None,
+        ),
+        (
+            serde_json::json!({"url": "http://127.0.0.1:8080/mcp"}),
+            "local",
+            Some(executable),
+            None,
+        ),
+    ] {
+        let mut call = call.clone();
+        let config = Arc::make_mut(&mut call.config);
+        config.codex_self_exe = path;
+        let mut catalog = crate::ResolvedMcpCatalog::builder();
+        catalog.register(crate::McpServerRegistration::from_config(
+            SERVER_NAME.to_owned(),
+            serde_json::from_value(server)?,
+        ));
+        config.mcp_server_catalog = catalog.build();
+        call.server_metadata.environment_id = runtime_environment.to_owned();
+        assert_eq!(call.sandbox_codex_executable().await, expected);
+
+        let state = crate::SandboxState {
+            permission_profile: PermissionProfile::default(),
+            codex_linux_sandbox_exe: None,
+            sandbox_cwd: codex_utils_path_uri::PathUri::from_host_native_path(
+                std::env::current_dir()?,
+            )?,
+            use_legacy_landlock: false,
+            use_mxc: false,
+        };
+        let expected_state = serde_json::to_value(&state)?;
+        let mut metadata = Some(serde_json::json!({
+            "unrelated": "retained",
+            "codex/sandbox-state": {"stale": true},
+            "codex/sandbox-state-meta": {"different": true},
+            "codex/sandbox-launcher": {"codexExecutable": "must-not-survive"},
+        }));
+        call.augment_sandbox_metadata(&mut metadata, state).await?;
+        let mut expected_metadata = serde_json::json!({
+            "unrelated": "retained",
+            "codex/sandbox-state": expected_state,
+            "codex/sandbox-state-meta": expected_state,
+        });
+        if let Some(executable) = expected {
+            expected_metadata["codex/sandbox-launcher"] =
+                serde_json::json!({"codexExecutable": executable});
+        }
+        assert_eq!(metadata, Some(expected_metadata));
+    }
+    Ok(())
 }

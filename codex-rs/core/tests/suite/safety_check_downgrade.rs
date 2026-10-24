@@ -1,4 +1,8 @@
 use anyhow::Result;
+use codex_core::TurnInputRequest;
+use codex_protocol::config_types::CollaborationMode;
+use codex_protocol::config_types::ModeKind;
+use codex_protocol::config_types::Settings;
 use codex_protocol::models::ContentItem;
 use codex_protocol::models::PermissionProfile;
 use codex_protocol::models::ResponseItem;
@@ -7,9 +11,7 @@ use codex_protocol::protocol::CodexErrorInfo;
 use codex_protocol::protocol::EventMsg;
 use codex_protocol::protocol::ModelRerouteReason;
 use codex_protocol::protocol::ModelVerification;
-use codex_protocol::protocol::Op;
-use codex_protocol::protocol::TokenUsage;
-use codex_protocol::protocol::TurnCompleteEvent;
+use codex_protocol::protocol::ThreadSettingsOverrides;
 use codex_protocol::user_input::UserInput;
 use core_test_support::responses::ev_assistant_message;
 use core_test_support::responses::ev_function_call;
@@ -23,7 +25,7 @@ use core_test_support::responses::sse_response;
 use core_test_support::responses::start_mock_server;
 use core_test_support::skip_if_no_network;
 use core_test_support::test_codex::TestCodex;
-use core_test_support::test_codex::local_selections;
+use core_test_support::test_codex::local_requests;
 use core_test_support::test_codex::test_codex;
 use core_test_support::test_codex::turn_permission_fields;
 use core_test_support::wait_for_event;
@@ -31,64 +33,36 @@ use pretty_assertions::assert_eq;
 use wiremock::ResponseTemplate;
 
 const SERVER_MODEL: &str = "gpt-5.2";
-const TERMINAL_SERVER_MODEL: &str = "gpt-5.1-codex";
 const REQUESTED_MODEL: &str = "gpt-5.3-codex";
-const FIRST_MODEL_SNAPSHOT: &str = "gpt-5.2-2026-05-01";
-const TERMINAL_MODEL_SNAPSHOT: &str = "gpt-5.1-codex-2026-06-01";
 const TRUSTED_ACCESS_FOR_CYBER_VERIFICATION: &str = "trusted_access_for_cyber";
 
 const CYBER_POLICY_MESSAGE: &str =
     "This request has been flagged for potentially high-risk cyber activity.";
+const BIO_POLICY_MESSAGE: &str = "This request has been flagged for possible biological risk.";
+const INVALID_PROMPT_MESSAGE: &str = "This prompt was rejected.";
 
-fn ev_completed_with_usage(
-    id: &str,
-    input_tokens: i64,
-    cached_input_tokens: i64,
-    output_tokens: i64,
-    reasoning_output_tokens: i64,
-) -> serde_json::Value {
-    serde_json::json!({
-        "type": "response.completed",
-        "response": {
-            "id": id,
-            "usage": {
-                "input_tokens": input_tokens,
-                "input_tokens_details": {"cached_tokens": cached_input_tokens},
-                "output_tokens": output_tokens,
-                "output_tokens_details": {"reasoning_tokens": reasoning_output_tokens},
-                "total_tokens": input_tokens + output_tokens
-            }
-        }
-    })
-}
-
-fn disabled_text_turn(test: &TestCodex, text: &str) -> Op {
+fn disabled_text_turn(test: &TestCodex, text: &str) -> TurnInputRequest {
     let (sandbox_policy, permission_profile) =
         turn_permission_fields(PermissionProfile::Disabled, test.cwd_path());
-    Op::UserInput {
-        items: vec![UserInput::Text {
-            text: text.to_string(),
-            text_elements: Vec::new(),
-        }],
-        final_output_json_schema: None,
-        responsesapi_client_metadata: None,
-        additional_context: Default::default(),
-        thread_settings: codex_protocol::protocol::ThreadSettingsOverrides {
-            environments: Some(local_selections(test.config.cwd.clone())),
-            approval_policy: Some(AskForApproval::Never),
-            sandbox_policy: Some(sandbox_policy),
-            permission_profile,
-            collaboration_mode: Some(codex_protocol::config_types::CollaborationMode {
-                mode: codex_protocol::config_types::ModeKind::Default,
-                settings: codex_protocol::config_types::Settings {
-                    model: test.session_configured.model.clone(),
-                    reasoning_effort: test.config.model_reasoning_effort.clone(),
-                    developer_instructions: None,
-                },
-            }),
-            ..Default::default()
-        },
-    }
+    TurnInputRequest::user_input(vec![UserInput::Text {
+        text: text.to_string(),
+        text_elements: Vec::new(),
+    }])
+    .with_thread_settings(ThreadSettingsOverrides {
+        environments: Some(local_requests(test.config.cwd.clone())),
+        approval_policy: Some(AskForApproval::Never),
+        sandbox_policy: Some(sandbox_policy),
+        permission_profile,
+        collaboration_mode: Some(CollaborationMode {
+            mode: ModeKind::Default,
+            settings: Settings {
+                model: test.session_configured.model.clone(),
+                reasoning_effort: test.config.model_reasoning_effort.clone(),
+                developer_instructions: None,
+            },
+        }),
+        ..Default::default()
+    })
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -104,7 +78,7 @@ async fn openai_model_header_mismatch_emits_warning_event() -> Result<()> {
     let test = builder.build(&server).await?;
 
     test.codex
-        .submit(disabled_text_turn(&test, "trigger safety check"))
+        .start_or_steer_turn(disabled_text_turn(&test, "trigger safety check"))
         .await?;
 
     let reroute = wait_for_event(&test.codex, |event| {
@@ -133,36 +107,61 @@ async fn openai_model_header_mismatch_emits_warning_event() -> Result<()> {
     Ok(())
 }
 
+#[test_case::test_case("cyber_policy", CYBER_POLICY_MESSAGE, CodexErrorInfo::CyberPolicy; "cyber")]
+#[test_case::test_case("bio_policy", BIO_POLICY_MESSAGE, CodexErrorInfo::BioPolicy; "bio")]
+#[test_case::test_case("invalid_prompt", INVALID_PROMPT_MESSAGE, CodexErrorInfo::InvalidPrompt; "invalid_prompt")]
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn cyber_policy_response_emits_typed_error_without_retry() -> Result<()> {
+async fn error_response_emits_typed_error_without_retry(
+    code: &str,
+    message: &str,
+    error_info: CodexErrorInfo,
+) -> Result<()> {
     skip_if_no_network!(Ok(()));
 
-    let server = start_mock_server().await;
-    let response = ResponseTemplate::new(400).set_body_json(serde_json::json!({
-        "error": {
-            "message": CYBER_POLICY_MESSAGE,
-            "type": "invalid_request",
-            "param": null,
-            "code": "cyber_policy"
-        }
-    }));
-    let mock = mount_response_once(&server, response).await;
+    let error = serde_json::json!({
+        "message": message,
+        "type": "invalid_request",
+        "param": null,
+        "code": code
+    });
+    for response in [
+        ResponseTemplate::new(400).set_body_json(serde_json::json!({"error": error})),
+        sse_response(sse(vec![serde_json::json!({
+            "type": "response.failed",
+            "response": {"error": error}
+        })])),
+    ] {
+        let server = start_mock_server().await;
+        let mock = mount_response_once(&server, response).await;
 
-    let mut builder = test_codex().with_model(REQUESTED_MODEL);
-    let test = builder.build(&server).await?;
+        let mut builder = test_codex().with_model(REQUESTED_MODEL);
+        let test = builder.build_with_auto_env(&server).await?;
 
-    test.codex
-        .submit(disabled_text_turn(&test, "trigger cyber policy error"))
-        .await?;
+        test.codex
+            .start_or_steer_turn(TurnInputRequest::user_input(vec![UserInput::Text {
+                text: "trigger error".to_string(),
+                text_elements: Vec::new(),
+            }]))
+            .await?;
 
-    let error = wait_for_event(&test.codex, |event| matches!(event, EventMsg::Error(_))).await;
-    let EventMsg::Error(error) = error else {
-        panic!("expected error event");
-    };
-    assert_eq!(error.message, CYBER_POLICY_MESSAGE);
-    assert_eq!(error.codex_error_info, Some(CodexErrorInfo::CyberPolicy));
+        let error = wait_for_event(&test.codex, |event| matches!(event, EventMsg::Error(_))).await;
+        let EventMsg::Error(error) = error else {
+            panic!("expected error event");
+        };
+        assert_eq!(error.message, message);
+        assert_eq!(error.codex_error_info.as_ref(), Some(&error_info));
+        assert_eq!(
+            serde_json::to_value(&error.codex_error_info)?,
+            serde_json::json!(code)
+        );
 
-    mock.single_request();
+        let _ = wait_for_event(&test.codex, |event| {
+            matches!(event, EventMsg::TurnComplete(_))
+        })
+        .await;
+
+        mock.single_request();
+    }
 
     Ok(())
 }
@@ -191,7 +190,7 @@ async fn response_model_field_mismatch_emits_warning_when_header_matches_request
     let test = builder.build(&server).await?;
 
     test.codex
-        .submit(disabled_text_turn(&test, "trigger response model check"))
+        .start_or_steer_turn(disabled_text_turn(&test, "trigger response model check"))
         .await?;
 
     let reroute = wait_for_event(&test.codex, |event| {
@@ -235,54 +234,37 @@ async fn openai_model_header_mismatch_only_emits_one_warning_per_turn() -> Resul
 
     let server = start_mock_server().await;
     let tool_args = serde_json::json!({
-        "command": "echo hello",
-        "timeout_ms": 1_000
+        "cmd": "echo hello",
+        "yield_time_ms": 1_000
     });
 
     let first_response = sse_response(sse(vec![
         ev_response_created("resp-1"),
         ev_function_call(
             "call-1",
-            "shell_command",
+            "exec_command",
             &serde_json::to_string(&tool_args)?,
         ),
-        ev_completed_with_usage(
-            "resp-1", /*input_tokens*/ 10, /*cached_input_tokens*/ 4,
-            /*output_tokens*/ 5, /*reasoning_output_tokens*/ 1,
-        ),
+        core_test_support::responses::ev_completed("resp-1"),
     ]))
-    .insert_header("OpenAI-Model", SERVER_MODEL)
-    .insert_header("OpenAI-Model-Snapshot", FIRST_MODEL_SNAPSHOT);
+    .insert_header("OpenAI-Model", SERVER_MODEL);
     let second_response = sse_response(sse(vec![
         ev_response_created("resp-2"),
         ev_assistant_message("msg-1", "done"),
-        ev_completed_with_usage(
-            "resp-2", /*input_tokens*/ 20, /*cached_input_tokens*/ 7,
-            /*output_tokens*/ 8, /*reasoning_output_tokens*/ 2,
-        ),
+        core_test_support::responses::ev_completed("resp-2"),
     ]))
-    .insert_header("OpenAI-Model", TERMINAL_SERVER_MODEL)
-    .insert_header("OpenAI-Model-Snapshot", TERMINAL_MODEL_SNAPSHOT);
-    let third_response = sse_response(sse(vec![
-        ev_response_created("resp-3"),
-        ev_assistant_message("msg-2", "done again"),
-        core_test_support::responses::ev_completed("resp-3"),
-    ]));
-    let _mock = mount_response_sequence(
-        &server,
-        vec![first_response, second_response, third_response],
-    )
-    .await;
+    .insert_header("OpenAI-Model", SERVER_MODEL);
+    let _mock = mount_response_sequence(&server, vec![first_response, second_response]).await;
 
     let mut builder = test_codex().with_model(REQUESTED_MODEL);
     let test = builder.build(&server).await?;
 
     test.codex
-        .submit(disabled_text_turn(&test, "trigger follow-up turn"))
+        .start_or_steer_turn(disabled_text_turn(&test, "trigger follow-up turn"))
         .await?;
 
     let mut warning_count = 0;
-    let turn_complete = loop {
+    loop {
         let event = wait_for_event(&test.codex, |_| true).await;
         match event {
             EventMsg::Warning(warning)
@@ -292,147 +274,12 @@ async fn openai_model_header_mismatch_only_emits_one_warning_per_turn() -> Resul
             {
                 warning_count += 1;
             }
-            EventMsg::TurnComplete(turn_complete) => break turn_complete,
+            EventMsg::TurnComplete(_) => break,
             _ => {}
         }
-    };
+    }
 
     assert_eq!(warning_count, 1);
-    assert_eq!(
-        turn_complete.final_model.as_deref(),
-        Some(TERMINAL_SERVER_MODEL)
-    );
-    assert_eq!(
-        turn_complete.model_snapshot.as_deref(),
-        Some(TERMINAL_MODEL_SNAPSHOT)
-    );
-    assert_eq!(
-        turn_complete.provider_usage,
-        Some(TokenUsage {
-            input_tokens: 30,
-            cached_input_tokens: 11,
-            cache_write_input_tokens: 0,
-            output_tokens: 13,
-            reasoning_output_tokens: 3,
-            total_tokens: 43,
-        })
-    );
-
-    test.codex
-        .submit(disabled_text_turn(&test, "second ordinary turn"))
-        .await?;
-    let second_turn_complete = wait_for_event(&test.codex, |event| {
-        matches!(event, EventMsg::TurnComplete(_))
-    })
-    .await;
-    let EventMsg::TurnComplete(second_turn_complete) = second_turn_complete else {
-        panic!("expected second turn complete event");
-    };
-    assert_eq!(
-        second_turn_complete.provider_usage,
-        Some(TokenUsage::default())
-    );
-
-    Ok(())
-}
-
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn nonterminal_response_identity_is_not_reported_when_follow_up_fails() -> Result<()> {
-    skip_if_no_network!(Ok(()));
-
-    let server = start_mock_server().await;
-    let tool_args = serde_json::json!({
-        "command": "echo hello",
-        "timeout_ms": 1_000
-    });
-    let first_response = sse_response(sse(vec![
-        ev_response_created("resp-1"),
-        ev_function_call(
-            "call-1",
-            "shell_command",
-            &serde_json::to_string(&tool_args)?,
-        ),
-        ev_completed_with_usage(
-            "resp-1", /*input_tokens*/ 12, /*cached_input_tokens*/ 3,
-            /*output_tokens*/ 4, /*reasoning_output_tokens*/ 1,
-        ),
-    ]))
-    .insert_header("OpenAI-Model", SERVER_MODEL)
-    .insert_header("OpenAI-Model-Snapshot", FIRST_MODEL_SNAPSHOT);
-    let failed_follow_up = ResponseTemplate::new(400).set_body_json(serde_json::json!({
-        "error": {
-            "message": "synthetic follow-up failure",
-            "type": "invalid_request_error",
-            "param": null,
-            "code": "invalid_prompt"
-        }
-    }));
-    let _mock = mount_response_sequence(&server, vec![first_response, failed_follow_up]).await;
-
-    let mut builder = test_codex().with_model(REQUESTED_MODEL);
-    let test = builder.build(&server).await?;
-
-    test.codex
-        .submit(disabled_text_turn(&test, "trigger failed follow-up"))
-        .await?;
-
-    let error = wait_for_event(&test.codex, |event| matches!(event, EventMsg::Error(_))).await;
-    let EventMsg::Error(error) = error else {
-        panic!("expected error event");
-    };
-    let turn_complete = wait_for_event(&test.codex, |event| {
-        matches!(event, EventMsg::TurnComplete(_))
-    })
-    .await;
-    let EventMsg::TurnComplete(turn_complete) = turn_complete else {
-        panic!("expected turn complete event");
-    };
-
-    let started_at = turn_complete.started_at.expect("turn start timestamp");
-    let completed_at = turn_complete
-        .completed_at
-        .expect("turn completion timestamp");
-    let duration_ms = turn_complete.duration_ms.expect("turn duration");
-    let time_to_first_token_ms = turn_complete
-        .time_to_first_token_ms
-        .expect("time to first token");
-    let provider_usage = TokenUsage {
-        input_tokens: 12,
-        cached_input_tokens: 3,
-        cache_write_input_tokens: 0,
-        output_tokens: 4,
-        reasoning_output_tokens: 1,
-        total_tokens: 16,
-    };
-    let expected = TurnCompleteEvent {
-        turn_id: turn_complete.turn_id.clone(),
-        last_agent_message: None,
-        error: Some(error.clone()),
-        started_at: Some(started_at),
-        compaction_events_in_turn: 0,
-        final_model: None,
-        model_snapshot: None,
-        provider_usage: Some(provider_usage.clone()),
-        completed_at: Some(completed_at),
-        duration_ms: Some(duration_ms),
-        time_to_first_token_ms: Some(time_to_first_token_ms),
-    };
-
-    assert_eq!(turn_complete, expected);
-    assert_eq!(
-        serde_json::to_value(turn_complete)?,
-        serde_json::json!({
-            "turn_id": expected.turn_id,
-            "last_agent_message": null,
-            "error": error,
-            "started_at": started_at,
-            "compaction_events_in_turn": 0,
-            "provider_usage": provider_usage,
-            "completed_at": completed_at,
-            "duration_ms": duration_ms,
-            "time_to_first_token_ms": time_to_first_token_ms,
-        })
-    );
 
     Ok(())
 }
@@ -451,7 +298,7 @@ async fn openai_model_header_casing_only_mismatch_does_not_warn() -> Result<()> 
     let test = builder.build(&server).await?;
 
     test.codex
-        .submit(disabled_text_turn(&test, "trigger casing check"))
+        .start_or_steer_turn(disabled_text_turn(&test, "trigger casing check"))
         .await?;
 
     let mut reroute_count = 0;
@@ -490,11 +337,11 @@ async fn model_verification_emits_structured_event_without_reroute_or_warning() 
     ]));
     let _mock = mount_response_once(&server, response).await;
 
-    let mut builder = test_codex().with_model(SERVER_MODEL);
+    let mut builder = test_codex().with_model("gpt-5.5");
     let test = builder.build(&server).await?;
 
     test.codex
-        .submit(disabled_text_turn(&test, "trigger model verification"))
+        .start_or_steer_turn(disabled_text_turn(&test, "trigger model verification"))
         .await?;
 
     let mut verification_count = 0;
@@ -544,15 +391,15 @@ async fn model_verification_only_emits_once_per_turn() -> Result<()> {
 
     let server = start_mock_server().await;
     let tool_args = serde_json::json!({
-        "command": "echo hello",
-        "timeout_ms": 1_000
+        "cmd": "echo hello",
+        "yield_time_ms": 1_000
     });
 
     let first_response = sse_response(sse(vec![
         ev_response_created("resp-1"),
         ev_function_call(
             "call-1",
-            "shell_command",
+            "exec_command",
             &serde_json::to_string(&tool_args)?,
         ),
         ev_model_verification_metadata("resp-1", vec![TRUSTED_ACCESS_FOR_CYBER_VERIFICATION]),
@@ -570,7 +417,7 @@ async fn model_verification_only_emits_once_per_turn() -> Result<()> {
     let test = builder.build(&server).await?;
 
     test.codex
-        .submit(disabled_text_turn(
+        .start_or_steer_turn(disabled_text_turn(
             &test,
             "trigger follow-up model verification",
         ))

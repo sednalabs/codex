@@ -1,5 +1,6 @@
 use super::StateRuntime;
 use crate::model::datetime_to_epoch_millis;
+use crate::sqlite::SqliteWriteQueryExt;
 use chrono::Utc;
 use serde::Deserialize;
 use serde::Serialize;
@@ -12,6 +13,8 @@ pub struct ExternalAgentConfigImportSuccessRecord {
     pub cwd: Option<PathBuf>,
     pub source: Option<String>,
     pub target: Option<String>,
+    #[serde(default)]
+    pub title: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -70,7 +73,7 @@ ON CONFLICT(import_id) DO UPDATE SET
         .bind(datetime_to_epoch_millis(Utc::now()))
         .bind(serde_json::to_string(successes)?)
         .bind(serde_json::to_string(failures)?)
-        .execute(self.pool.as_ref())
+        .execute_with_busy_retry(self.pool.as_ref())
         .await?;
 
         Ok(())

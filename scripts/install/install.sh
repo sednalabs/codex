@@ -4,6 +4,7 @@ set -eu
 
 RELEASE="${CODEX_RELEASE:-latest}"
 NON_INTERACTIVE="${CODEX_NON_INTERACTIVE:-false}"
+DAEMON_ONLY="${CODEX_INSTALL_DAEMON_ONLY:-0}"
 DEFAULT_PREFER_RELEASES_OPENAI_COM="true"
 PREFER_RELEASES_OPENAI_COM="${CODEX_INSTALLER_USE_RELEASES_OPENAI_COM:-$DEFAULT_PREFER_RELEASES_OPENAI_COM}"
 RELEASES_BASE_URL="https://releases.openai.com/codex"
@@ -17,13 +18,22 @@ BIN_PATH="$BIN_DIR/codex"
 CODE_MODE_HOST_BIN_PATH="$BIN_DIR/codex-code-mode-host"
 CODEX_HOME_DIR="${CODEX_HOME:-$HOME/.codex}"
 STANDALONE_ROOT="$CODEX_HOME_DIR/packages/standalone"
+if [ "$DAEMON_ONLY" = "1" ]; then
+  STANDALONE_ROOT="$CODEX_HOME_DIR/packages/app-server-daemon"
+fi
 RELEASES_DIR="$STANDALONE_ROOT/releases"
 CURRENT_LINK="$STANDALONE_ROOT/current"
+if [ "${CODEX_INSTALL_DEFER_SELECTION:-0}" = "1" ]; then
+  if [ "$DAEMON_ONLY" != "1" ]; then
+    echo "Deferred selection requires a daemon-only installation." >&2
+    exit 1
+  fi
+  CURRENT_LINK="$STANDALONE_ROOT/.migration-current"
+fi
+AUTO_UPDATE_VERSION="$STANDALONE_ROOT/auto-update-version"
 LOCK_FILE="$STANDALONE_ROOT/install.lock"
 LOCK_DIR="$STANDALONE_ROOT/install.lock.d"
 LOCK_STALE_AFTER_SECS=600
-RELEASE_REPOSITORY="${CODEX_RELEASE_REPOSITORY:-openai/codex}"
-RELEASE_TAG_PREFIX="${CODEX_RELEASE_TAG_PREFIX:-rust-v}"
 
 path_action="already"
 path_profile=""
@@ -41,14 +51,9 @@ warn() {
 }
 
 normalize_version() {
-  configured_prefix="$RELEASE_TAG_PREFIX"
-
   case "$1" in
     "" | latest)
       printf 'latest\n'
-      ;;
-    "${configured_prefix}"*)
-      printf '%s\n' "${1#$configured_prefix}"
       ;;
     rust-v*)
       printf '%s\n' "${1#rust-v}"
@@ -69,8 +74,8 @@ validate_version() {
     return
   fi
 
-  if ! printf '%s\n' "$version" | grep -Eq '^[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z][0-9A-Za-z.-]*)?(\+[0-9A-Za-z][0-9A-Za-z.-]*)?$'; then
-    echo "Invalid Codex release version: $version. Expected latest or a semver release such as x.y.z[-prerelease][+build]." >&2
+  if ! printf '%s\n' "$version" | grep -Eq '^[0-9]+\.[0-9]+\.[0-9]+(-alpha(\.[0-9]+){0,2}|-beta(\.[0-9]+)?)?$'; then
+    echo "Invalid Codex release version: $version. Expected latest or x.y.z[-alpha[.N[.M]]|-beta[.N]]." >&2
     return 1
   fi
 }
@@ -209,8 +214,9 @@ parse_release_metadata() {
   # so the record boundaries inserted by fold do not change the document.
   LC_ALL=C fold -b -w 4096 | LC_ALL=C awk '
     function finish_string(value) {
-      if (object_depth == 1 && key == "tag_name") {
-        print "tag_name\t" value
+      if (object_depth == 1 &&
+          (key == "tag_name" || key == "version" || key == "target" || key == "entrypoint")) {
+        print key "\t" value
       } else if (object_depth == asset_object_depth) {
         if (key == "name") {
           asset_name = value
@@ -313,15 +319,8 @@ parse_release_metadata() {
 release_url_for_asset() {
   asset="$1"
   resolved_version="$2"
-  release_tag="$(release_tag_for_version "$resolved_version")"
 
-  printf 'https://github.com/%s/releases/download/%s/%s\n' "$RELEASE_REPOSITORY" "$release_tag" "$asset"
-}
-
-release_tag_for_version() {
-  resolved_version="$1"
-
-  printf '%s%s\n' "$RELEASE_TAG_PREFIX" "$resolved_version"
+  printf 'https://github.com/openai/codex/releases/download/rust-v%s/%s\n' "$resolved_version" "$asset"
 }
 
 releases_url_for_asset() {
@@ -333,9 +332,8 @@ releases_url_for_asset() {
 
 release_metadata_url() {
   resolved_version="$1"
-  release_tag="$(release_tag_for_version "$resolved_version")"
 
-  printf 'https://api.github.com/repos/%s/releases/tags/%s\n' "$RELEASE_REPOSITORY" "$release_tag"
+  printf 'https://api.github.com/repos/openai/codex/releases/tags/rust-v%s\n' "$resolved_version"
 }
 
 parse_downloaded_release_metadata() {
@@ -350,7 +348,7 @@ parse_downloaded_release_metadata() {
 resolve_metadata_version() {
   release_tag="$(printf '%s\n' "$release_metadata" | awk -F '\t' '$1 == "tag_name" { print $2; exit }')"
   case "$release_tag" in
-    "${RELEASE_TAG_PREFIX}"*) metadata_version="${release_tag#"${RELEASE_TAG_PREFIX}"}" ;;
+    rust-v*) metadata_version="${release_tag#rust-v}" ;;
     *) metadata_version="" ;;
   esac
   if [ -z "$metadata_version" ]; then
@@ -364,7 +362,7 @@ resolve_release_from_github() {
   normalized_version="$1"
   if [ "$normalized_version" = "latest" ]; then
     requested_release="latest"
-    metadata_url="https://api.github.com/repos/$RELEASE_REPOSITORY/releases/latest"
+    metadata_url="https://api.github.com/repos/openai/codex/releases/latest"
   else
     resolved_version="$normalized_version"
     requested_release="$resolved_version"
@@ -419,17 +417,15 @@ resolve_release() {
   normalized_version="$(normalize_version "$RELEASE")"
   validate_version "$normalized_version"
 
-  if [ "$RELEASE_REPOSITORY" = "openai/codex" ] && [ "$RELEASE_TAG_PREFIX" = "rust-v" ]; then
-    case "$PREFER_RELEASES_OPENAI_COM" in
-      1 | [Tt][Rr][Uu][Ee] | [Yy][Ee][Ss])
-        if resolve_release_from_releases "$normalized_version" &&
-          select_release_assets; then
-          return
-        fi
-        warn "releases.openai.com is unavailable; falling back to GitHub Releases."
-        ;;
-    esac
-  fi
+  case "$PREFER_RELEASES_OPENAI_COM" in
+    1 | [Tt][Rr][Uu][Ee] | [Yy][Ee][Ss])
+      if resolve_release_from_releases "$normalized_version" &&
+        select_release_assets; then
+        return
+      fi
+      warn "releases.openai.com is unavailable; falling back to GitHub Releases."
+      ;;
+  esac
 
   resolve_release_from_github "$normalized_version"
   select_release_assets
@@ -758,10 +754,161 @@ cleanup_stale_install_artifacts() {
   find "$RELEASES_DIR" -mindepth 1 -maxdepth 1 -name '.staging.*' -exec rm -rf {} +
   find "$STANDALONE_ROOT" -mindepth 1 -maxdepth 1 -name '.current.*' -exec rm -f {} +
 
-  if [ -d "$BIN_DIR" ]; then
+  if [ "$DAEMON_ONLY" != "1" ] && [ -d "$BIN_DIR" ]; then
     find "$BIN_DIR" -mindepth 1 -maxdepth 1 -name '.codex.*' -exec rm -f {} +
   fi
 }
+
+record_standalone_releases_in_use() {
+  # /proc also catches old clients with no session records. On macOS lsof
+  # checks every open file in the release, including running helper programs.
+  if [ "$os" = "linux" ]; then
+    [ -r /proc/self/mountinfo ] && [ -L /proc/self/exe ] || return 1
+    # hidepid can omit other users' processes entirely; do not assume an
+    # incomplete process listing proves an older release is unused.
+    if grep -E '(^|[ ,])hidepid=[^0, ]' /proc/self/mountinfo >/dev/null; then
+      return 1
+    fi
+    : > "$tmp_dir/in-use" || return 1
+    for process in /proc/[0-9]*; do
+      if executable="$(readlink "$process/exe" 2>/dev/null)"; then
+        printf 'n%s\n' "$executable" >> "$tmp_dir/in-use" || return 1
+      elif [ -d "$process" ]; then
+        # Even same-user ssh-agent/systemd processes may deny exe inspection.
+        # Only an unreadable Codex or bundled helper prevents safe pruning.
+        process_name="$(cat "$process/comm" 2>/dev/null)" || {
+          [ ! -d "$process" ] && continue
+          return 1
+        }
+        # Linux truncates comm to 15 bytes, including the code-mode host.
+        case "$process_name" in
+          codex* | rg | bwrap)
+            # A zombie has no files left open, even if its parent never reaps it.
+            grep -Eq '^State:[[:space:]]*Z' "$process/status" 2>/dev/null && continue
+            [ ! -d "$process" ] && continue
+            return 1
+            ;;
+        esac
+      fi
+    done
+  else
+    # macOS lsof silently omits other users' processes, even with no errors.
+    # ps can still report their executable names. As on Linux, decline to
+    # prune when an uninspectable Codex or helper may be using a release.
+    current_uid="$(id -u)" || return 1
+    ps -axo uid=,comm= > "$tmp_dir/processes" || return 1
+    [ -s "$tmp_dir/processes" ] || return 1
+    while read -r process_uid process_name; do
+      [ "$process_uid" = "$current_uid" ] && continue
+      case "${process_name##*/}" in
+        codex* | rg | bwrap) return 1 ;;
+      esac
+    done < "$tmp_dir/processes"
+    if /usr/sbin/lsof -nP -F n +D "$releases" > "$tmp_dir/in-use" 2> "$tmp_dir/lsof-error"; then
+      :
+    else
+      # lsof returns 1 for an empty result as well as for errors.
+      [ ! -s "$tmp_dir/in-use" ] && [ ! -s "$tmp_dir/lsof-error" ] || return 1
+    fi
+    [ ! -s "$tmp_dir/lsof-error" ] || return 1
+  fi
+}
+
+# Run under the install lock, after the visible command has been verified.
+# Only retire ordinary, manifest-owned packages; never retry a retired tree.
+prune_standalone_releases() (
+  [ ! -L "$CODEX_HOME_DIR/packages" ] &&
+    [ ! -L "$STANDALONE_ROOT" ] && [ ! -L "$RELEASES_DIR" ] || return 1
+  releases="$(cd -P "$RELEASES_DIR" && pwd)" || return 1
+  # Local process inspection cannot establish whether a network home is in
+  # use on another host. df -l excludes remotely mounted filesystems.
+  df -lP "$releases" > /dev/null 2> "$tmp_dir/df-error" || return 1
+  [ ! -s "$tmp_dir/df-error" ] || return 1
+  selected="$(cd -P "$CURRENT_LINK" && pwd)" || return 1
+  history="$(cat "$STANDALONE_ROOT/selection-history")" || return 1
+  previous="$(printf '%s\n' "$history" | sed -n '2p')"
+  case "$previous" in
+    */* | . | ..) return 1 ;;
+  esac
+  identity="$(LC_ALL=C stat -c '%d %i %.9Z' "$CURRENT_LINK" 2>/dev/null ||
+    LC_ALL=C stat -f '%d %i %Fc' "$CURRENT_LINK")" || return 1
+  [ "$selected" = "$releases/${selected##*/}" ] &&
+    [ "$history" = "$(printf '%s\n%s\n%s' "${selected##*/}" "$previous" "$identity")" ] ||
+    return 1
+  record_standalone_releases_in_use || return 1
+  restore_candidate=""
+  # A stopped install must not strand a late-starting release in retirement.
+  trap 'if [ -n "$restore_candidate" ] && [ -d "$retired/release" ] &&
+    [ ! -e "$candidate" ] && [ ! -L "$candidate" ]; then
+    mv "$retired/release" "$candidate" && rmdir "$retired"
+  fi' EXIT
+  trap 'exit 1' HUP INT TERM
+
+  for candidate in "$releases"/*; do
+    [ -d "$candidate" ] && [ ! -L "$candidate" ] &&
+      [ "$candidate" != "$selected" ] && [ "${candidate##*/}" != "$previous" ] || continue
+    grep -F "n$candidate/" "$tmp_dir/in-use" >/dev/null && continue
+    [ -f "$candidate/codex-package.json" ] && [ ! -L "$candidate/codex-package.json" ] || continue
+    metadata="$(parse_release_metadata < "$candidate/codex-package.json")" || continue
+    version="$(printf '%s\n' "$metadata" | awk -F '\t' '$1 == "version" {print $2}')"
+    target="$(printf '%s\n' "$metadata" | awk -F '\t' '$1 == "target" {print $2}')"
+    entrypoint="$(printf '%s\n' "$metadata" | awk -F '\t' '$1 == "entrypoint" {print $2}')"
+    [ "${candidate##*/}" = "$version-$target" ] && [ "$version" != "latest" ] &&
+      [ "$entrypoint" = "bin/codex" ] && [ -f "$candidate/bin/codex" ] || continue
+    validate_version "$version" >/dev/null 2>&1 || continue
+    case "$target" in
+      aarch64-apple-darwin | x86_64-apple-darwin | aarch64-unknown-linux-musl | x86_64-unknown-linux-musl) ;;
+      *) continue ;;
+    esac
+
+    # Reject symlinks (except the installer's own alias), special files and
+    # mounts before rm -r. find -xdev alone would not protect nested mounts.
+    [ "$(readlink "$candidate/codex" 2>/dev/null)" = "bin/codex" ] || continue
+    if ! find "$candidate" -xdev ! -type f ! -type d ! -path "$candidate/codex" -print > "$tmp_dir/unowned"; then
+      continue
+    fi
+    [ ! -s "$tmp_dir/unowned" ] || continue
+    if [ "$os" = "linux" ]; then
+      # mountinfo escapes spaces, tabs, newlines, and backslashes in paths.
+      if ! CODEX_PRUNE_RELEASE="$candidate" LC_ALL=C awk '
+        BEGIN { release = ENVIRON["CODEX_PRUNE_RELEASE"] }
+        { path = $5; gsub(/\\040/, " ", path); gsub(/\\011/, "\t", path)
+          gsub(/\\012/, "\n", path); gsub(/\\134/, "\\", path)
+          if (path == release || index(path, release "/") == 1) found = 1 }
+        END { exit found ? 1 : 0 }
+      ' /proc/self/mountinfo; then
+        continue
+      fi
+    else
+      device="$(stat -f '%d' "$releases")" || return 1
+      if ! find "$candidate" -xdev -exec stat -f '%d' {} + > "$tmp_dir/devices"; then
+        continue
+      fi
+      grep -vxF "$device" "$tmp_dir/devices" >/dev/null && continue
+    fi
+
+    retired="$(mktemp -d "$releases/.retired.XXXXXXXX")" || return 1
+    restore_candidate=1
+    if mv "$candidate" "$retired/release"; then
+      # Block new launches at the original path before the final use check.
+      # Some systems report the old executable path, so check both names.
+      if ! record_standalone_releases_in_use ||
+        grep -F -e "n$candidate/" -e "n$retired/release/" "$tmp_dir/in-use" >/dev/null; then
+        [ ! -e "$candidate" ] && [ ! -L "$candidate" ] || return 1
+        mv "$retired/release" "$candidate" && rmdir "$retired" || return 1
+        restore_candidate=""
+        continue
+      fi
+      # Once proved unused, never restore a possibly partially deleted tree.
+      restore_candidate=""
+      find "$retired" -xdev -depth -delete || return 1
+    else
+      restore_candidate=""
+      rmdir "$retired"
+      return 1
+    fi
+  done
+)
 
 replace_path_with_symlink() {
   link_path="$1"
@@ -1156,7 +1303,9 @@ fi
 step "Detected platform: $platform_label"
 step "Resolved version: $resolved_version"
 
-detect_conflicting_install
+if [ "$DAEMON_ONLY" != "1" ]; then
+  detect_conflicting_install
+fi
 
 tmp_dir="$(mktemp -d)"
 cleanup() {
@@ -1165,13 +1314,75 @@ cleanup() {
     rm -rf "$tmp_dir"
   fi
 }
-trap cleanup EXIT INT TERM
+trap cleanup EXIT
+trap 'exit 130' INT
+trap 'exit 143' TERM
 
 acquire_install_lock
+if [ "${CODEX_INSTALL_DEFER_SELECTION:-0}" = "1" ] &&
+  { [ -e "$STANDALONE_ROOT/current" ] || [ -L "$STANDALONE_ROOT/current" ]; }; then
+  echo "A dedicated daemon is already selected; retry the update." >&2
+  exit 1
+fi
+updater_record="$CODEX_HOME_DIR/app-server-daemon/app-server-updater.pid"
+if [ "$DAEMON_ONLY" = "1" ]; then
+  updater_record="$CODEX_HOME_DIR/app-server-daemon/daemon-updater.pid"
+fi
+old_updater_parent="false"
+if [ "${CODEX_INSTALL_IF_LATEST:-}" != "1" ] && [ "${CODEX_INSTALL_IF_CURRENT:-}" != "1" ] && [ -f "$updater_record" ]; then
+  updater_pid="$(sed -n 's/.*"pid"[[:space:]]*:[[:space:]]*\([0-9][0-9]*\).*/\1/p' "$updater_record" | head -n 1)"
+  recorded_start="$(sed -n 's/.*"processStartTime"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' "$updater_record" | head -n 1)"
+  if [ -r "/proc/$$/stat" ]; then
+    parent_pid="$(sed 's/^.*) //' "/proc/$$/stat" | awk '{ print $2 }')"
+  else
+    parent_pid="$(ps -p "$$" -o ppid= 2>/dev/null)" || parent_pid=""
+    parent_pid="$(printf '%s' "$parent_pid" | tr -d ' ')"
+  fi
+  if [ -n "$updater_pid" ] && [ "$updater_pid" = "$parent_pid" ]; then
+    actual_details="$(ps -p "$updater_pid" -o stat= -o lstart= 2>/dev/null)" || actual_details=""
+    actual_start="$(printf '%s' "$actual_details" | sed 's/^[^[:space:]]*[[:space:]]*//; s/[[:space:]]*$//')"
+    if [ -n "$recorded_start" ] && [ "$recorded_start" = "$actual_start" ]; then
+      old_updater_parent="true"
+    fi
+  fi
+  if [ "$RELEASE" = "latest" ] && [ -n "$updater_pid" ] &&
+    { [ -z "$parent_pid" ] || { [ "$updater_pid" = "$parent_pid" ] &&
+      { [ -z "$recorded_start" ] || [ -z "$actual_start" ]; }; }; } &&
+    kill -0 "$updater_pid" 2>/dev/null; then
+    warn "Cannot verify whether an older updater launched this installer; skipping latest update."
+    exit 0
+  fi
+fi
+if [ "${CODEX_INSTALL_IF_LATEST:-}" = "1" ] || [ "${CODEX_INSTALL_IF_CURRENT:-}" = "1" ] || [ "$old_updater_parent" = "true" ]; then
+  guarded_release="${CODEX_UPDATE_FROM_RELEASE:-}"
+  if [ "$old_updater_parent" = "true" ]; then
+    guarded_release="$(cat "$AUTO_UPDATE_VERSION" 2>/dev/null || true)"
+  fi
+  current_release_dir="$(cd -P "$CURRENT_LINK" 2>/dev/null && pwd)" || exit 0
+  releases_dir="$(cd -P "$RELEASES_DIR" 2>/dev/null && pwd)" || exit 0
+  if [ "$RELEASE" != "latest" ] || [ -z "$guarded_release" ] ||
+    [ "$current_release_dir" != "$releases_dir/$guarded_release" ]; then
+    if [ "${CODEX_INSTALL_IF_CURRENT:-}" = "1" ]; then
+      echo "Daemon selection changed; retry the update." >&2
+      exit 1
+    fi
+    exit 0
+  fi
+  # An explicit daemon update may leave a local or pinned release. Scheduled
+  # updates still require the selected release to follow the latest channel.
+  if [ "${CODEX_INSTALL_IF_CURRENT:-}" != "1" ] &&
+    [ "$(cat "$AUTO_UPDATE_VERSION" 2>/dev/null || true)" != "$guarded_release" ]; then
+    exit 0
+  fi
+fi
 cleanup_stale_install_artifacts
 
 if ! release_dir_is_complete "$release_dir" "$resolved_version" "$vendor_target" "$install_layout"; then
   if [ -e "$release_dir" ] || [ -L "$release_dir" ]; then
+    if [ "$DAEMON_ONLY" = "1" ]; then
+      echo "Refusing to overwrite existing daemon release $release_dir." >&2
+      exit 1
+    fi
     warn "Found incomplete existing release at $release_dir; reinstalling."
   fi
 
@@ -1199,10 +1410,53 @@ if ! release_dir_is_complete "$release_dir" "$resolved_version" "$vendor_target"
   echo "Installed Codex command did not report expected version $resolved_version." >&2
   exit 1
 fi
-update_current_link "$release_dir"
+if [ "$DAEMON_ONLY" = "1" ] && [ "${CODEX_INSTALL_DEFER_SELECTION:-0}" != "1" ]; then
+  installed_codex="$release_dir/codex"
+  if [ "$install_layout" = "package" ]; then
+    installed_codex="$release_dir/bin/codex"
+  fi
+  if ! "$installed_codex" app-server daemon pid-update-loop --check-package-ownership >/dev/null 2>&1; then
+    echo "The production release does not support daemon-owned packages; the current selection was left unchanged." >&2
+    exit 1
+  fi
+fi
+if [ "${CODEX_INSTALL_DEFER_SELECTION:-0}" != "1" ]; then
+  # A no-op must not replace the selection link: history is bound to it.
+  selected_dir="$(cd -P "$release_dir" && pwd)"
+  previous_dir="$(cd -P "$CURRENT_LINK" 2>/dev/null && pwd)" || previous_dir=""
+  if [ "$previous_dir" != "$selected_dir" ]; then
+    update_current_link "$release_dir"
+    if ! (
+      history="$STANDALONE_ROOT/selection-history"
+      # GNU and BSD stat both inspect the link itself by default.
+      selection_id="$(LC_ALL=C stat -c '%d %i %.9Z' "$CURRENT_LINK" 2>/dev/null ||
+        LC_ALL=C stat -f '%d %i %Fc' "$CURRENT_LINK")"
+      printf '%s\n%s\n%s\n' "$release_name" "${previous_dir##*/}" "$selection_id" > "$history.tmp.$$"
+      mv -f "$history.tmp.$$" "$history"
+    ); then
+      warn "Could not record installation selection; pruning will be skipped."
+    fi
+  fi
+else
+  # Do not publish history for a migration until Rust has committed the cutover.
+  update_current_link "$release_dir"
+fi
+if [ "$RELEASE" = "latest" ]; then
+  printf '%s' "$release_name" > "$AUTO_UPDATE_VERSION.tmp.$$"
+  mv -f "$AUTO_UPDATE_VERSION.tmp.$$" "$AUTO_UPDATE_VERSION"
+else
+  rm -f "$AUTO_UPDATE_VERSION"
+fi
+if [ "$DAEMON_ONLY" = "1" ]; then
+  release_install_lock
+  exit 0
+fi
 update_visible_command "$release_dir"
 add_to_path
 verify_visible_command
+if ! prune_standalone_releases; then
+  warn "Could not safely inspect old Codex releases; skipped remaining cleanup."
+fi
 release_install_lock
 handle_conflicting_install
 

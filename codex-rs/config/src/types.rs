@@ -3,15 +3,18 @@
 // Note this file should generally be restricted to simple struct/enum
 // definitions that do not contain business logic.
 
+pub use crate::mcp_ema::McpEmaAuthScope;
+pub use crate::mcp_ema::McpEnterpriseManagedAuthConfig;
+pub use crate::mcp_ema::McpServerIdpOAuthConfig;
 pub use crate::mcp_types::AppToolApproval;
 pub use crate::mcp_types::McpServerAuth;
 pub use crate::mcp_types::McpServerConfig;
 pub use crate::mcp_types::McpServerDisabledReason;
 pub use crate::mcp_types::McpServerEnvVar;
 pub use crate::mcp_types::McpServerOAuthConfig;
-pub use crate::mcp_types::McpServerProtocolMode;
 pub use crate::mcp_types::McpServerToolConfig;
 pub use crate::mcp_types::McpServerTransportConfig;
+pub use crate::mcp_types::McpStartupReadiness;
 pub use crate::mcp_types::RawMcpServerConfig;
 pub use crate::shell_environment_policy::ShellEnvironmentPolicyToml;
 pub use codex_protocol::config_types::AltScreenMode;
@@ -19,6 +22,7 @@ pub use codex_protocol::config_types::ApprovalsReviewer;
 pub use codex_protocol::config_types::ModeKind;
 pub use codex_protocol::config_types::Personality;
 pub use codex_protocol::config_types::ServiceTier;
+use codex_protocol::config_types::ToolExposureSurface;
 pub use codex_protocol::config_types::WebSearchMode;
 use codex_utils_absolute_path::AbsolutePathBuf;
 use std::collections::BTreeMap;
@@ -29,9 +33,11 @@ use schemars::JsonSchema;
 use serde::Deserialize;
 use serde::Serialize;
 
+pub use crate::tui_effects::TuiEffects;
 pub use crate::tui_keymap::KeybindingSpec;
 pub use crate::tui_keymap::KeybindingsSpec;
 pub use crate::tui_keymap::MAX_FUNCTION_KEY;
+pub use crate::tui_keymap::TuiAgentsKeymap;
 pub use crate::tui_keymap::TuiApprovalKeymap;
 pub use crate::tui_keymap::TuiChatKeymap;
 pub use crate::tui_keymap::TuiComposerKeymap;
@@ -42,6 +48,8 @@ pub use crate::tui_keymap::TuiListKeymap;
 pub use crate::tui_keymap::TuiPagerKeymap;
 pub use crate::tui_keymap::TuiVimNormalKeymap;
 pub use crate::tui_keymap::TuiVimOperatorKeymap;
+pub use crate::tui_keymap::TuiVimSearchKeymap;
+pub use crate::tui_rendering::TuiRendering;
 
 pub const DEFAULT_OTEL_ENVIRONMENT: &str = "dev";
 pub const DEFAULT_MEMORIES_MAX_ROLLOUTS_PER_STARTUP: usize = 2;
@@ -59,6 +67,26 @@ const fn default_enabled() -> bool {
     true
 }
 
+/// Last selected grouping in Agent Command Center.
+#[derive(Serialize, Deserialize, Debug, Default, Copy, Clone, PartialEq, Eq, JsonSchema)]
+#[serde(rename_all = "kebab-case")]
+pub enum AgentsOverviewGrouping {
+    #[default]
+    Project,
+    Status,
+    Model,
+}
+
+impl AgentsOverviewGrouping {
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Project => "project",
+            Self::Status => "status",
+            Self::Model => "model",
+        }
+    }
+}
+
 /// Preferred layout for the resume/fork session picker.
 #[derive(Serialize, Deserialize, Debug, Default, Copy, Clone, PartialEq, Eq, JsonSchema)]
 #[serde(rename_all = "kebab-case")]
@@ -66,17 +94,6 @@ pub enum SessionPickerViewMode {
     Comfortable,
     #[default]
     Dense,
-}
-
-/// Default detail mode for the TUI transcript overlay.
-#[derive(Serialize, Deserialize, Debug, Default, Copy, Clone, PartialEq, Eq, JsonSchema)]
-#[serde(rename_all = "kebab-case")]
-pub enum TuiTranscriptDetailMode {
-    /// Show the complete transcript, including terminal/tool details.
-    #[default]
-    Verbose,
-    /// Show a quieter transcript focused on user prompts and agent-facing output.
-    Compact,
 }
 
 impl SessionPickerViewMode {
@@ -170,15 +187,15 @@ impl Default for AuthKeyringBackendKind {
 pub enum WindowsSandboxModeToml {
     Elevated,
     Unelevated,
+    Mxc,
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone, Default, PartialEq, Eq, JsonSchema)]
 #[schemars(deny_unknown_fields)]
 pub struct WindowsToml {
     pub sandbox: Option<WindowsSandboxModeToml>,
-    /// Defaults to `true`. Set to `false` to launch the final sandboxed child
-    /// process on `Winsta0\\Default` instead of a private desktop.
-    pub sandbox_private_desktop: Option<bool>,
+    /// False blocks both explicit MXC configuration and automatic selection.
+    pub allow_mxc: Option<bool>,
 }
 
 #[derive(Serialize, Deserialize, Debug, Copy, Clone, PartialEq, JsonSchema)]
@@ -229,14 +246,15 @@ pub enum HistoryPersistence {
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Default, JsonSchema)]
 #[schemars(deny_unknown_fields)]
 pub struct AnalyticsConfigToml {
-    /// When `false`, disables analytics across Codex product surfaces in this profile.
+    /// When `false`, disables OpenAI analytics across Codex product surfaces in this profile.
+    /// Custom OTLP metrics exporters remain enabled; set `otel.metrics_exporter = "none"` to disable them.
     pub enabled: Option<bool>,
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Default, JsonSchema)]
 #[schemars(deny_unknown_fields)]
 pub struct FeedbackConfigToml {
-    /// When `false`, disables the feedback flow across Codex product surfaces.
+    /// When `false`, disables feedback uploads and background Guardian review retention. Explicit local exports remain available.
     pub enabled: Option<bool>,
 }
 
@@ -296,10 +314,17 @@ pub struct ToolSuggestConfig {
     pub disabled_tools: Vec<ToolSuggestDisabledTool>,
 }
 
+pub use codex_protocol::MemoryVersion;
+
 /// Memories settings loaded from config.toml.
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Default, JsonSchema)]
 #[schemars(deny_unknown_fields)]
 pub struct MemoriesToml {
+    /// Selects the memory pipeline. Fresh profiles default to v2 when memories are enabled,
+    /// unless dual-write is explicitly disabled; existing v1 profiles default to v1.
+    pub version: Option<MemoryVersion>,
+    /// Generate both versions while v1 is selected; v2 runs alone after cutover.
+    pub dual_write: Option<bool>,
     /// When `true`, external context sources mark the thread `memory_mode` as `"polluted"`.
     #[serde(alias = "no_memories_if_mcp_or_web_search")]
     pub disable_on_external_context: Option<bool>,
@@ -333,6 +358,8 @@ pub struct MemoriesToml {
 /// Effective memories settings after defaults are applied.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct MemoriesConfig {
+    pub version: MemoryVersion,
+    pub dual_write: bool,
     pub disable_on_external_context: bool,
     pub generate_memories: bool,
     pub use_memories: bool,
@@ -350,6 +377,8 @@ pub struct MemoriesConfig {
 impl Default for MemoriesConfig {
     fn default() -> Self {
         Self {
+            version: MemoryVersion::V1,
+            dual_write: false,
             disable_on_external_context: false,
             generate_memories: true,
             use_memories: true,
@@ -370,6 +399,8 @@ impl From<MemoriesToml> for MemoriesConfig {
     fn from(toml: MemoriesToml) -> Self {
         let defaults = Self::default();
         Self {
+            version: toml.version.unwrap_or(defaults.version),
+            dual_write: toml.dual_write.unwrap_or(defaults.dual_write),
             disable_on_external_context: toml
                 .disable_on_external_context
                 .unwrap_or(defaults.disable_on_external_context),
@@ -465,6 +496,28 @@ pub struct AppToolsConfig {
     pub tools: HashMap<String, AppToolConfig>,
 }
 
+/// Approval settings for a connected account within an app.
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Default, JsonSchema)]
+#[schemars(deny_unknown_fields)]
+pub struct AppLinkConfig {
+    /// Reviewer for approval prompts from this account, overriding the app default.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub approvals_reviewer: Option<ApprovalsReviewer>,
+
+    /// Approval mode for this account unless a tool override exists.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub default_tools_approval_mode: Option<AppToolApproval>,
+}
+
+/// Account settings for a single app.
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Default, JsonSchema)]
+#[schemars(deny_unknown_fields)]
+pub struct AppLinksConfig {
+    /// Per-account approval settings keyed by link ID.
+    #[serde(default, flatten)]
+    pub links: HashMap<String, AppLinkConfig>,
+}
+
 /// Config values for a single app/connector.
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Default, JsonSchema)]
 #[schemars(deny_unknown_fields)]
@@ -472,6 +525,12 @@ pub struct AppConfig {
     /// When `false`, Codex does not surface this app.
     #[serde(default = "default_enabled")]
     pub enabled: bool,
+
+    /// Model-facing surfaces from which this connector's tools must be omitted,
+    /// in addition to any server-level omissions. `None` leaves lower-priority
+    /// configuration unchanged; an empty list clears connector-level omissions.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub omit_tools_from: Option<Vec<ToolExposureSurface>>,
 
     /// Reviewer for approval prompts from this app, overriding the thread default.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -496,6 +555,10 @@ pub struct AppConfig {
     /// Per-tool settings for this app.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub tools: Option<AppToolsConfig>,
+
+    /// Per-account approval settings keyed by link ID.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub links: Option<AppLinksConfig>,
 }
 
 /// App/connector settings loaded from `config.toml`.
@@ -559,8 +622,17 @@ pub enum OtelExporterKind {
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Default, JsonSchema)]
 #[schemars(deny_unknown_fields)]
 pub struct OtelConfigToml {
+    /// Byte limit for tool-result log output; independent of model-visible output.
+    #[serde(default)]
+    pub tool_result: codex_protocol::config_types::ToolResultLogConfig,
     /// Log user prompt in traces
     pub log_user_prompt: Option<bool>,
+    /// Opt in to logging final main-agent and spawned-subagent responses to an OTLP log exporter.
+    /// Defaults to false. Response text can be sensitive and is capped at 64 KiB.
+    pub log_agent_responses: Option<bool>,
+    /// Opt in to logging completed Guardian assessments to an OTLP log exporter.
+    /// Defaults to false. Rationales can be sensitive and are capped at 64 KiB.
+    pub log_guardian_assessments: Option<bool>,
 
     /// Mark traces with environment (dev, staging, prod, test). Defaults to dev.
     pub environment: Option<String>,
@@ -571,7 +643,8 @@ pub struct OtelConfigToml {
     /// Optional trace exporter
     pub trace_exporter: Option<OtelExporterKind>,
 
-    /// Optional metrics exporter
+    /// Metrics exporter. Defaults to `statsig`, which follows `analytics.enabled`.
+    /// Custom OTLP exporters are independent of `analytics.enabled`; `none` disables metrics export.
     pub metrics_exporter: Option<OtelExporterKind>,
 
     /// Attributes to add to every exported trace span.
@@ -584,7 +657,10 @@ pub struct OtelConfigToml {
 /// Effective OTEL settings after defaults are applied.
 #[derive(Debug, Clone, PartialEq)]
 pub struct OtelConfig {
+    pub tool_result: codex_protocol::config_types::ToolResultLogConfig,
     pub log_user_prompt: bool,
+    pub log_agent_responses: bool,
+    pub log_guardian_assessments: bool,
     pub environment: String,
     pub exporter: OtelExporterKind,
     pub trace_exporter: OtelExporterKind,
@@ -596,7 +672,10 @@ pub struct OtelConfig {
 impl Default for OtelConfig {
     fn default() -> Self {
         OtelConfig {
+            tool_result: Default::default(),
             log_user_prompt: false,
+            log_agent_responses: false,
+            log_guardian_assessments: false,
             environment: DEFAULT_OTEL_ENVIRONMENT.to_owned(),
             exporter: OtelExporterKind::None,
             trace_exporter: OtelExporterKind::None,
@@ -604,6 +683,26 @@ impl Default for OtelConfig {
             span_attributes: BTreeMap::new(),
             tracestate: BTreeMap::new(),
         }
+    }
+}
+
+impl OtelConfig {
+    /// Response text requires a separate opt-in and an explicit OTLP log destination.
+    pub fn agent_response_logging_enabled(&self) -> bool {
+        self.log_agent_responses
+            && matches!(
+                self.exporter,
+                OtelExporterKind::OtlpHttp { .. } | OtelExporterKind::OtlpGrpc { .. }
+            )
+    }
+
+    /// Assessment text requires an explicit opt-in and an OTLP log destination.
+    pub fn guardian_assessment_logging_enabled(&self) -> bool {
+        self.log_guardian_assessments
+            && matches!(
+                self.exporter,
+                OtelExporterKind::OtlpHttp { .. } | OtelExporterKind::OtlpGrpc { .. }
+            )
     }
 }
 
@@ -668,6 +767,32 @@ pub enum TuiPetAnchor {
     ScreenBottom,
 }
 
+/// Right-click text paste when the fullscreen TUI has no selection.
+#[derive(Serialize, Deserialize, Debug, Clone, Copy, PartialEq, Eq, JsonSchema, Default)]
+#[serde(rename_all = "lowercase")]
+pub enum RightClickPaste {
+    /// Enable on Windows/WSL/Linux, except recognized terminal-owned paste paths.
+    #[default]
+    Auto,
+    /// Enable on supported local platforms; selection and terminal-owned paste still win.
+    On,
+    /// Leave right-click paste to the terminal.
+    Off,
+}
+
+/// When mouse selections are copied on release.
+#[derive(Serialize, Deserialize, Debug, Clone, Copy, PartialEq, Eq, JsonSchema, Default)]
+#[serde(rename_all = "lowercase")]
+pub enum CopyOnSelect {
+    /// Use the terminal-specific default.
+    #[default]
+    Auto,
+    /// Copy every nonempty transcript, footer, or composer mouse selection on release.
+    Always,
+    /// Require an explicit copy action.
+    Never,
+}
+
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq, Default, JsonSchema)]
 #[schemars(deny_unknown_fields)]
 pub struct TuiNotificationSettings {
@@ -698,6 +823,32 @@ pub struct ModelAvailabilityNuxConfig {
 /// Fallback resize-reflow row cap when Codex cannot identify a terminal-specific scrollback size.
 pub const DEFAULT_TERMINAL_RESIZE_REFLOW_FALLBACK_MAX_ROWS: usize = 1_000;
 
+/// One reusable prompt or slash command submitted through the TUI composer.
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq, JsonSchema)]
+#[schemars(deny_unknown_fields, rename = "Preset")]
+pub struct QuickDial {
+    /// Plain-text input, limited to 8,000 UTF-8 bytes.
+    pub input: String,
+    /// Optional short name for the picker and shortcut hints.
+    pub label: Option<String>,
+}
+
+impl QuickDial {
+    /// Keep stored inputs nonempty and below the context-item limit even with byte tokenization.
+    pub fn validate(&self) -> Result<(), &'static str> {
+        if self.input.trim().is_empty() {
+            return Err("Preset input cannot be empty.");
+        }
+        if self.input.trim_start().starts_with('!') {
+            return Err("Presets support prompts and slash commands, not shell commands.");
+        }
+        if self.input.len() > 8_000 {
+            return Err("Preset input cannot exceed 8,000 UTF-8 bytes.");
+        }
+        Ok(())
+    }
+}
+
 /// Collection of settings that are specific to the TUI.
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Default, JsonSchema)]
 #[schemars(deny_unknown_fields)]
@@ -710,27 +861,81 @@ pub struct Tui {
     #[serde(default = "default_true")]
     pub animations: bool,
 
+    /// Records the one-time screen-reader detection attempt. Either value skips detection.
+    pub screen_reader_detection_done: Option<bool>,
+
+    /// Individual visual effects. Each also requires animations to be enabled.
+    #[serde(default)]
+    pub effects: TuiEffects,
+
+    /// Rich content rendering. Independent of animations and visual effects.
+    #[serde(default)]
+    pub rendering: TuiRendering,
+
     /// Show startup tooltips in the TUI welcome screen.
     /// Defaults to `true`.
     #[serde(default = "default_true")]
     pub show_tooltips: bool,
+
+    /// Show informational notices about connected app server version differences.
+    /// Defaults to `true`; this does not control compatibility errors or version status.
+    #[serde(default = "default_true")]
+    pub show_server_version_notice: bool,
+
+    /// Generate automatic conversation recaps when the terminal is unfocused.
+    /// Defaults to `true`. Disabling this leaves `/recap` available on demand.
+    #[serde(default = "default_true")]
+    pub auto_recap: bool,
+
+    /// When true, disables burst-paste detection for typed input entirely.
+    /// All characters are inserted as they are received, and no buffering
+    /// or placeholder replacement will occur for fast keypress bursts.
+    /// Overrides the legacy top-level `disable_paste_burst` setting. Defaults to `false`.
+    pub disable_paste_burst: Option<bool>,
 
     /// Start the composer in Vim mode (`Normal`) by default.
     /// Defaults to `false`.
     #[serde(default)]
     pub vim_mode_default: bool,
 
+    /// Escape returns from async questions to the composer, preserving the answer draft.
+    #[serde(default = "default_true")]
+    pub question_esc_back: bool,
+
     /// Start the TUI in raw scrollback mode for copy-friendly transcript output.
     /// Defaults to `false`.
     #[serde(default)]
     pub raw_output_mode: bool,
 
-    /// Default detail mode for the `Ctrl+T` transcript overlay.
-    ///
-    /// - `verbose` (default): show the complete audit transcript.
-    /// - `compact`: focus on user prompts and agent-facing output.
+    /// Own the fullscreen transcript, including scrolling, selection, and search.
+    /// Defaults to `true`; alternate-screen restrictions take precedence.
+    #[serde(default = "default_true")]
+    pub fullscreen_transcript: bool,
+
+    /// Mouse wheel speed multiplier for transcript scrolling, based on one row per event.
+    /// Defaults to `1.0`. Positive fractional values slow scrolling; values above `1.0` speed it up.
+    #[serde(default, deserialize_with = "crate::tui_mouse_scroll::deserialize")]
+    #[schemars(schema_with = "crate::tui_mouse_scroll::schema")]
+    pub mouse_scroll_speed: Option<f64>,
+
+    /// Copy selected transcript, footer, or composer text when the mouse button is released.
+    /// Defaults to `auto`: enabled except in direct terminals known to forward their native
+    /// copy shortcut (Ghostty 1.2+, Kitty on macOS, Windows Terminal, and VS Code on Windows).
+    /// Unknown terminals, Ghostty without a recognized version, and tmux/Zellij default to copying.
     #[serde(default)]
-    pub transcript_default_detail_mode: TuiTranscriptDetailMode,
+    pub copy_on_select: CopyOnSelect,
+
+    /// Deselect read-only transcript or footer text after Copy on select confirms delivery.
+    /// Editable composer selections remain visible. Defaults to `false` and has no effect when
+    /// Copy on select is off.
+    #[serde(default)]
+    pub copy_on_select_clear_selection: bool,
+
+    /// Right-click text paste fallback. Defaults to `auto` (Windows/WSL/Linux).
+    /// `on` also enables macOS; neither mode reads over SSH or in recognized VS Code terminals.
+    /// This controls the fullscreen fallback, not the terminal's own paste binding.
+    #[serde(default)]
+    pub right_click_paste: RightClickPaste,
 
     /// Controls whether the TUI uses the terminal's alternate screen buffer.
     ///
@@ -743,7 +948,7 @@ pub struct Tui {
     /// Ordered list of status line item identifiers.
     ///
     /// When set, the TUI renders the selected items as the status line.
-    /// When unset, the TUI defaults to: `model-with-reasoning` and `current-dir`.
+    /// When unset, the TUI defaults to: `model-with-reasoning`, `current-dir`, and `thread-name`.
     #[serde(default)]
     pub status_line: Option<Vec<String>>,
 
@@ -755,7 +960,7 @@ pub struct Tui {
     /// Ordered list of terminal title item identifiers.
     ///
     /// When set, the TUI renders the selected items into the terminal window/tab title.
-    /// When unset, the TUI defaults to: `activity` and `project`.
+    /// When unset, the TUI defaults to: `activity`, `thread-name`, and `project-name`.
     /// The `activity` item spins while working and shows an action-required
     /// message when blocked on the user.
     #[serde(default)]
@@ -784,6 +989,10 @@ pub struct Tui {
     #[serde(default)]
     pub session_picker_view: Option<SessionPickerViewMode>,
 
+    /// Last selected grouping in Agent Command Center.
+    #[serde(default)]
+    pub agents_overview_grouping: AgentsOverviewGrouping,
+
     /// Working directory to use when resuming or forking a session.
     /// When unset, prompt if the current and session directories differ.
     #[serde(default)]
@@ -795,6 +1004,10 @@ pub struct Tui {
     /// Context bindings take precedence over `global` bindings.
     #[serde(default)]
     pub keymap: TuiKeymap,
+
+    /// Saved inputs keyed by a single digit (`0` through `9`).
+    #[serde(default, rename = "presets")]
+    pub quick_dials: BTreeMap<String, QuickDial>,
 
     /// Startup tooltip availability NUX state persisted by the TUI.
     #[serde(default)]
@@ -833,10 +1046,8 @@ pub struct ExternalConfigMigrationPrompts {
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Default, JsonSchema)]
 #[schemars(deny_unknown_fields)]
 pub struct Notice {
-    /// Automatically submits up to three consecutive `continue` follow-ups after cybersecurity
-    /// policy notices end live turns. Follow-ups stay in the same thread and use the normal request
-    /// path; this option does not disable or bypass server-side policy checks.
-    pub auto_continue_on_cyber_policy: Option<bool>,
+    /// Tracks whether the user has acknowledged the AWS GovCloud guidance.
+    pub hide_gov_cloud_guidance: Option<bool>,
     /// Tracks whether the user has acknowledged the full access warning prompt.
     pub hide_full_access_warning: Option<bool>,
     /// Tracks whether the user has acknowledged the Windows world-writable directories warning.
@@ -845,9 +1056,6 @@ pub struct Notice {
     pub fast_default_opt_out: Option<bool>,
     /// Tracks whether the user opted out of the rate limit model switch reminder.
     pub hide_rate_limit_model_nudge: Option<bool>,
-    /// Tracks whether the user opted out of the interactive safety-buffering prompt while Codex
-    /// continues waiting.
-    pub hide_safety_buffering_prompt: Option<bool>,
     /// Tracks whether the user has seen the model migration prompt
     pub hide_gpt5_1_migration_prompt: Option<bool>,
     /// Tracks whether the user has seen the gpt-5.1-codex-max migration prompt
@@ -865,11 +1073,69 @@ pub use crate::skills_config::BundledSkillsConfig;
 pub use crate::skills_config::SkillConfig;
 pub use crate::skills_config::SkillsConfig;
 
+/// Default activation settings for installed plugins.
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq, JsonSchema)]
+#[schemars(deny_unknown_fields)]
+pub struct PluginsDefaultConfig {
+    #[serde(default = "default_enabled")]
+    pub enabled: bool,
+}
+
+/// Plugin activation and capability settings loaded from configuration layers.
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq, Default, JsonSchema)]
+#[schemars(deny_unknown_fields)]
+pub struct PluginsConfigToml {
+    /// Defaults for installed plugin activation. Omission preserves source enablement.
+    /// Explicit plugin enablement settings override this default, but cannot enable
+    /// an installation disabled by its source.
+    #[serde(default, rename = "_default", skip_serializing_if = "Option::is_none")]
+    pub default: Option<PluginsDefaultConfig>,
+
+    #[serde(default, flatten)]
+    pub plugins: HashMap<String, PluginConfig>,
+}
+
+impl PluginsConfigToml {
+    /// Whether configuration permits a source-enabled plugin to remain active.
+    /// Without `_default`, preserve legacy source and account enablement.
+    /// Otherwise, an explicit enablement setting overrides the configured default.
+    pub fn allows_plugin(&self, plugin_id: &str) -> bool {
+        let Some(default) = &self.default else {
+            return true;
+        };
+        self.plugins
+            .get(plugin_id)
+            .and_then(|plugin| plugin.enabled)
+            .unwrap_or(default.enabled)
+    }
+}
+
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq, JsonSchema)]
 #[schemars(deny_unknown_fields)]
 pub struct PluginConfig {
-    #[serde(default = "default_enabled")]
-    pub enabled: bool,
+    /// Explicit activation override. Omission inherits the installed-plugin default.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub enabled: Option<bool>,
+
+    /// Stable, unique identifier of a ChatGPT-hosted remote plugin.
+    /// Availability to the requesting user is determined by Plugin Service at
+    /// provisioning time.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub remote_plugin_id: Option<String>,
+
+    /// Release identifier used to pin the remote plugin to a specific release.
+    /// Omission leaves release selection unchanged.
+    /// Core stores this metadata without selecting or fetching a release.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub release_id: Option<String>,
+
+    /// Provisioning metadata. Omission does not request provisioning.
+    /// Only applies with `remote_plugin_id` and Plugin Service availability to the
+    /// requesting user at provisioning time. Effective enablement, trusted
+    /// provisioning policy, and authentication and authorization restrictions still apply.
+    /// This value is not trusted authorization and does not trigger provisioning.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub auto_provision: Option<bool>,
 
     /// Per-MCP-server policy overlays for MCP servers contributed by this plugin.
     #[serde(default, skip_serializing_if = "HashMap::is_empty")]
@@ -879,13 +1145,23 @@ pub struct PluginConfig {
 /// Policy settings for a plugin-provided MCP server.
 ///
 /// This intentionally excludes transport settings: plugin manifests own how the
-/// MCP server is launched, while user config owns enablement and tool policy.
+/// MCP server is launched, while host config owns enablement, auth, and tool policy.
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq, JsonSchema)]
 #[schemars(deny_unknown_fields)]
 pub struct PluginMcpServerConfig {
     /// When `false`, Codex skips initializing this plugin MCP server.
     #[serde(default = "default_enabled")]
     pub enabled: bool,
+
+    /// Retired EMA overlays must disable the server instead of losing their auth policy.
+    #[serde(
+        default,
+        rename = "ema_auth",
+        deserialize_with = "unsupported_plugin_ema_auth",
+        skip_serializing_if = "std::ops::Not::not"
+    )]
+    #[schemars(skip)]
+    pub has_unsupported_ema_auth: bool,
 
     /// Approval mode for tools in this server unless a tool override exists.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -899,7 +1175,7 @@ pub struct PluginMcpServerConfig {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub disabled_tools: Option<Vec<String>>,
 
-    /// Per-tool approval settings keyed by tool name.
+    /// Per-tool policy settings keyed by tool name.
     #[serde(default, skip_serializing_if = "HashMap::is_empty")]
     pub tools: HashMap<String, McpServerToolConfig>,
 }
@@ -908,12 +1184,20 @@ impl Default for PluginMcpServerConfig {
     fn default() -> Self {
         Self {
             enabled: true,
+            has_unsupported_ema_auth: false,
             default_tools_approval_mode: None,
             enabled_tools: None,
             disabled_tools: None,
             tools: HashMap::new(),
         }
     }
+}
+
+fn unsupported_plugin_ema_auth<'de, D>(deserializer: D) -> Result<bool, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    serde::de::IgnoredAny::deserialize(deserializer).map(|_| true)
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq, Default, JsonSchema)]

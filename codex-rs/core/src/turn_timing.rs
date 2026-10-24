@@ -1,3 +1,4 @@
+use std::collections::HashMap;
 use std::sync::Arc;
 use std::sync::Mutex as StdMutex;
 use std::time::Duration;
@@ -7,6 +8,7 @@ use std::time::UNIX_EPOCH;
 
 use codex_analytics::TurnProfile;
 use codex_otel::TURN_TTFM_DURATION_METRIC;
+use codex_protocol::ThreadId;
 use codex_protocol::items::TurnItem;
 use codex_protocol::models::ResponseItem;
 use tokio::sync::Mutex;
@@ -14,6 +16,22 @@ use tokio::sync::Mutex;
 use crate::ResponseEvent;
 use crate::session::turn_context::TurnContext;
 use crate::stream_events_utils::raw_assistant_output_text_from_item;
+
+// Reuse the finalized analytics counters instead of counting sampled child spans.
+// Recovery can complete the same turn ID again, so consumers must retain the
+// completion event's trace and timestamp rather than deduplicating by turn alone.
+pub(crate) fn record_turn_profile_trace(thread_id: ThreadId, turn_id: &str, profile: &TurnProfile) {
+    tracing::event!(
+        name: "codex.turn_profile",
+        target: "codex_otel.trace_safe",
+        tracing::Level::INFO,
+        event.name = "codex.turn_profile",
+        conversation.id = %thread_id,
+        turn_id,
+        sampling_request_count = profile.sampling_request_count,
+        sampling_retry_count = profile.sampling_retry_count,
+    );
+}
 
 pub(crate) async fn record_turn_ttft_metric(turn_context: &TurnContext, event: &ResponseEvent) {
     let Some(duration) = turn_context
@@ -49,6 +67,7 @@ pub(crate) struct TurnTimingState {
 struct TurnTimingStateInner {
     started_at: Option<Instant>,
     started_at_unix_secs: Option<i64>,
+    item_started_at_ms: HashMap<String, i64>,
     first_token_at: Option<Instant>,
     first_message_at: Option<Instant>,
 }
@@ -67,6 +86,7 @@ struct TurnProfileState {
     pending_idle_after_sampling: Duration,
     sampling_request_count: u32,
     sampling_retry_count: u32,
+    tools_change_count: u32,
     completed_profile: Option<TurnProfile>,
 }
 
@@ -90,6 +110,7 @@ impl TurnTimingState {
         let mut state = self.state.lock().await;
         state.started_at = Some(started_at);
         state.started_at_unix_secs = Some(started_at_unix_ms / 1000);
+        state.item_started_at_ms.clear();
         state.first_token_at = None;
         state.first_message_at = None;
         self.profile_state().start(started_at);
@@ -98,6 +119,20 @@ impl TurnTimingState {
 
     pub(crate) async fn started_at_unix_secs(&self) -> Option<i64> {
         self.state.lock().await.started_at_unix_secs
+    }
+
+    pub(crate) async fn record_item_started(&self, item_id: String, started_at_ms: i64) -> i64 {
+        *self
+            .state
+            .lock()
+            .await
+            .item_started_at_ms
+            .entry(item_id)
+            .or_insert(started_at_ms)
+    }
+
+    pub(crate) async fn take_item_started(&self, item_id: &str) -> Option<i64> {
+        self.state.lock().await.item_started_at_ms.remove(item_id)
     }
 
     pub(crate) async fn complete_profile_and_duration_ms(
@@ -136,6 +171,13 @@ impl TurnTimingState {
 
     pub(crate) fn record_sampling_retry(&self) {
         self.profile_state().record_sampling_retry();
+    }
+
+    pub(crate) fn record_tools_change(&self) {
+        let mut profile = self.profile_state();
+        if profile.completed_profile.is_none() && profile.started_at.is_some() {
+            profile.tools_change_count = profile.tools_change_count.saturating_add(1);
+        }
     }
 
     pub(crate) fn begin_compaction(self: &Arc<Self>) -> TurnProfileTimingGuard {
@@ -307,6 +349,7 @@ impl TurnProfileState {
             after_last_sampling_ms: duration_to_u64_ms(after_last_sampling),
             sampling_request_count: self.sampling_request_count,
             sampling_retry_count: self.sampling_retry_count,
+            tools_change_count: self.tools_change_count,
         };
         let total_ms = self
             .started_at
@@ -368,9 +411,8 @@ fn response_event_records_turn_ttft(event: &ResponseEvent) -> bool {
         | ResponseEvent::ReasoningSummaryDelta { .. }
         | ResponseEvent::ReasoningSummaryDone { .. }
         | ResponseEvent::ReasoningContentDelta { .. } => true,
-        ResponseEvent::Created
+        ResponseEvent::Created { .. }
         | ResponseEvent::ServerModel(_)
-        | ResponseEvent::ServerModelIdentity(_)
         | ResponseEvent::ModelVerifications(_)
         | ResponseEvent::TurnModerationMetadata(_)
         | ResponseEvent::SafetyBuffering(_)
@@ -413,7 +455,7 @@ fn response_item_records_turn_ttft(item: &ResponseItem) -> bool {
         | ResponseItem::ImageGenerationCall { .. }
         | ResponseItem::Compaction { .. }
         | ResponseItem::ContextCompaction { .. } => true,
-        ResponseItem::CompactionTrigger { .. } => false,
+        ResponseItem::ConfigurationUpdate { .. } | ResponseItem::CompactionTrigger { .. } => false,
         ResponseItem::AdditionalTools { .. }
         | ResponseItem::FunctionCallOutput { .. }
         | ResponseItem::CustomToolCallOutput { .. }
