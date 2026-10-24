@@ -247,7 +247,7 @@ impl TestToolServer {
             "properties": {
                 "sleep_before_ms": { "type": "number" },
                 "sleep_after_ms": { "type": "number" },
-                "report_pipe_targets": { "type": "boolean" },
+                "report_pipe_ids": { "type": "boolean" },
                 "barrier": {
                     "type": "object",
                     "properties": {
@@ -275,7 +275,7 @@ impl TestToolServer {
             "type": "object",
             "properties": {
                 "result": { "type": "string" },
-                "pipe_targets": {
+                "pipe_ids": {
                     "type": "array",
                     "items": { "type": "string" }
                 }
@@ -422,7 +422,7 @@ struct SyncArgs {
     #[serde(default)]
     sleep_after_ms: Option<u64>,
     #[serde(default)]
-    report_pipe_targets: bool,
+    report_pipe_ids: bool,
     #[serde(default)]
     barrier: Option<SyncBarrierArgs>,
 }
@@ -811,33 +811,29 @@ impl TestToolServer {
         }
 
         let mut result = json!({ "result": "ok" });
-        if args.report_pipe_targets {
-            result["pipe_targets"] = json!(Self::stdio_pipe_targets());
+        if args.report_pipe_ids {
+            result["pipe_ids"] = json!(Self::stdio_pipe_ids());
         }
         Ok(Self::structured_result(result))
     }
 
-    fn stdio_pipe_targets() -> Vec<String> {
+    fn stdio_pipe_ids() -> Vec<String> {
         #[cfg(target_os = "linux")]
-        let targets = {
-            let mut targets = Vec::new();
-            if let Ok(entries) = std::fs::read_dir("/proc/self/fd") {
-                for entry in entries.flatten() {
-                    let Ok(target) = std::fs::read_link(entry.path()) else {
-                        continue;
-                    };
-                    let target = target.to_string_lossy();
-                    if target.starts_with("pipe:[") {
-                        targets.push(target.into_owned());
-                    }
-                }
-            }
-            targets
+        let pipe_ids = {
+            use std::os::unix::fs::FileTypeExt;
+            use std::os::unix::fs::MetadataExt;
+
+            ["/proc/self/fd/0", "/proc/self/fd/1"]
+                .into_iter()
+                .filter_map(|descriptor| std::fs::metadata(descriptor).ok())
+                .filter(|metadata| metadata.file_type().is_fifo())
+                .map(|metadata| format!("{}:{}", metadata.dev(), metadata.ino()))
+                .collect()
         };
         #[cfg(not(target_os = "linux"))]
-        let targets: Vec<String> = Vec::new();
+        let pipe_ids: Vec<String> = Vec::new();
 
-        targets
+        pipe_ids
     }
 
     fn structured_result(value: serde_json::Value) -> CallToolResult {

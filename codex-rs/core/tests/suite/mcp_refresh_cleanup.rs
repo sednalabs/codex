@@ -22,38 +22,51 @@ use core_test_support::wait_for_mcp_server;
 const IN_FLIGHT_CALL_DELAY_MS: u64 = 15_000;
 
 #[cfg(target_os = "linux")]
-fn pipe_targets() -> anyhow::Result<HashSet<String>> {
-    let mut targets = HashSet::new();
+fn open_pipe_ids() -> anyhow::Result<HashSet<String>> {
+    let mut pipe_ids = HashSet::new();
     for entry in fs::read_dir("/proc/self/fd")? {
         let entry = entry?;
-        let target = match fs::read_link(entry.path()) {
-            Ok(target) => target,
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => continue,
-            Err(error) => return Err(error.into()),
+        let Ok(fd) = entry
+            .file_name()
+            .to_str()
+            .unwrap_or_default()
+            .parse::<libc::c_int>()
+        else {
+            continue;
         };
-        let target = target.to_string_lossy();
-        if target.starts_with("pipe:[") {
-            targets.insert(target.into_owned());
+        let mut stat = std::mem::MaybeUninit::<libc::stat>::uninit();
+        // SAFETY: `fd` is a kernel-listed descriptor number, and `stat` is writable.
+        if unsafe { libc::fstat(fd, stat.as_mut_ptr()) } != 0 {
+            let error = std::io::Error::last_os_error();
+            if error.raw_os_error() == Some(libc::EBADF) {
+                continue;
+            }
+            return Err(error.into());
+        }
+        // SAFETY: `fstat` returned success and initialized the full structure.
+        let stat = unsafe { stat.assume_init() };
+        if stat.st_mode & libc::S_IFMT == libc::S_IFIFO {
+            pipe_ids.insert(format!("{}:{}", stat.st_dev, stat.st_ino));
         }
     }
-    Ok(targets)
+    Ok(pipe_ids)
 }
 
 #[cfg(target_os = "linux")]
-fn shared_stdio_pipe_targets(child_targets: &HashSet<String>) -> anyhow::Result<HashSet<String>> {
-    let parent_targets = pipe_targets()?;
-    Ok(parent_targets
-        .intersection(child_targets)
+fn shared_stdio_pipe_ids(child_pipe_ids: &HashSet<String>) -> anyhow::Result<HashSet<String>> {
+    let parent_pipe_ids = open_pipe_ids()?;
+    Ok(parent_pipe_ids
+        .intersection(child_pipe_ids)
         .cloned()
         .collect())
 }
 
 #[cfg(target_os = "linux")]
-async fn wait_for_stdio_pipe_release(targets: &HashSet<String>) -> anyhow::Result<()> {
+async fn wait_for_stdio_pipe_release(pipe_ids: &HashSet<String>) -> anyhow::Result<()> {
     tokio::time::timeout(Duration::from_secs(2), async {
         loop {
-            let open_targets = pipe_targets()?;
-            if targets.is_disjoint(&open_targets) {
+            let open_pipe_ids = open_pipe_ids()?;
+            if pipe_ids.is_disjoint(&open_pipe_ids) {
                 return Ok(());
             }
             tokio::time::sleep(Duration::from_millis(10)).await;
@@ -122,26 +135,26 @@ async fn refresh_reaps_superseded_mcp_server_after_in_flight_call_finishes() -> 
     let superseded_pid = wait_for_pid_file(&pid_file).await?;
     assert!(process_is_alive(&superseded_pid)?);
     #[cfg(target_os = "linux")]
-    let superseded_pipe_targets = {
+    let superseded_pipe_ids = {
         let child_targets = fixture
             .codex
             .call_mcp_tool(
                 "refresh_cleanup",
                 "sync",
-                Some(serde_json::json!({ "report_pipe_targets": true })),
+                Some(serde_json::json!({ "report_pipe_ids": true })),
                 /*meta*/ None,
             )
             .await?
             .structured_content
-            .and_then(|content| content.get("pipe_targets").cloned())
-            .ok_or_else(|| anyhow::anyhow!("expected stdio pipe targets from the MCP server"))?;
-        let child_targets: HashSet<String> = serde_json::from_value(child_targets)?;
-        let targets = shared_stdio_pipe_targets(&child_targets)?;
+            .and_then(|content| content.get("pipe_ids").cloned())
+            .ok_or_else(|| anyhow::anyhow!("expected stdio pipe ids from the MCP server"))?;
+        let child_pipe_ids: HashSet<String> = serde_json::from_value(child_pipe_ids)?;
+        let pipe_ids = shared_stdio_pipe_ids(&child_pipe_ids)?;
         anyhow::ensure!(
-            !targets.is_empty(),
+            !pipe_ids.is_empty(),
             "expected to observe stdio pipe descriptors shared with the MCP server"
         );
-        targets
+        pipe_ids
     };
 
     let barrier = serde_json::json!({
@@ -198,30 +211,30 @@ async fn refresh_reaps_superseded_mcp_server_after_in_flight_call_finishes() -> 
     tokio::time::timeout(Duration::from_secs(20), long_call).await???;
     wait_for_process_exit(&superseded_pid).await?;
     #[cfg(target_os = "linux")]
-    wait_for_stdio_pipe_release(&superseded_pipe_targets).await?;
+    wait_for_stdio_pipe_release(&superseded_pipe_ids).await?;
     assert!(process_is_alive(&replacement_pid)?);
 
     #[cfg(target_os = "linux")]
-    let replacement_pipe_targets = {
+    let replacement_pipe_ids = {
         let child_targets = fixture
             .codex
             .call_mcp_tool(
                 "refresh_cleanup",
                 "sync",
-                Some(serde_json::json!({ "report_pipe_targets": true })),
+                Some(serde_json::json!({ "report_pipe_ids": true })),
                 /*meta*/ None,
             )
             .await?
             .structured_content
-            .and_then(|content| content.get("pipe_targets").cloned())
-            .ok_or_else(|| anyhow::anyhow!("expected stdio pipe targets from the MCP server"))?;
-        let child_targets: HashSet<String> = serde_json::from_value(child_targets)?;
-        let targets = shared_stdio_pipe_targets(&child_targets)?;
+            .and_then(|content| content.get("pipe_ids").cloned())
+            .ok_or_else(|| anyhow::anyhow!("expected stdio pipe ids from the MCP server"))?;
+        let child_pipe_ids: HashSet<String> = serde_json::from_value(child_pipe_ids)?;
+        let pipe_ids = shared_stdio_pipe_ids(&child_pipe_ids)?;
         anyhow::ensure!(
-            !targets.is_empty(),
+            !pipe_ids.is_empty(),
             "expected to observe replacement stdio pipe descriptors shared with the MCP server"
         );
-        targets
+        pipe_ids
     };
 
     let shutdown_barrier = serde_json::json!({
@@ -265,7 +278,7 @@ async fn refresh_reaps_superseded_mcp_server_after_in_flight_call_finishes() -> 
     tokio::time::timeout(Duration::from_secs(20), shutdown_call).await???;
     wait_for_process_exit(&replacement_pid).await?;
     #[cfg(target_os = "linux")]
-    wait_for_stdio_pipe_release(&replacement_pipe_targets).await?;
+    wait_for_stdio_pipe_release(&replacement_pipe_ids).await?;
     Ok(())
 }
 
