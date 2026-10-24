@@ -442,8 +442,8 @@ class RunBazelWithBuildBuddyTest(unittest.TestCase):
                 attempt.write_text(marker + "\n", encoding="utf-8")
                 markers.append(marker)
 
-            fake_bazel = root / "fake-bazel"
-            fake_bazel.write_text(
+            fake_script = root / "fake-bazel.py"
+            fake_script.write_text(
                 f"#!{sys.executable}\n"
                 "import os, sys\n"
                 "if 'info' in sys.argv:\n"
@@ -458,18 +458,29 @@ class RunBazelWithBuildBuddyTest(unittest.TestCase):
                 "sys.exit(1)\n",
                 encoding="utf-8",
             )
-            fake_bazel.chmod(0o755)
+            bash = "bash"
+            if os.name == "nt":
+                # A bare bash can resolve to WSL rather than Git for Windows.
+                bash = str(Path(os.environ["ProgramFiles"]) / "Git/bin/bash.exe")
+                fake_bazel = root / "fake-bazel.cmd"
+                fake_bazel.write_text(
+                    f'@echo off\n"{sys.executable}" "{fake_script}" %*\n',
+                    encoding="utf-8",
+                )
+            else:
+                fake_bazel = fake_script
+                fake_bazel.chmod(0o755)
             env = os.environ.copy()
             env.pop("BUILDBUDDY_API_KEY", None)
             env.update(
                 CODEX_BAZEL_BIN=str(fake_bazel),
-                TEST_BAZEL_TESTLOGS_DIR=str(testlogs),
-                RUNNER_TEMP=str(root),
+                TEST_BAZEL_TESTLOGS_DIR=testlogs.as_posix(),
+                RUNNER_TEMP=root.as_posix(),
             )
             result = subprocess.run(
                 [
-                    "bash",
-                    str(repo_root / ".github/scripts/run-bazel-ci.sh"),
+                    bash,
+                    (repo_root / ".github/scripts/run-bazel-ci.sh").as_posix(),
                     "--print-failed-test-logs",
                     "--",
                     "test",
