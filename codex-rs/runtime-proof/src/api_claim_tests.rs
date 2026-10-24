@@ -122,6 +122,15 @@ fn api_bearer_consistency_is_bound_to_issuer_audience_subject_scope_and_expiry()
         "the fixed API audience may be a member of the existing Ops audience set"
     );
 
+    let exact_scope_array = serde_json::json!({
+        "iss": API_ISSUER,
+        "aud": API_AUDIENCE,
+        "sub": principal.to_string(),
+        "scp": ["ops:write", "ops:read"],
+        "exp": now + 60,
+    });
+    assert!(validate_bearer(jwt(exact_scope_array), principal, now).is_ok());
+
     for (field, value) in [
         ("iss", serde_json::json!("https://wrong.example/")),
         ("aud", serde_json::json!("ops-mcp")),
@@ -132,8 +141,10 @@ fn api_bearer_consistency_is_bound_to_issuer_audience_subject_scope_and_expiry()
             serde_json::json!(principal.to_string().to_uppercase()),
         ),
         ("scope", serde_json::json!("ops:read")),
+        ("scope", serde_json::json!("ops:write")),
         ("scope", serde_json::json!("openid ops:write")),
-        ("scp", serde_json::json!([API_SCOPE, "ops:read"])),
+        ("scp", serde_json::json!(["ops:write"])),
+        ("scp", serde_json::json!(["ops:read", "ops:write", "ops:admin"])),
         ("exp", serde_json::json!(now)),
     ] {
         let mut claims = valid_claims.clone();
