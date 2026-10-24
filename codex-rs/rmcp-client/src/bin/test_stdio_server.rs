@@ -247,7 +247,6 @@ impl TestToolServer {
             "properties": {
                 "sleep_before_ms": { "type": "number" },
                 "sleep_after_ms": { "type": "number" },
-                "wait_for_file": { "type": "string" },
                 "barrier": {
                     "type": "object",
                     "properties": {
@@ -266,7 +265,7 @@ impl TestToolServer {
         let mut tool = Tool::new(
             Cow::Borrowed("sync"),
             Cow::Borrowed(
-                "Synchronize concurrent test calls and optionally delay or wait for a file release.",
+                "Synchronize concurrent test calls and optionally delay their responses.",
             ),
             Arc::new(schema),
         );
@@ -417,8 +416,6 @@ struct SyncArgs {
     sleep_before_ms: Option<u64>,
     #[serde(default)]
     sleep_after_ms: Option<u64>,
-    #[serde(default)]
-    wait_for_file: Option<String>,
     #[serde(default)]
     barrier: Option<SyncBarrierArgs>,
 }
@@ -798,18 +795,6 @@ impl TestToolServer {
 
         if let Some(barrier) = args.barrier {
             wait_on_sync_barrier(barrier).await?;
-        }
-
-        if let Some(path) = args.wait_for_file {
-            tokio::time::timeout(Duration::from_secs(30), async {
-                while !std::path::Path::new(&path).is_file() {
-                    sleep(Duration::from_millis(10)).await;
-                }
-            })
-            .await
-            .map_err(|_| {
-                McpError::invalid_params("sync file wait timed out", /*data*/ None)
-            })?;
         }
 
         if let Some(delay) = args.sleep_after_ms

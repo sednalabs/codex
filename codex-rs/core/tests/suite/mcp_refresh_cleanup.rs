@@ -7,7 +7,7 @@ use std::time::Duration;
 #[cfg(target_os = "linux")]
 use std::collections::HashSet;
 #[cfg(target_os = "linux")]
-use std::path::Path;
+use std::path::PathBuf;
 
 use codex_config::DEFAULT_MCP_SERVER_ENVIRONMENT_ID;
 use codex_config::types::McpServerConfig;
@@ -21,9 +21,15 @@ use core_test_support::stdio_server_bin;
 use core_test_support::test_codex::test_codex;
 use core_test_support::wait_for_mcp_server;
 
+const IN_FLIGHT_CALL_DELAY_MS: u64 = 15_000;
+
 #[cfg(target_os = "linux")]
-fn pipe_targets(fd_dir: impl AsRef<Path>) -> anyhow::Result<HashSet<String>> {
+fn pipe_targets(pid: Option<u32>) -> anyhow::Result<HashSet<String>> {
     let mut targets = HashSet::new();
+    let fd_dir = match pid {
+        Some(pid) => PathBuf::from("/proc").join(pid.to_string()).join("fd"),
+        None => PathBuf::from("/proc/self/fd"),
+    };
     for entry in fs::read_dir(fd_dir)? {
         let entry = entry?;
         let target = match fs::read_link(entry.path()) {
@@ -40,9 +46,9 @@ fn pipe_targets(fd_dir: impl AsRef<Path>) -> anyhow::Result<HashSet<String>> {
 }
 
 #[cfg(target_os = "linux")]
-fn parent_stdio_pipe_targets(pid: &str) -> anyhow::Result<HashSet<String>> {
-    let child = pipe_targets(format!("/proc/{pid}/fd"))?;
-    let parent = pipe_targets("/proc/self/fd")?;
+fn parent_stdio_pipe_targets(pid: u32) -> anyhow::Result<HashSet<String>> {
+    let child = pipe_targets(Some(pid))?;
+    let parent = pipe_targets(None)?;
     Ok(parent.intersection(&child).cloned().collect())
 }
 
@@ -50,7 +56,7 @@ fn parent_stdio_pipe_targets(pid: &str) -> anyhow::Result<HashSet<String>> {
 async fn wait_for_stdio_pipe_release(targets: &HashSet<String>) -> anyhow::Result<()> {
     tokio::time::timeout(Duration::from_secs(2), async {
         loop {
-            let open_targets = pipe_targets("/proc/self/fd")?;
+            let open_targets = pipe_targets(None)?;
             if targets.is_disjoint(&open_targets) {
                 return Ok(());
             }
@@ -68,8 +74,6 @@ async fn refresh_reaps_superseded_mcp_server_after_in_flight_call_finishes() -> 
     let server = responses::start_mock_server().await;
     let temp_dir = tempfile::tempdir()?;
     let pid_file = temp_dir.path().join("mcp.pid");
-    let release_file = temp_dir.path().join("release-in-flight-call");
-    let shutdown_release_file = temp_dir.path().join("release-shutdown-call");
     let pid_file_for_config = pid_file.clone();
     let command = stdio_server_bin()?;
     let fixture = test_codex()
@@ -120,10 +124,12 @@ async fn refresh_reaps_superseded_mcp_server_after_in_flight_call_finishes() -> 
     wait_for_mcp_server(&fixture.codex, "refresh_cleanup").await?;
 
     let superseded_pid = wait_for_pid_file(&pid_file).await?;
+    #[cfg(target_os = "linux")]
+    let superseded_pid_number = superseded_pid.parse::<u32>()?;
     assert!(process_is_alive(&superseded_pid)?);
     #[cfg(target_os = "linux")]
     let superseded_pipe_targets = {
-        let targets = parent_stdio_pipe_targets(&superseded_pid)?;
+        let targets = parent_stdio_pipe_targets(superseded_pid_number)?;
         anyhow::ensure!(
             !targets.is_empty(),
             "expected to observe stdio pipe descriptors shared with the MCP server"
@@ -136,7 +142,6 @@ async fn refresh_reaps_superseded_mcp_server_after_in_flight_call_finishes() -> 
         "participants": 2,
         "timeout_ms": 1_000
     });
-    let release_file_for_call = release_file.to_string_lossy().into_owned();
     let long_call = tokio::spawn({
         let codex = Arc::clone(&fixture.codex);
         let barrier = barrier.clone();
@@ -147,7 +152,7 @@ async fn refresh_reaps_superseded_mcp_server_after_in_flight_call_finishes() -> 
                     "sync",
                     Some(serde_json::json!({
                         "barrier": barrier,
-                        "wait_for_file": release_file_for_call
+                        "sleep_after_ms": IN_FLIGHT_CALL_DELAY_MS
                     })),
                     /*meta*/ None,
                 )
@@ -181,10 +186,11 @@ async fn refresh_reaps_superseded_mcp_server_after_in_flight_call_finishes() -> 
     fixture.submit_turn("refresh MCP servers").await?;
 
     let replacement_pid = wait_for_pid_file(&pid_file).await?;
+    #[cfg(target_os = "linux")]
+    let replacement_pid_number = replacement_pid.parse::<u32>()?;
     assert_ne!(replacement_pid, superseded_pid);
     assert!(process_is_alive(&superseded_pid)?);
-    fs::write(&release_file, "finish")?;
-    tokio::time::timeout(Duration::from_secs(10), long_call).await???;
+    tokio::time::timeout(Duration::from_secs(20), long_call).await???;
     wait_for_process_exit(&superseded_pid).await?;
     #[cfg(target_os = "linux")]
     wait_for_stdio_pipe_release(&superseded_pipe_targets).await?;
@@ -192,7 +198,7 @@ async fn refresh_reaps_superseded_mcp_server_after_in_flight_call_finishes() -> 
 
     #[cfg(target_os = "linux")]
     let replacement_pipe_targets = {
-        let targets = parent_stdio_pipe_targets(&replacement_pid)?;
+        let targets = parent_stdio_pipe_targets(replacement_pid_number)?;
         anyhow::ensure!(
             !targets.is_empty(),
             "expected to observe replacement stdio pipe descriptors shared with the MCP server"
@@ -205,7 +211,6 @@ async fn refresh_reaps_superseded_mcp_server_after_in_flight_call_finishes() -> 
         "participants": 2,
         "timeout_ms": 1_000
     });
-    let shutdown_release_file_for_call = shutdown_release_file.to_string_lossy().into_owned();
     let shutdown_call = tokio::spawn({
         let codex = Arc::clone(&fixture.codex);
         let barrier = shutdown_barrier.clone();
@@ -216,7 +221,7 @@ async fn refresh_reaps_superseded_mcp_server_after_in_flight_call_finishes() -> 
                     "sync",
                     Some(serde_json::json!({
                         "barrier": barrier,
-                        "wait_for_file": shutdown_release_file_for_call
+                        "sleep_after_ms": IN_FLIGHT_CALL_DELAY_MS
                     })),
                     /*meta*/ None,
                 )
@@ -237,10 +242,9 @@ async fn refresh_reaps_superseded_mcp_server_after_in_flight_call_finishes() -> 
         let codex = Arc::clone(&fixture.codex);
         async move { codex.shutdown_and_wait().await }
     });
-    tokio::time::timeout(Duration::from_secs(10), shutdown).await???;
+    tokio::time::timeout(Duration::from_secs(1), shutdown).await???;
     assert!(process_is_alive(&replacement_pid)?);
-    fs::write(&shutdown_release_file, "finish")?;
-    tokio::time::timeout(Duration::from_secs(10), shutdown_call).await???;
+    tokio::time::timeout(Duration::from_secs(20), shutdown_call).await???;
     wait_for_process_exit(&replacement_pid).await?;
     #[cfg(target_os = "linux")]
     wait_for_stdio_pipe_release(&replacement_pipe_targets).await?;
