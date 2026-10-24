@@ -141,11 +141,15 @@ def bazel_args_with_remote_config(
     config = remote_config(args, env)
     if config is None:
         configured_args = bazel_args_without_remote_execution(args)
+        local_config_args = configured_args
+        if "--" in configured_args:
+            local_config_args = configured_args[: configured_args.index("--")]
         if (
             env.get("GITHUB_ACTIONS") == "true"
             and env.get("GITHUB_REPOSITORY") == "sednalabs/codex"
             and env.get("RUNNER_ENVIRONMENT") == "github-hosted"
             and uses_remote_execution(args)
+            and "--config=ci-bazel" not in local_config_args
         ):
             # Removing a remote platform must not also lose the shared CI
             # settings: lean Rust artifacts and no duplicate on-runner disk CAS.

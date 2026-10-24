@@ -152,6 +152,28 @@ class RunBazelWithBuildBuddyTest(unittest.TestCase):
                     ["build", "--", "//codex-rs/cli:codex"],
                 )
 
+    def test_shared_local_ci_is_not_duplicated_or_selected_by_payload(self) -> None:
+        env = {
+            "GITHUB_ACTIONS": "true",
+            "GITHUB_REPOSITORY": "sednalabs/codex",
+            "RUNNER_ENVIRONMENT": "github-hosted",
+        }
+        for args, expected in (
+            (
+                ["test", "--config=ci-bazel", "--config=ci-linux", "--", "//..."],
+                ["test", "--config=ci-bazel", "--", "//..."],
+            ),
+            (
+                ["run", "--config=ci-linux", "//...", "--", "--config=ci-bazel"],
+                ["run", "--config=ci-bazel", "//...", "--", "--config=ci-bazel"],
+            ),
+        ):
+            with self.subTest(args=args):
+                self.assertEqual(
+                    run_bazel_with_buildbuddy.bazel_args_with_remote_config(args, env),
+                    expected,
+                )
+
     def test_shared_ci_config_is_lean_without_remote_endpoints_or_disk_cas(self) -> None:
         bazelrc = Path(__file__).resolve().parents[2] / ".bazelrc"
         shared_ci = [
@@ -445,8 +467,12 @@ class RunBazelWithBuildBuddyTest(unittest.TestCase):
             fake_script = root / "fake-bazel.py"
             fake_script.write_text(
                 f"#!{sys.executable}\n"
-                "import os, sys\n"
+                "import json, os, sys\n"
                 "sys.stdout.reconfigure(newline='\\n')\n"
+                "invocation = 'info' if 'info' in sys.argv else 'test'\n"
+                "with open(os.environ['TEST_BAZEL_ARGS_FILE'] + '-' + invocation, "
+                "'w', encoding='utf-8') as args_file:\n"
+                "    json.dump(sys.argv[1:], args_file)\n"
                 "if 'info' in sys.argv:\n"
                 "    print(os.environ['TEST_BAZEL_TESTLOGS_DIR'])\n"
                 "    sys.exit(0)\n"
@@ -476,32 +502,66 @@ class RunBazelWithBuildBuddyTest(unittest.TestCase):
             env.update(
                 CODEX_BAZEL_BIN=str(fake_bazel),
                 TEST_BAZEL_TESTLOGS_DIR=testlogs.as_posix(),
+                TEST_BAZEL_ARGS_FILE=(root / "invocation").as_posix(),
                 RUNNER_TEMP=root.as_posix(),
             )
             if os.name == "nt":
                 # The fake only needs a valid PATH, not the runner's long tool list
                 # repeated in arguments to a command with cmd.exe's length limit.
                 env["CODEX_BAZEL_WINDOWS_PATH"] = str(Path(sys.executable).parent)
-            result = subprocess.run(
-                [
-                    bash,
-                    (repo_root / ".github/scripts/run-bazel-ci.sh").as_posix(),
-                    "--print-failed-test-logs",
-                    "--",
-                    "test",
-                    "--",
-                    "//codex-rs/core:core-unit-tests",
-                ],
-                cwd=repo_root,
-                env=env,
-                check=False,
-                capture_output=True,
-                text=True,
-            )
-            self.assertEqual(result.returncode, 1, result.stderr)
-            for marker in markers:
-                self.assertIn(marker, result.stdout, result.stdout + result.stderr)
-            self.assertNotIn("Missing test log:", result.stdout)
+            windows_options = ["--windows-cross-compile"] if os.name == "nt" else []
+            host_options = ["--host_platform=//:local_windows"] if os.name == "nt" else []
+            for actions, repository, runner, shared_ci in (
+                ("true", "sednalabs/codex", "github-hosted", True),
+                ("true", "openai/codex", "github-hosted", False),
+                ("true", "sednalabs/codex", "self-hosted", False),
+                ("false", "sednalabs/codex", "github-hosted", False),
+                ("true", "sednalabs/codex", "", False),
+            ):
+                with self.subTest(actions=actions, repository=repository, runner=runner):
+                    env.update(
+                        GITHUB_ACTIONS=actions,
+                        GITHUB_REPOSITORY=repository,
+                        RUNNER_ENVIRONMENT=runner,
+                    )
+                    result = subprocess.run(
+                        [
+                            bash,
+                            (repo_root / ".github/scripts/run-bazel-ci.sh").as_posix(),
+                            "--print-failed-test-logs",
+                            *windows_options,
+                            "--",
+                            "test",
+                            *host_options,
+                            "--",
+                            "//codex-rs/core:core-unit-tests",
+                        ],
+                        cwd=repo_root,
+                        env=env,
+                        check=False,
+                        capture_output=True,
+                        text=True,
+                    )
+                    self.assertEqual(result.returncode, 1, result.stderr)
+                    for marker in markers:
+                        self.assertIn(marker, result.stdout, result.stdout + result.stderr)
+                    self.assertNotIn("Missing test log:", result.stdout)
+                    for invocation in ("test", "info"):
+                        forwarded = json.loads(
+                            (root / f"invocation-{invocation}").read_text(encoding="utf-8")
+                        )
+                        self.assertEqual(forwarded.count("--config=ci-bazel"), int(shared_ci))
+                        self.assertFalse(
+                            any(
+                                arg in run_bazel_with_buildbuddy.REMOTE_EXECUTION_CONFIGS
+                                or arg.startswith("--remote_header=")
+                                for arg in forwarded
+                            )
+                        )
+                    self.assertEqual(
+                        json.loads((root / "invocation-test").read_text(encoding="utf-8"))[-2:],
+                        ["--", "//codex-rs/core:core-unit-tests"],
+                    )
 
     def test_main_preserves_spaced_argument_and_child_exit_status(self) -> None:
         spaced_arg = (
