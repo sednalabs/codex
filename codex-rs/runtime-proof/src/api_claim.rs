@@ -186,12 +186,14 @@ fn validate_bearer_profile(
     let principal = token_principal
         .ok_or_else(|| anyhow::anyhow!("fixed Ops API bearer has no canonical principal"))?;
     let subject_matches = expected_principal.is_none_or(|expected| principal == expected);
-    let has_scope = claims.scope.as_deref().is_some_and(|scope| {
-        exact_api_scope_set(scope.split_whitespace())
-    }) || claims
-        .scp
-        .as_ref()
-        .is_some_and(ScopeClaim::contains_exact_api_scopes);
+    let has_scope = claims
+        .scope
+        .as_deref()
+        .is_some_and(|scope| exact_api_scope_set(scope.split_whitespace()))
+        || claims
+            .scp
+            .as_ref()
+            .is_some_and(ScopeClaim::contains_exact_api_scopes);
     let scope_claims_are_consistent = claims
         .scope
         .as_deref()

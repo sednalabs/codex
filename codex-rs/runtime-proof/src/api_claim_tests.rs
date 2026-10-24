@@ -144,7 +144,10 @@ fn api_bearer_consistency_is_bound_to_issuer_audience_subject_scope_and_expiry()
         ("scope", serde_json::json!("ops:write")),
         ("scope", serde_json::json!("openid ops:write")),
         ("scp", serde_json::json!(["ops:write"])),
-        ("scp", serde_json::json!(["ops:read", "ops:write", "ops:admin"])),
+        (
+            "scp",
+            serde_json::json!(["ops:read", "ops:write", "ops:admin"]),
+        ),
         ("exp", serde_json::json!(now)),
     ] {
         let mut claims = valid_claims.clone();

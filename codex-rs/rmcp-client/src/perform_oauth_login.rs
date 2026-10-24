@@ -1612,7 +1612,6 @@ mod tests {
     use super::FIXED_API_CLAIM_ISSUER;
     use super::FIXED_API_CLAIM_RESOURCE;
     use super::FIXED_API_CLAIM_SCOPE;
-    use super::fixed_api_claim_scopes;
     use super::FixedOAuthCallbackFailure;
     use super::FixedOAuthLoginError;
     use super::FixedOAuthLoginStage;
@@ -1626,6 +1625,7 @@ mod tests {
     use super::callback_id_from_server_url;
     use super::callback_path_from_redirect_uri;
     use super::exchange_fixed_api_refresh_at_endpoint;
+    use super::fixed_api_claim_scopes;
     use super::fixed_authorization_url;
     use super::parse_oauth_callback;
     use super::parse_pasted_oauth_callback;
@@ -2149,9 +2149,7 @@ mod tests {
             "refresh_token": "ignored"
         }))
         .expect("parse extra-scope OAuth response");
-        assert!(
-            access_token_from_response(response, &fixed_api_claim_scopes()).is_err()
-        );
+        assert!(access_token_from_response(response, &fixed_api_claim_scopes()).is_err());
     }
 
     #[test]
@@ -2164,9 +2162,7 @@ mod tests {
                 "scope": "ops:read ops:write"
             }))
             .expect("parse OAuth token response");
-            assert!(
-                access_token_from_response(response, &fixed_api_claim_scopes()).is_err()
-            );
+            assert!(access_token_from_response(response, &fixed_api_claim_scopes()).is_err());
         }
     }
 
