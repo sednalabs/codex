@@ -1680,6 +1680,40 @@ class RouteSelectionTests(unittest.TestCase):
                 job = (payload.get("jobs") or {}).get(job_name) or {}
                 self.assertEqual(job.get("timeout-minutes"), expected_budget)
 
+    def test_fork_hosted_linux_bazel_tests_prepare_user_namespaces(self) -> None:
+        payload = load_workflow_payload(REPO_ROOT / ".github/workflows/bazel.yml")
+        steps = ((payload.get("jobs") or {}).get("test") or {}).get("steps") or []
+        prepare_step = next(
+            step
+            for step in steps
+            if step.get("name") == "Enable user namespaces for hosted Linux sandbox tests"
+        )
+        self.assertEqual(
+            prepare_step.get("if"),
+            "${{ github.repository == 'sednalabs/codex' && runner.os == 'Linux' "
+            "&& runner.environment == 'github-hosted' }}",
+        )
+        self.assertEqual(prepare_step.get("shell"), "bash")
+        prepare_run = prepare_step.get("run") or ""
+        self.assertIn("sudo sysctl -w kernel.unprivileged_userns_clone=1", prepare_run)
+        self.assertIn(
+            "if sudo sysctl -n kernel.apparmor_restrict_unprivileged_userns "
+            ">/dev/null 2>&1; then",
+            prepare_run,
+        )
+        self.assertIn(
+            "sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0",
+            prepare_run,
+        )
+        self.assertLess(
+            steps.index(prepare_step),
+            next(
+                index
+                for index, step in enumerate(steps)
+                if step.get("name") == "bazel test //..."
+            ),
+        )
+
     def test_bazel_windows_native_main_uses_gnullvm_proc_macro_toolchain(self) -> None:
         bazel = load_workflow_payload(REPO_ROOT / ".github/workflows/bazel.yml")
         self.assertNotIn("test-windows-native-main", bazel.get("jobs") or {})
