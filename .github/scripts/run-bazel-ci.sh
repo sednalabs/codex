@@ -141,7 +141,20 @@ print_bazel_test_log_tails() {
     if [[ -f "$test_log" ]]; then
       tail -n 200 "$test_log"
     else
-      echo "Missing test log: $test_log"
+      # A build failure can interrupt a sharded target before its final test.log
+      # exists. Retain the failed attempt evidence already written by Bazel.
+      local found_attempt=0
+      local attempt_log
+      for attempt_log in "${testlogs_dir}/${rel_path}"/shard_*_of_*/test_attempts/attempt_*.log; do
+        if [[ -f "$attempt_log" ]]; then
+          found_attempt=1
+          echo "Bazel sharded attempt log: ${attempt_log}"
+          tail -n 200 "$attempt_log"
+        fi
+      done
+      if [[ $found_attempt -eq 0 ]]; then
+        echo "Missing test log: $test_log"
+      fi
     fi
     echo "::endgroup::"
   done

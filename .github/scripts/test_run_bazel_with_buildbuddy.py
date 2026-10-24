@@ -425,6 +425,68 @@ class RunBazelWithBuildBuddyTest(unittest.TestCase):
             ],
         )
 
+    def test_failed_sharded_attempt_logs_survive_interrupted_build_reporting(self) -> None:
+        repo_root = Path(__file__).resolve().parents[2]
+        with TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            testlogs = root / "testlogs"
+            markers = []
+            for shard in (2, 3, 5):
+                attempt = (
+                    testlogs
+                    / "codex-rs/core/core-unit-tests"
+                    / f"shard_{shard}_of_8/test_attempts/attempt_1.log"
+                )
+                attempt.parent.mkdir(parents=True)
+                marker = f"failed-shard-{shard}-evidence"
+                attempt.write_text(marker + "\n", encoding="utf-8")
+                markers.append(marker)
+
+            fake_bazel = root / "fake-bazel"
+            fake_bazel.write_text(
+                f"#!{sys.executable}\n"
+                "import os, sys\n"
+                "if 'info' in sys.argv:\n"
+                "    print(os.environ['TEST_BAZEL_TESTLOGS_DIR'])\n"
+                "    sys.exit(0)\n"
+                "for shard in (2, 3, 5):\n"
+                "    path = os.environ['TEST_BAZEL_TESTLOGS_DIR'] + "
+                "f'/codex-rs/core/core-unit-tests/shard_{shard}_of_8/' "
+                "+ 'test_attempts/attempt_1.log'\n"
+                "    print(f'FAIL: //codex-rs/core:core-unit-tests "
+                "(shard {shard} of 8) (Exit 101) (see {path})')\n"
+                "sys.exit(1)\n",
+                encoding="utf-8",
+            )
+            fake_bazel.chmod(0o755)
+            env = os.environ.copy()
+            env.pop("BUILDBUDDY_API_KEY", None)
+            env.update(
+                CODEX_BAZEL_BIN=str(fake_bazel),
+                TEST_BAZEL_TESTLOGS_DIR=str(testlogs),
+                RUNNER_TEMP=str(root),
+            )
+            result = subprocess.run(
+                [
+                    "bash",
+                    str(repo_root / ".github/scripts/run-bazel-ci.sh"),
+                    "--print-failed-test-logs",
+                    "--",
+                    "test",
+                    "--",
+                    "//codex-rs/core:core-unit-tests",
+                ],
+                cwd=repo_root,
+                env=env,
+                check=False,
+                capture_output=True,
+                text=True,
+            )
+            self.assertEqual(result.returncode, 1, result.stderr)
+            for marker in markers:
+                self.assertIn(marker, result.stdout)
+            self.assertNotIn("Missing test log:", result.stdout)
+
     def test_main_preserves_spaced_argument_and_child_exit_status(self) -> None:
         spaced_arg = (
             r"--test_env=PATH=C:\Program Files\PowerShell\7;C:\Program Files\Git\bin"
