@@ -1011,10 +1011,14 @@ class RouteSelectionTests(unittest.TestCase):
                 "core-multi-agent-orchestration-targeted"
             ]
         )
-        self.assertEqual(recipe.count("cargo nextest run"), 4)
-        self.assertEqual(recipe.count("RUST_MIN_STACK="), 6)
-        self.assertEqual(recipe.count("--no-tests=fail"), 4)
+        self.assertEqual(recipe.count("cargo nextest run"), 5)
+        self.assertEqual(recipe.count("RUST_MIN_STACK="), 7)
+        self.assertEqual(recipe.count("--no-tests=fail"), 5)
         for test_name in (
+            "tools::handlers::multi_agents_spec::tests::"
+            "spawn_agent_tool_v2_requires_task_name_and_lists_visible_models",
+            "tools::handlers::multi_agents_spec::tests::"
+            "followup_task_tool_requires_message_and_describes_model_receipt",
             "agent::control::residency::tests::"
             "residency_slot_reservation_unloads_oldest_idle_v2_agent",
             "agent::control::residency::tests::"
@@ -5738,7 +5742,7 @@ git() {
         multi_agent_recipe = "\n".join(
             recipes["core-multi-agent-orchestration-targeted"]
         )
-        self.assertEqual(multi_agent_recipe.count("RUST_MIN_STACK="), 6)
+        self.assertEqual(multi_agent_recipe.count("RUST_MIN_STACK="), 7)
 
         blocking_waits_core_recipe = "\n".join(
             recipes["blocking-waits-core-targeted"]
