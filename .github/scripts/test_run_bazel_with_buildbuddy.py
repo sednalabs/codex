@@ -446,6 +446,7 @@ class RunBazelWithBuildBuddyTest(unittest.TestCase):
             fake_script.write_text(
                 f"#!{sys.executable}\n"
                 "import os, sys\n"
+                "sys.stdout.reconfigure(newline='\\n')\n"
                 "if 'info' in sys.argv:\n"
                 "    print(os.environ['TEST_BAZEL_TESTLOGS_DIR'])\n"
                 "    sys.exit(0)\n"
@@ -477,6 +478,9 @@ class RunBazelWithBuildBuddyTest(unittest.TestCase):
                 TEST_BAZEL_TESTLOGS_DIR=testlogs.as_posix(),
                 RUNNER_TEMP=root.as_posix(),
             )
+            if os.name == "nt":
+                # This test runs before Prepare Bazel CI supplies the native PATH.
+                env["CODEX_BAZEL_WINDOWS_PATH"] = env["PATH"]
             result = subprocess.run(
                 [
                     bash,
@@ -495,7 +499,7 @@ class RunBazelWithBuildBuddyTest(unittest.TestCase):
             )
             self.assertEqual(result.returncode, 1, result.stderr)
             for marker in markers:
-                self.assertIn(marker, result.stdout)
+                self.assertIn(marker, result.stdout, result.stdout + result.stderr)
             self.assertNotIn("Missing test log:", result.stdout)
 
     def test_main_preserves_spaced_argument_and_child_exit_status(self) -> None:
