@@ -81,12 +81,125 @@ class RunBazelWithBuildBuddyTest(unittest.TestCase):
                     ["test", "--", "//codex-rs/cli:codex", "//..."],
                 )
 
+    def test_keyless_hosted_fork_retains_only_shared_local_ci_settings(self) -> None:
+        env = {
+            "GITHUB_ACTIONS": "true",
+            "GITHUB_REPOSITORY": "sednalabs/codex",
+            "RUNNER_ENVIRONMENT": "github-hosted",
+        }
+        for config in run_bazel_with_buildbuddy.REMOTE_EXECUTION_CONFIGS:
+            with self.subTest(config=config):
+                self.assertEqual(
+                    run_bazel_with_buildbuddy.bazel_args_with_remote_config(
+                        [
+                            "--output_user_root=/tmp/test-bazel-output",
+                            "test",
+                            config,
+                            "--test_tag_filters=-argument-comment-lint",
+                            "--",
+                            "//codex-rs/cli:codex",
+                            "//...",
+                        ],
+                        env,
+                    ),
+                    [
+                        "--output_user_root=/tmp/test-bazel-output",
+                        "test",
+                        "--config=ci-bazel",
+                        "--test_tag_filters=-argument-comment-lint",
+                        "--",
+                        "//codex-rs/cli:codex",
+                        "//...",
+                    ],
+                )
+
+    def test_shared_local_ci_fallback_is_limited_to_this_hosted_fork(self) -> None:
+        for env in (
+            {},
+            {"GITHUB_REPOSITORY": "sednalabs/codex"},
+            {
+                "GITHUB_REPOSITORY": "sednalabs/codex",
+                "RUNNER_ENVIRONMENT": "github-hosted",
+            },
+            {
+                "GITHUB_ACTIONS": "false",
+                "GITHUB_REPOSITORY": "sednalabs/codex",
+                "RUNNER_ENVIRONMENT": "github-hosted",
+            },
+            {
+                "GITHUB_ACTIONS": "true",
+                "GITHUB_REPOSITORY": "openai/codex",
+                "RUNNER_ENVIRONMENT": "github-hosted",
+            },
+            {
+                "GITHUB_ACTIONS": "true",
+                "GITHUB_REPOSITORY": "example/codex",
+                "RUNNER_ENVIRONMENT": "github-hosted",
+            },
+            {"GITHUB_ACTIONS": "true", "GITHUB_REPOSITORY": "sednalabs/codex"},
+            {
+                "GITHUB_ACTIONS": "true",
+                "GITHUB_REPOSITORY": "sednalabs/codex",
+                "RUNNER_ENVIRONMENT": "self-hosted",
+            },
+        ):
+            with self.subTest(env=env):
+                self.assertEqual(
+                    run_bazel_with_buildbuddy.bazel_args_with_remote_config(
+                        ["build", "--config=ci-linux", "--", "//codex-rs/cli:codex"],
+                        env,
+                    ),
+                    ["build", "--", "//codex-rs/cli:codex"],
+                )
+
+    def test_shared_ci_config_is_lean_without_remote_endpoints_or_disk_cas(self) -> None:
+        bazelrc = Path(__file__).resolve().parents[2] / ".bazelrc"
+        shared_ci = [
+            line
+            for line in bazelrc.read_text(encoding="utf-8").splitlines()
+            if line.startswith(("common:ci ", "common:ci-bazel "))
+        ]
+        self.assertIn("common:ci-bazel --config=ci", shared_ci)
+        self.assertIn("common:ci --disk_cache=", shared_ci)
+        self.assertIn(
+            "common:ci --@rules_rust//rust/settings:extra_rustc_flag=-Cdebuginfo=0",
+            shared_ci,
+        )
+        self.assertIn(
+            "common:ci --@rules_rust//rust/settings:extra_exec_rustc_flag=-Cdebuginfo=0",
+            shared_ci,
+        )
+        for forbidden in (
+            "--config=buildbuddy-",
+            "--config=remote",
+            "--remote_executor=",
+            "--remote_cache=",
+            "--bes_backend=",
+            "--experimental_remote_downloader=",
+            "--strategy=remote",
+            "--platforms=//:rbe",
+            "--extra_execution_platforms=",
+        ):
+            with self.subTest(forbidden=forbidden):
+                self.assertFalse(any(forbidden in line for line in shared_ci))
+
     def test_program_arguments_after_separator_do_not_select_or_lose_rbe(self) -> None:
         args = ["run", "//codex-rs/cli:codex", "--", "--config=remote"]
 
         self.assertEqual(
             run_bazel_with_buildbuddy.bazel_args_with_remote_config(args, {}),
             args,
+        )
+        self.assertEqual(
+            run_bazel_with_buildbuddy.bazel_args_with_remote_config(
+                ["run", "//codex-rs/cli:codex", "--", "--config=ci-linux"],
+                {
+                    "GITHUB_ACTIONS": "true",
+                    "GITHUB_REPOSITORY": "sednalabs/codex",
+                    "RUNNER_ENVIRONMENT": "github-hosted",
+                },
+            ),
+            ["run", "//codex-rs/cli:codex", "--", "--config=ci-linux"],
         )
         self.assertEqual(
             run_bazel_with_buildbuddy.remote_config(

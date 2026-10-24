@@ -42,7 +42,8 @@ rust_binary(
 
 wine_rust_test(
     name = "wine-test-support-unit-tests",
-    timeout = "short",
+    # Allow isolated Wine prefix startup and teardown to finish reporting.
+    timeout = "moderate",
     crate = ":wine_test_support",
     windows_binaries = {
         "wine-smoke": ":windows-smoke",
