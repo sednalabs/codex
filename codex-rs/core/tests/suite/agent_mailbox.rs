@@ -565,7 +565,10 @@ async fn mailbox_read_keeps_encrypted_body_canonical_and_wait_joins_exact_ids() 
         .as_str()
         .expect("request receipt should contain a native message ID");
     assert_eq!(request_receipt["durable_state"], "accepted");
-    assert_eq!(request_receipt["activation_disposition"], "denied");
+    assert_eq!(
+        request_receipt["activation_disposition"], "denied",
+        "root activation receipt: {request_receipt}"
+    );
     assert_eq!(
         request_receipt["activation_reason"],
         "root_activation_is_not_allowed"

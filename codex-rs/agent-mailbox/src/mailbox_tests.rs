@@ -1604,6 +1604,90 @@ async fn explicit_attention_is_one_shot_after_canonical_read_without_settling_re
 }
 
 #[tokio::test]
+async fn activation_claim_waits_for_an_existing_writer() {
+    let fixture = test_mailbox().await;
+    let (sender, recipient) = (thread_id(/*index*/ 20), thread_id(/*index*/ 21));
+    let mut message_draft = draft(
+        "activation-writer",
+        sender,
+        recipient,
+        MessageKind::Request,
+        "activate",
+        /*legacy_attention*/ false,
+    );
+    message_draft.activate_if_idle = true;
+    let message = send(&fixture.mailbox, message_draft).await;
+    let writer = fixture
+        .mailbox
+        .pool
+        .begin_with("BEGIN IMMEDIATE")
+        .await
+        .unwrap();
+    let claim = fixture.mailbox.begin_activation(sender, &message.id);
+    tokio::pin!(claim);
+    let while_locked =
+        tokio::time::timeout(std::time::Duration::from_millis(100), &mut claim).await;
+    assert!(
+        while_locked.is_err(),
+        "activation must wait for the writer, not fail a read-to-write upgrade: {while_locked:?}"
+    );
+    writer.commit().await.unwrap();
+    assert_eq!(claim.await.unwrap(), ActivationDecision::Activate);
+}
+
+#[tokio::test]
+async fn activation_receipt_waits_for_an_existing_writer() {
+    let fixture = test_mailbox().await;
+    let (sender, recipient) = (thread_id(/*index*/ 20), thread_id(/*index*/ 21));
+    let mut message_draft = draft(
+        "activation-receipt-writer",
+        sender,
+        recipient,
+        MessageKind::Request,
+        "activate",
+        /*legacy_attention*/ false,
+    );
+    message_draft.activate_if_idle = true;
+    let message = send(&fixture.mailbox, message_draft).await;
+    assert_eq!(
+        fixture
+            .mailbox
+            .begin_activation(sender, &message.id)
+            .await
+            .unwrap(),
+        ActivationDecision::Activate
+    );
+    let writer = fixture
+        .mailbox
+        .pool
+        .begin_with("BEGIN IMMEDIATE")
+        .await
+        .unwrap();
+    let receipt = fixture.mailbox.record_activation(
+        sender,
+        &message.id,
+        ActivationDisposition::Denied,
+    );
+    tokio::pin!(receipt);
+    let while_locked =
+        tokio::time::timeout(std::time::Duration::from_millis(100), &mut receipt).await;
+    assert!(
+        while_locked.is_err(),
+        "activation receipt must wait for the writer, not fail a read-to-write upgrade: {while_locked:?}"
+    );
+    writer.commit().await.unwrap();
+    receipt.await.unwrap();
+    assert_eq!(
+        fixture
+            .mailbox
+            .begin_activation(sender, &message.id)
+            .await
+            .unwrap(),
+        ActivationDecision::AlreadyDecided(ActivationDisposition::Denied)
+    );
+}
+
+#[tokio::test]
 async fn activation_claim_is_single_use_across_a_lost_result() {
     let fixture = test_mailbox().await;
     let (sender, recipient) = (thread_id(/*index*/ 20), thread_id(/*index*/ 21));
