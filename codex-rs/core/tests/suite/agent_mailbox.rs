@@ -613,7 +613,10 @@ async fn mailbox_read_keeps_encrypted_body_canonical_and_wait_joins_exact_ids() 
     assert_eq!(wait_report["requestedTargets"], json!([work_ref]));
     assert_eq!(wait_report["requestedRepliesTo"], json!([request_id]));
     assert_eq!(wait_report["returnWhen"], "all");
-    assert_eq!(wait_report["conditionSatisfied"], true);
+    assert_eq!(
+        wait_report["conditionSatisfied"], true,
+        "exact join report: {wait_report}"
+    );
     assert!(
         wait_report["completed"]
             .as_array()
@@ -901,10 +904,14 @@ async fn quiet_events_keep_deadline_fixed_then_request_wakes_event_only_wait() -
         .lock()
         .expect("wait start lock should not be poisoned")
         .expect("first targeted wait should have started");
+    let deadline_report: Value = serde_json::from_str(
+        function_output_text(&requests[3].1, "wait-1-call")
+            .expect("first wait should return its deadline report"),
+    )?;
     let deadline_wait_elapsed = requests[3].0.duration_since(wait_started);
     assert!(
         (Duration::from_millis(850)..Duration::from_millis(1_500)).contains(&deadline_wait_elapsed),
-        "quiet messages should not refresh the one-second deadline: {deadline_wait_elapsed:?}"
+        "quiet messages should not refresh the one-second deadline: {deadline_wait_elapsed:?}; report: {deadline_report}"
     );
 
     let watched_spawn: Value = serde_json::from_str(
@@ -923,10 +930,6 @@ async fn quiet_events_keep_deadline_fixed_then_request_wakes_event_only_wait() -
         .expect("unrelated spawn should return an immutable work reference");
     assert_ne!(work_ref, unrelated_work_ref);
 
-    let deadline_report: Value = serde_json::from_str(
-        function_output_text(&requests[3].1, "wait-1-call")
-            .expect("first wait should return its deadline report"),
-    )?;
     assert_eq!(deadline_report["requestedTargets"], json!([work_ref]));
     assert_eq!(deadline_report["completionReason"], "deadline");
     assert_eq!(deadline_report["conditionSatisfied"], false);
