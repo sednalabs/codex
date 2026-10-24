@@ -1556,9 +1556,11 @@ mod tests {
             assert_eq!(view["properties"]["scrollY"]["type"], "number");
             assert_eq!(tool.input_schema["additionalProperties"], true);
             assert_eq!(view["additionalProperties"], true);
-            assert!(view["description"]
-                .as_str()
-                .is_some_and(|description| description.contains("does not change the user agent")));
+            assert!(
+                view["description"].as_str().is_some_and(
+                    |description| description.contains("does not change the user agent")
+                )
+            );
         }
     }
 
