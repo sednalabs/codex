@@ -164,6 +164,7 @@ fn spawn_agent_tool_v2_requires_task_name_and_lists_visible_models() {
             .collect::<std::collections::BTreeSet<_>>(),
         [
             "agent_id",
+            "dispatch_state",
             "effective_model",
             "effective_reasoning_effort",
             "nickname",
@@ -171,6 +172,7 @@ fn spawn_agent_tool_v2_requires_task_name_and_lists_visible_models() {
             "requested_model_honored",
             "requested_reasoning_effort",
             "task_name",
+            "work_ref",
         ]
         .into_iter()
         .map(str::to_string)
@@ -597,6 +599,11 @@ fn followup_task_tool_requires_message_and_describes_model_receipt() {
                     "type": "string",
                     "description": "Immutable accepted work reference assigned to the follow-up."
                 },
+                "dispatch_state": {
+                    "type": "string",
+                    "enum": ["accepted", "dispatching", "dispatched", "recovery_needed"],
+                    "description": "Native dispatch custody for the original work. Uncertain dispatch is not resent."
+                },
                 "recipient_task_name": {
                     "type": "string",
                     "description": "Explicit canonical task name of the recipient; the effective_* fields below describe this recipient, not the sending agent."
@@ -607,11 +614,11 @@ fn followup_task_tool_requires_message_and_describes_model_receipt() {
                     "description": "Identity scope for the effective_* fields in this receipt."
                 },
                 "effective_model": {
-                    "type": "string",
+                    "type": ["string", "null"],
                     "description": "Effective model retained by the recipient agent for the follow-up turn."
                 },
                 "effective_model_provider_id": {
-                    "type": "string",
+                    "type": ["string", "null"],
                     "description": "Effective model provider retained by the recipient agent for the follow-up turn."
                 },
                 "effective_reasoning_effort": {
