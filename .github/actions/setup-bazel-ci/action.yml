@@ -15,6 +15,24 @@ runs:
     - id: setup_ci
       uses: ./.github/actions/setup-ci
 
+    - name: Reclaim unused hosted Linux Android SDK
+      if: ${{ github.repository == 'sednalabs/codex' && runner.os == 'Linux' && runner.environment == 'github-hosted' }}
+      shell: bash
+      run: |
+        set -euo pipefail
+        # Native Linux Rust targets do not use this preinstalled image SDK.
+        # Keep the workspace, tool cache, and Bazel/Cargo caches intact.
+        df -h /
+        if [[ -d /usr/local/lib/android ]]; then
+          if [[ "$(realpath /usr/local/lib/android)" != /usr/local/lib/android ]]; then
+            echo "::error::Refusing to reclaim a non-canonical runner SDK path"
+            exit 1
+          fi
+          du -sh /usr/local/lib/android
+          sudo rm -rf -- /usr/local/lib/android
+        fi
+        df -h /
+
     - name: Set up Bazel
       uses: bazel-contrib/setup-bazel@c5acdfb288317d0b5c0bbd7a396a3dc868bb0f86 # 0.19.0
       # Without an explicit Bazelisk version, setup-bazel leaves PATH unchanged

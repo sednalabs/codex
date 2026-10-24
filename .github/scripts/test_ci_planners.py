@@ -2121,6 +2121,33 @@ class RouteSelectionTests(unittest.TestCase):
                 )
                 self.assertEqual(proc.returncode, 0, proc.stderr)
 
+    def test_fork_hosted_linux_bazel_reclaims_only_unused_image_sdk(self) -> None:
+        payload = load_workflow_payload(
+            REPO_ROOT / ".github/actions/setup-bazel-ci/action.yml"
+        )
+        steps = (payload.get("runs") or {}).get("steps") or []
+        cleanup = next(
+            step
+            for step in steps
+            if step.get("name") == "Reclaim unused hosted Linux Android SDK"
+        )
+        self.assertEqual(
+            cleanup.get("if"),
+            "${{ github.repository == 'sednalabs/codex' && runner.os == 'Linux' "
+            "&& runner.environment == 'github-hosted' }}",
+        )
+        self.assertEqual(cleanup.get("shell"), "bash")
+        script = cleanup.get("run") or ""
+        self.assertIn("realpath /usr/local/lib/android", script)
+        removal_commands = [
+            line.strip()
+            for line in script.splitlines()
+            if line.strip().startswith("sudo rm ")
+        ]
+        self.assertEqual(removal_commands, ["sudo rm -rf -- /usr/local/lib/android"])
+        setup_bazel = next(step for step in steps if step.get("name") == "Set up Bazel")
+        self.assertLess(steps.index(cleanup), steps.index(setup_bazel))
+
     def test_bazel_cache_writes_are_limited_to_trusted_post_merge_pushes(self) -> None:
         setup_action = load_workflow_payload(REPO_ROOT / ".github/actions/setup-bazel-ci/action.yml")
         setup_bazel_step = next(
