@@ -48,7 +48,7 @@ fn pipe_targets(pid: Option<u32>) -> anyhow::Result<HashSet<String>> {
 #[cfg(target_os = "linux")]
 fn parent_stdio_pipe_targets(pid: u32) -> anyhow::Result<HashSet<String>> {
     let child = pipe_targets(Some(pid))?;
-    let parent = pipe_targets(None)?;
+    let parent = pipe_targets(/*pid*/ None)?;
     Ok(parent.intersection(&child).cloned().collect())
 }
 
@@ -56,7 +56,7 @@ fn parent_stdio_pipe_targets(pid: u32) -> anyhow::Result<HashSet<String>> {
 async fn wait_for_stdio_pipe_release(targets: &HashSet<String>) -> anyhow::Result<()> {
     tokio::time::timeout(Duration::from_secs(2), async {
         loop {
-            let open_targets = pipe_targets(None)?;
+            let open_targets = pipe_targets(/*pid*/ None)?;
             if targets.is_disjoint(&open_targets) {
                 return Ok(());
             }
