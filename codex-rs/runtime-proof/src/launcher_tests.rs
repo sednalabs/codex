@@ -65,6 +65,19 @@ fn api_bearer_provisioning_failure_exposes_only_a_fixed_stage() {
 }
 
 #[test]
+fn mcp_failure_stage_exposes_only_a_closed_phase() {
+    let error = anyhow::anyhow!("private failure detail")
+        .context(McpFailureStage::OAuth)
+        .context("additional outer context");
+
+    assert_eq!(safe_mcp_failure_stage(&error), Some("oauth"));
+    assert_eq!(
+        safe_mcp_failure_stage(&anyhow::anyhow!("MCP launcher failure stage: oauth")),
+        None
+    );
+}
+
+#[test]
 fn callback_failure_keeps_its_stage_and_closed_detail() {
     let login_error = codex_rmcp_client::FixedOAuthLoginError::callback_failure(
         codex_rmcp_client::FixedOAuthCallbackFailure::InputTimeout,

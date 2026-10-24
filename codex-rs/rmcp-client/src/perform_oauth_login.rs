@@ -45,7 +45,8 @@ use crate::utils::build_default_headers;
 use codex_config::types::AuthKeyringBackendKind;
 use codex_config::types::OAuthCredentialsStoreMode;
 
-pub(crate) const FIXED_API_CLAIM_SCOPE: &str = "ops:write";
+pub(crate) const FIXED_API_CLAIM_SCOPE: &str = "ops:read ops:write";
+const FIXED_API_CLAIM_SCOPES: [&str; 2] = ["ops:read", "ops:write"];
 pub(crate) const FIXED_API_CLAIM_ISSUER: &str = "https://auth.grantmatler.com/realms/agent-ops";
 pub(crate) const FIXED_API_CLAIM_RESOURCE: &str = "https://ops-api.grantmatler.com";
 pub(crate) const FIXED_API_CLAIM_CLIENT_ID: &str = "codex-runtime-proof-api-claim";
@@ -340,8 +341,8 @@ impl OAuthAccessToken {
 /// Runs the fixed Ops API loopback authorization-code flow without storing
 /// returned credentials in Codex's persistent MCP OAuth store.
 ///
-/// The issuer, API resource, client ID, redirect, and `ops:write` scope are
-/// fixed in source. The flow requires the exact Keycloak realm endpoints,
+/// The issuer, API resource, client ID, redirect, and `ops:read ops:write`
+/// scope set are fixed in source. The flow requires the exact Keycloak realm endpoints,
 /// authorization-code plus PKCE S256, a loopback callback, and a bounded
 /// Bearer token lifetime. The refresh token is returned only to the fixed
 /// API-profile store so its privileged caller can persist it in the protected
@@ -353,7 +354,7 @@ pub async fn perform_fixed_ops_api_access_token_login(
         FIXED_API_CLAIM_ISSUER,
         FIXED_API_CLAIM_RESOURCE,
         FIXED_API_CLAIM_CLIENT_ID,
-        &[FIXED_API_CLAIM_SCOPE.to_string()],
+        &fixed_api_claim_scopes(),
         FIXED_API_CLAIM_CALLBACK_PORT,
         FIXED_API_CLAIM_CALLBACK_URL,
         FIXED_API_CLAIM_TIMEOUT_SECS,
@@ -374,7 +375,7 @@ pub async fn perform_fixed_ops_api_access_token_login_with_callback_input(
         FIXED_API_CLAIM_ISSUER,
         FIXED_API_CLAIM_RESOURCE,
         FIXED_API_CLAIM_CLIENT_ID,
-        &[FIXED_API_CLAIM_SCOPE.to_string()],
+        &fixed_api_claim_scopes(),
         FIXED_API_CLAIM_CALLBACK_PORT,
         FIXED_API_CLAIM_CALLBACK_URL,
         FIXED_API_CLAIM_TIMEOUT_SECS,
@@ -432,7 +433,7 @@ pub(crate) async fn perform_fixed_ops_api_access_token_refresh(
     let rotated_refresh_token = response
         .refresh_token()
         .map(|token| zeroize::Zeroizing::new(token.secret().to_string()));
-    let access_token = access_token_from_response(response, &[FIXED_API_CLAIM_SCOPE.to_string()])
+    let access_token = access_token_from_response(response, &fixed_api_claim_scopes())
         .map_err(|_| FixedOAuthLoginError::at(FixedOAuthLoginStage::TokenValidation));
     Ok(FixedOAuthRefreshResult {
         access_token,
@@ -716,8 +717,10 @@ fn validate_fixed_oauth_inputs(
         || !client_id
             .bytes()
             .all(|byte| byte.is_ascii_alphanumeric() || b"._~-".contains(&byte))
-        || requested_scopes.len() != 1
-        || requested_scopes.first().map(String::as_str) != Some(FIXED_API_CLAIM_SCOPE)
+        || !requested_scopes
+            .iter()
+            .map(String::as_str)
+            .eq(FIXED_API_CLAIM_SCOPES.iter().copied())
         || callback_port == 0
         || callback.scheme() != "http"
         || callback.host_str() != Some("127.0.0.1")
@@ -733,6 +736,13 @@ fn validate_fixed_oauth_inputs(
         bail!("fixed OAuth request is outside the admitted loopback contract");
     }
     Ok(())
+}
+
+fn fixed_api_claim_scopes() -> Vec<String> {
+    FIXED_API_CLAIM_SCOPES
+        .iter()
+        .map(|scope| (*scope).to_string())
+        .collect()
 }
 
 fn validate_canonical_https_url(value: &str) -> Result<Url> {
@@ -1615,6 +1625,7 @@ mod tests {
     use super::callback_id_from_server_url;
     use super::callback_path_from_redirect_uri;
     use super::exchange_fixed_api_refresh_at_endpoint;
+    use super::fixed_api_claim_scopes;
     use super::fixed_authorization_url;
     use super::parse_oauth_callback;
     use super::parse_pasted_oauth_callback;
@@ -1992,7 +2003,7 @@ mod tests {
             &mut manager,
             FIXED_API_CLAIM_CLIENT_ID,
             &redirect,
-            &[FIXED_API_CLAIM_SCOPE.to_string()],
+            &fixed_api_claim_scopes(),
         )
         .await
         .expect("build fixed authorization URL");
@@ -2023,7 +2034,7 @@ mod tests {
 
     #[test]
     fn fixed_access_token_flow_rejects_unbounded_or_non_loopback_inputs() {
-        let scope = vec![FIXED_API_CLAIM_SCOPE.to_string()];
+        let scope = fixed_api_claim_scopes();
         assert!(
             validate_fixed_oauth_inputs(
                 FIXED_API_CLAIM_ISSUER,
@@ -2059,7 +2070,7 @@ mod tests {
                 FIXED_API_CLAIM_ISSUER,
                 FIXED_API_CLAIM_RESOURCE,
                 FIXED_API_CLAIM_CLIENT_ID,
-                &["ops:write offline_access".to_string()],
+                &["ops:write".to_string()],
                 /*callback_port*/ 8765,
                 "http://127.0.0.1:8765/callback",
                 /*timeout_secs*/ 300,
@@ -2120,11 +2131,11 @@ mod tests {
             "access_token": "bounded-test-token",
             "token_type": "Bearer",
             "expires_in": 300,
-            "scope": "ops:write",
+            "scope": "ops:read ops:write",
             "refresh_token": "fixed-api-refresh-token"
         }))
         .expect("parse OAuth token response");
-        let token = access_token_from_response(response, &[FIXED_API_CLAIM_SCOPE.to_string()])
+        let token = access_token_from_response(response, &fixed_api_claim_scopes())
             .expect("extract bounded fixed API tokens");
         assert_eq!(token.access_token(), "bounded-test-token");
         assert_eq!(token.refresh_token(), Some("fixed-api-refresh-token"));
@@ -2134,13 +2145,11 @@ mod tests {
             "access_token": "bounded-test-token",
             "token_type": "Bearer",
             "expires_in": 300,
-            "scope": "ops:write offline_access",
+            "scope": "ops:read ops:write offline_access",
             "refresh_token": "ignored"
         }))
         .expect("parse extra-scope OAuth response");
-        assert!(
-            access_token_from_response(response, &[FIXED_API_CLAIM_SCOPE.to_string()]).is_err()
-        );
+        assert!(access_token_from_response(response, &fixed_api_claim_scopes()).is_err());
     }
 
     #[test]
@@ -2150,12 +2159,10 @@ mod tests {
                 "access_token": "bounded-test-token",
                 "token_type": token_type,
                 "expires_in": expires_in,
-                "scope": "ops:write"
+                "scope": "ops:read ops:write"
             }))
             .expect("parse OAuth token response");
-            assert!(
-                access_token_from_response(response, &[FIXED_API_CLAIM_SCOPE.to_string()]).is_err()
-            );
+            assert!(access_token_from_response(response, &fixed_api_claim_scopes()).is_err());
         }
     }
 

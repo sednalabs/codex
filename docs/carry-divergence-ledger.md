@@ -3902,6 +3902,7 @@ The unit uses `KillMode=control-group` and a finite stop timeout to clean up
 descendants, and masks `/home`, `/root` and `/run/user` rather than exposing
 host user auth stores to the root service or its child. The normal `codex-dev`
 entrypoint remains user-owned and unchanged.
+The ordinary MCP launcher also tags failures at its existing fixed boundaries: policy, credential setup, runtime setup, OAuth, signer, child start, bootstrap, child prompt, and child exit. The journal receives only that closed phase label; underlying error text remains suppressed, and untagged failures retain the generic failed-closed line. These stages narrow diagnosis without claiming that a protected operation did or did not take effect.
 
 The same launcher also has a closed HTTP target for the maintained App claim
 route. It measures its own running ELF before reading credentials, signs the
@@ -3942,15 +3943,17 @@ there. The callback parser binds scheme, loopback host, port, exact registered
 path, unique state, and unambiguous response parameters before the same PKCE
 exchange and token checks. OAuth exchange failures expose only allowlisted HTTP status/OAuth codes or a closed SDK error category, never provider text. Manual input disables terminal echo and restores the
 original terminal settings on success, error, or a handled cancellation signal.
-Both forms use the API resource and only
-`ops:write`; neither writes the persistent MCP credential store. One versioned
+Both forms use the API resource and exactly the `ops:read ops:write` scope set;
+neither writes the persistent MCP credential store. One versioned
 API-only refresh profile is stored as a root-owned mode-0600 encrypted blob at
 the fixed `/etc/credstore.encrypted/codex-runtime-proof-api-refresh` path. The
 root provisioner uses the fixed root-owned `systemd-creds` utility with the
 explicit nonempty profile name and `--with-key=host`, after checking the
 existing root-only `/var/lib/systemd/credential.secret`; it does not create a
 host key or fall back to plaintext. The profile remains bound to its fixed
-issuer, client, API resource, scope, and canonical subject. Each later request
+issuer, client, API resource, exact scope set, and canonical subject. A prior
+write-only profile remains invalid and needs normal reauthorization; refresh
+cannot expand the existing grant. Each later request
 refreshes that profile under the root credential lock and atomically persists
 any rotated token before returning the short-lived access token; encryption or
 storage failure releases no bearer. OAuth now runs in the non-dumpable root
@@ -3959,9 +3962,9 @@ URL for `xdg-open`. Root still validates issuer, audience, scope, subject, and
 expiry before atomically writing the volatile systemd input. Before
 storage, the returned token must match the fixed issuer, an audience claim
 containing `ops-api`, the exact scope, UUID-shaped subject, and bounded expiry.
-The configured client-specific `ops-api` mapper works with the existing
-`ops:write` scope, whose audience mappers also supply the existing MCP
-audiences; no shared mapper or scope is changed. Provisioning does not require
+The configured client-specific `ops-api` mapper works with the fixed
+`ops:read ops:write` scope set; the existing `ops:write` mapper continues to
+supply the existing MCP audiences, and no shared mapper or scope is changed. Provisioning does not require
 or activate the root claim policy: the HTTP launcher later checks the token
 subject against that policy before signing or sending a claim. The short-lived
 credential is atomically written only to `/run/credstore/ops-api-bearer` in a

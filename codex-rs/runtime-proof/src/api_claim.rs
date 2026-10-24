@@ -26,7 +26,8 @@ const API_EXECUTION_RECEIPT_ROUTE: &str = "/v0/work-items/execution-receipt/read
 pub(crate) const API_PROVIDER: &str = "agent-ops-api-claim-client";
 const API_ISSUER: &str = "https://auth.grantmatler.com/realms/agent-ops";
 const API_AUDIENCE: &str = "ops-api";
-pub(crate) const API_SCOPE: &str = "ops:write";
+const API_READ_SCOPE: &str = "ops:read";
+const API_WRITE_SCOPE: &str = "ops:write";
 pub(crate) const API_BEARER_CREDENTIAL: &str = "ops-api-bearer";
 pub(crate) const API_BEARER_MAX_BYTES: usize = 16 * 1024;
 pub(crate) const API_BEARER_CREDENTIAL_MAX_BYTES: usize = API_BEARER_MAX_BYTES + 256;
@@ -95,14 +96,27 @@ enum ScopeClaim {
 }
 
 impl ScopeClaim {
-    fn contains(&self, expected: &str) -> bool {
+    fn contains_exact_api_scopes(&self) -> bool {
         match self {
-            Self::One(scopes) => scopes == expected,
-            Self::Many(scopes) => {
-                scopes.len() == 1 && scopes.first().is_some_and(|scope| scope == expected)
-            }
+            Self::One(scopes) => exact_api_scope_set(scopes.split_whitespace()),
+            Self::Many(scopes) => exact_api_scope_set(scopes.iter().map(String::as_str)),
         }
     }
+}
+
+fn exact_api_scope_set<'a>(scopes: impl Iterator<Item = &'a str>) -> bool {
+    let mut saw_read = false;
+    let mut saw_write = false;
+    let mut count = 0;
+    for scope in scopes {
+        count += 1;
+        match scope {
+            API_READ_SCOPE if !saw_read => saw_read = true,
+            API_WRITE_SCOPE if !saw_write => saw_write = true,
+            _ => return false,
+        }
+    }
+    count == 2 && saw_read && saw_write
 }
 
 pub(crate) fn encode_bearer_credential(value: &SecretString) -> Result<Zeroizing<Vec<u8>>> {
@@ -176,19 +190,19 @@ fn validate_bearer_profile(
     let has_scope = claims
         .scope
         .as_deref()
-        .is_some_and(|scope| scope == API_SCOPE)
+        .is_some_and(|scope| exact_api_scope_set(scope.split_whitespace()))
         || claims
             .scp
             .as_ref()
-            .is_some_and(|scopes| scopes.contains(API_SCOPE));
+            .is_some_and(ScopeClaim::contains_exact_api_scopes);
     let scope_claims_are_consistent = claims
         .scope
         .as_deref()
-        .is_none_or(|scope| scope == API_SCOPE)
+        .is_none_or(|scope| exact_api_scope_set(scope.split_whitespace()))
         && claims
             .scp
             .as_ref()
-            .is_none_or(|scopes| scopes.contains(API_SCOPE));
+            .is_none_or(ScopeClaim::contains_exact_api_scopes);
     if claims.iss != API_ISSUER
         || !claims.aud.contains(API_AUDIENCE)
         || !subject_matches

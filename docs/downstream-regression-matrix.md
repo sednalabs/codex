@@ -55,9 +55,9 @@ claim/release, keeps current-work and exact-request receipt reads on ordinary
 bearer authorization, and projects only bounded canonical primary-thread
 outcomes to the launcher's existing journal path. Its focused regressions cover
 closed tool configuration, claim/release proof binding, exact holder-conflict
-classification, payload redaction, child-event exclusion, and overlong-line
-draining. Protected package installation and natural first use remain separate
-acceptance steps.
+classification, payload redaction, child-event exclusion, overlong-line draining,
+and closed MCP launcher failure-stage projection. Protected package installation
+and natural first use remain separate acceptance steps.
 
 ## Core default path
 
@@ -1231,7 +1231,8 @@ retries, redirects, and request logging disabled, and preserves an uncertain
 outcome without replay. The API server authenticates the bearer and verifies
 the proof; local JWT comparisons require `ops-api` membership and only check
 policy consistency. The client-specific mapper adds `ops-api` while the
-existing optional `ops:write` scope contributes its established MCP audiences.
+existing optional `ops:write` scope contributes its established MCP audiences;
+the fixed profile requests exactly `ops:read ops:write` for API authorization.
 Source and
 hosted package proof do not appoint the bearer or establish HTTP first use.
 
@@ -1247,7 +1248,7 @@ path.
 
 The bounded `provision-api-bearer` mode reuses the existing Codex OAuth callback
 and PKCE path with the fixed API issuer, resource, client, loopback redirect, and
-`ops:write` scope. The fixed `--no-browser` form accepts a complete callback URL
+exact `ops:read ops:write` scope set. The fixed `--no-browser` form accepts a complete callback URL
 on the invoking TTY without opening a browser or binding a local callback
 listener; it validates the exact redirect and single-use state before the same
 PKCE exchange while suppressing and restoring TTY input echo, including when a

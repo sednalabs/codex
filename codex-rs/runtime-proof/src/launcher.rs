@@ -146,15 +146,17 @@ struct McpSupervisionContext<'a> {
 
 /// Starts the fixed root-owned task and returns the child exit code.
 pub fn run() -> Result<i32> {
-    reject_caller_input()?;
-    require_root_launcher()?;
+    reject_caller_input().context(McpFailureStage::Policy)?;
+    require_root_launcher().context(McpFailureStage::Policy)?;
 
-    let policy_bytes = read_root_file(Path::new(POLICY_PATH), MAX_POLICY_BYTES)?;
-    let policy: LauncherPolicy =
-        serde_json::from_slice(&policy_bytes).context("parse fixed launcher policy")?;
-    validate_policy(&policy)?;
+    let policy_bytes = read_root_file(Path::new(POLICY_PATH), MAX_POLICY_BYTES)
+        .context(McpFailureStage::Policy)?;
+    let policy: LauncherPolicy = serde_json::from_slice(&policy_bytes)
+        .context("parse fixed launcher policy")
+        .context(McpFailureStage::Policy)?;
+    validate_policy(&policy).context(McpFailureStage::Policy)?;
 
-    let credential_directory = credential_directory()?;
+    let credential_directory = credential_directory().context(McpFailureStage::CredentialSetup)?;
     match &policy.target {
         LauncherTarget::Mcp(target) => run_mcp(&policy, target, &credential_directory),
         LauncherTarget::Http(target) => {
@@ -220,6 +222,43 @@ pub(crate) enum ProvisioningStage {
     CredentialStore,
     CredentialWrite,
 }
+
+#[derive(Debug)]
+enum McpFailureStage {
+    Policy,
+    CredentialSetup,
+    RuntimeSetup,
+    OAuth,
+    Signer,
+    ChildStart,
+    Bootstrap,
+    ChildPrompt,
+    ChildExit,
+}
+
+impl McpFailureStage {
+    fn as_str(&self) -> &'static str {
+        match self {
+            Self::Policy => "policy",
+            Self::CredentialSetup => "credential_setup",
+            Self::RuntimeSetup => "runtime_setup",
+            Self::OAuth => "oauth",
+            Self::Signer => "signer",
+            Self::ChildStart => "child_start",
+            Self::Bootstrap => "bootstrap",
+            Self::ChildPrompt => "child_prompt",
+            Self::ChildExit => "child_exit",
+        }
+    }
+}
+
+impl std::fmt::Display for McpFailureStage {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(formatter, "MCP launcher failure stage: {}", self.as_str())
+    }
+}
+
+impl std::error::Error for McpFailureStage {}
 
 impl ProvisioningStage {
     fn as_str(self) -> &'static str {
@@ -316,6 +355,13 @@ pub fn safe_provisioning_failure_detail(error: &anyhow::Error) -> Option<&str> {
         })
 }
 
+/// Returns only a fixed phase label for an ordinary native MCP launcher error.
+pub fn safe_mcp_failure_stage(error: &anyhow::Error) -> Option<&'static str> {
+    error
+        .downcast_ref::<McpFailureStage>()
+        .map(McpFailureStage::as_str)
+}
+
 fn provision_api_bearer_with_mode(mode: ApiBearerProvisioningMode) -> Result<i32> {
     let arguments = std::env::args_os().skip(1).collect::<Vec<_>>();
     if !matches_api_bearer_invocation(&arguments, mode) {
@@ -404,20 +450,28 @@ fn run_mcp(
     target: &McpLaunchConfig,
     credential_directory: &Path,
 ) -> Result<i32> {
-    let runtime_directory = validate_runtime_directory(target.runtime_gid)?;
+    let runtime_directory =
+        validate_runtime_directory(target.runtime_gid).context(McpFailureStage::RuntimeSetup)?;
     let working_directory = validate_working_directory(
         &target.working_directory,
         target.runtime_uid,
         target.runtime_gid,
-    )?;
-    let executable = open_verified_executable(&target.codex_dev_path, &target.codex_dev_sha256)?;
-    let run_directory = create_run_directory(&runtime_directory, target, working_directory)?;
+    )
+    .context(McpFailureStage::RuntimeSetup)?;
+    let executable = open_verified_executable(&target.codex_dev_path, &target.codex_dev_sha256)
+        .context(McpFailureStage::ChildStart)?;
+    let run_directory = create_run_directory(&runtime_directory, target, working_directory)
+        .context(McpFailureStage::RuntimeSetup)?;
 
-    let (bootstrap_parent, bootstrap_child) = seqpacket_pair()?;
-    let (auth_parent, auth_child) = seqpacket_pair()?;
-    let bootstrap_source = duplicate_high(bootstrap_child.as_raw_fd())?;
-    let auth_source = duplicate_high(auth_child.as_raw_fd())?;
-    let executable_source = duplicate_high(executable.file.as_raw_fd())?;
+    let (bootstrap_parent, bootstrap_child) =
+        seqpacket_pair().context(McpFailureStage::RuntimeSetup)?;
+    let (auth_parent, auth_child) = seqpacket_pair().context(McpFailureStage::RuntimeSetup)?;
+    let bootstrap_source =
+        duplicate_high(bootstrap_child.as_raw_fd()).context(McpFailureStage::RuntimeSetup)?;
+    let auth_source =
+        duplicate_high(auth_child.as_raw_fd()).context(McpFailureStage::RuntimeSetup)?;
+    let executable_source =
+        duplicate_high(executable.file.as_raw_fd()).context(McpFailureStage::RuntimeSetup)?;
 
     let mut child = spawn_verified_child(
         &executable_source,
@@ -425,11 +479,13 @@ fn run_mcp(
         &auth_source,
         &run_directory,
         target,
-    )?;
+    )
+    .context(McpFailureStage::ChildStart)?;
     let stdout = child
         .stdout
         .take()
-        .context("fixed codex-dev task has no JSON event stream")?;
+        .context("fixed codex-dev task has no JSON event stream")
+        .context(McpFailureStage::ChildStart)?;
     let (output_finished_tx, output_finished_rx) = std::sync::mpsc::sync_channel(1);
     let work_item_ref = policy.work_item_ref.clone();
     let principal = policy.principal;
@@ -450,7 +506,9 @@ fn run_mcp(
         Ok(reader) => reader,
         Err(error) => {
             terminate_child_group(&mut child);
-            return Err(error).context("start fixed task outcome projection");
+            return Err(error)
+                .context("start fixed task outcome projection")
+                .context(McpFailureStage::ChildStart);
         }
     };
     drop(bootstrap_child);
@@ -989,26 +1047,34 @@ fn supervise_child(
         policy,
         target,
     } = context;
-    verify_child_image_and_identity(child, executable, target)?;
+    verify_child_image_and_identity(child, executable, target)
+        .context(McpFailureStage::ChildStart)?;
 
-    let issuer_seed = read_issuer_seed(credential_directory, policy)?;
+    let issuer_seed =
+        read_issuer_seed(credential_directory, policy).context(McpFailureStage::CredentialSetup)?;
     let mut runtime_seed = Zeroizing::new([0_u8; RUNTIME_SEED_BYTES]);
     rand::rng().fill_bytes(runtime_seed.as_mut());
-    let provider = read_provider_auth(credential_directory)?;
-    let client_secret = read_mcp_client_secret(credential_directory)?;
+    let provider =
+        read_provider_auth(credential_directory).context(McpFailureStage::CredentialSetup)?;
+    let client_secret =
+        read_mcp_client_secret(credential_directory).context(McpFailureStage::CredentialSetup)?;
     let mcp_access_token = exchange_client_credentials(
         &target.mcp_oauth,
         &client_secret,
         policy.principal,
         policy.project_id,
-    )?;
+    )
+    .context(McpFailureStage::OAuth)?;
     drop(client_secret);
 
-    let (now, policy_expires_at, policy_task_deadline) = certificate_timing(policy)?;
+    let (now, policy_expires_at, policy_task_deadline) =
+        certificate_timing(policy).context(McpFailureStage::Signer)?;
     let (expires_at, execution_lease_seconds) =
-        effective_expiry(now, policy_expires_at, mcp_access_token.expires_at)?;
+        effective_expiry(now, policy_expires_at, mcp_access_token.expires_at)
+            .context(McpFailureStage::Signer)?;
     let task_deadline =
-        task_deadline_for_expiry(expires_at, policy_expires_at, policy_task_deadline)?;
+        task_deadline_for_expiry(expires_at, policy_expires_at, policy_task_deadline)
+            .context(McpFailureStage::Signer)?;
 
     let claims = wire::CertificateClaims {
         version: 2,
@@ -1042,10 +1108,12 @@ fn supervise_child(
         iat: now,
         exp: expires_at,
     };
-    let certificate = issue_certificate(&claims, &issuer_seed, policy)?;
+    let certificate =
+        issue_certificate(&claims, &issuer_seed, policy).context(McpFailureStage::Signer)?;
     drop(issuer_seed);
     let certificate_sha256 = wire::certificate_digest(certificate.as_bytes());
-    validate_live_credentials(&provider, &mcp_access_token.bearer, expires_at)?;
+    validate_live_credentials(&provider, &mcp_access_token.bearer, expires_at)
+        .context(McpFailureStage::CredentialSetup)?;
 
     let auth_packet = {
         let auth_frame = AuthFrame {
@@ -1064,31 +1132,42 @@ fn supervise_child(
             mcp_bearer: mcp_access_token.bearer,
         };
         Zeroizing::new(
-            serde_json::to_vec(&auth_frame).context("encode protected runtime auth frame")?,
+            serde_json::to_vec(&auth_frame)
+                .context("encode protected runtime auth frame")
+                .context(McpFailureStage::Bootstrap)?,
         )
     };
     if auth_packet.len() > 32 * 1024 {
-        bail!("protected runtime auth frame exceeds its size limit");
+        return Err(anyhow!(
+            "protected runtime auth frame exceeds its size limit"
+        ))
+        .context(McpFailureStage::Bootstrap);
     }
 
-    let bootstrap_packet = make_bootstrap_packet(&certificate, &runtime_seed)?;
-    send_packet(bootstrap_socket, &bootstrap_packet)?;
+    let bootstrap_packet =
+        make_bootstrap_packet(&certificate, &runtime_seed).context(McpFailureStage::Signer)?;
+    send_packet(bootstrap_socket, &bootstrap_packet).context(McpFailureStage::Bootstrap)?;
     drop(bootstrap_packet);
     drop(runtime_seed);
-    send_packet(auth_socket, &auth_packet)?;
+    send_packet(auth_socket, &auth_packet).context(McpFailureStage::Bootstrap)?;
     drop(auth_packet);
     let ack_timeout = ACK_TIMEOUT.min(task_deadline.saturating_duration_since(Instant::now()));
-    receive_ack(bootstrap_socket, ack_timeout)?;
+    receive_ack(bootstrap_socket, ack_timeout).context(McpFailureStage::Bootstrap)?;
     if Instant::now() >= task_deadline {
-        bail!("protected runtime expired before task execution started");
+        return Err(anyhow!(
+            "protected runtime expired before task execution started"
+        ))
+        .context(McpFailureStage::Bootstrap);
     }
     if let Some(mut stdin) = child.stdin.take() {
-        let prompt = make_prompt(policy, target)?;
-        write_prompt_until(&mut stdin, &prompt, task_deadline)?;
+        let prompt = make_prompt(policy, target).context(McpFailureStage::ChildPrompt)?;
+        write_prompt_until(&mut stdin, &prompt, task_deadline)
+            .context(McpFailureStage::ChildPrompt)?;
     } else {
-        bail!("fixed codex-dev task has no prompt input");
+        return Err(anyhow!("fixed codex-dev task has no prompt input"))
+            .context(McpFailureStage::ChildPrompt);
     }
-    let status = wait_for_child(child, task_deadline)?;
+    let status = wait_for_child(child, task_deadline).context(McpFailureStage::ChildExit)?;
     Ok(exit_code(status))
 }
 

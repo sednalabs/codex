@@ -44,9 +44,17 @@ fn fixed_profile_contains_only_the_expected_context_and_refresh_credential() {
         serde_json::from_str(&serialized).expect("parse fixed API profile");
     validate_profile(&parsed).expect("fixed profile contract");
     assert_eq!(parsed.subject, SUBJECT);
-    assert_eq!(parsed.scope, "ops:write");
+    assert_eq!(parsed.scope, "ops:read ops:write");
     assert!(!serialized.contains("offline_access"));
     assert!(!serialized.contains("signature"));
+}
+
+#[test]
+fn old_write_only_profile_fails_closed_until_normal_reauthorization() {
+    let mut old_profile = stored_profile("old-refresh-token");
+    old_profile.scope = "ops:write".to_string();
+
+    assert!(validate_profile(&old_profile).is_err());
 }
 
 #[tokio::test]
