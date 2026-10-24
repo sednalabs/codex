@@ -172,7 +172,7 @@ jobs:
     if: ${{ needs.plan.outputs.run_bazel == 'true' }}
     # This fork executes cold builds on standard hosted runners only.
     # Other repositories retain their existing remote-enabled budget.
-    timeout-minutes: ${{ github.repository == 'sednalabs/codex' && 180 || 120 }}
+    timeout-minutes: ${{ github.repository == 'sednalabs/codex' && 360 || 120 }}
     strategy:
       fail-fast: false
       matrix:
@@ -421,7 +421,7 @@ jobs:
     if: ${{ needs.plan.outputs.run_bazel == 'true' }}
     # Cold hosted-local V8/toolchain builds need the full Bazel-test budget.
     # Preserve upstream's remote-enabled budget outside this fork.
-    timeout-minutes: ${{ github.repository == 'sednalabs/codex' && 180 || 30 }}
+    timeout-minutes: ${{ github.repository == 'sednalabs/codex' && 360 || 30 }}
     strategy:
       fail-fast: false
       matrix:
@@ -536,7 +536,7 @@ jobs:
     if: ${{ needs.plan.outputs.run_bazel == 'true' }}
     # Hosted-local cold builds need the same bounded budget as test jobs.
     # Other repositories retain their existing release-verifier limit.
-    timeout-minutes: ${{ github.repository == 'sednalabs/codex' && 180 || 60 }}
+    timeout-minutes: ${{ github.repository == 'sednalabs/codex' && 360 || 60 }}
     strategy:
       fail-fast: false
       matrix:

@@ -1658,19 +1658,19 @@ class RouteSelectionTests(unittest.TestCase):
         )
 
     def test_fork_hosted_local_compile_jobs_keep_bounded_full_build_budget(self) -> None:
-        fork_budget = "${{ github.repository == 'sednalabs/codex' && 180 || 30 }}"
+        fork_budget = "${{ github.repository == 'sednalabs/codex' && 360 || 30 }}"
         for workflow_name, job_name, expected_budget in (
             ("bazel.yml", "clippy", fork_budget),
             ("sdk.yml", "sdks", fork_budget),
             (
                 "bazel.yml",
                 "test",
-                "${{ github.repository == 'sednalabs/codex' && 180 || 120 }}",
+                "${{ github.repository == 'sednalabs/codex' && 360 || 120 }}",
             ),
             (
                 "bazel.yml",
                 "verify-release-build",
-                "${{ github.repository == 'sednalabs/codex' && 180 || 60 }}",
+                "${{ github.repository == 'sednalabs/codex' && 360 || 60 }}",
             ),
         ):
             with self.subTest(workflow=workflow_name, job=job_name):
