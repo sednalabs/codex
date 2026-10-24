@@ -450,6 +450,7 @@ mcp-tool-exposure-targeted:
     RUST_BACKTRACE=1 RUST_MIN_STACK="${RUST_MIN_STACK:-{{ rust_min_stack }}}" cargo nextest run -p codex-core --test all -- suite::rmcp_client::streamable_http_cancelled_startup_reconnect_stays_unready --exact
     RUST_MIN_STACK="${RUST_MIN_STACK:-{{ rust_min_stack }}}" cargo nextest run -p codex-core --test all -- suite::rmcp_client::stdio_mcp_read_only_tool_calls_run_concurrently_without_server_opt_in --exact
     RUST_MIN_STACK="${RUST_MIN_STACK:-{{ rust_min_stack }}}" cargo nextest run -p codex-core --test all -- suite::rmcp_client::stdio_mcp_parallel_tool_calls_opt_in_runs_concurrently --exact
+    RUST_MIN_STACK="${RUST_MIN_STACK:-{{ rust_min_stack }}}" cargo nextest run -p codex-core --test all -- suite::mcp_refresh_cleanup::refresh_reaps_superseded_mcp_server_after_in_flight_call_finishes --exact
 
 mcp-safety-targeted:
     cargo test -p codex-core config::edit_tests::blocking_replace_mcp_servers_round_trips --lib -- --exact --test-threads=1
