@@ -1,6 +1,8 @@
 use crate::CodexAppsToolsCache;
 use crate::SkillsService;
 use crate::agent::AgentControl;
+use crate::agent::goal_notifications::GoalNotificationSnapshot;
+use crate::agent::goal_notifications::GoalNotificationStore;
 use crate::agent_communication::AgentCommunicationContext;
 use crate::agent_communication::AgentCommunicationKind;
 use crate::attestation::AttestationProvider;
@@ -1367,45 +1369,147 @@ impl ThreadManager {
         AgentControl::new(Arc::downgrade(&self.state), /*rollout_budget*/ None)
     }
 
-    /// Delivers a queue-only V2 child completion to its immediate parent.
-    /// Extensions use this when a completion was intentionally deferred during
-    /// a child turn and a later external state change makes it terminal while
-    /// the child is idle.
+    /// Settles a deferred V2 child completion after a later external state
+    /// change makes it terminal while the child is idle. Mailbox-enabled
+    /// sessions persist the outcome and delivery intent instead of queueing a
+    /// separate native completion. A false return means the native enqueue was
+    /// rejected after no matching mailbox work was captured; persistence or
+    /// required same-tree custody failures return an error.
     pub async fn notify_v2_child_completion(
         &self,
         child_thread_id: ThreadId,
         parent_thread_id: ThreadId,
         child_agent_path: AgentPath,
+        source_turn_id: &str,
         status: AgentStatus,
-    ) -> Result<(), String> {
-        let Some(parent_agent_path) = child_agent_path
+        goal: Option<(ThreadId, GoalNotificationSnapshot)>,
+    ) -> Result<bool, String> {
+        let parent_agent_path = child_agent_path
             .as_str()
             .rsplit_once('/')
-            .and_then(|(parent, _)| AgentPath::try_from(parent).ok())
-        else {
-            return Ok(());
+            .and_then(|(parent, _)| AgentPath::try_from(parent).ok());
+        let communication = match parent_agent_path.as_ref() {
+            Some(parent_agent_path) => format_inter_agent_completion_message(
+                parent_agent_path.clone(),
+                child_agent_path.clone(),
+                &status,
+            )
+            .map(|message| {
+                codex_protocol::protocol::InterAgentCommunication::new(
+                    child_agent_path.clone(),
+                    parent_agent_path.clone(),
+                    Vec::new(),
+                    message,
+                    /*trigger_turn*/ false,
+                )
+            }),
+            None => None,
         };
-        let Some(message) = format_inter_agent_completion_message(
-            parent_agent_path.clone(),
-            child_agent_path.clone(),
-            &status,
-        ) else {
-            return Ok(());
+        if let Ok(child_thread) = self.get_thread(child_thread_id).await {
+            let child_agent_control = child_thread.session.services.agent_control.clone();
+            let child_config = child_thread.config().await;
+            let goal_store = child_thread
+                .session
+                .services
+                .thread_extension_data
+                .get::<GoalNotificationStore>();
+            if goal.is_some() && goal_store.is_none() {
+                return Err(
+                    "deferred goal handback lacks the loaded child's native goal incarnation"
+                        .to_string(),
+                );
+            }
+            validate_deferred_goal_identity(
+                child_thread_id,
+                parent_thread_id,
+                source_turn_id,
+                goal.as_ref(),
+                goal_store.as_deref(),
+            )?;
+            let mailbox_configured = child_thread.multi_agent_version()
+                == Some(MultiAgentVersion::V2)
+                && child_config.multi_agent_version_from_features() == MultiAgentVersion::V2
+                && child_config.features.enabled(Feature::AgentMailbox)
+                && child_agent_control.mailbox_enabled();
+            if mailbox_configured {
+                let captured = child_agent_control
+                    .mailbox_record_terminal(
+                        child_thread_id,
+                        source_turn_id,
+                        status.clone(),
+                        goal.clone(),
+                        communication.clone(),
+                    )
+                    .await
+                    .map_err(|err| err.to_string())?;
+                if captured {
+                    return Ok(true);
+                }
+            }
+        } else if let Some((incarnation, snapshot)) = goal.as_ref() {
+            // A deferred goal runtime can outlive the child's residency. The loaded
+            // immediate parent shares the tree's AgentControl and therefore its
+            // mailbox; the manager's freshly constructed control does not.
+            let parent_thread = self.get_thread(parent_thread_id).await.map_err(|err| {
+                format!(
+                    "cannot establish same-tree mailbox custody for deferred child goal handback: {err}"
+                )
+            })?;
+            validate_deferred_goal_identity(
+                child_thread_id,
+                parent_thread_id,
+                source_turn_id,
+                goal.as_ref(),
+                /*goal_store*/ None,
+            )?;
+            let parent_agent_control = parent_thread.session.services.agent_control.clone();
+            let parent_config = parent_thread.config().await;
+            let parent_mailbox_configured = parent_thread.multi_agent_version()
+                == Some(MultiAgentVersion::V2)
+                && parent_config.multi_agent_version_from_features() == MultiAgentVersion::V2
+                && parent_config.features.enabled(Feature::AgentMailbox);
+            if parent_mailbox_configured && !parent_agent_control.mailbox_enabled() {
+                return Err(
+                    "loaded parent has mailbox enabled but lacks initialized same-tree mailbox custody"
+                        .to_string(),
+                );
+            }
+            if parent_mailbox_configured {
+                let captured = parent_agent_control
+                    .mailbox_record_terminal(
+                        child_thread_id,
+                        source_turn_id,
+                        status.clone(),
+                        Some((*incarnation, snapshot.clone())),
+                        communication.clone(),
+                    )
+                    .await
+                    .map_err(|err| err.to_string())?;
+                if captured {
+                    return Ok(true);
+                }
+            }
+        }
+
+        let Some(_parent_agent_path) = parent_agent_path else {
+            return Ok(true);
         };
-        let communication = codex_protocol::protocol::InterAgentCommunication::new(
-            child_agent_path,
-            parent_agent_path,
-            Vec::new(),
-            message,
-            /*trigger_turn*/ false,
-        );
+        let Some(communication) = communication else {
+            return Ok(true);
+        };
         let context =
             AgentCommunicationContext::new(AgentCommunicationKind::Result, child_thread_id);
-        self.agent_control()
+        match self
+            .agent_control()
             .send_inter_agent_communication(parent_thread_id, communication, context)
             .await
-            .map(|_| ())
-            .map_err(|err| err.to_string())
+        {
+            Ok(_) => Ok(true),
+            Err(err) => {
+                tracing::warn!("failed to queue deferred child completion: {err}");
+                Ok(false)
+            }
+        }
     }
 
     fn agent_control_for_config(&self, config: &Config) -> AgentControl {
@@ -2537,6 +2641,35 @@ fn append_interrupted_boundary(
             InitialHistory::Forked(history)
         }
     }
+}
+
+fn validate_deferred_goal_identity(
+    child_thread_id: ThreadId,
+    parent_thread_id: ThreadId,
+    source_turn_id: &str,
+    goal: Option<&(ThreadId, GoalNotificationSnapshot)>,
+    goal_store: Option<&GoalNotificationStore>,
+) -> Result<(), String> {
+    let Some((incarnation, snapshot)) = goal else {
+        return Ok(());
+    };
+    if snapshot.binding.child_thread_id != child_thread_id
+        || snapshot.binding.parent_thread_id != parent_thread_id
+    {
+        return Err(
+            "deferred goal handback does not match its captured child/parent binding".into(),
+        );
+    }
+    if snapshot.last_completed_source_turn.as_deref() != Some(source_turn_id) {
+        return Err("deferred goal handback does not match its captured source turn".into());
+    }
+    if goal_store.is_some_and(|store| store.incarnation() != *incarnation) {
+        return Err(
+            "deferred goal handback incarnation does not match the loaded child's native goal store"
+                .into(),
+        );
+    }
+    Ok(())
 }
 
 #[cfg(test)]

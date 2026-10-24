@@ -1471,6 +1471,26 @@ The app-server streams JSON-RPC notifications while a turn is running. Each turn
 - `contextCompaction` — `{id}` emitted when codex compacts the conversation history. This can happen automatically.
 - `compacted` - `{threadId, turnId}` when codex compacts the conversation history. This can happen automatically. **Deprecated:** Use `contextCompaction` instead.
 
+For opt-in same-tree V2 mailbox waits, `collabAgentToolCall` also carries optional
+`mailboxWaitReport`. It is the same structured result used by the `wait_agent`
+tool: `requestedTargets`, `requestedRepliesTo`, `returnWhen`, `completed`,
+`pending`, `completionReason`, `conditionSatisfied`, and `quietCount`, with nullable
+`wakeSender` and `wakeRef`. Selection entries expose nullable `workRef`,
+`messageId`, and `agent` plus their typed `status`. Repeated in-progress updates
+retain the same item ID; clients should update the active row rather than append
+duplicate bodies. `quietCount` is the recipient's retained quiet backlog, not a
+count of satisfied conditions or an acknowledgement of hidden bodies.
+
+Only selected successful work or exact request replies satisfy the any/all join.
+Attention, human/tool input, cancellation, deadline, and runtime faults can end a
+wait with pending references intact. Resume closes an unfinished typed wait with
+`status: "failed"` and `completionReason: "interrupted"`; it does not restart the
+old deadline. Older history without `mailboxWaitReport` retains its native
+projection, and current readers accept the earlier snake_case report fields.
+Both `agent_mailbox` and the separate recipient `agent_mailbox_idle_activation`
+permission are disabled by default; starting a binary alone does not opt a
+session into mailbox tools or authorize idle activation.
+
 All items emit shared lifecycle events:
 
 - `item/started` — emits the full `item` when a new unit of work begins so the UI can render it immediately; the `item.id` in this payload matches the `itemId` used by deltas.

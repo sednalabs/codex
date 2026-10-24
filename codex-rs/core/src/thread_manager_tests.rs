@@ -2158,3 +2158,84 @@ async fn interrupted_fork_snapshot_uses_persisted_mid_turn_history_without_live_
         1,
     );
 }
+
+#[test]
+fn mailbox_deferred_goal_handoff_rejects_replaced_native_incarnation() {
+    let parent_thread_id = ThreadId::new();
+    let child_thread_id = ThreadId::new();
+    let binding = crate::agent::goal_notifications::GoalNotificationBinding {
+        parent_thread_id,
+        child_thread_id,
+        goal_id: "goal-a".to_string(),
+        control_generation: 1,
+    };
+    let mut projection = crate::agent::goal_notifications::GoalNotificationProjection::new(
+        binding,
+        codex_protocol::protocol::ThreadGoalStatus::Active,
+    );
+    let binding = projection.snapshot().binding.clone();
+    assert!(projection.observe(
+        &binding,
+        crate::agent::goal_notifications::GoalNotificationInput::TurnComplete {
+            source_turn: "turn-a".to_string(),
+            result: None,
+        },
+    ));
+    let snapshot = projection.snapshot().clone();
+    let store = GoalNotificationStore::default();
+    let exact_goal = (store.incarnation(), snapshot.clone());
+
+    assert!(
+        validate_deferred_goal_identity(
+            child_thread_id,
+            parent_thread_id,
+            "turn-a",
+            Some(&exact_goal),
+            Some(&store),
+        )
+        .is_ok()
+    );
+    assert!(
+        validate_deferred_goal_identity(
+            child_thread_id,
+            parent_thread_id,
+            "turn-b",
+            Some(&exact_goal),
+            Some(&store),
+        )
+        .is_err()
+    );
+    assert!(
+        validate_deferred_goal_identity(
+            child_thread_id,
+            parent_thread_id,
+            "turn-a",
+            Some(&(ThreadId::new(), snapshot)),
+            Some(&store),
+        )
+        .is_err()
+    );
+    assert!(
+        validate_deferred_goal_identity(
+            ThreadId::new(),
+            parent_thread_id,
+            "turn-a",
+            Some(&exact_goal),
+            Some(&store),
+        )
+        .is_err()
+    );
+
+    // An unloaded child has no current native store to compare against. Its exact
+    // incarnation is carried from the original runtime token and binding checked.
+    assert!(
+        validate_deferred_goal_identity(
+            child_thread_id,
+            parent_thread_id,
+            "turn-a",
+            Some(&exact_goal),
+            /*goal_store*/ None,
+        )
+        .is_ok()
+    );
+}

@@ -214,6 +214,7 @@ impl ChatWidget {
                 wake_notifications,
                 completion_reason,
                 wake_cause,
+                mailbox_wait_report,
             } => self.on_collab_agent_tool_call(ThreadItem::CollabAgentToolCall {
                 id,
                 tool,
@@ -231,6 +232,7 @@ impl ChatWidget {
                 wake_notifications,
                 completion_reason,
                 wake_cause,
+                mailbox_wait_report,
             }),
             item @ ThreadItem::SubAgentActivity { .. } => self.on_sub_agent_activity(item),
             ThreadItem::DynamicToolCall { .. } => {}

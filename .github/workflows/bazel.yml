@@ -170,7 +170,9 @@ jobs:
     # the default window while build actions execute remotely.
     needs: plan
     if: ${{ needs.plan.outputs.run_bazel == 'true' }}
-    timeout-minutes: 120
+    # This fork executes cold builds on standard hosted runners only.
+    # Other repositories retain their existing remote-enabled budget.
+    timeout-minutes: ${{ github.repository == 'sednalabs/codex' && 360 || 120 }}
     strategy:
       fail-fast: false
       matrix:
@@ -214,6 +216,17 @@ jobs:
           target: ${{ matrix.target }}
           cache-scope: bazel-${{ github.job }}
 
+      - name: Enable user namespaces for hosted Linux sandbox tests
+        if: ${{ github.repository == 'sednalabs/codex' && runner.os == 'Linux' && runner.environment == 'github-hosted' }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          # Match the native Linux test prerequisites on this disposable runner.
+          sudo sysctl -w kernel.unprivileged_userns_clone=1
+          if sudo sysctl -n kernel.apparmor_restrict_unprivileged_userns >/dev/null 2>&1; then
+            sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
+          fi
+
       - name: Check rusty_v8 MODULE.bazel checksums
         if: matrix.os == 'ubuntu-24.04' && matrix.target == 'x86_64-unknown-linux-gnu'
         shell: bash
@@ -228,7 +241,8 @@ jobs:
 
       - name: bazel test //...
         env:
-          BUILDBUDDY_API_KEY: ${{ secrets.BUILDBUDDY_API_KEY }}
+          # This fork uses hosted-local Bazel; preserve upstream's remote opt-in elsewhere.
+          BUILDBUDDY_API_KEY: ${{ github.repository != 'sednalabs/codex' && secrets.BUILDBUDDY_API_KEY || '' }}
         shell: bash
         run: |
           bazel_targets=(
@@ -326,7 +340,7 @@ jobs:
         env:
           BAZEL_TEST_SHARD: ${{ matrix.shard }}
           BAZEL_TEST_SHARD_COUNT: 4
-          BUILDBUDDY_API_KEY: ${{ secrets.BUILDBUDDY_API_KEY }}
+          BUILDBUDDY_API_KEY: ${{ github.repository != 'sednalabs/codex' && secrets.BUILDBUDDY_API_KEY || '' }}
         shell: bash
         run: |
           set -euo pipefail
@@ -368,6 +382,10 @@ jobs:
             --build_metadata=COMMIT_SHA=${GITHUB_SHA}
             --build_metadata=TAG_windows_test_shard=${BAZEL_TEST_SHARD}
           )
+          if [[ "${GITHUB_REPOSITORY:-}" == "sednalabs/codex" && -z "${BUILDBUDDY_API_KEY:-}" ]]; then
+            # Use the same native gnullvm host platform as fork clippy.
+            bazel_test_args+=(--host_platform=//:local_windows)
+          fi
 
           ./.github/scripts/run-bazel-ci.sh \
             --print-failed-action-summary \
@@ -412,7 +430,9 @@ jobs:
   clippy:
     needs: plan
     if: ${{ needs.plan.outputs.run_bazel == 'true' }}
-    timeout-minutes: 30
+    # Cold hosted-local V8/toolchain builds need the full Bazel-test budget.
+    # Preserve upstream's remote-enabled budget outside this fork.
+    timeout-minutes: ${{ github.repository == 'sednalabs/codex' && 360 || 30 }}
     strategy:
       fail-fast: false
       matrix:
@@ -449,7 +469,7 @@ jobs:
 
       - name: bazel build --config=clippy lint targets
         env:
-          BUILDBUDDY_API_KEY: ${{ secrets.BUILDBUDDY_API_KEY }}
+          BUILDBUDDY_API_KEY: ${{ github.repository != 'sednalabs/codex' && secrets.BUILDBUDDY_API_KEY || '' }}
         shell: bash
         run: |
           bazel_clippy_args=(
@@ -477,6 +497,10 @@ jobs:
               # internal test binaries in the generated target list. Preserve
               # the old local-fallback behavior there.
               bazel_clippy_args+=(--skip_incompatible_explicit_targets)
+            fi
+            if [[ "${GITHUB_REPOSITORY:-}" == "sednalabs/codex" && -z "${BUILDBUDDY_API_KEY:-}" ]]; then
+              # Match native Rust execution tools to the fork's gnullvm C++ host.
+              bazel_clippy_args+=(--host_platform=//:local_windows)
             fi
           fi
 
@@ -521,7 +545,9 @@ jobs:
   verify-release-build:
     needs: plan
     if: ${{ needs.plan.outputs.run_bazel == 'true' }}
-    timeout-minutes: 60
+    # Hosted-local cold builds need the same bounded budget as test jobs.
+    # Other repositories retain their existing release-verifier limit.
+    timeout-minutes: ${{ github.repository == 'sednalabs/codex' && 360 || 60 }}
     strategy:
       fail-fast: false
       matrix:
@@ -554,7 +580,7 @@ jobs:
 
       - name: bazel build verify-release-build targets
         env:
-          BUILDBUDDY_API_KEY: ${{ secrets.BUILDBUDDY_API_KEY }}
+          BUILDBUDDY_API_KEY: ${{ github.repository != 'sednalabs/codex' && secrets.BUILDBUDDY_API_KEY || '' }}
         shell: bash
         run: |
           # This job exists to compile Rust code behind
@@ -565,11 +591,9 @@ jobs:
           # Rust debug assertions explicitly.
           bazel_wrapper_args=()
           if [[ "${RUNNER_OS}" == "Windows" ]]; then
-            # This is build-only signal, so use the same Linux-RBE
-            # cross-compile path as the fast Windows test and clippy jobs.
-            # Fork/community PRs without the BuildBuddy secret fall back
-            # inside `run-bazel-ci.sh` to the previous local Windows MSVC
-            # host-platform shape.
+            # Use the same Windows cross-compile wrapper path as the fast test
+            # and Clippy jobs. Without RBE, the wrapper keeps its generic MSVC
+            # fallback; this fork overrides it with gnullvm below.
             bazel_wrapper_args+=(--windows-cross-compile)
           fi
 
@@ -581,6 +605,9 @@ jobs:
             --build_metadata=TAG_job=verify-release-build
             --build_metadata=TAG_rust_debug_assertions=off
           )
+          if [[ "${RUNNER_OS}" == "Windows" && "${GITHUB_REPOSITORY:-}" == "sednalabs/codex" && -z "${BUILDBUDDY_API_KEY:-}" ]]; then
+            bazel_build_args+=(--host_platform=//:local_windows)
+          fi
           if [[ "${RUNNER_OS}" == "macOS" ]]; then
             # Hosted macOS runners can exhaust the Bazel client thread/process
             # ceiling when inheriting the high remote-execution job count.
@@ -604,7 +631,7 @@ jobs:
       - name: Verify Bazel builds bwrap
         if: runner.os == 'Linux'
         env:
-          BUILDBUDDY_API_KEY: ${{ secrets.BUILDBUDDY_API_KEY }}
+          BUILDBUDDY_API_KEY: ${{ github.repository != 'sednalabs/codex' && secrets.BUILDBUDDY_API_KEY || '' }}
         shell: bash
         run: |
           ./.github/scripts/run-bazel-ci.sh \

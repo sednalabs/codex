@@ -367,17 +367,28 @@ fn spawn_agent_tool_hides_model_controls_without_override_exposure() {
     let output_properties = output_schema["properties"]
         .as_object()
         .expect("spawn result properties");
+    assert_eq!(output_properties["work_ref"]["type"], json!("string"));
+    assert_eq!(
+        output_properties["dispatch_state"]["enum"],
+        json!(["accepted", "dispatching", "dispatched", "recovery_needed"])
+    );
+    assert!(
+        output_properties["work_ref"]["description"]
+            .as_str()
+            .expect("work_ref description")
+            .contains("Immutable accepted work reference")
+    );
     assert!(!output_properties.contains_key("agent_id"));
     assert!(!output_properties.contains_key("nickname"));
 }
 
 #[test]
-fn send_message_tool_requires_encrypted_scalar_message_and_interrupt_schema() {
+fn mailbox_send_message_tool_exposes_encrypted_mailbox_contract() {
     let ToolSpec::Function(ResponsesApiTool {
         parameters,
         output_schema,
         ..
-    }) = create_send_message_tool()
+    }) = create_mailbox_send_message_tool()
     else {
         panic!("send_message should be a function tool");
     };
@@ -397,7 +408,47 @@ fn send_message_tool_requires_encrypted_scalar_message_and_interrupt_schema() {
             .and_then(|schema| schema.encrypted),
         Some(true)
     );
-    assert!(properties.contains_key("interrupt"));
+    for property in [
+        "kind",
+        "work_ref",
+        "reply_to",
+        "supersedes",
+        "activate_if_idle",
+        "wake_wait",
+    ] {
+        assert!(properties.contains_key(property), "missing `{property}`");
+    }
+    assert!(!properties.contains_key("interrupt"));
+    assert_eq!(
+        properties["kind"].enum_values.as_ref(),
+        Some(&vec![
+            json!("note"),
+            json!("progress"),
+            json!("request"),
+            json!("alert")
+        ])
+    );
+    assert!(
+        properties["kind"]
+            .description
+            .as_deref()
+            .unwrap()
+            .contains("Defaults to `note`")
+    );
+    assert!(
+        properties["reply_to"]
+            .description
+            .as_deref()
+            .unwrap()
+            .contains("Progress messages cannot set `reply_to`")
+    );
+    assert!(
+        properties["wake_wait"]
+            .description
+            .as_deref()
+            .unwrap()
+            .contains("Ignored when `kind` is supplied")
+    );
     assert!(!properties.contains_key("items"));
     assert_eq!(
         properties
@@ -410,6 +461,87 @@ fn send_message_tool_requires_encrypted_scalar_message_and_interrupt_schema() {
         Some(&vec!["target".to_string(), "message".to_string()])
     );
     assert!(output_schema.is_some());
+}
+
+#[test]
+fn send_message_legacy_tool_remains_unchanged_without_mailbox_contract() {
+    let ToolSpec::Function(ResponsesApiTool {
+        parameters,
+        output_schema,
+        ..
+    }) = create_send_message_tool()
+    else {
+        panic!("send_message should be a function tool");
+    };
+    let properties = parameters
+        .properties
+        .as_ref()
+        .expect("send_message should use object params");
+    assert!(properties.contains_key("interrupt"));
+    assert!(!properties.contains_key("kind"));
+    assert!(!properties.contains_key("activate_if_idle"));
+    assert_eq!(
+        properties
+            .get("message")
+            .and_then(|schema| schema.encrypted),
+        Some(true)
+    );
+    assert_eq!(
+        output_schema.expect("legacy send_message output schema")["required"],
+        json!([
+            "task_name",
+            "recipient_task_name",
+            "effective_identity_scope",
+            "handoff_state",
+            "effective_model",
+            "effective_model_provider_id",
+            "effective_reasoning_effort",
+            "effective_service_tier"
+        ])
+    );
+}
+
+#[test]
+fn mailbox_read_tool_exposes_bounded_cursor_pagination() {
+    let ToolSpec::Function(ResponsesApiTool {
+        parameters,
+        output_schema,
+        ..
+    }) = create_mailbox_read_tool()
+    else {
+        panic!("mailbox_read should be a function tool");
+    };
+    let properties = parameters
+        .properties
+        .as_ref()
+        .expect("mailbox_read should use object params");
+    assert!(properties.contains_key("cursor"));
+    assert_eq!(
+        properties["limit"].schema_type,
+        Some(JsonSchemaType::Single(JsonSchemaPrimitiveType::Integer))
+    );
+    assert!(
+        properties["limit"]
+            .description
+            .as_deref()
+            .unwrap()
+            .contains("capped at 100")
+    );
+    assert_eq!(parameters.required, None);
+    let output_schema = output_schema.expect("mailbox_read output schema");
+    assert_eq!(
+        output_schema["required"],
+        json!(["messages", "next_cursor", "quiet_count"])
+    );
+    assert_eq!(
+        output_schema["properties"]["messages"]["items"]["required"],
+        json!(["message_id", "sender", "kind", "canonical_delivered"])
+    );
+    assert!(
+        output_schema["properties"]["messages"]["items"]["properties"]
+            .get("message")
+            .is_none()
+    );
 }
 
 #[test]
@@ -461,6 +593,10 @@ fn followup_task_tool_requires_message_and_describes_model_receipt() {
                     "type": "string",
                     "description": "Canonical task name of the agent receiving the follow-up."
                 },
+                "work_ref": {
+                    "type": "string",
+                    "description": "Immutable accepted work reference assigned to the follow-up."
+                },
                 "recipient_task_name": {
                     "type": "string",
                     "description": "Explicit canonical task name of the recipient; the effective_* fields below describe this recipient, not the sending agent."
@@ -502,17 +638,13 @@ fn followup_task_tool_requires_message_and_describes_model_receipt() {
 }
 
 #[test]
-fn wait_agent_tool_v2_uses_timeout_only_summary_output() {
+fn mailbox_wait_agent_tool_exposes_unbounded_join_contract_and_structured_result() {
     let ToolSpec::Function(ResponsesApiTool {
         description,
         parameters,
         output_schema,
         ..
-    }) = create_wait_agent_tool_v2(WaitAgentTimeoutOptions {
-        default_timeout_ms: 30_000,
-        min_timeout_ms: 10_000,
-        max_timeout_ms: 7_200_000,
-    })
+    }) = create_mailbox_wait_agent_tool()
     else {
         panic!("wait_agent should be a function tool");
     };
@@ -525,29 +657,81 @@ fn wait_agent_tool_v2_uses_timeout_only_summary_output() {
         .as_ref()
         .expect("wait_agent should use object params");
     assert!(properties.contains_key("targets"));
+    assert!(properties.contains_key("replies_to"));
     assert!(properties.contains_key("timeout_ms"));
     assert!(properties.contains_key("return_when"));
     assert!(properties.contains_key("native_event_wait"));
-    let completion_reason = output_schema
-        .as_ref()
-        .expect("wait output schema")["properties"]["completion_reason"]["enum"]
-        .as_array()
-        .expect("completion reason enum");
-    assert!(completion_reason.contains(&json!("subscription_loss")));
-    assert!(description.contains("When `return_when` is `all`"));
+    assert!(!properties.contains_key("returnWhen"));
+    assert_eq!(parameters.required, None);
+    assert_eq!(
+        properties["timeout_ms"].schema_type,
+        Some(JsonSchemaType::Single(JsonSchemaPrimitiveType::Integer))
+    );
     assert_eq!(
         properties
             .get("timeout_ms")
             .and_then(|schema| schema.description.as_deref()),
         Some(
-            "Optional timeout in milliseconds. Defaults to 30000, min 10000, max 7200000. Prefer longer waits to avoid busy polling."
+            "Optional timeout in milliseconds. Omit for an unbounded event-only wait; no short timeout is applied implicitly."
         )
     );
-    assert_eq!(parameters.required.as_ref(), None);
     assert_eq!(
-        output_schema.expect("wait output schema")["properties"]["message"]["description"],
-        json!("Brief wait summary without the agent's final content.")
+        properties["return_when"].enum_values.as_ref(),
+        Some(&vec![json!("any"), json!("all")])
     );
+    assert!(
+        properties["return_when"]
+            .description
+            .as_deref()
+            .unwrap()
+            .contains("Defaults to `any`")
+    );
+    assert!(
+        properties["native_event_wait"]
+            .description
+            .as_deref()
+            .unwrap()
+            .contains("has no effect")
+    );
+    assert!(description.contains("unbounded event-only wait"));
+    assert!(description.contains("do not satisfy a selected join"));
+    let output_schema = output_schema.expect("wait output schema");
+    assert_eq!(
+        output_schema["required"],
+        json!([
+            "requestedTargets",
+            "requestedRepliesTo",
+            "returnWhen",
+            "completed",
+            "pending",
+            "completionReason",
+            "conditionSatisfied",
+            "quietCount"
+        ])
+    );
+    for cause in [
+        "result",
+        "reply",
+        "request",
+        "human",
+        "tool",
+        "deadline",
+        "cancel",
+        "subscription_loss",
+        "runtime_fault",
+        "no_matching_work",
+        "already_satisfied",
+        "cycle",
+        "needs_attention",
+    ] {
+        assert!(
+            output_schema["properties"]["completionReason"]["enum"]
+                .as_array()
+                .expect("completion reason enum")
+                .contains(&json!(cause)),
+            "missing completion cause `{cause}`"
+        );
+    }
 }
 
 #[test]
@@ -588,6 +772,69 @@ fn wait_agent_tool_v2_omits_runtime_fields_without_capability_provider() {
     assert_eq!(
         output_schema["required"],
         json!(["message", "requested_ids", "timed_out"])
+    );
+}
+
+#[test]
+fn mailbox_wait_agent_tool_has_no_native_capability_prerequisite() {
+    let ToolSpec::Function(ResponsesApiTool {
+        parameters,
+        output_schema,
+        ..
+    }) = create_mailbox_wait_agent_tool()
+    else {
+        panic!("wait_agent should be a function tool");
+    };
+    let properties = parameters
+        .properties
+        .as_ref()
+        .expect("wait_agent should use object params");
+    assert!(properties.contains_key("return_when"));
+    assert!(properties.contains_key("native_event_wait"));
+    let output_schema = output_schema.expect("mailbox wait output schema");
+    assert!(
+        output_schema["properties"]
+            .get("conditionSatisfied")
+            .is_some()
+    );
+    assert!(output_schema["properties"].get("quietCount").is_some());
+    assert!(
+        output_schema["properties"]
+            .get("completionReason")
+            .is_some()
+    );
+    assert!(
+        output_schema["properties"]
+            .get("requestedTargets")
+            .is_some()
+    );
+    assert!(
+        output_schema["properties"]
+            .get("requestedRepliesTo")
+            .is_some()
+    );
+    assert!(output_schema["properties"].get("returnWhen").is_some());
+    assert!(output_schema["properties"].get("wakeSender").is_some());
+    assert!(output_schema["properties"].get("wakeRef").is_some());
+    assert!(
+        output_schema["properties"]
+            .get("condition_satisfied")
+            .is_none()
+    );
+    assert!(output_schema["properties"].get("quiet_count").is_none());
+    assert_eq!(
+        output_schema["properties"]["completed"]["items"]["type"],
+        json!("object")
+    );
+    assert!(
+        output_schema["properties"]["completed"]["items"]["properties"]
+            .get("workRef")
+            .is_some()
+    );
+    assert!(
+        output_schema["properties"]["completed"]["items"]["properties"]
+            .get("messageId")
+            .is_some()
     );
 }
 
@@ -703,8 +950,9 @@ fn inspect_agent_tree_tool_exposes_scope_and_compact_tree_fields() {
 }
 
 #[test]
-fn send_message_tool_declares_non_acknowledgement_handoff_receipt() {
-    let ToolSpec::Function(ResponsesApiTool { output_schema, .. }) = create_send_message_tool()
+fn mailbox_send_message_tool_declares_durable_receipt_without_claiming_comprehension() {
+    let ToolSpec::Function(ResponsesApiTool { output_schema, .. }) =
+        create_mailbox_send_message_tool()
     else {
         panic!("send_message should be a function tool");
     };
@@ -712,31 +960,26 @@ fn send_message_tool_declares_non_acknowledgement_handoff_receipt() {
     let output_schema = output_schema.expect("send_message output schema");
     assert_eq!(
         output_schema["required"],
+        json!(["message_id", "durable_state", "activation_disposition"])
+    );
+    assert_eq!(
+        output_schema["properties"]["durable_state"]["enum"],
+        json!(["accepted"])
+    );
+    assert_eq!(
+        output_schema["properties"]["activation_disposition"]["enum"],
         json!([
-            "task_name",
-            "recipient_task_name",
-            "effective_identity_scope",
-            "handoff_state",
-            "effective_model",
-            "effective_model_provider_id",
-            "effective_reasoning_effort",
-            "effective_service_tier"
+            "not_requested",
+            "already_active",
+            "activated",
+            "denied",
+            "unknown"
         ])
     );
-    assert_eq!(
-        output_schema["properties"]["handoff_state"]["enum"],
-        json!(["queued"])
-    );
-    assert_eq!(
-        output_schema["properties"]["effective_model"]["type"],
-        json!(["string", "null"])
-    );
-    assert_eq!(
-        output_schema["properties"]["effective_model_provider_id"]["type"],
-        json!(["string", "null"])
-    );
-    assert_eq!(
-        output_schema["properties"]["effective_identity_scope"]["enum"],
-        json!(["recipient"])
+    assert!(
+        output_schema["properties"]["durable_state"]["description"]
+            .as_str()
+            .expect("durable state description")
+            .contains("does not establish that the recipient read or understood it")
     );
 }

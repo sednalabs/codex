@@ -10,6 +10,7 @@ use crate::tools::handlers::multi_agents_spec::SpawnAgentToolOptions;
 use crate::tools::handlers::multi_agents_spec::create_spawn_agent_tool_v2;
 use crate::tools::handlers::multi_agents_v2::message_tool::message_content;
 use codex_protocol::AgentPath;
+use codex_protocol::protocol::MultiAgentVersion;
 use codex_tools::ToolSpec;
 
 #[derive(Default)]
@@ -59,47 +60,65 @@ async fn handle_spawn_agent(
     let message = message_content(args.message)?;
     let session_source = turn.session_source.clone();
     let child_depth = next_thread_spawn_depth(&session_source);
+    let mailbox_enabled = turn.multi_agent_version == MultiAgentVersion::V2
+        && turn
+            .config
+            .features
+            .enabled(codex_features::Feature::AgentMailbox);
+    let accepted_retry = mailbox_enabled
+        && session
+            .services
+            .agent_control
+            .mailbox_work_for_key(session.thread_id, &call_id)
+            .await
+            .map_err(collab_spawn_error)?
+            .is_some();
     let mut config =
         build_agent_spawn_config(&session.get_base_instructions().await, turn.as_ref())?;
-    if let Some(service_tier) = args.service_tier.as_ref() {
-        config.service_tier = Some(service_tier.clone());
-    }
-    let is_full_history_fork = matches!(fork_mode, Some(SpawnAgentForkMode::FullHistory));
-    apply_requested_spawn_agent_model_overrides(
-        &session,
-        turn.as_ref(),
-        &mut config,
-        args.model.as_deref(),
-        args.reasoning_effort.clone(),
-        role_name,
-    )
-    .await?;
-    if !is_full_history_fork || role_name.is_some() {
-        apply_spawn_agent_role(&session, &mut config, role_name).await?;
-        if is_full_history_fork && config.developer_instructions.is_none() {
-            config
-                .developer_instructions
-                .clone_from(&turn.developer_instructions);
+    // An accepted invocation belongs to its retained child, even if the requested role
+    // is now missing or cannot be loaded. The native retry path validates its original
+    // input and recipient configuration without provisioning or submitting again.
+    if !accepted_retry {
+        if let Some(service_tier) = args.service_tier.as_ref() {
+            config.service_tier = Some(service_tier.clone());
         }
+        let is_full_history_fork = matches!(fork_mode, Some(SpawnAgentForkMode::FullHistory));
+        apply_requested_spawn_agent_model_overrides(
+            &session,
+            turn.as_ref(),
+            &mut config,
+            args.model.as_deref(),
+            args.reasoning_effort.clone(),
+            role_name,
+        )
+        .await?;
+        if !is_full_history_fork || role_name.is_some() {
+            apply_spawn_agent_role(&session, &mut config, role_name).await?;
+            if is_full_history_fork && config.developer_instructions.is_none() {
+                config
+                    .developer_instructions
+                    .clone_from(&turn.developer_instructions);
+            }
+        }
+        apply_spawn_agent_service_tier(
+            &session,
+            &mut config,
+            turn.config.service_tier.as_deref(),
+            args.service_tier.as_deref(),
+        )
+        .await?;
+        apply_spawn_agent_runtime_overrides(&mut config, turn.as_ref())?;
+        validate_spawn_agent_expected_model(
+            &config,
+            args.model.as_deref(),
+            args.expected_model.as_deref(),
+        )?;
+        validate_spawn_agent_expected_reasoning_effort(
+            &config,
+            args.reasoning_effort.as_ref(),
+            args.expected_reasoning_effort.as_ref(),
+        )?;
     }
-    apply_spawn_agent_service_tier(
-        &session,
-        &mut config,
-        turn.config.service_tier.as_deref(),
-        args.service_tier.as_deref(),
-    )
-    .await?;
-    apply_spawn_agent_runtime_overrides(&mut config, turn.as_ref())?;
-    validate_spawn_agent_expected_model(
-        &config,
-        args.model.as_deref(),
-        args.expected_model.as_deref(),
-    )?;
-    validate_spawn_agent_expected_reasoning_effort(
-        &config,
-        args.reasoning_effort.as_ref(),
-        args.expected_reasoning_effort.as_ref(),
-    )?;
 
     let spawn_source = thread_spawn_source(
         session.thread_id,
@@ -118,7 +137,11 @@ async fn handle_spawn_agent(
         .get_agent_path()
         .unwrap_or_else(AgentPath::root);
     let communication = communication_from_tool_message(author, new_agent_path.clone(), message);
-    let context = AgentCommunicationContext::new(AgentCommunicationKind::Spawn, session.thread_id);
+    let mut context =
+        AgentCommunicationContext::new(AgentCommunicationKind::Spawn, session.thread_id);
+    if mailbox_enabled {
+        context = context.with_native_key(call_id.clone());
+    }
     let spawned_agent = Box::pin(
         session
             .services
@@ -140,6 +163,29 @@ async fn handle_spawn_agent(
     .await
     .map_err(collab_spawn_error)?;
     let new_thread_id = spawned_agent.thread_id;
+    let accepted_work = if mailbox_enabled {
+        session
+            .services
+            .agent_control
+            .mailbox_work_for_key(session.thread_id, &call_id)
+            .await
+            .map_err(collab_spawn_error)?
+    } else {
+        None
+    };
+    let dispatch_state = if let Some(work) = accepted_work.as_ref()
+        && let Some(mailbox) = session.services.agent_control.mailbox()
+    {
+        Some(
+            mailbox
+                .dispatch_state(work)
+                .await
+                .map_err(super::mailbox_message::mailbox_error)?,
+        )
+    } else {
+        None
+    };
+    let work_ref = accepted_work.map(|work| work.id);
     let agent_snapshot = session
         .services
         .agent_control
@@ -184,6 +230,8 @@ async fn handle_spawn_agent(
     if hide_agent_metadata {
         Ok(SpawnAgentResult {
             agent_id: None,
+            work_ref,
+            dispatch_state,
             task_name,
             nickname: None,
             requested_model: args.model.clone(),
@@ -199,6 +247,8 @@ async fn handle_spawn_agent(
     } else {
         Ok(SpawnAgentResult {
             agent_id: Some(new_thread_id.to_string()),
+            work_ref,
+            dispatch_state,
             task_name,
             nickname,
             requested_model: args.model.clone(),
@@ -346,6 +396,10 @@ fn validate_spawn_agent_expected_reasoning_effort(
 pub(crate) struct SpawnAgentResult {
     #[serde(skip_serializing_if = "Option::is_none")]
     agent_id: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    work_ref: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    dispatch_state: Option<codex_agent_mailbox::DispatchState>,
     task_name: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     nickname: Option<String>,

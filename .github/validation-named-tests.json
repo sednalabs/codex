@@ -2,12 +2,28 @@
   "schema_version": "rust-tests-command-manifest-v1",
   "targets": [
     {
+      "package": "codex-agent-mailbox",
+      "target_kind": "lib",
+      "target": "",
+      "profiles": ["rust_minimal", "rust_integration"],
+      "inventory_argv": ["cargo", "test", "--locked", "-p", "codex-agent-mailbox", "--lib", "--", "--list"],
+      "execution_argv": ["cargo", "test", "--locked", "-p", "codex-agent-mailbox", "--lib", "--", "--test-threads=1"]
+    },
+    {
       "package": "codex-app-server",
       "target_kind": "lib",
       "target": "",
       "profiles": ["rust_minimal", "rust_integration"],
       "inventory_argv": ["cargo", "test", "--locked", "-p", "codex-app-server", "--lib", "--", "--list"],
       "execution_argv": ["cargo", "test", "--locked", "-p", "codex-app-server", "--lib", "--", "--test-threads=1"]
+    },
+    {
+      "package": "codex-app-server-protocol",
+      "target_kind": "lib",
+      "target": "",
+      "profiles": ["rust_minimal", "rust_integration"],
+      "inventory_argv": ["cargo", "test", "--locked", "-p", "codex-app-server-protocol", "--lib", "--", "--list"],
+      "execution_argv": ["cargo", "test", "--locked", "-p", "codex-app-server-protocol", "--lib", "--", "--test-threads=1"]
     },
     {
       "package": "codex-config",

@@ -98,6 +98,7 @@ pub fn item_event_to_server_notification(
                 wake_notifications: None,
                 completion_reason: None,
                 wake_cause: None,
+                mailbox_wait_report: None,
             };
             ServerNotification::ItemStarted(ItemStartedNotification {
                 thread_id,
@@ -149,6 +150,7 @@ pub fn item_event_to_server_notification(
                 wake_notifications: None,
                 completion_reason: None,
                 wake_cause: None,
+                mailbox_wait_report: None,
             };
             ServerNotification::ItemCompleted(ItemCompletedNotification {
                 thread_id,
@@ -176,6 +178,7 @@ pub fn item_event_to_server_notification(
                 wake_notifications: None,
                 completion_reason: None,
                 wake_cause: None,
+                mailbox_wait_report: None,
             };
             ServerNotification::ItemStarted(ItemStartedNotification {
                 thread_id,
@@ -211,6 +214,7 @@ pub fn item_event_to_server_notification(
                 wake_notifications: None,
                 completion_reason: None,
                 wake_cause: None,
+                mailbox_wait_report: None,
             };
             ServerNotification::ItemCompleted(ItemCompletedNotification {
                 thread_id,
@@ -258,6 +262,7 @@ pub fn item_event_to_server_notification(
                 wake_notifications: None,
                 completion_reason: None,
                 wake_cause: None,
+                mailbox_wait_report: begin_event.mailbox_wait_report.clone(),
             };
             ServerNotification::ItemStarted(ItemStartedNotification {
                 thread_id,
@@ -306,6 +311,7 @@ pub fn item_event_to_server_notification(
                 wake_notifications: None,
                 completion_reason: None,
                 wake_cause: None,
+                mailbox_wait_report: end_event.mailbox_wait_report.clone(),
             };
             ServerNotification::ItemCompleted(ItemCompletedNotification {
                 thread_id,
@@ -332,6 +338,7 @@ pub fn item_event_to_server_notification(
                 wake_notifications: None,
                 completion_reason: None,
                 wake_cause: None,
+                mailbox_wait_report: None,
             };
             ServerNotification::ItemStarted(ItemStartedNotification {
                 thread_id,
@@ -372,6 +379,7 @@ pub fn item_event_to_server_notification(
                 wake_notifications: None,
                 completion_reason: None,
                 wake_cause: None,
+                mailbox_wait_report: None,
             };
             ServerNotification::ItemCompleted(ItemCompletedNotification {
                 thread_id,
@@ -398,6 +406,7 @@ pub fn item_event_to_server_notification(
                 wake_notifications: None,
                 completion_reason: None,
                 wake_cause: None,
+                mailbox_wait_report: None,
             };
             ServerNotification::ItemStarted(ItemStartedNotification {
                 thread_id,
@@ -438,6 +447,7 @@ pub fn item_event_to_server_notification(
                 wake_notifications: None,
                 completion_reason: None,
                 wake_cause: None,
+                mailbox_wait_report: None,
             };
             ServerNotification::ItemCompleted(ItemCompletedNotification {
                 thread_id,
@@ -630,6 +640,97 @@ mod tests {
     }
 
     #[test]
+    fn legacy_collab_wait_events_keep_mailbox_report_in_live_items() {
+        let sender_thread_id = ThreadId::new();
+        let receiver_thread_id = ThreadId::new();
+        let active_report = codex_protocol::items::MailboxWaitReport {
+            requested_targets: vec!["work_9".to_string()],
+            requested_replies_to: vec!["msg-request".to_string()],
+            return_when: codex_protocol::items::MailboxWaitReturnWhen::All,
+            completed: Vec::new(),
+            pending: vec![codex_protocol::items::MailboxWaitSelectionItem {
+                work_ref: Some("work_9".to_string()),
+                message_id: None,
+                agent: Some("worker-A".to_string()),
+                status: "running".to_string(),
+            }],
+            completion_reason: None,
+            condition_satisfied: false,
+            quiet_count: 0,
+            wake_sender: None,
+            wake_ref: None,
+        };
+        let notification = item_event_to_server_notification(
+            EventMsg::CollabWaitingBegin(codex_protocol::protocol::CollabWaitingBeginEvent {
+                started_at_ms: 1,
+                sender_thread_id,
+                receiver_thread_ids: vec![receiver_thread_id],
+                receiver_agents: Vec::new(),
+                call_id: "wait-call".to_string(),
+                mailbox_wait_report: Some(active_report.clone()),
+            }),
+            "thread-live",
+            "turn-live",
+        )
+        .expect("legacy waiting begin maps to a notification");
+        let ServerNotification::ItemStarted(notification) = notification else {
+            panic!("legacy waiting begin should start an item");
+        };
+        let ThreadItem::CollabAgentToolCall {
+            mailbox_wait_report,
+            ..
+        } = notification.item
+        else {
+            panic!("legacy waiting begin should map to a collab wait item");
+        };
+        assert_eq!(mailbox_wait_report, Some(active_report.clone()));
+
+        let terminal_report = codex_protocol::items::MailboxWaitReport {
+            requested_targets: active_report.requested_targets,
+            requested_replies_to: active_report.requested_replies_to,
+            return_when: active_report.return_when,
+            completed: vec![codex_protocol::items::MailboxWaitSelectionItem {
+                work_ref: Some("work_9".to_string()),
+                message_id: Some("msg-reply".to_string()),
+                agent: Some("worker-A".to_string()),
+                status: "replied".to_string(),
+            }],
+            pending: Vec::new(),
+            completion_reason: Some(codex_protocol::items::MailboxWakeCause::Reply),
+            condition_satisfied: true,
+            quiet_count: 0,
+            wake_sender: Some("worker-A".to_string()),
+            wake_ref: Some("msg-reply".to_string()),
+        };
+        let notification = item_event_to_server_notification(
+            EventMsg::CollabWaitingEnd(codex_protocol::protocol::CollabWaitingEndEvent {
+                sender_thread_id,
+                call_id: "wait-call".to_string(),
+                completed_at_ms: 2,
+                agent_statuses: Vec::new(),
+                statuses: [(receiver_thread_id, AgentStatus::Completed(None))]
+                    .into_iter()
+                    .collect(),
+                mailbox_wait_report: Some(terminal_report.clone()),
+            }),
+            "thread-live",
+            "turn-live",
+        )
+        .expect("legacy waiting end maps to a notification");
+        let ServerNotification::ItemCompleted(notification) = notification else {
+            panic!("legacy waiting end should complete an item");
+        };
+        let ThreadItem::CollabAgentToolCall {
+            mailbox_wait_report,
+            ..
+        } = notification.item
+        else {
+            panic!("legacy waiting end should map to a collab wait item");
+        };
+        assert_eq!(mailbox_wait_report, Some(terminal_report));
+    }
+
+    #[test]
     fn collab_resume_begin_maps_to_item_started_resume_agent() {
         let event = CollabResumeBeginEvent {
             call_id: "call-1".to_string(),
@@ -668,6 +769,7 @@ mod tests {
                     wake_notifications: None,
                     completion_reason: None,
                     wake_cause: None,
+                    mailbox_wait_report: None,
                 },
             },
         );
@@ -704,6 +806,7 @@ mod tests {
                     wake_notifications: None,
                     completion_reason: None,
                     wake_cause: None,
+                    mailbox_wait_report: None,
                 }),
             }),
             "thread-phase-compatible",
@@ -758,6 +861,7 @@ mod tests {
                     wake_notifications: None,
                     completion_reason: None,
                     wake_cause: None,
+                    mailbox_wait_report: None,
                 }),
             }),
             "thread-phase-compatible",
@@ -864,6 +968,7 @@ mod tests {
                     wake_notifications: None,
                     completion_reason: None,
                     wake_cause: None,
+                    mailbox_wait_report: None,
                 }),
             }),
             "thread-unknown-terminal",
@@ -943,6 +1048,7 @@ mod tests {
                     wake_notifications: None,
                     completion_reason: None,
                     wake_cause: None,
+                    mailbox_wait_report: None,
                 },
             },
         );
@@ -976,6 +1082,7 @@ mod tests {
                 wake_notifications: None,
                 completion_reason: None,
                 wake_cause: None,
+                mailbox_wait_report: None,
             }),
         };
 
@@ -1028,6 +1135,7 @@ mod tests {
                     wake_notifications: None,
                     completion_reason: None,
                     wake_cause: None,
+                    mailbox_wait_report: None,
                 },
             },
         );
@@ -1064,6 +1172,7 @@ mod tests {
                 wake_notifications: None,
                 completion_reason: None,
                 wake_cause: None,
+                mailbox_wait_report: None,
             }),
         };
 
@@ -1116,6 +1225,7 @@ mod tests {
                     wake_notifications: None,
                     completion_reason: None,
                     wake_cause: None,
+                    mailbox_wait_report: None,
                 },
             },
         );

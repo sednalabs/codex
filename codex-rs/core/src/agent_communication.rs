@@ -24,8 +24,9 @@ impl AgentCommunicationKind {
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) struct AgentCommunicationContext {
-    kind: AgentCommunicationKind,
-    sender_thread_id: ThreadId,
+    pub(crate) kind: AgentCommunicationKind,
+    pub(crate) sender_thread_id: ThreadId,
+    pub(crate) native_key: Option<String>,
 }
 
 impl AgentCommunicationContext {
@@ -33,7 +34,13 @@ impl AgentCommunicationContext {
         Self {
             kind,
             sender_thread_id,
+            native_key: None,
         }
+    }
+
+    pub(crate) fn with_native_key(mut self, native_key: String) -> Self {
+        self.native_key = Some(native_key);
+        self
     }
 }
 

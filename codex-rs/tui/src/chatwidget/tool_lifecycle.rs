@@ -157,11 +157,75 @@ impl ChatWidget {
 
     pub(super) fn on_collab_agent_tool_call(&mut self, item: ThreadItem) {
         let ThreadItem::CollabAgentToolCall {
-            id, tool, status, ..
+            id,
+            tool,
+            status,
+            mailbox_wait_report,
+            ..
         } = &item
         else {
             return;
         };
+
+        if matches!(tool, CollabAgentTool::Wait)
+            && matches!(status, CollabAgentToolCallStatus::InProgress)
+            && let Some(report) = mailbox_wait_report.as_ref()
+        {
+            if let Some(progress) = self.active_mailbox_waits.get(id).cloned() {
+                progress.update(report.clone(), /*in_progress*/ true);
+                let wait_cell_is_active = self
+                    .transcript
+                    .active_cell
+                    .as_ref()
+                    .and_then(|cell| {
+                        cell.as_any()
+                            .downcast_ref::<multi_agents::mailbox_wait::MailboxWaitProgressCell>()
+                    })
+                    .is_some_and(|cell| cell.call_id() == id.as_str());
+                if wait_cell_is_active {
+                    self.bump_active_cell_revision();
+                } else {
+                    self.flush_active_cell();
+                    self.transcript.active_cell = Some(Box::new(progress.cell(id.to_string())));
+                    self.bump_active_cell_revision();
+                }
+            } else {
+                self.flush_answer_stream_with_separator();
+                self.flush_active_cell();
+                let (cell, progress) =
+                    multi_agents::mailbox_wait::progress_cell(id.to_string(), report.clone());
+                self.active_mailbox_waits.insert(id.clone(), progress);
+                self.transcript.active_cell = Some(Box::new(cell));
+                self.bump_active_cell_revision();
+            }
+            self.request_redraw();
+            return;
+        }
+        if matches!(tool, CollabAgentTool::Wait)
+            && let Some(progress) = self.active_mailbox_waits.remove(id)
+        {
+            if let Some(report) = mailbox_wait_report.as_ref() {
+                progress.update(report.clone(), /*in_progress*/ false);
+            } else {
+                progress.finish();
+            }
+            let wait_cell_is_active = self
+                .transcript
+                .active_cell
+                .as_ref()
+                .and_then(|cell| {
+                    cell.as_any()
+                        .downcast_ref::<multi_agents::mailbox_wait::MailboxWaitProgressCell>()
+                })
+                .is_some_and(|cell| cell.call_id() == id.as_str());
+            if wait_cell_is_active {
+                self.bump_active_cell_revision();
+                self.flush_active_cell();
+                self.request_redraw();
+                return;
+            }
+        }
+
         if matches!(tool, CollabAgentTool::SpawnAgent)
             && let Some(spawn_request) = multi_agents::spawn_request_summary(&item)
         {

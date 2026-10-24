@@ -3,6 +3,8 @@ use crate::context::TerminalCompletionNotification;
 use crate::state::ActiveTurn;
 use crate::state::MailboxDeliveryPhase;
 use crate::state::TurnState;
+use codex_agent_mailbox::InputArrival;
+use codex_agent_mailbox::Mailbox;
 use codex_protocol::models::ResponseItem;
 use codex_protocol::protocol::InterAgentCommunication;
 use codex_protocol::user_input::UserInput;
@@ -10,6 +12,7 @@ use std::collections::HashSet;
 use std::collections::VecDeque;
 use std::sync::Arc;
 use std::sync::Mutex as StdMutex;
+use std::sync::OnceLock;
 use std::sync::atomic::AtomicU64;
 use std::sync::atomic::AtomicUsize;
 use std::sync::atomic::Ordering;
@@ -60,6 +63,7 @@ pub(crate) struct MailboxEntry {
 /// Session-scoped pending input storage and active-turn mailbox delivery coordination.
 pub(crate) struct InputQueue {
     activity_tx: watch::Sender<InputQueueActivity>,
+    durable_mailbox: OnceLock<Arc<Mailbox>>,
     mailbox: Mutex<MailboxQueue>,
     pending_mailbox_entries: Mutex<VecDeque<MailboxEntry>>,
     next_mailbox_sequence: AtomicU64,
@@ -80,6 +84,7 @@ impl InputQueue {
         let (activity_tx, _) = watch::channel(InputQueueActivity::Mailbox);
         Self {
             activity_tx,
+            durable_mailbox: OnceLock::new(),
             mailbox: Mutex::new(MailboxQueue::default()),
             pending_mailbox_entries: Mutex::new(VecDeque::new()),
             next_mailbox_sequence: AtomicU64::new(0),
@@ -91,6 +96,17 @@ impl InputQueue {
             #[cfg(test)]
             residency_submission_changed: Notify::new(),
         }
+    }
+
+    /// Only enabled V2 sessions bind this adapter. Native queues remain authoritative.
+    pub(crate) fn bind_durable_mailbox(&self, mailbox: Arc<Mailbox>) {
+        let _ = self.durable_mailbox.set(mailbox);
+    }
+
+    fn reserve_mailbox_input(&self) -> Option<InputArrival> {
+        self.durable_mailbox
+            .get()
+            .map(|mailbox| mailbox.begin_input_arrival())
     }
 
     pub(crate) async fn begin_residency_activity(&self) -> OwnedMutexGuard<()> {
@@ -116,6 +132,12 @@ impl InputQueue {
     pub(crate) fn finish_terminal_finalizer(&self) {
         self.pending_terminal_finalizers
             .fetch_sub(1, Ordering::AcqRel);
+        if let Some(mailbox) = self.durable_mailbox.get() {
+            // A turn can fail before provider admission, so it has no mailbox
+            // outcome to publish. Wake only after native finalizer custody ends;
+            // selected waits then reconcile the still-unadmitted exact work.
+            mailbox.notify_native_custody_changed();
+        }
     }
 
     pub(crate) fn has_pending_terminal_finalizers(&self) -> bool {
@@ -224,6 +246,7 @@ impl InputQueue {
         if communications.is_empty() {
             return;
         }
+        let _input_arrival = self.reserve_mailbox_input();
         let communication_count = communications.len();
         let mut mailbox = self.mailbox.lock().await;
         let enqueued_at_ms = current_time_ms();
@@ -249,6 +272,7 @@ impl InputQueue {
         if entries.is_empty() {
             return;
         }
+        let _input_arrival = self.reserve_mailbox_input();
         let communication_count = entries.len();
         let mut mailbox = self.mailbox.lock().await;
         mailbox.entries.extend(entries);
@@ -301,6 +325,7 @@ impl InputQueue {
         if entries.is_empty() {
             return;
         }
+        let _input_arrival = self.reserve_mailbox_input();
         let mut mailbox = self.mailbox.lock().await;
         for entry in entries.into_iter().rev() {
             mailbox.entries.push_front(entry);
@@ -435,6 +460,7 @@ impl InputQueue {
         &self,
         mut completion: TerminalCompletionNotification,
     ) {
+        let _input_arrival = self.reserve_mailbox_input();
         let mut pending = self.terminal_completions.lock().await;
         if pending
             .iter()
@@ -686,6 +712,11 @@ impl InputQueue {
         turn_state: &Mutex<TurnState>,
         input: Vec<TurnInput>,
     ) {
+        let _input_arrival = if input.is_empty() {
+            None
+        } else {
+            self.reserve_mailbox_input()
+        };
         let activity = if input
             .iter()
             .any(|input| matches!(input, TurnInput::UserInput { .. }))
@@ -712,6 +743,11 @@ impl InputQueue {
         turn_state: &Mutex<TurnState>,
         input: Vec<TurnInput>,
     ) {
+        let _input_arrival = if input.is_empty() {
+            None
+        } else {
+            self.reserve_mailbox_input()
+        };
         turn_state.lock().await.pending_input.items.extend(input);
     }
 
@@ -887,6 +923,94 @@ mod tests {
             coalesced_exited: 0,
             coalesced_failed: 0,
         }
+    }
+
+    #[tokio::test]
+    async fn durable_mailbox_finalizer_release_wakes_rescan_without_fabricating_input() {
+        use codex_utils_absolute_path::test_support::PathExt;
+
+        let home = tempfile::tempdir().unwrap();
+        let mailbox = Arc::new(
+            Mailbox::open(&codex_state::SqliteConfig::new_for_testing(
+                home.path().abs(),
+            ))
+            .await
+            .unwrap(),
+        );
+        let queue = InputQueue::new();
+        queue.bind_durable_mailbox(Arc::clone(&mailbox));
+        queue.register_terminal_finalizer();
+        let mut changes = mailbox.subscribe();
+        let input_generation = mailbox.wait_input_generation();
+        queue.finish_terminal_finalizer();
+
+        assert!(changes.has_changed().unwrap());
+        changes.borrow_and_update();
+        assert!(!queue.has_pending_terminal_finalizers());
+        assert!(!queue.has_pending_mailbox_items().await);
+        assert_eq!(mailbox.wait_input_generation(), input_generation);
+    }
+
+    #[tokio::test]
+    async fn durable_mailbox_input_arrival_invalidates_stale_cycle_snapshots() {
+        use codex_agent_mailbox::MailboxError;
+        use codex_agent_mailbox::ReturnWhen;
+        use codex_protocol::ThreadId;
+        use codex_utils_absolute_path::test_support::PathExt;
+
+        let home = tempfile::tempdir().unwrap();
+        let mailbox = Arc::new(
+            Mailbox::open(&codex_state::SqliteConfig::new_for_testing(
+                home.path().abs(),
+            ))
+            .await
+            .unwrap(),
+        );
+        let queue = InputQueue::new();
+        queue.bind_durable_mailbox(Arc::clone(&mailbox));
+        let (a, b) = (ThreadId::new(), ThreadId::new());
+        let generation = mailbox.wait_input_generation();
+        let _old = mailbox
+            .begin_wait_at(
+                "old-a".into(),
+                a,
+                vec![b],
+                ReturnWhen::Any,
+                /*has_escape*/ false,
+                generation,
+            )
+            .unwrap();
+        queue
+            .enqueue_mailbox_communication(make_mail(
+                AgentPath::root(),
+                AgentPath::root(),
+                "native input",
+                /*trigger_turn*/ true,
+            ))
+            .await;
+        assert!(queue.has_pending_mailbox_items().await);
+        assert!(matches!(
+            mailbox.begin_wait_at(
+                "stale-b".into(),
+                b,
+                vec![a],
+                ReturnWhen::All,
+                /*has_escape*/ false,
+                generation
+            ),
+            Err(MailboxError::StaleWaitSnapshot)
+        ));
+        // Native input invalidated the older edge before publication, so a peer cannot
+        // incorrectly prove that both owners remain blocked on one another.
+        let _peer = mailbox
+            .begin_wait(
+                "peer-b".into(),
+                b,
+                vec![a],
+                ReturnWhen::All,
+                /*has_escape*/ false,
+            )
+            .unwrap();
     }
 
     #[tokio::test]

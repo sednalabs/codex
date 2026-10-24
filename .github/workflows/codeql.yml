@@ -297,7 +297,7 @@ jobs:
               ;;
             codex-rs-rest-a)
               scope_paths=(
-                codex-rs/.cargo codex-rs/analytics codex-rs/arg0 codex-rs/browser-computer-use
+                codex-rs/.cargo codex-rs/agent-mailbox codex-rs/analytics codex-rs/arg0 codex-rs/browser-computer-use
                 codex-rs/cloud-tasks codex-rs/code-mode-host codex-rs/codex-client
                 codex-rs/collaboration-mode-templates codex-rs/core-api codex-rs/exec-server-protocol
                 codex-rs/features codex-rs/git-utils codex-rs/lmstudio codex-rs/message-history

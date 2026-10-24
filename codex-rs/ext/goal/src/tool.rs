@@ -288,8 +288,14 @@ impl GoalToolExecutor {
                     "cannot update goal because this thread has no goal".to_string(),
                 )
             })?;
-        if let Err(err) = self.runtime.finalize_pending_goal_notification().await {
-            tracing::warn!("failed to forward deferred goal completion: {err}");
+        if let Err(err) = self
+            .runtime
+            .finalize_pending_goal_notification(Some((goal.goal_id.clone(), goal.status)))
+            .await
+        {
+            return Err(FunctionCallError::RespondToModel(format!(
+                "goal updated but deferred completion settlement failed: {err}"
+            )));
         }
         self.metrics
             .record_terminal_if_status_changed(previous_status, &goal);

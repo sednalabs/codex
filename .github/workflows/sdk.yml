@@ -59,7 +59,8 @@ jobs:
   sdks:
     if: ${{ inputs.run_typescript }}
     runs-on: ubuntu-24.04
-    timeout-minutes: 30
+    # The fork builds Codex locally on the standard hosted runner before SDK tests.
+    timeout-minutes: ${{ github.repository == 'sednalabs/codex' && 360 || 30 }}
     environment:
       name: bazel
       deployment: false
@@ -96,7 +97,7 @@ jobs:
 
       - name: Build codex with Bazel
         env:
-          BUILDBUDDY_API_KEY: ${{ secrets.BUILDBUDDY_API_KEY }}
+          BUILDBUDDY_API_KEY: ${{ github.repository != 'sednalabs/codex' && secrets.BUILDBUDDY_API_KEY || '' }}
         shell: bash
         run: |
           set -euo pipefail

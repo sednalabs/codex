@@ -5,6 +5,8 @@ use std::sync::atomic::AtomicU64;
 use std::sync::atomic::Ordering;
 
 use codex_core::GoalNotificationBinding;
+use codex_core::GoalNotificationClassification;
+use codex_core::GoalNotificationPhase;
 use codex_core::GoalNotificationStore;
 use codex_core::GoalNotificationTurnToken;
 use codex_core::ThreadManager;
@@ -241,16 +243,79 @@ impl GoalRuntimeHandle {
 
     /// Completes a deferred child handback when an external goal mutation
     /// makes the child terminal while no new turn will run. The pending
-    /// completion is claimed before delivery and restored if the parent
-    /// transport rejects it, allowing a later mutation to retry.
-    pub(crate) async fn finalize_pending_goal_notification(&self) -> Result<(), String> {
+    /// completion is claimed before settlement and restored after a failed
+    /// durable mailbox write or native queue delivery, allowing a later mutation
+    /// to retry.
+    pub(crate) async fn finalize_pending_goal_notification(
+        &self,
+        external_goal: Option<(String, codex_state::ThreadGoalStatus)>,
+    ) -> Result<(), String> {
         let Some((token, result)) = self.inner.notification_store.take_pending_completion() else {
             if self.inner.notification_store.has_forwarded_completion() {
                 return Ok(());
             }
+            if let Some((goal_id, codex_state::ThreadGoalStatus::Active)) = external_goal.as_ref() {
+                let snapshot = self.inner.notification_store.snapshot();
+                if snapshot
+                    .as_ref()
+                    .is_none_or(|snapshot| snapshot.binding.goal_id == *goal_id)
+                {
+                    return Ok(());
+                }
+            }
             self.invalidate_goal_notification();
             return Ok(());
         };
+
+        let Some(mut goal_snapshot) = self.inner.notification_store.snapshot().filter(|snapshot| {
+            snapshot.binding == token.binding
+                && snapshot.last_completed_source_turn.as_deref()
+                    == Some(token.source_turn_id.as_str())
+        }) else {
+            self.inner
+                .notification_store
+                .restore_pending_completion(&token.binding);
+            return Err("deferred goal completion no longer matches its captured binding".into());
+        };
+        let external_goal_matches_binding = external_goal
+            .as_ref()
+            .is_some_and(|(goal_id, _)| goal_id == &token.binding.goal_id);
+        if external_goal_matches_binding
+            && matches!(
+                external_goal.as_ref().map(|(_, status)| status),
+                Some(codex_state::ThreadGoalStatus::Active)
+            )
+        {
+            self.inner
+                .notification_store
+                .restore_pending_completion(&token.binding);
+            return Ok(());
+        }
+        if let Some((_, status)) = external_goal.filter(|_| external_goal_matches_binding) {
+            goal_snapshot.status = match status {
+                codex_state::ThreadGoalStatus::Active => ThreadGoalStatus::Active,
+                codex_state::ThreadGoalStatus::Paused => ThreadGoalStatus::Paused,
+                codex_state::ThreadGoalStatus::Blocked => ThreadGoalStatus::Blocked,
+                codex_state::ThreadGoalStatus::UsageLimited => ThreadGoalStatus::UsageLimited,
+                codex_state::ThreadGoalStatus::BudgetLimited => ThreadGoalStatus::BudgetLimited,
+                codex_state::ThreadGoalStatus::Complete => ThreadGoalStatus::Complete,
+            };
+        }
+        goal_snapshot.phase = if external_goal_matches_binding
+            && goal_snapshot.status == ThreadGoalStatus::Complete
+            && result.is_some()
+        {
+            GoalNotificationPhase::ResultReady
+        } else {
+            // Pausing, blocking, limiting, clearing, or replacing the goal ends
+            // this continuation without claiming that the goal itself completed.
+            GoalNotificationPhase::ActionRequired
+        };
+        goal_snapshot.classification = match goal_snapshot.phase {
+            GoalNotificationPhase::ResultReady => GoalNotificationClassification::Result,
+            _ => GoalNotificationClassification::ActionRequired,
+        };
+        goal_snapshot.revision = goal_snapshot.revision.saturating_add(1);
 
         let Some(parent_thread_id) = self.inner.parent_thread_id else {
             self.invalidate_goal_notification();
@@ -267,16 +332,18 @@ impl GoalRuntimeHandle {
             return Err("thread manager unavailable for deferred goal completion".to_string());
         };
 
-        let result = thread_manager
+        let delivery = thread_manager
             .notify_v2_child_completion(
                 self.inner.thread_id,
                 parent_thread_id,
                 child_agent_path,
+                &token.source_turn_id,
                 codex_protocol::protocol::AgentStatus::Completed(result),
+                Some((token.incarnation, goal_snapshot)),
             )
             .await;
-        match result {
-            Ok(()) => {
+        match delivery {
+            Ok(true) => {
                 let _ = self
                     .inner
                     .notification_store
@@ -287,6 +354,12 @@ impl GoalRuntimeHandle {
                 self.inner
                     .notification_store
                     .clear_preserving_forwarded_completion();
+                Ok(())
+            }
+            Ok(false) => {
+                self.inner
+                    .notification_store
+                    .restore_pending_completion(&token.binding);
                 Ok(())
             }
             Err(err) => {

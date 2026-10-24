@@ -61,7 +61,32 @@ acceptance steps.
 
 ## Core default path
 
-Exact-target V2 `wait_agent` ignores queue-only (`trigger_turn=false`) mailbox
+The opt-in same-tree V2 `agent_mailbox` path is covered by the standalone
+`codex-agent-mailbox` behavioral suite in
+`codex.core-multi-agent-orchestration-targeted`, plus real core admission/history,
+wrapped tool-schema, and collaboration live/replay tests. The native path remains
+the default. Qualify accepted-work retries and caller cancellation, exact
+incremental provider admission, mixed issuer/outcome and request joins, fixed
+deadlines across quiet mail, typed goal continuation, canonical flush failure and
+compaction, activation denial, backpressure, and conservative closed-peer cycles.
+Library tests alone do not prove the native adapter, UI, final packages, landing,
+or an installed session. Linux preview packages remain exact-SHA artifacts;
+install/restart and runtime adoption are separate operator actions.
+The maintained core lane runs the owned library, the core `mailbox` unit slice,
+and `suite::agent_mailbox`, including
+`unadmitted_canonical_message_survives_precreated_failure_and_manual_compaction`.
+Its native cancellation slice includes
+`configured_v2_mailbox_spawn_fast_completion_cancellation_retry_reuses_native_work`.
+The notification visibility lane also runs protocol/app-server-protocol/TUI
+`mailbox` tests so the same structured report is exercised in live and replay
+consumers, including interrupted-wait recovery with pending references retained.
+The native goal adapter also exercises
+`mailbox_goal_terminal_matches_logical_binding_across_native_revisions_and_turns`
+and `mailbox_cold_goal_continuation_returns_recovery_needed_without_losing_custody`:
+later logical progress may settle exact original work, but a replacement native
+goal incarnation cannot, and an unowned deferred continuation must not hang.
+
+Without the opt-in mailbox feature, exact-target V2 `wait_agent` ignores queue-only (`trigger_turn=false`) mailbox
 activity while preserving durable FIFO delivery and notification summaries;
 targetless waits retain broad mailbox wake behavior. The focused guardrail is
 `codex.core-multi-agent-orchestration-targeted`, covering

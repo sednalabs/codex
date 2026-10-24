@@ -10,6 +10,7 @@ use crate::agent_communication::AgentCommunicationKind;
 use crate::tools::context::FunctionToolOutput;
 use codex_protocol::openai_models::ReasoningEffort;
 use codex_protocol::protocol::InterAgentCommunication;
+use codex_protocol::protocol::MultiAgentVersion;
 use codex_protocol::user_input::UserInput;
 use futures::future::BoxFuture;
 use serde::Serialize;
@@ -136,9 +137,13 @@ pub(crate) struct AssignTaskArgs {
 struct FollowupTaskResult {
     task_name: String,
     recipient_task_name: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    work_ref: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    dispatch_state: Option<codex_agent_mailbox::DispatchState>,
     effective_identity_scope: &'static str,
-    effective_model: String,
-    effective_model_provider_id: String,
+    effective_model: Option<String>,
+    effective_model_provider_id: Option<String>,
     effective_reasoning_effort: Option<ReasoningEffort>,
     effective_service_tier: Option<String>,
 }
@@ -246,6 +251,11 @@ async fn handle_message_submission_inner(
         ..
     } = invocation;
     let _ = payload;
+    let mailbox_enabled = turn.multi_agent_version == MultiAgentVersion::V2
+        && turn
+            .config
+            .features
+            .enabled(codex_features::Feature::AgentMailbox);
     let receiver_thread_id = resolve_agent_target(&session, &turn, &target).await?;
     let receiver_agent = session
         .services
@@ -265,6 +275,113 @@ async fn handle_message_submission_inner(
     let receiver_agent_path = receiver_agent.agent_path.clone().ok_or_else(|| {
         FunctionCallError::RespondToModel("target agent is missing an agent_path".to_string())
     })?;
+    let existing_work = if mailbox_enabled && mode == MessageDeliveryMode::TriggerTurn {
+        session
+            .services
+            .agent_control
+            .mailbox_work_for_key(session.thread_id, &call_id)
+            .await
+            .map_err(|err| collab_agent_error(receiver_thread_id, err))?
+    } else {
+        None
+    };
+    // Resolve compatibility without reloading a cold recipient: reloading may restore
+    // already queued native input, so a rejected new operation must not use it as a probe.
+    let recipient_compatible = if mailbox_enabled && mode == MessageDeliveryMode::TriggerTurn {
+        let resume_config = build_agent_resume_config(turn.as_ref())?;
+        Some(
+            session
+                .services
+                .agent_control
+                .mailbox_recipient_config_compatible(receiver_thread_id, &resume_config)
+                .await
+                .map_err(|err| {
+                    if let Some(work) = existing_work.as_ref() {
+                        FunctionCallError::RespondToModel(format!(
+                            "accepted work {} for recipient {} is blocked pending native recovery: {err}; original custody is retained and no input was resent",
+                            work.id, work.agent
+                        ))
+                    } else {
+                        collab_agent_error(receiver_thread_id, err)
+                    }
+                })?,
+        )
+    } else {
+        None
+    };
+    if let Some(work) = existing_work
+        && let Some(mailbox) = session.services.agent_control.mailbox()
+    {
+        if work.agent != receiver_thread_id {
+            return Err(FunctionCallError::RespondToModel(
+                "native invocation was already accepted for a different agent".to_string(),
+            ));
+        }
+        mailbox
+            .accept_work(codex_agent_mailbox::NativeWork {
+                native_key: call_id.clone(),
+                issuer: session.thread_id,
+                agent: work.agent,
+                submission_id: work.submission_id.clone(),
+                input: communication_from_tool_message(
+                    turn.session_source
+                        .get_agent_path()
+                        .unwrap_or_else(AgentPath::root),
+                    receiver_agent_path.clone(),
+                    message.clone(),
+                ),
+            })
+            .await
+            .map_err(super::mailbox_message::mailbox_error)?;
+        if recipient_compatible == Some(false) {
+            mailbox
+                .mark_recovery_needed(
+                    &work,
+                    codex_agent_mailbox::RecoveryEvidence::RecipientIncompatible,
+                )
+                .await
+                .map_err(super::mailbox_message::mailbox_error)?;
+        }
+        let dispatch_state = mailbox
+            .dispatch_state(&work)
+            .await
+            .map_err(super::mailbox_message::mailbox_error)?;
+        if dispatch_state != codex_agent_mailbox::DispatchState::Accepted {
+            let snapshot = session
+                .services
+                .agent_control
+                .get_agent_config_snapshot(receiver_thread_id)
+                .await;
+            return Ok(FunctionToolOutput::from_text(
+                tool_output_json_text(
+                    &FollowupTaskResult {
+                        task_name: receiver_agent_path.to_string(),
+                        recipient_task_name: receiver_agent_path.to_string(),
+                        work_ref: Some(work.id),
+                        dispatch_state: Some(dispatch_state),
+                        effective_identity_scope: "recipient",
+                        effective_model: snapshot.as_ref().map(|config| config.model.clone()),
+                        effective_model_provider_id: snapshot
+                            .as_ref()
+                            .map(|config| config.model_provider_id.clone()),
+                        effective_reasoning_effort: snapshot
+                            .as_ref()
+                            .and_then(|config| config.reasoning_effort.clone()),
+                        effective_service_tier: snapshot
+                            .as_ref()
+                            .and_then(|config| config.service_tier.clone()),
+                    },
+                    "followup_task",
+                ),
+                Some(true),
+            ));
+        }
+    }
+    if recipient_compatible == Some(false) {
+        return Err(FunctionCallError::RespondToModel(format!(
+            "follow-up task was not accepted: recipient {receiver_agent_path} requires MultiAgentV2 and agent_mailbox to be enabled",
+        )));
+    }
     let delivery = match mode {
         MessageDeliveryMode::QueueOnly => {
             session
@@ -321,7 +438,10 @@ async fn handle_message_submission_inner(
         MessageDeliveryMode::QueueOnly => AgentCommunicationKind::Message,
         MessageDeliveryMode::TriggerTurn => AgentCommunicationKind::Followup,
     };
-    let context = AgentCommunicationContext::new(kind, session.thread_id);
+    let mut context = AgentCommunicationContext::new(kind, session.thread_id);
+    if mailbox_enabled {
+        context = context.with_native_key(call_id.clone());
+    }
     let result = delivery
         .send(mode.apply(communication), context, interrupt)
         .await
@@ -331,7 +451,7 @@ async fn handle_message_submission_inner(
         &session,
         &turn,
         SubAgentActivityItem {
-            id: call_id,
+            id: call_id.clone(),
             agent_thread_id: receiver_thread_id,
             agent_path: receiver_agent_path.clone(),
             model: None,
@@ -341,6 +461,28 @@ async fn handle_message_submission_inner(
     )
     .await;
 
+    let accepted_work = if mailbox_enabled && mode == MessageDeliveryMode::TriggerTurn {
+        session
+            .services
+            .agent_control
+            .mailbox_work_for_key(session.thread_id, &call_id)
+            .await
+            .map_err(|err| collab_agent_error(receiver_thread_id, err))?
+    } else {
+        None
+    };
+    let dispatch_state = if let Some(work) = accepted_work.as_ref()
+        && let Some(mailbox) = session.services.agent_control.mailbox()
+    {
+        Some(
+            mailbox
+                .dispatch_state(work)
+                .await
+                .map_err(super::mailbox_message::mailbox_error)?,
+        )
+    } else {
+        None
+    };
     let output = match mode {
         MessageDeliveryMode::QueueOnly => {
             let receipt = SendMessageReceipt {
@@ -371,9 +513,11 @@ async fn handle_message_submission_inner(
                 &FollowupTaskResult {
                     task_name: receiver_agent_path.to_string(),
                     recipient_task_name: receiver_agent_path.to_string(),
+                    work_ref: accepted_work.map(|work| work.id),
+                    dispatch_state,
                     effective_identity_scope: "recipient",
-                    effective_model: receiver_config.model,
-                    effective_model_provider_id: receiver_config.model_provider_id,
+                    effective_model: Some(receiver_config.model),
+                    effective_model_provider_id: Some(receiver_config.model_provider_id),
                     effective_reasoning_effort: receiver_config.reasoning_effort,
                     effective_service_tier: receiver_config.service_tier,
                 },

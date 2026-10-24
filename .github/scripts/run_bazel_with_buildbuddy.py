@@ -141,6 +141,18 @@ def bazel_args_with_remote_config(
     config = remote_config(args, env)
     if config is None:
         configured_args = bazel_args_without_remote_execution(args)
+        if (
+            env.get("GITHUB_ACTIONS") == "true"
+            and env.get("GITHUB_REPOSITORY") == "sednalabs/codex"
+            and env.get("RUNNER_ENVIRONMENT") == "github-hosted"
+            and uses_remote_execution(args)
+        ):
+            # Removing a remote platform must not also lose the shared CI
+            # settings: lean Rust artifacts and no duplicate on-runner disk CAS.
+            local_command_idx = next(
+                idx for idx, arg in enumerate(configured_args) if not arg.startswith("-")
+            )
+            configured_args.insert(local_command_idx + 1, "--config=ci-bazel")
     else:
         # `remote_config()` returns a configuration only when this key is present.
         api_key = env["BUILDBUDDY_API_KEY"]

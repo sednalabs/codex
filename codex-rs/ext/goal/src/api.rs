@@ -275,10 +275,13 @@ impl GoalService {
             fill_empty_thread_preview_if_possible(state_db, thread_id, &goal).await;
         }
         if let Some(runtime) = runtime.as_ref()
-            && !matches!(goal.status, codex_state::ThreadGoalStatus::Active)
-            && let Err(err) = runtime.finalize_pending_goal_notification().await
+            && let Err(err) = runtime
+                .finalize_pending_goal_notification(Some((goal.goal_id.clone(), goal.status)))
+                .await
         {
-            tracing::warn!("failed to forward deferred goal completion: {err}");
+            return Err(GoalServiceError::Internal(format!(
+                "goal updated but deferred completion settlement failed: {err}"
+            )));
         }
         Ok(GoalSetOutcome {
             goal: protocol_goal_from_state(goal.clone()),
@@ -319,9 +322,13 @@ impl GoalService {
             })?;
         let cleared = cleared_goal.is_some();
         if let Some(runtime) = runtime.as_ref()
-            && let Err(err) = runtime.finalize_pending_goal_notification().await
+            && let Err(err) = runtime
+                .finalize_pending_goal_notification(/*external_goal*/ None)
+                .await
         {
-            tracing::warn!("failed to forward deferred goal completion: {err}");
+            return Err(GoalServiceError::Internal(format!(
+                "goal cleared but deferred completion settlement failed: {err}"
+            )));
         }
         drop(goal_state_permit);
         drop(runtime);

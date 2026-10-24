@@ -639,13 +639,23 @@ impl Session {
                     )
                     .await;
                 } else {
-                    record_pending_input(
+                    if let Err(error) = record_pending_input(
                         self,
                         &turn_context,
                         pending_input_item,
                         hook_outcome.additional_contexts,
                     )
-                    .await;
+                    .await
+                    {
+                        // Finalization is not execution admission. Accepted mailbox input
+                        // retains its durable custody when canonical history cannot take it.
+                        if let Some(mailbox) = self.services.agent_control.mailbox() {
+                            mailbox.notify_runtime_fault(self.thread_id);
+                        }
+                        let error_event = error.to_error_event(/*message_prefix*/ None);
+                        self.send_event(&turn_context, EventMsg::Error(error_event))
+                            .await;
+                    }
                 }
             }
         }
@@ -871,6 +881,15 @@ impl Session {
         }
         if cleared_active_turn {
             self.maybe_start_turn_for_pending_work().await;
+        }
+        if turn_context.multi_agent_version == codex_protocol::protocol::MultiAgentVersion::V2
+            && turn_context.config.features.enabled(Feature::AgentMailbox)
+            && let Some(mailbox) = self.services.agent_control.mailbox()
+        {
+            // This follows active-turn release and the native pending-work decision.
+            // A pre-admission producer failure has no terminal mailbox result, but an
+            // event-only issuer wait must still rescan exact native custody.
+            mailbox.notify_native_custody_changed();
         }
     }
 

@@ -1,0 +1,539 @@
+use super::*;
+use crate::agent::goal_notifications::GoalNotificationBinding;
+use crate::agent::goal_notifications::GoalNotificationClassification;
+use codex_agent_mailbox::DispatchState;
+use codex_agent_mailbox::ReturnWhen;
+use codex_agent_mailbox::Selection;
+use codex_agent_mailbox::Selector;
+use codex_agent_mailbox::SnapshotItem;
+use codex_protocol::AgentPath;
+use codex_utils_absolute_path::test_support::PathExt;
+use pretty_assertions::assert_eq;
+
+#[tokio::test]
+async fn mailbox_shared_control_does_not_capture_stock_invocations() {
+    let (session, turn) = crate::session::tests::make_session_and_context().await;
+    let mut config = (*turn.config).clone();
+    let sqlite_home = tempfile::tempdir().unwrap();
+    config.sqlite = codex_state::SqliteConfig::new_for_testing(sqlite_home.path().abs());
+    config.features.enable(Feature::MultiAgentV2).unwrap();
+    config.features.enable(Feature::AgentMailbox).unwrap();
+    let control = &session.services.agent_control;
+    control.mailbox_initialize(&config).await.unwrap();
+    let recipient = ThreadId::new();
+    let mut communication = InterAgentCommunication::new(
+        AgentPath::root(),
+        AgentPath::from_string("/root/worker".to_string()).unwrap(),
+        Vec::new(),
+        "native input".to_string(),
+        /*trigger_turn*/ true,
+    );
+    let original = communication.clone();
+    let mut submission_id = "stock-submission".to_string();
+    let context =
+        AgentCommunicationContext::new(AgentCommunicationKind::Followup, session.thread_id);
+    assert!(
+        control
+            .mailbox_accept_native_submission(
+                recipient,
+                &context,
+                &mut communication,
+                &mut submission_id,
+                &config,
+            )
+            .await
+            .unwrap()
+            .is_none()
+    );
+    assert_eq!(communication, original);
+    assert_eq!(submission_id, "stock-submission");
+    let mailbox = control.mailbox().unwrap();
+    assert!(
+        mailbox
+            .issued_work_refs(session.thread_id, /*agent*/ None, /*limit*/ 100)
+            .await
+            .unwrap()
+            .is_empty()
+    );
+
+    let enabled_context = context.with_native_key("enabled-call".to_string());
+    let (accepted, decision) = control
+        .mailbox_accept_native_submission(
+            recipient,
+            &enabled_context,
+            &mut communication,
+            &mut submission_id,
+            &config,
+        )
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(decision, DispatchDecision::Dispatch);
+    assert_eq!(accepted.issuer, session.thread_id);
+    assert_eq!(
+        mailbox.accepted_input(&accepted).await.unwrap(),
+        communication
+    );
+    assert!(communication.id.unwrap().as_str().starts_with("amsg_"));
+}
+
+fn goal_snapshot(issuer: ThreadId, agent: ThreadId) -> GoalNotificationSnapshot {
+    GoalNotificationSnapshot {
+        binding: GoalNotificationBinding {
+            parent_thread_id: issuer,
+            child_thread_id: agent,
+            goal_id: "native-goal".to_string(),
+            control_generation: 7,
+        },
+        status: ThreadGoalStatus::Active,
+        phase: GoalNotificationPhase::ContinuationPending,
+        revision: 1,
+        last_completed_source_turn: Some("accepted-turn".to_string()),
+        result_reference: None,
+        classification: GoalNotificationClassification::Progress,
+    }
+}
+
+async fn accepted_goal_work(mailbox: &Mailbox, issuer: ThreadId, agent: ThreadId) -> WorkRef {
+    let work = mailbox
+        .accept_work(NativeWork {
+            native_key: "goal-call".to_string(),
+            issuer,
+            agent,
+            submission_id: "goal-submission".to_string(),
+            input: InterAgentCommunication::new(
+                AgentPath::root(),
+                AgentPath::from_string("/root/worker".to_string()).unwrap(),
+                Vec::new(),
+                "complete the accepted work".to_string(),
+                /*trigger_turn*/ true,
+            ),
+        })
+        .await
+        .unwrap();
+    assert_eq!(
+        mailbox.begin_dispatch(&work).await.unwrap(),
+        DispatchDecision::Dispatch
+    );
+    mailbox.mark_dispatched(&work).await.unwrap();
+    let input = mailbox.accepted_input(&work).await.unwrap();
+    mailbox
+        .record_admission(agent, "accepted-turn", &[input.id.unwrap().to_string()])
+        .await
+        .unwrap();
+    work
+}
+
+async fn accepted_unadmitted_work(
+    mailbox: &Mailbox,
+    issuer: ThreadId,
+    agent: ThreadId,
+    submission_id: &str,
+) -> (WorkRef, String) {
+    let work = mailbox
+        .accept_work(NativeWork {
+            native_key: "pre-admission-failure".to_string(),
+            issuer,
+            agent,
+            submission_id: submission_id.to_string(),
+            input: InterAgentCommunication::new(
+                AgentPath::root(),
+                AgentPath::from_string("/root/worker".to_string()).unwrap(),
+                Vec::new(),
+                "accepted input not yet admitted to a provider request".to_string(),
+                /*trigger_turn*/ true,
+            ),
+        })
+        .await
+        .unwrap();
+    assert_eq!(
+        mailbox.begin_dispatch(&work).await.unwrap(),
+        DispatchDecision::Dispatch
+    );
+    let input_id = mailbox
+        .accepted_input(&work)
+        .await
+        .unwrap()
+        .id
+        .expect("accepted mailbox input should carry a stable ID")
+        .to_string();
+    (work, input_id)
+}
+
+async fn exact_work_snapshot(mailbox: &Mailbox, work: &WorkRef) -> WorkSnapshot {
+    let snapshot = mailbox
+        .snapshot(&Selection {
+            caller: work.issuer,
+            agent: Some(work.agent),
+            selectors: vec![Selector::Work(work.id.clone())],
+            return_when: ReturnWhen::All,
+            limit: 1,
+        })
+        .await
+        .unwrap();
+    match snapshot.items.into_iter().next().unwrap() {
+        SnapshotItem::Work(work) => work,
+        SnapshotItem::Request(_) => panic!("exact work selector returned a request"),
+    }
+}
+
+#[tokio::test]
+async fn mailbox_goal_terminal_matches_logical_binding_across_native_revisions_and_turns() {
+    let (session, turn) = crate::session::tests::make_session_and_context().await;
+    let mut config = (*turn.config).clone();
+    let sqlite_home = tempfile::tempdir().unwrap();
+    config.sqlite = codex_state::SqliteConfig::new_for_testing(sqlite_home.path().abs());
+    config.features.enable(Feature::MultiAgentV2).unwrap();
+    config.features.enable(Feature::AgentMailbox).unwrap();
+    let control = &session.services.agent_control;
+    control.mailbox_initialize(&config).await.unwrap();
+    let mailbox = control.mailbox().unwrap();
+    let agent = ThreadId::new();
+    let incarnation = ThreadId::new();
+    let work = accepted_goal_work(&mailbox, session.thread_id, agent).await;
+    let mut goal = goal_snapshot(session.thread_id, agent);
+
+    assert!(
+        control
+            .mailbox_record_terminal(
+                agent,
+                "accepted-turn",
+                AgentStatus::Completed(None),
+                Some((incarnation, goal.clone())),
+                /*completion*/ None
+            )
+            .await
+            .unwrap()
+    );
+    goal.phase = GoalNotificationPhase::DeferredWithOwner;
+    goal.revision += 1;
+    assert!(
+        control
+            .mailbox_record_terminal(
+                agent,
+                "accepted-turn",
+                AgentStatus::Completed(None),
+                Some((incarnation, goal.clone())),
+                /*completion*/ None
+            )
+            .await
+            .unwrap()
+    );
+    let pending = exact_work_snapshot(&mailbox, &work).await;
+    assert!(pending.outcome.is_none());
+    assert_eq!(pending.continuations.len(), 1);
+    assert_eq!(pending.continuations[0].source_turn_id, "accepted-turn");
+    assert_eq!(pending.continuations[0].state, ContinuationState::Deferred);
+
+    goal.phase = GoalNotificationPhase::ResultReady;
+    goal.status = ThreadGoalStatus::Complete;
+    goal.revision += 1;
+    goal.last_completed_source_turn = Some("continuation-turn".to_string());
+    goal.classification = GoalNotificationClassification::Result;
+    // A restarted/replaced native store is not evidence for the old producer,
+    // even when its goal ID, generation and thread IDs happen to be identical.
+    assert!(
+        !control
+            .mailbox_record_terminal(
+                agent,
+                "continuation-turn",
+                AgentStatus::Completed(None),
+                Some((ThreadId::new(), goal.clone())),
+                /*completion*/ None
+            )
+            .await
+            .unwrap()
+    );
+    assert!(exact_work_snapshot(&mailbox, &work).await.outcome.is_none());
+    assert!(
+        control
+            .mailbox_record_terminal(
+                agent,
+                "continuation-turn",
+                AgentStatus::Completed(None),
+                Some((incarnation, goal)),
+                /*completion*/ None
+            )
+            .await
+            .unwrap()
+    );
+    let completed = exact_work_snapshot(&mailbox, &work).await;
+    assert_eq!(completed.outcome.unwrap().outcome, Outcome::Completed);
+    assert_eq!(
+        completed.continuations[0].state,
+        ContinuationState::Terminal
+    );
+    // An unrelated native result must retain the existing native fallback path.
+    assert!(
+        !control
+            .mailbox_record_terminal(
+                ThreadId::new(),
+                "uncaptured-turn",
+                AgentStatus::Completed(None),
+                /*goal*/ None,
+                /*completion*/ None
+            )
+            .await
+            .unwrap()
+    );
+}
+
+#[tokio::test]
+async fn mailbox_terminal_recovers_exact_unadmitted_submission_idempotently() {
+    let (session, turn) = crate::session::tests::make_session_and_context().await;
+    let mut config = (*turn.config).clone();
+    let sqlite_home = tempfile::tempdir().unwrap();
+    config.sqlite = codex_state::SqliteConfig::new_for_testing(sqlite_home.path().abs());
+    config.features.enable(Feature::MultiAgentV2).unwrap();
+    config.features.enable(Feature::AgentMailbox).unwrap();
+    let control = &session.services.agent_control;
+    control.mailbox_initialize(&config).await.unwrap();
+    let mailbox = control.mailbox().unwrap();
+    let agent = ThreadId::new();
+    let submission_id = "producer-failed-before-created";
+    let (work, input_id) =
+        accepted_unadmitted_work(&mailbox, session.thread_id, agent, submission_id).await;
+    assert_eq!(
+        mailbox
+            .unadmitted_input_ids(agent, std::slice::from_ref(&input_id))
+            .await
+            .unwrap(),
+        vec![input_id.clone()]
+    );
+
+    assert!(
+        control
+            .mailbox_record_terminal(
+                agent,
+                submission_id,
+                AgentStatus::Errored("provider request setup failed".to_string()),
+                /*goal*/ None,
+                /*completion*/ None,
+            )
+            .await
+            .unwrap()
+    );
+    assert_eq!(
+        mailbox.dispatch_state(&work).await.unwrap(),
+        DispatchState::RecoveryNeeded
+    );
+    assert!(exact_work_snapshot(&mailbox, &work).await.outcome.is_none());
+    assert_eq!(
+        mailbox
+            .unadmitted_input_ids(agent, std::slice::from_ref(&input_id))
+            .await
+            .unwrap(),
+        vec![input_id.clone()],
+        "recovery capture must not consume or admit the accepted input"
+    );
+
+    // A fast sender finishing after producer failure must preserve the truthful receipt.
+    control.mailbox_dispatched(&work).await.unwrap();
+    assert_eq!(
+        mailbox.dispatch_state(&work).await.unwrap(),
+        DispatchState::RecoveryNeeded
+    );
+
+    assert!(
+        !control
+            .mailbox_record_terminal(
+                agent,
+                "unrelated-source-turn",
+                AgentStatus::Errored("unrelated failure".to_string()),
+                /*goal*/ None,
+                /*completion*/ None,
+            )
+            .await
+            .unwrap(),
+        "an unrelated source turn must not capture the accepted submission"
+    );
+    assert!(
+        control
+            .mailbox_record_terminal(
+                agent,
+                submission_id,
+                AgentStatus::Errored("provider request setup failed".to_string()),
+                /*goal*/ None,
+                /*completion*/ None,
+            )
+            .await
+            .unwrap(),
+        "retrying the exact producer terminal must retain the same recovery custody"
+    );
+    assert_eq!(
+        mailbox.dispatch_state(&work).await.unwrap(),
+        DispatchState::RecoveryNeeded
+    );
+    assert!(exact_work_snapshot(&mailbox, &work).await.outcome.is_none());
+    assert_eq!(
+        mailbox
+            .unadmitted_input_ids(agent, std::slice::from_ref(&input_id))
+            .await
+            .unwrap(),
+        vec![input_id]
+    );
+}
+
+#[tokio::test]
+async fn mailbox_cold_goal_continuation_returns_recovery_needed_without_losing_custody() {
+    let (mut session, turn) = crate::session::tests::make_session_and_context().await;
+    let mut config = (*turn.config).clone();
+    let sqlite_home = tempfile::tempdir().unwrap();
+    config.sqlite = codex_state::SqliteConfig::new_for_testing(sqlite_home.path().abs());
+    config.features.enable(Feature::MultiAgentV2).unwrap();
+    config.features.enable(Feature::AgentMailbox).unwrap();
+    let manager = crate::ThreadManager::with_models_provider_for_tests(
+        codex_login::CodexAuth::from_api_key("dummy"),
+        config.model_provider.clone(),
+    );
+    session.services.agent_control = manager.agent_control();
+    let control = &session.services.agent_control;
+    control.mailbox_initialize(&config).await.unwrap();
+    let mailbox = control.mailbox().unwrap();
+    let agent = ThreadId::new();
+    let incarnation = ThreadId::new();
+    let work = accepted_goal_work(&mailbox, session.thread_id, agent).await;
+    let mut goal = goal_snapshot(session.thread_id, agent);
+    goal.phase = GoalNotificationPhase::DeferredWithOwner;
+    assert!(
+        control
+            .mailbox_record_terminal(
+                agent,
+                "accepted-turn",
+                AgentStatus::Completed(None),
+                Some((incarnation, goal.clone())),
+                /*completion*/ None
+            )
+            .await
+            .unwrap()
+    );
+    let pending = exact_work_snapshot(&mailbox, &work).await;
+
+    // This exact producer has no loaded native thread or continuation owner.
+    assert!(
+        control
+            .mailbox_reconcile_pending_work(&pending)
+            .await
+            .unwrap()
+    );
+    let recovered = exact_work_snapshot(&mailbox, &work).await;
+    assert_eq!(recovered.work_ref, work);
+    assert_eq!(recovered.dispatch_state, DispatchState::RecoveryNeeded);
+    assert!(recovered.outcome.is_none());
+    assert_eq!(recovered.input, pending.input);
+    assert_eq!(recovered.continuations, pending.continuations);
+    assert!(
+        !control
+            .mailbox_reconcile_pending_work(&recovered)
+            .await
+            .unwrap()
+    );
+
+    goal.phase = GoalNotificationPhase::ResultReady;
+    goal.status = ThreadGoalStatus::Complete;
+    goal.revision += 1;
+    goal.classification = GoalNotificationClassification::Result;
+    assert!(
+        control
+            .mailbox_record_terminal(
+                agent,
+                "recovered-turn",
+                AgentStatus::Completed(None),
+                Some((incarnation, goal)),
+                /*completion*/ None
+            )
+            .await
+            .unwrap()
+    );
+    assert_eq!(
+        exact_work_snapshot(&mailbox, &work)
+            .await
+            .outcome
+            .unwrap()
+            .outcome,
+        Outcome::Completed
+    );
+}
+
+#[tokio::test]
+async fn mailbox_cold_deferred_handback_uses_loaded_parents_shared_store() {
+    let (_session, turn) = crate::session::tests::make_session_and_context().await;
+    let mut config = (*turn.config).clone();
+    let sqlite_home = tempfile::tempdir().unwrap();
+    config.sqlite = codex_state::SqliteConfig::new_for_testing(sqlite_home.path().abs());
+    config.features.enable(Feature::MultiAgentV2).unwrap();
+    config.features.enable(Feature::AgentMailbox).unwrap();
+    let manager = crate::ThreadManager::with_models_provider_for_tests(
+        codex_login::CodexAuth::from_api_key("dummy"),
+        config.model_provider.clone(),
+    );
+    let parent = manager
+        .start_thread(crate::thread_manager::StartThreadOptions::new(
+            config.clone(),
+        ))
+        .await
+        .unwrap();
+    parent
+        .thread
+        .session
+        .set_multi_agent_version_if_unset(MultiAgentVersion::V2);
+    let control = &parent.thread.session.services.agent_control;
+    control.mailbox_initialize(&config).await.unwrap();
+    let mailbox = control.mailbox().unwrap();
+    let agent = ThreadId::new();
+    let incarnation = ThreadId::new();
+    let work = accepted_goal_work(&mailbox, parent.thread_id, agent).await;
+    let mut goal = goal_snapshot(parent.thread_id, agent);
+    assert!(
+        control
+            .mailbox_record_terminal(
+                agent,
+                "accepted-turn",
+                AgentStatus::Completed(None),
+                Some((incarnation, goal.clone())),
+                /*completion*/ None
+            )
+            .await
+            .unwrap()
+    );
+    assert!(manager.get_thread(agent).await.is_err());
+    assert!(
+        !parent
+            .thread
+            .session
+            .input_queue
+            .has_pending_mailbox_items()
+            .await
+    );
+
+    goal.phase = GoalNotificationPhase::ResultReady;
+    goal.status = ThreadGoalStatus::Complete;
+    goal.revision += 1;
+    goal.classification = GoalNotificationClassification::Result;
+    assert!(
+        manager
+            .notify_v2_child_completion(
+                agent,
+                parent.thread_id,
+                AgentPath::from_string("/root/worker".to_string()).unwrap(),
+                "accepted-turn",
+                AgentStatus::Completed(Some("durable goal result".to_string())),
+                Some((incarnation, goal)),
+            )
+            .await
+            .unwrap()
+    );
+    let settled = exact_work_snapshot(&mailbox, &work).await;
+    assert_eq!(settled.work_ref, work);
+    assert_eq!(settled.outcome.unwrap().outcome, Outcome::Completed);
+    assert_eq!(settled.continuations[0].state, ContinuationState::Terminal);
+    assert!(manager.get_thread(agent).await.is_err());
+    assert!(
+        !parent
+            .thread
+            .session
+            .input_queue
+            .has_pending_mailbox_items()
+            .await
+    );
+}
