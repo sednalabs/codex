@@ -479,8 +479,9 @@ class RunBazelWithBuildBuddyTest(unittest.TestCase):
                 RUNNER_TEMP=root.as_posix(),
             )
             if os.name == "nt":
-                # This test runs before Prepare Bazel CI supplies the native PATH.
-                env["CODEX_BAZEL_WINDOWS_PATH"] = env["PATH"]
+                # The fake only needs a valid PATH, not the runner's long tool list
+                # repeated in arguments to a command with cmd.exe's length limit.
+                env["CODEX_BAZEL_WINDOWS_PATH"] = str(Path(sys.executable).parent)
             result = subprocess.run(
                 [
                     bash,
