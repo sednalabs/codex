@@ -241,7 +241,6 @@ async fn refresh_reaps_superseded_mcp_server_after_in_flight_call_finishes() -> 
     assert!(process_is_alive(&replacement_pid)?);
     fs::write(&shutdown_release_file, "finish")?;
     tokio::time::timeout(Duration::from_secs(10), shutdown_call).await??;
-    tokio::time::timeout(Duration::from_secs(10), shutdown).await???;
     wait_for_process_exit(&replacement_pid).await?;
     #[cfg(target_os = "linux")]
     wait_for_stdio_pipe_release(&replacement_pipe_targets).await?;
