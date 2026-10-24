@@ -1,5 +1,4 @@
 use super::*;
-use anyhow::Context as _;
 use ed25519_dalek::Signature;
 use ed25519_dalek::Verifier as _;
 use pretty_assertions::assert_eq;
