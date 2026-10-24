@@ -8,6 +8,7 @@
 use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::Arc;
+use std::sync::RwLock;
 use std::sync::atomic::AtomicBool;
 use std::sync::atomic::Ordering;
 use std::time::Duration;
@@ -72,6 +73,8 @@ pub struct McpRuntimeInput {
 /// their exact connections and configuration for as long as they are needed.
 pub struct McpRuntime {
     current: ArcSwap<PublishedMcpRuntime>,
+    connection_access: RwLock<()>,
+    retired: AtomicBool,
     reconnect_pending: AtomicBool,
     elicitation_router: ElicitationRequestRouter,
 }
@@ -83,6 +86,19 @@ struct PublishedMcpRuntime {
     auth_token: Option<String>,
     plugins_available: bool,
     ready_selected_capability_roots: Vec<SelectedCapabilityRoot>,
+}
+
+impl PublishedMcpRuntime {
+    fn empty(prefix_mcp_tool_names: bool) -> Self {
+        Self {
+            connections: Arc::new(McpConnectionSet::empty(prefix_mcp_tool_names)),
+            config: None,
+            auth: None,
+            auth_token: None,
+            plugins_available: false,
+            ready_selected_capability_roots: Vec::new(),
+        }
+    }
 }
 
 struct McpReconnectGuard<'a> {
@@ -140,14 +156,9 @@ impl McpRuntime {
     /// runtime handle before its full MCP inputs are available.
     pub fn empty(prefix_mcp_tool_names: bool) -> Self {
         Self {
-            current: ArcSwap::from_pointee(PublishedMcpRuntime {
-                connections: Arc::new(McpConnectionSet::empty(prefix_mcp_tool_names)),
-                config: None,
-                auth: None,
-                auth_token: None,
-                plugins_available: false,
-                ready_selected_capability_roots: Vec::new(),
-            }),
+            current: ArcSwap::from_pointee(PublishedMcpRuntime::empty(prefix_mcp_tool_names)),
+            connection_access: RwLock::new(()),
+            retired: AtomicBool::new(false),
             reconnect_pending: AtomicBool::new(false),
             elicitation_router: ElicitationRequestRouter::default(),
         }
@@ -161,16 +172,20 @@ impl McpRuntime {
 
     /// Reconciles configured servers and publishes their immutable runtime snapshot.
     pub async fn replace(&self, input: McpRuntimeInput) {
-        let current = self.current.load_full();
+        let previous = {
+            let _access = self
+                .connection_access
+                .read()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            let current = self.current.load_full();
+            Arc::clone(&current.connections)
+        };
         let mut reconnect = McpReconnectGuard {
             pending: &self.reconnect_pending,
             claimed: self.reconnect_pending.swap(false, Ordering::AcqRel),
         };
-        self.publish(
-            input,
-            (!reconnect.claimed).then_some(current.connections.as_ref()),
-        )
-        .await;
+        self.publish(input, (!reconnect.claimed).then_some(previous.as_ref()))
+            .await;
         reconnect.claimed = false;
     }
 
@@ -196,14 +211,22 @@ impl McpRuntime {
             )
             .await,
         );
-        self.current.store(Arc::new(PublishedMcpRuntime {
+        let published_runtime = Arc::new(PublishedMcpRuntime {
             connections,
             config: Some(config),
             auth,
             auth_token,
             plugins_available,
             ready_selected_capability_roots,
-        }));
+        });
+        let _access = self
+            .connection_access
+            .write()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let is_retired = self.retired.load(Ordering::Acquire);
+        if !is_retired {
+            self.current.store(published_runtime);
+        }
         let _ = publish.send(true);
     }
 
@@ -214,12 +237,22 @@ impl McpRuntime {
 
     /// Captures the latest published configuration and live client handles.
     pub async fn current_binding(&self) -> Option<Arc<McpBinding>> {
-        let current = self.current.load_full();
-        let config = Arc::clone(current.config.as_ref()?);
+        let (config, plugins_available, connections) = {
+            let _access = self
+                .connection_access
+                .read()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            let current = self.current.load_full();
+            let config = Arc::clone(current.config.as_ref()?);
+            (
+                config,
+                current.plugins_available,
+                Arc::clone(&current.connections),
+            )
+        };
         Some(Arc::new(
-            current
-                .connections
-                .capture_binding_with_metadata(config, current.plugins_available)
+            connections
+                .capture_binding_with_metadata(config, plugins_available)
                 .await,
         ))
     }
@@ -326,11 +359,31 @@ impl McpRuntime {
     }
 
     pub(crate) fn latest_connections(&self) -> Arc<McpConnectionSet> {
-        Arc::clone(&self.current.load().connections)
+        let _access = self
+            .connection_access
+            .read()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let current = self.current.load_full();
+        Arc::clone(&current.connections)
     }
 
+    /// Permanently retires the published runtime and waits for existing bindings before shutdown.
     pub async fn shutdown(&self) {
-        self.latest_connections().shutdown().await;
+        let connections = {
+            let _access = self
+                .connection_access
+                .write()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            self.retired.store(true, Ordering::Release);
+            let retired = self.current.swap(Arc::new(PublishedMcpRuntime::empty(
+                /*prefix_mcp_tool_names*/ false,
+            )));
+            Arc::clone(&retired.connections)
+        };
+        while Arc::strong_count(&connections) > 1 {
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+        connections.shutdown().await;
     }
 }
 

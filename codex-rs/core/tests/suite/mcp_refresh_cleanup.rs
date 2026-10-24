@@ -4,6 +4,11 @@ use std::process::Command;
 use std::sync::Arc;
 use std::time::Duration;
 
+#[cfg(target_os = "linux")]
+use std::collections::HashSet;
+#[cfg(target_os = "linux")]
+use std::path::Path;
+
 use codex_config::DEFAULT_MCP_SERVER_ENVIRONMENT_ID;
 use codex_config::types::McpServerConfig;
 use codex_config::types::McpServerTransportConfig;
@@ -16,13 +21,55 @@ use core_test_support::stdio_server_bin;
 use core_test_support::test_codex::test_codex;
 use core_test_support::wait_for_mcp_server;
 
+#[cfg(target_os = "linux")]
+fn pipe_targets(fd_dir: impl AsRef<Path>) -> anyhow::Result<HashSet<String>> {
+    let mut targets = HashSet::new();
+    for entry in fs::read_dir(fd_dir)? {
+        let entry = entry?;
+        let target = match fs::read_link(entry.path()) {
+            Ok(target) => target,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => continue,
+            Err(error) => return Err(error.into()),
+        };
+        let target = target.to_string_lossy();
+        if target.starts_with("pipe:[") {
+            targets.insert(target.into_owned());
+        }
+    }
+    Ok(targets)
+}
+
+#[cfg(target_os = "linux")]
+fn parent_stdio_pipe_targets(pid: &str) -> anyhow::Result<HashSet<String>> {
+    let child = pipe_targets(format!("/proc/{pid}/fd"))?;
+    let parent = pipe_targets("/proc/self/fd")?;
+    Ok(parent.intersection(&child).cloned().collect())
+}
+
+#[cfg(target_os = "linux")]
+async fn wait_for_stdio_pipe_release(targets: &HashSet<String>) -> anyhow::Result<()> {
+    tokio::time::timeout(Duration::from_secs(2), async {
+        loop {
+            let open_targets = pipe_targets("/proc/self/fd")?;
+            if targets.is_disjoint(&open_targets) {
+                return Ok(());
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .map_err(|_| anyhow::anyhow!("timed out waiting for MCP stdio pipe descriptors to close"))?
+}
+
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn refresh_keeps_superseded_mcp_server_alive_for_in_flight_calls() -> anyhow::Result<()> {
+async fn refresh_reaps_superseded_mcp_server_after_in_flight_call_finishes() -> anyhow::Result<()> {
     skip_if_no_network!(Ok(()));
 
     let server = responses::start_mock_server().await;
     let temp_dir = tempfile::tempdir()?;
     let pid_file = temp_dir.path().join("mcp.pid");
+    let release_file = temp_dir.path().join("release-in-flight-call");
+    let shutdown_release_file = temp_dir.path().join("release-shutdown-call");
     let pid_file_for_config = pid_file.clone();
     let command = stdio_server_bin()?;
     let fixture = test_codex()
@@ -74,12 +121,22 @@ async fn refresh_keeps_superseded_mcp_server_alive_for_in_flight_calls() -> anyh
 
     let superseded_pid = wait_for_pid_file(&pid_file).await?;
     assert!(process_is_alive(&superseded_pid)?);
+    #[cfg(target_os = "linux")]
+    let superseded_pipe_targets = {
+        let targets = parent_stdio_pipe_targets(&superseded_pid)?;
+        anyhow::ensure!(
+            !targets.is_empty(),
+            "expected to observe stdio pipe descriptors shared with the MCP server"
+        );
+        targets
+    };
 
     let barrier = serde_json::json!({
         "id": "mcp-refresh-cleanup",
         "participants": 2,
         "timeout_ms": 1_000
     });
+    let release_file_for_call = release_file.to_string_lossy().into_owned();
     let long_call = tokio::spawn({
         let codex = Arc::clone(&fixture.codex);
         let barrier = barrier.clone();
@@ -90,7 +147,7 @@ async fn refresh_keeps_superseded_mcp_server_alive_for_in_flight_calls() -> anyh
                     "sync",
                     Some(serde_json::json!({
                         "barrier": barrier,
-                        "sleep_after_ms": 300_000
+                        "wait_for_file": release_file_for_call
                     })),
                     /*meta*/ None,
                 )
@@ -126,18 +183,73 @@ async fn refresh_keeps_superseded_mcp_server_alive_for_in_flight_calls() -> anyh
     let replacement_pid = wait_for_pid_file(&pid_file).await?;
     assert_ne!(replacement_pid, superseded_pid);
     assert!(process_is_alive(&superseded_pid)?);
-    long_call.abort();
-    assert!(
-        long_call
-            .await
-            .expect_err("call should be aborted")
-            .is_cancelled()
-    );
+    fs::write(&release_file, "finish")?;
+    tokio::time::timeout(Duration::from_secs(10), long_call).await??;
     wait_for_process_exit(&superseded_pid).await?;
+    #[cfg(target_os = "linux")]
+    wait_for_stdio_pipe_release(&superseded_pipe_targets).await?;
     assert!(process_is_alive(&replacement_pid)?);
 
-    fixture.codex.shutdown_and_wait().await?;
-    wait_for_process_exit(&replacement_pid).await
+    #[cfg(target_os = "linux")]
+    let replacement_pipe_targets = {
+        let targets = parent_stdio_pipe_targets(&replacement_pid)?;
+        anyhow::ensure!(
+            !targets.is_empty(),
+            "expected to observe replacement stdio pipe descriptors shared with the MCP server"
+        );
+        targets
+    };
+
+    let shutdown_barrier = serde_json::json!({
+        "id": "mcp-shutdown-cleanup",
+        "participants": 2,
+        "timeout_ms": 1_000
+    });
+    let shutdown_release_file_for_call = shutdown_release_file.to_string_lossy().into_owned();
+    let shutdown_call = tokio::spawn({
+        let codex = Arc::clone(&fixture.codex);
+        let barrier = shutdown_barrier.clone();
+        async move {
+            codex
+                .call_mcp_tool(
+                    "refresh_cleanup",
+                    "sync",
+                    Some(serde_json::json!({
+                        "barrier": barrier,
+                        "wait_for_file": shutdown_release_file_for_call
+                    })),
+                    /*meta*/ None,
+                )
+                .await
+        }
+    });
+    fixture
+        .codex
+        .call_mcp_tool(
+            "refresh_cleanup",
+            "sync",
+            Some(serde_json::json!({ "barrier": shutdown_barrier })),
+            /*meta*/ None,
+        )
+        .await?;
+
+    let shutdown = tokio::spawn({
+        let codex = Arc::clone(&fixture.codex);
+        async move { codex.shutdown_and_wait().await }
+    });
+    tokio::time::sleep(Duration::from_millis(50)).await;
+    assert!(
+        !shutdown.is_finished(),
+        "shutdown should wait for the in-flight MCP call"
+    );
+    assert!(process_is_alive(&replacement_pid)?);
+    fs::write(&shutdown_release_file, "finish")?;
+    tokio::time::timeout(Duration::from_secs(10), shutdown_call).await??;
+    tokio::time::timeout(Duration::from_secs(10), shutdown).await???;
+    wait_for_process_exit(&replacement_pid).await?;
+    #[cfg(target_os = "linux")]
+    wait_for_stdio_pipe_release(&replacement_pipe_targets).await?;
+    Ok(())
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
