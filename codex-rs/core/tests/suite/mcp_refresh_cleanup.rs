@@ -237,11 +237,7 @@ async fn refresh_reaps_superseded_mcp_server_after_in_flight_call_finishes() -> 
         let codex = Arc::clone(&fixture.codex);
         async move { codex.shutdown_and_wait().await }
     });
-    tokio::time::sleep(Duration::from_millis(50)).await;
-    assert!(
-        !shutdown.is_finished(),
-        "shutdown should wait for the in-flight MCP call"
-    );
+    tokio::time::timeout(Duration::from_secs(10), shutdown).await???;
     assert!(process_is_alive(&replacement_pid)?);
     fs::write(&shutdown_release_file, "finish")?;
     tokio::time::timeout(Duration::from_secs(10), shutdown_call).await??;

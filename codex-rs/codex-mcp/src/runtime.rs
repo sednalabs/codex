@@ -367,7 +367,9 @@ impl McpRuntime {
         Arc::clone(&current.connections)
     }
 
-    /// Permanently retires the published runtime and waits for existing bindings before shutdown.
+    /// Permanently retires the published runtime and shuts down idle connections.
+    ///
+    /// Connections retained by existing bindings shut down when their final owner drops.
     pub async fn shutdown(&self) {
         let connections = {
             let _access = self
@@ -380,10 +382,9 @@ impl McpRuntime {
             )));
             Arc::clone(&retired.connections)
         };
-        while Arc::strong_count(&connections) > 1 {
-            tokio::time::sleep(Duration::from_millis(10)).await;
+        if Arc::strong_count(&connections) == 1 {
+            connections.shutdown().await;
         }
-        connections.shutdown().await;
     }
 }
 
