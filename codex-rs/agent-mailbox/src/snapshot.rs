@@ -181,7 +181,7 @@ impl Mailbox {
                 "observation count must be between 1 and 100".into(),
             ));
         }
-        let mut transaction = self.pool.begin().await?;
+        let mut transaction = self.pool.begin_with("BEGIN IMMEDIATE").await?;
         for target in targets {
             match target {
                 ObservationTarget::Work(work_ref) => {

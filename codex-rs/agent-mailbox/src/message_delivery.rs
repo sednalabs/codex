@@ -85,7 +85,7 @@ impl Mailbox {
     /// Withdrawal is durable and idempotent; replies cannot target it afterward.
     pub async fn withdraw_message(&self, sender: ThreadId, id: &str) -> MailboxResult<()> {
         let _input_arrival = self.begin_input_arrival();
-        let mut transaction = self.pool.begin().await?;
+        let mut transaction = self.pool.begin_with("BEGIN IMMEDIATE").await?;
         let row = sqlx::query(
             "SELECT sender, kind, canonical, input_admitted, legacy_attention,
                     CASE WHEN kind IN ('\"note\"', '\"progress\"')
@@ -320,7 +320,7 @@ impl Mailbox {
     /// Mark canonical admission only after the adapter has appended and flushed
     /// the stable ID. This operation is idempotent and recipient-bound.
     pub async fn mark_canonical(&self, recipient: ThreadId, id: &str) -> MailboxResult<()> {
-        let mut transaction = self.pool.begin().await?;
+        let mut transaction = self.pool.begin_with("BEGIN IMMEDIATE").await?;
         let current = sqlx::query(
             "SELECT canonical, input_admitted, legacy_attention, superseded_by, withdrawn,
                     CASE WHEN kind IN ('\"note\"', '\"progress\"')
@@ -382,7 +382,7 @@ impl Mailbox {
     /// Mark a no-response or typed outcome after the adapter has appended its
     /// exact `OutcomeReceipt.id` and flushed canonical history.
     pub async fn mark_outcome_canonical(&self, recipient: ThreadId, id: &str) -> MailboxResult<()> {
-        let mut transaction = self.pool.begin().await?;
+        let mut transaction = self.pool.begin_with("BEGIN IMMEDIATE").await?;
         let result = sqlx::query(
             "UPDATE mailbox_work SET outcome_canonical = 1
              WHERE outcome_id = ? AND issuer = ? AND outcome_json IS NOT NULL",

@@ -74,7 +74,7 @@ impl Mailbox {
                 })?;
         let input_json = serde_json::to_string(&work.input)?;
 
-        let mut transaction = self.pool.begin().await?;
+        let mut transaction = self.pool.begin_with("BEGIN IMMEDIATE").await?;
         if let Some(row) =
             sqlx::query("SELECT * FROM mailbox_work WHERE issuer = ? AND native_key = ?")
                 .bind(work.issuer.to_string())
@@ -245,7 +245,7 @@ impl Mailbox {
     /// Atomically claim native activation. Only the first accepted caller may
     /// send; dispatching work requires exact adapter recovery, never a retry send.
     pub async fn begin_dispatch(&self, work_ref: &WorkRef) -> MailboxResult<DispatchDecision> {
-        let mut transaction = self.pool.begin().await?;
+        let mut transaction = self.pool.begin_with("BEGIN IMMEDIATE").await?;
         let row = exact_work_tx(&mut transaction, work_ref).await?;
         let state = parse_dispatch_state(row.try_get::<String, _>("dispatch_state")?.as_str())?;
         if state != DispatchState::Accepted {
@@ -310,7 +310,7 @@ impl Mailbox {
         work_ref: &WorkRef,
         evidence: RecoveryEvidence,
     ) -> MailboxResult<bool> {
-        let mut transaction = self.pool.begin().await?;
+        let mut transaction = self.pool.begin_with("BEGIN IMMEDIATE").await?;
         let row = exact_work_tx(&mut transaction, work_ref).await?;
         let state = parse_dispatch_state(row.try_get::<String, _>("dispatch_state")?.as_str())?;
         if state == DispatchState::Accepted
@@ -457,7 +457,7 @@ impl Mailbox {
             ));
         }
 
-        let mut transaction = self.pool.begin().await?;
+        let mut transaction = self.pool.begin_with("BEGIN IMMEDIATE").await?;
         let mut work_refs = Vec::with_capacity(ids.len());
         let mut added = false;
         for input_id in &ids {

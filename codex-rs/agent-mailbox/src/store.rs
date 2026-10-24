@@ -9,6 +9,8 @@ use tokio::sync::watch;
 
 #[derive(Clone)]
 pub struct Mailbox {
+    // Read-before-write transactions use BEGIN IMMEDIATE so concurrent custody
+    // writes cannot invalidate a deferred WAL snapshot during its write upgrade.
     pub(crate) pool: SqlitePool,
     change_tx: watch::Sender<u64>,
     pub(crate) waits: Arc<Mutex<HashMap<String, crate::wait_graph::ActiveWait>>>,

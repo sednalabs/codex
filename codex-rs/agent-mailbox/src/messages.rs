@@ -51,7 +51,7 @@ impl Mailbox {
         };
         let inserted_id = id.clone();
         let envelope = {
-            let mut transaction = self.pool.begin().await?;
+            let mut transaction = self.pool.begin_with("BEGIN IMMEDIATE").await?;
             let envelope = insert_message_tx(&mut transaction, draft, Some(inserted_id)).await?;
             transaction.commit().await?;
             envelope

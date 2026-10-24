@@ -40,7 +40,7 @@ impl Mailbox {
     ) -> MailboxResult<TurnOutcomeReceipt> {
         let _input_arrival = self.begin_input_arrival();
         validate_key(source_turn_id)?;
-        let mut transaction = self.pool.begin().await?;
+        let mut transaction = self.pool.begin_with("BEGIN IMMEDIATE").await?;
         let admitted_rows = sqlx::query(
             "SELECT work.* FROM mailbox_work AS work
              JOIN mailbox_admissions AS admission ON admission.work_id = work.id
@@ -365,7 +365,7 @@ impl Mailbox {
         if let Continuation::Terminal(binding) = &continuation {
             validate_binding_for_work(binding, work_ref)?;
         }
-        let mut transaction = self.pool.begin().await?;
+        let mut transaction = self.pool.begin_with("BEGIN IMMEDIATE").await?;
         let mut groups = response_groups(
             &mut transaction,
             std::slice::from_ref(work_ref),

@@ -14,7 +14,7 @@ impl Mailbox {
         sender: ThreadId,
         message_id: &str,
     ) -> MailboxResult<ActivationDecision> {
-        let mut transaction = self.pool.begin().await?;
+        let mut transaction = self.pool.begin_with("BEGIN IMMEDIATE").await?;
         let message =
             sqlx::query("SELECT id FROM mailbox_messages WHERE id = ? AND sender = ? LIMIT 1")
                 .bind(message_id)
@@ -64,7 +64,7 @@ impl Mailbox {
         message_id: &str,
         disposition: ActivationDisposition,
     ) -> MailboxResult<()> {
-        let mut transaction = self.pool.begin().await?;
+        let mut transaction = self.pool.begin_with("BEGIN IMMEDIATE").await?;
         let current = sqlx::query(
             "SELECT sender, state, disposition FROM mailbox_activations WHERE message_id = ?",
         )
