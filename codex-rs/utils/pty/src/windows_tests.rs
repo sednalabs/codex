@@ -304,6 +304,7 @@ async fn conpty_delivers_input_to_foreground_children() -> anyhow::Result<()> {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn conpty_ctrl_c_interrupts_powershell_foreground_child() -> anyhow::Result<()> {
+    const PROMPT_READY_MARKER: &str = "__CODEX_SHELL_PROMPT__";
     let Some(program) = find_powershell() else {
         return Ok(());
     };
@@ -324,7 +325,9 @@ if (-not [CodexPtyTests.ConsoleControl]::SetConsoleCtrlHandler([IntPtr]::Zero, $
         "-NoProfile".to_string(),
         "-NoExit".to_string(),
         "-Command".to_string(),
-        format!("{restore_ctrl_c}\n[Console]::WriteLine('{SHELL_READY_MARKER}')"),
+        format!(
+            "{restore_ctrl_c}\nfunction global:prompt {{ '{PROMPT_READY_MARKER}' }}\n[Console]::WriteLine('{SHELL_READY_MARKER}')"
+        ),
     ];
     let env: HashMap<String, String> = std::env::vars().collect();
     let spawned = spawn_pty_process(
@@ -349,14 +352,23 @@ if (-not [CodexPtyTests.ConsoleControl]::SetConsoleCtrlHandler([IntPtr]::Zero, $
     wait_for_output_contains(&mut output_rx, "127.0.0.1", /*timeout_ms*/ 10_000).await?;
 
     writer.send(vec![0x03]).await?;
-    tokio::time::sleep(tokio::time::Duration::from_millis(200)).await;
-    writer.send(b"cmd.exe /D /C ver\n".to_vec()).await?;
+    let resume_deadline = tokio::time::Instant::now() + Duration::from_millis(10_000);
+    // Use the next prompt as the resumed-input boundary, not a fixed sleep.
+    // Prompt readiness and follow-up output share the existing ten-second window.
     let mut output = wait_for_output_contains(
         &mut output_rx,
-        "Microsoft Windows",
+        PROMPT_READY_MARKER,
         /*timeout_ms*/ 10_000,
     )
     .await?;
+    writer.send(b"cmd.exe /D /C ver\n".to_vec()).await?;
+    let remaining_ms = resume_deadline
+        .saturating_duration_since(tokio::time::Instant::now())
+        .as_millis()
+        .try_into()?;
+    output.extend_from_slice(
+        &wait_for_output_contains(&mut output_rx, "Microsoft Windows", remaining_ms).await?,
+    );
 
     writer.send(b"exit 0\n".to_vec()).await?;
     let (remaining, exit_code) =
