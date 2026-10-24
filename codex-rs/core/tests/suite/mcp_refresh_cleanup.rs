@@ -184,7 +184,7 @@ async fn refresh_reaps_superseded_mcp_server_after_in_flight_call_finishes() -> 
     assert_ne!(replacement_pid, superseded_pid);
     assert!(process_is_alive(&superseded_pid)?);
     fs::write(&release_file, "finish")?;
-    tokio::time::timeout(Duration::from_secs(10), long_call).await??;
+    tokio::time::timeout(Duration::from_secs(10), long_call).await???;
     wait_for_process_exit(&superseded_pid).await?;
     #[cfg(target_os = "linux")]
     wait_for_stdio_pipe_release(&superseded_pipe_targets).await?;
@@ -240,7 +240,7 @@ async fn refresh_reaps_superseded_mcp_server_after_in_flight_call_finishes() -> 
     tokio::time::timeout(Duration::from_secs(10), shutdown).await???;
     assert!(process_is_alive(&replacement_pid)?);
     fs::write(&shutdown_release_file, "finish")?;
-    tokio::time::timeout(Duration::from_secs(10), shutdown_call).await??;
+    tokio::time::timeout(Duration::from_secs(10), shutdown_call).await???;
     wait_for_process_exit(&replacement_pid).await?;
     #[cfg(target_os = "linux")]
     wait_for_stdio_pipe_release(&replacement_pipe_targets).await?;
