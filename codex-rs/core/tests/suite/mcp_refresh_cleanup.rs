@@ -136,7 +136,7 @@ async fn refresh_reaps_superseded_mcp_server_after_in_flight_call_finishes() -> 
     assert!(process_is_alive(&superseded_pid)?);
     #[cfg(target_os = "linux")]
     let superseded_pipe_ids = {
-        let child_targets = fixture
+        let child_pipe_ids = fixture
             .codex
             .call_mcp_tool(
                 "refresh_cleanup",
@@ -216,7 +216,7 @@ async fn refresh_reaps_superseded_mcp_server_after_in_flight_call_finishes() -> 
 
     #[cfg(target_os = "linux")]
     let replacement_pipe_ids = {
-        let child_targets = fixture
+        let child_pipe_ids = fixture
             .codex
             .call_mcp_tool(
                 "refresh_cleanup",
