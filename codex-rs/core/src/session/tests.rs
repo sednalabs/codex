@@ -11072,13 +11072,10 @@ async fn model_baseline_overlay_reaches_fresh_root_and_child_request_payloads() 
             );
             let developer_messages = developer_message_texts(&request.input);
             assert!(
-                developer_messages
-                    .iter()
-                    .flatten()
-                    .all(|text| {
-                        !text.contains(BLOCKING_WAIT_TARGET)
-                            && !text.contains(COMMENTARY_CADENCE_TARGET)
-                    }),
+                developer_messages.iter().flatten().all(|text| {
+                    !text.contains(BLOCKING_WAIT_TARGET)
+                        && !text.contains(COMMENTARY_CADENCE_TARGET)
+                }),
                 "the final {model_slug} {thread_kind} developer payload must omit both configured targets"
             );
             assert!(
@@ -11089,7 +11086,10 @@ async fn model_baseline_overlay_reaches_fresh_root_and_child_request_payloads() 
             );
             assert!(
                 prompt.base_instructions.text.contains(BLOCKING_WAIT_TARGET)
-                    && prompt.base_instructions.text.contains(COMMENTARY_CADENCE_TARGET),
+                    && prompt
+                        .base_instructions
+                        .text
+                        .contains(COMMENTARY_CADENCE_TARGET),
                 "request transformation must not mutate the production prompt history"
             );
         }

@@ -1857,9 +1857,15 @@ impl Session {
                                 Some(BaseInstructionsProvenance::Model { .. })
                             )
                     } else if let Some(base) = initial_history.get_base_instructions() {
-                        matches!(base.provenance, Some(BaseInstructionsProvenance::Model { .. }))
+                        matches!(
+                            base.provenance,
+                            Some(BaseInstructionsProvenance::Model { .. })
+                        )
                     } else {
-                        matches!(&initial_history, InitialHistory::New | InitialHistory::Cleared)
+                        matches!(
+                            &initial_history,
+                            InitialHistory::New | InitialHistory::Cleared
+                        )
                     },
                 )
                 .with_restored_history(matches!(

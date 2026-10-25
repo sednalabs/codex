@@ -4231,9 +4231,7 @@ impl Session {
         communication: impl Into<crate::PendingAgentMessage>,
     ) -> codex_protocol::error::Result<()> {
         let communication = communication.into();
-        let durable_input_id = communication
-            .durable_input_id()
-            .map(str::to_string);
+        let durable_input_id = communication.durable_input_id().map(str::to_string);
         let durable_message_id = communication
             .delivery
             .as_ref()
@@ -4246,7 +4244,9 @@ impl Session {
             ));
         }
         if durable_message_id.as_deref().is_some_and(|message_id| {
-            response_item.id().is_none_or(|id| id.as_str() != message_id)
+            response_item
+                .id()
+                .is_none_or(|id| id.as_str() != message_id)
         }) {
             return Err(codex_protocol::error::CodexErr::Fatal(
                 "accepted durable mailbox message ID does not match its canonical response item"
@@ -4324,9 +4324,18 @@ impl Session {
             });
             let order = (!already_present).then(|| state.history.reserve_input_order());
             let pending = (!already_present).then(|| self.pending_code_mode_message_recordings());
-            (order, pending, already_present, append_pending, existing_item)
+            (
+                order,
+                pending,
+                already_present,
+                append_pending,
+                existing_item,
+            )
         };
-        if already_present && append_pending && let Some(existing_item) = existing_item {
+        if already_present
+            && append_pending
+            && let Some(existing_item) = existing_item
+        {
             response_item = ResponseItemEnvelope::new(existing_item);
         }
         if let (Some(order), Some(pending)) = (order, pending) {
@@ -4400,7 +4409,8 @@ impl Session {
                 delivery.consumed(self.thread_id);
             }
         }
-        let should_publish_item = !already_present || (durable_input_id.is_some() && append_pending);
+        let should_publish_item =
+            !already_present || (durable_input_id.is_some() && append_pending);
         let raw_item = response_item.item.clone();
         drop(boundary);
         if should_publish_item {
@@ -4537,12 +4547,12 @@ impl Session {
                     .and_then(crate::agent_communication::MessageDelivery::durable_message_id)
                     .map(str::to_string);
                 let mut response_item = pending.to_model_input_item();
-                if response_item
-                    .id()
-                    .is_none_or(|id| id.as_str() != input_id)
-                    || message_id
-                        .as_deref()
-                        .is_some_and(|id| response_item.id().is_none_or(|item_id| item_id.as_str() != id))
+                if response_item.id().is_none_or(|id| id.as_str() != input_id)
+                    || message_id.as_deref().is_some_and(|id| {
+                        response_item
+                            .id()
+                            .is_none_or(|item_id| item_id.as_str() != id)
+                    })
                 {
                     tracing::error!("durable mailbox compaction input has mismatched stable IDs");
                     return false;

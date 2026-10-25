@@ -85,7 +85,10 @@ impl AgentCommunicationContext {
 
     pub(crate) fn is_native_message(&self) -> bool {
         self.native_key.is_some()
-            && matches!(self.kind, AgentCommunicationKind::Message | AgentCommunicationKind::Result)
+            && matches!(
+                self.kind,
+                AgentCommunicationKind::Message | AgentCommunicationKind::Result
+            )
     }
 
     pub(crate) fn is_completion_result(&self) -> bool {

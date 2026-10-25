@@ -116,7 +116,9 @@ impl LocalAgentControl {
             let logical_goal = match outcome.logical_goal.as_ref() {
                 Ok(goal) => goal,
                 Err(error) => {
-                    debug!("failed to capture native logical goal for terminal work outcome: {error}");
+                    debug!(
+                        "failed to capture native logical goal for terminal work outcome: {error}"
+                    );
                     return;
                 }
             };
@@ -196,7 +198,9 @@ impl LocalAgentControl {
                     )
                     .await
                 {
-                    debug!("failed to admit durable terminal response to parent input queue: {error}");
+                    debug!(
+                        "failed to admit durable terminal response to parent input queue: {error}"
+                    );
                     return;
                 }
                 if let Some(message) = trace_message.as_ref() {
@@ -222,11 +226,9 @@ impl LocalAgentControl {
             message,
             /*trigger_turn*/ false,
         );
-        let context = AgentCommunicationContext::new(
-            AgentCommunicationKind::Result,
-            outcome.thread_id,
-        )
-        .with_native_key(Some(outcome.turn_id.clone()));
+        let context =
+            AgentCommunicationContext::new(AgentCommunicationKind::Result, outcome.thread_id)
+                .with_native_key(Some(outcome.turn_id.clone()));
         let delivery = self
             .send_inter_agent_communication(
                 parent_thread_id,

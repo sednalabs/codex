@@ -22,9 +22,15 @@ function Invoke-BestEffort {
     }
 }
 
+$FormatVolumeCommand = Get-Command Format-Volume -ErrorAction SilentlyContinue
+$SupportsDevDrive = $null -ne $FormatVolumeCommand -and $FormatVolumeCommand.Parameters.ContainsKey("DevDrive")
+
 if ((Test-Path "D:\") -and (Test-DevDrive "D:")) {
     Write-Output "Using existing Dev Drive at D:"
     $Drive = "D:"
+} elseif (($env:GITHUB_ACTIONS -eq "true") -and (-not $SupportsDevDrive)) {
+    $Drive = if (Test-Path "D:\") { "D:" } else { $env:SystemDrive }
+    Write-Warning "Dev Drive creation is unavailable on this hosted runner; using $Drive without Dev Drive optimizations."
 } else {
     if (Test-Path "D:\") {
         Write-Output "Existing D: volume is not a Dev Drive; provisioning a new Dev Drive VHD."

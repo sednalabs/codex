@@ -94,9 +94,7 @@ mod tests {
     fn source_build_version_is_not_checked() {
         assert!(is_source_build_version("0.0.0"));
         assert!(is_source_build_version("0.164.0-dev"));
-        assert!(is_source_build_version(
-            "0.164.0-dev.distro.1+build.1"
-        ));
+        assert!(is_source_build_version("0.164.0-dev.distro.1+build.1"));
         assert!(!is_source_build_version("0.1.0"));
         assert!(!is_source_build_version("0.164.0-beta.1"));
     }

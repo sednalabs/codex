@@ -65,13 +65,14 @@ impl BaseInstructionsFragment {
         if kinds_are_empty {
             message_metadata.content_item_kinds = None;
         }
-        let metadata_is_empty = message_metadata
-            .content_item_metadata
-            .as_mut()
-            .is_some_and(|metadata| {
-                metadata.remove(content_index);
-                metadata.is_empty()
-            });
+        let metadata_is_empty =
+            message_metadata
+                .content_item_metadata
+                .as_mut()
+                .is_some_and(|metadata| {
+                    metadata.remove(content_index);
+                    metadata.is_empty()
+                });
         if metadata_is_empty {
             message_metadata.content_item_metadata = None;
         }

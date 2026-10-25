@@ -578,8 +578,7 @@ fn developer_overlay_reaches_fresh_root_and_child_request_payloads() -> anyhow::
         assert!(developer_text.contains("Guidance before.  Guidance after."));
         assert!(developer_text.contains(UNSELECTED));
         assert_eq!(
-            prompt.input,
-            original_input,
+            prompt.input, original_input,
             "request overlay must not mutate history"
         );
     }
@@ -612,7 +611,11 @@ fn incremental_model_baseline_overlay_preserves_notice_and_history() -> anyhow::
         crate::context::world_state::PreviousSectionState::Known(&previous_snapshot),
     );
     let history = crate::context_manager::updates::merge_world_state_updates(updates);
-    assert_eq!(history.len(), 1, "the model change should be one history item");
+    assert_eq!(
+        history.len(),
+        1,
+        "the model change should be one history item"
+    );
     assert_eq!(
         crate::context::BaseInstructionsFragment::text_from_item(&history[0]),
         Some(CURRENT_BASELINE),
@@ -677,9 +680,10 @@ fn incremental_model_baseline_overlay_preserves_notice_and_history() -> anyhow::
         .join("\n");
     assert_eq!(developer_text.matches(EDITED_BASELINE).count(), 1);
     assert!(developer_text.contains("The current model is gpt-current."));
-    assert!(developer_text.contains(
-        "The following instructions replace the previous base instructions:"
-    ));
+    assert!(
+        developer_text
+            .contains("The following instructions replace the previous base instructions:")
+    );
     assert!(developer_text.contains(EDITED_BASELINE));
     assert!(!developer_text.contains(CURRENT_BASELINE));
 
@@ -694,9 +698,10 @@ fn incremental_model_baseline_overlay_preserves_notice_and_history() -> anyhow::
     );
     let retained_history_text = developer_item_text(&prompt.input[0]);
     assert!(retained_history_text.contains("The current model is gpt-current."));
-    assert!(retained_history_text.contains(
-        "The following instructions replace the previous base instructions:"
-    ));
+    assert!(
+        retained_history_text
+            .contains("The following instructions replace the previous base instructions:")
+    );
     Ok(())
 }
 
@@ -706,10 +711,7 @@ fn model_baseline_selector_is_scoped_to_exact_model_slugs() -> anyhow::Result<()
     let overlays = InstructionOverlaysToml {
         model_baseline: Some(InstructionOverlayComponentToml {
             on_absent: InstructionOverlayOnAbsent::Error,
-            models: Some(vec![
-                "gpt-6.1-sol".to_string(),
-                "gpt-6-luna".to_string(),
-            ]),
+            models: Some(vec!["gpt-6.1-sol".to_string(), "gpt-6-luna".to_string()]),
             edits: vec![InstructionOverlayEdit::RemoveExact {
                 text: SELECTED_ONLY_MARKER.to_string(),
                 expected_matches: 1,

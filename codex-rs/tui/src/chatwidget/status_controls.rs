@@ -508,9 +508,9 @@ impl ChatWidget {
                 };
                 Some(format!("{base} ({signal})"))
             }
-            codex_config::types::WeeklyLimitPacingStyle::Ratio => {
-                Some(format!("{label} {usage_remaining_pct:.0}%/{time_remaining_pct:.0}%"))
-            }
+            codex_config::types::WeeklyLimitPacingStyle::Ratio => Some(format!(
+                "{label} {usage_remaining_pct:.0}%/{time_remaining_pct:.0}%"
+            )),
         }
     }
 

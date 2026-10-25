@@ -357,11 +357,8 @@ impl McpRuntime {
             pending: &self.reconnect_pending,
             claimed: self.reconnect_pending.swap(false, Ordering::AcqRel),
         };
-        self.publish(
-            input,
-            (!reconnect.claimed).then_some(previous.as_ref()),
-        )
-        .await;
+        self.publish(input, (!reconnect.claimed).then_some(previous.as_ref()))
+            .await;
         reconnect.claimed = false;
     }
 

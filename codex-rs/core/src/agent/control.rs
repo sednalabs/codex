@@ -1,8 +1,8 @@
+use self::mailbox_v2::MailboxActivationPlan;
+use self::mailbox_v2::envelope_preempts_active_turn;
 use crate::TurnInputRequest;
 use crate::TurnInputSubmission;
 use crate::TurnStartOptions;
-use self::mailbox_v2::envelope_preempts_active_turn;
-use self::mailbox_v2::MailboxActivationPlan;
 use crate::agent::AgentStatus;
 use crate::agent::role::DEFAULT_ROLE_NAME;
 use crate::agent::role::resolve_role_config;
@@ -293,16 +293,10 @@ impl LocalAgentControl {
         };
 
         let durable_message = self
-            .mailbox_v2_accept_native_message(
-                agent_id,
-                &context,
-                &communication,
-            )
+            .mailbox_v2_accept_native_message(agent_id, &context, &communication)
             .await?;
         let activation_plan = match durable_message.as_ref() {
-            Some(envelope) => self
-                .mailbox_v2_activation_plan(agent_id, envelope)
-                .await?,
+            Some(envelope) => self.mailbox_v2_activation_plan(agent_id, envelope).await?,
             None => MailboxActivationPlan::QueueOnly,
         };
         if activation_plan == MailboxActivationPlan::AlreadyActivated {

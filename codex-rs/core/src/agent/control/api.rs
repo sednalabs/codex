@@ -282,9 +282,7 @@ impl AgentControl for LocalAgentControl {
         turn_id: &'a str,
         ids: Vec<String>,
     ) -> BoxFuture<'a, Result<()>> {
-        Box::pin(async move {
-            self.mailbox_v2_record_admission(agent, turn_id, &ids).await
-        })
+        Box::pin(async move { self.mailbox_v2_record_admission(agent, turn_id, &ids).await })
     }
 
     fn mailbox_v2(&self) -> Option<std::sync::Arc<codex_agent_mailbox::Mailbox>> {
@@ -297,7 +295,9 @@ impl AgentControl for LocalAgentControl {
     ) -> BoxFuture<'a, Result<Option<std::sync::Arc<codex_agent_mailbox::Mailbox>>>> {
         Box::pin(async move {
             if config.multi_agent_version_from_features() != MultiAgentVersion::V2
-                || !config.features.enabled(codex_features::Feature::AgentMailbox)
+                || !config
+                    .features
+                    .enabled(codex_features::Feature::AgentMailbox)
             {
                 return Ok(None);
             }

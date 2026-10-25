@@ -160,11 +160,10 @@ fn build_agent_shared_config(turn: &TurnContext) -> Result<Config, String> {
             .subagent_developer_instructions
             .clone()
     {
-        config.client_owned_developer_instructions = config
-            .multi_agent_text_is_client_owned(
-                "subagent_developer_instructions",
-                &developer_instructions,
-            );
+        config.client_owned_developer_instructions = config.multi_agent_text_is_client_owned(
+            "subagent_developer_instructions",
+            &developer_instructions,
+        );
         config.developer_instructions = Some(developer_instructions);
     }
     apply_spawn_agent_runtime_overrides(&mut config, turn)?;

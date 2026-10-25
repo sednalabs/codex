@@ -129,9 +129,9 @@ use codex_protocol::permissions::FileSystemSandboxPolicyContext;
 use codex_protocol::permissions::NetworkSandboxPolicy;
 use codex_protocol::protocol::AskForApproval;
 use codex_protocol::protocol::MultiAgentVersion;
+use codex_protocol::protocol::SandboxPolicy;
 use codex_protocol::protocol::SessionSource;
 use codex_protocol::protocol::SubAgentSource;
-use codex_protocol::protocol::SandboxPolicy;
 use codex_rmcp_client::McpOAuthRefreshMode;
 use codex_sandboxing::SandboxType;
 pub use codex_thread_store::ExtraConfig;
@@ -5347,8 +5347,8 @@ mod instruction_overlay_origin_tests {
     fn developer_instruction_overlay_eligibility_uses_the_winning_origin() {
         let home = tempfile::tempdir().expect("temporary config home");
         let path = AbsolutePathBuf::from_absolute_path(home.path()).expect("absolute path");
-        let config: TomlValue = toml::from_str("developer_instructions = 'guidance'")
-            .expect("parse config value");
+        let config: TomlValue =
+            toml::from_str("developer_instructions = 'guidance'").expect("parse config value");
         let user = ConfigLayerEntry::new(
             ConfigLayerSource::User {
                 file: path.join("config.toml"),
@@ -5362,23 +5362,17 @@ mod instruction_overlay_origin_tests {
             },
             config,
         );
-        let user_stack = ConfigLayerStack::new(
-            vec![user.clone()],
-            Default::default(),
-            Default::default(),
-        )
-        .expect("user stack");
+        let user_stack =
+            ConfigLayerStack::new(vec![user.clone()], Default::default(), Default::default())
+                .expect("user stack");
         assert!(Config::instruction_origin_is_client_owned(
             &user_stack,
             "developer_instructions"
         ));
 
-        let managed_winner = ConfigLayerStack::new(
-            vec![user, managed],
-            Default::default(),
-            Default::default(),
-        )
-        .expect("managed stack");
+        let managed_winner =
+            ConfigLayerStack::new(vec![user, managed], Default::default(), Default::default())
+                .expect("managed stack");
         assert!(!Config::instruction_origin_is_client_owned(
             &managed_winner,
             "developer_instructions"

@@ -150,9 +150,10 @@ class RunBazelWithBuildBuddyTest(unittest.TestCase):
 
     def test_same_repository_pull_request_selects_openai_host(self) -> None:
         with TemporaryDirectory() as temp_dir:
+            env = self.github_env(temp_dir)
             self.assertEqual(
                 run_bazel_with_buildbuddy.remote_config(
-                    ["build", "--config=ci-v8"], self.github_env(temp_dir)
+                    ["build", "--config=ci-v8"], env
                 ),
                 "buildbuddy-openai-rbe",
             )

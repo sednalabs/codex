@@ -7,16 +7,16 @@
 
 use super::LocalAgentControl;
 use crate::PendingAgentMessage;
-use crate::agent_communication::MessageDelivery;
 use crate::agent_communication::AgentCommunicationContext;
+use crate::agent_communication::MessageDelivery;
 use crate::config::Config;
-use codex_agent_mailbox::Envelope;
-use codex_agent_mailbox::MessageDraft;
-use codex_agent_mailbox::MessageKind;
-use codex_agent_mailbox::DispatchDecision;
 use codex_agent_mailbox::ActivationDecision;
 use codex_agent_mailbox::ActivationDisposition;
+use codex_agent_mailbox::DispatchDecision;
+use codex_agent_mailbox::Envelope;
 use codex_agent_mailbox::Mailbox;
+use codex_agent_mailbox::MessageDraft;
+use codex_agent_mailbox::MessageKind;
 use codex_agent_mailbox::NativeWork;
 use codex_agent_mailbox::RecoveryEvidence;
 use codex_agent_mailbox::WorkRef;
@@ -149,12 +149,12 @@ impl LocalAgentControl {
             let sender = envelope.sender;
             let message_id = envelope.id.clone();
             async move {
-            mailbox
-                .record_activation(sender, &message_id, ActivationDisposition::Denied)
-                .await
-                .map_err(storage_error)?;
-            tracing::debug!(message_id = %message_id, %reason, "native mailbox idle activation denied");
-            Ok::<_, CodexErr>(MailboxActivationPlan::QueueOnly)
+                mailbox
+                    .record_activation(sender, &message_id, ActivationDisposition::Denied)
+                    .await
+                    .map_err(storage_error)?;
+                tracing::debug!(message_id = %message_id, %reason, "native mailbox idle activation denied");
+                Ok::<_, CodexErr>(MailboxActivationPlan::QueueOnly)
             }
         };
         let metadata = match self.runtime.ensure_agent_known(recipient) {
@@ -174,9 +174,7 @@ impl LocalAgentControl {
             _ => return deny("recipient_is_not_live").await,
         };
         let config = thread.session.get_config().await;
-        if !compatible(&config)
-            || !config.features.enabled(Feature::AgentMailboxIdleActivation)
-        {
+        if !compatible(&config) || !config.features.enabled(Feature::AgentMailboxIdleActivation) {
             return deny("recipient_idle_activation_is_not_enabled").await;
         }
         if thread.session.active_turn.lock().await.is_some() {
@@ -347,10 +345,7 @@ impl LocalAgentControl {
                 .enabled(Feature::AgentMailboxIdleActivation);
         let envelope = mailbox
             .accept_message(MessageDraft {
-                invocation_key: format!(
-                    "{}:{}:{native_key}",
-                    context.sender_thread_id, recipient
-                ),
+                invocation_key: format!("{}:{}:{native_key}", context.sender_thread_id, recipient),
                 sender: context.sender_thread_id,
                 recipient,
                 communication: communication.clone(),
@@ -639,10 +634,7 @@ impl LocalAgentControl {
             })
             .await
             .map_err(storage_error)?;
-        *communication = mailbox
-            .accepted_input(&work)
-            .await
-            .map_err(storage_error)?;
+        *communication = mailbox.accepted_input(&work).await.map_err(storage_error)?;
         *submission_id = work.submission_id.clone();
         let decision = mailbox.begin_dispatch(&work).await.map_err(storage_error)?;
         Ok(Some((work, decision)))

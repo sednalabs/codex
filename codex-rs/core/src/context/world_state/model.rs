@@ -140,15 +140,15 @@ impl WorldStateSection for ModelInstructionsState {
                 instructions: instructions_changed.then(|| self.instructions.clone()),
             };
             if self.client_owned_base_instructions {
-                vec![WorldStateUpdate::prefix_item(
-                    ClientOwnedModelInstructions::from_model_instructions(instructions)
-                        .into_response_item(),
-                )
-                .standalone()]
+                vec![
+                    WorldStateUpdate::prefix_item(
+                        ClientOwnedModelInstructions::from_model_instructions(instructions)
+                            .into_response_item(),
+                    )
+                    .standalone(),
+                ]
             } else {
-                WorldStateUpdate::optional_standalone_boxed_fragment(Some(Box::new(
-                    instructions,
-                )))
+                WorldStateUpdate::optional_standalone_boxed_fragment(Some(Box::new(instructions)))
             }
         } else {
             let fragment = (model_changed && !self.instructions.is_empty()).then(|| {

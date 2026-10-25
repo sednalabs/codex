@@ -99,10 +99,9 @@ impl WorldStateSection for MultiAgentUsageHintState {
                         .with_metadata(ContentItemMetadata::tool(self.namespace.clone())),
                     ))
                 } else {
-                    Some(Box::new(
-                        self.clone()
-                            .with_metadata(ContentItemMetadata::tool(self.namespace.clone())),
-                    ))
+                    Some(Box::new(self.clone().with_metadata(
+                        ContentItemMetadata::tool(self.namespace.clone()),
+                    )))
                 }
             }
         };

@@ -127,7 +127,7 @@ pub(crate) fn ensure_terminal_responses(
                 "typed outcome envelope byte limit",
             ));
         }
-        let mut communication = InterAgentCommunication::new(
+        let communication = InterAgentCommunication::new(
             group.author.clone(),
             group.recipient.clone(),
             Vec::new(),

@@ -1,11 +1,11 @@
 use super::*;
+use crate::agent_communication::MessageDelivery;
+use crate::agent_communication::PendingAgentMessage;
 use crate::session::InputQueueActivity;
 use crate::session::session::Session;
 use crate::session::turn_context::TurnContext;
 use crate::tools::handlers::multi_agents_spec::WaitAgentTimeoutOptions;
 use crate::tools::handlers::multi_agents_spec::create_wait_agent_tool_v2;
-use crate::agent_communication::MessageDelivery;
-use crate::agent_communication::PendingAgentMessage;
 use codex_agent_mailbox::DispatchState;
 use codex_agent_mailbox::Mailbox;
 use codex_agent_mailbox::MessageKind;
@@ -94,7 +94,9 @@ impl Handler {
             .agent_control
             .mailbox_v2_open(&turn.config)
             .await
-            .map_err(|error| FunctionCallError::RespondToModel(format!("mailbox operation failed: {error}")))?;
+            .map_err(|error| {
+                FunctionCallError::RespondToModel(format!("mailbox operation failed: {error}"))
+            })?;
         if let Some(mailbox) = mailbox {
             return handle_mailbox_wait(
                 session,
@@ -199,24 +201,32 @@ fn validate_wait_selectors(
     replies_to: &[String],
 ) -> Result<(), FunctionCallError> {
     if targets.len() + replies_to.len() > 100 {
-        return Err(mailbox_error("at most 100 exact work/reply selectors are supported"));
+        return Err(mailbox_error(
+            "at most 100 exact work/reply selectors are supported",
+        ));
     }
     let mut total_bytes = 0_usize;
     for selector in targets.iter().chain(replies_to) {
         if selector.len() > 256 {
-            return Err(mailbox_error("each work/reply selector must be at most 256 UTF-8 bytes"));
+            return Err(mailbox_error(
+                "each work/reply selector must be at most 256 UTF-8 bytes",
+            ));
         }
         total_bytes = total_bytes.saturating_add(selector.len());
     }
     if total_bytes > 8_192 {
-        return Err(mailbox_error("combined work/reply selectors exceed 8192 UTF-8 bytes"));
+        return Err(mailbox_error(
+            "combined work/reply selectors exceed 8192 UTF-8 bytes",
+        ));
     }
     Ok(())
 }
 
 fn validate_wait_report(report: &MailboxWaitReport) -> Result<(), FunctionCallError> {
     if serde_json::to_vec(report).map_err(mailbox_error)?.len() > 16_384 {
-        return Err(mailbox_error("resolved wait report exceeds 16384 bytes; select fewer exact references"));
+        return Err(mailbox_error(
+            "resolved wait report exceeds 16384 bytes; select fewer exact references",
+        ));
     }
     Ok(())
 }
@@ -279,11 +289,7 @@ fn readable_agent_name(session: &Session, agent: codex_protocol::ThreadId) -> St
         .unwrap_or_else(|| agent.to_string())
 }
 
-fn update_report(
-    session: &Session,
-    report: &mut MailboxWaitReport,
-    selected: &[SnapshotItem],
-) {
+fn update_report(session: &Session, report: &mut MailboxWaitReport, selected: &[SnapshotItem]) {
     report.completed.clear();
     report.pending.clear();
     for item in selected {
@@ -300,13 +306,15 @@ fn update_report(
                 } else {
                     work.outcome.as_ref().map_or_else(
                         || "pending".to_string(),
-                        |outcome| match outcome.outcome {
-                            Outcome::Completed => "completed",
-                            Outcome::Failed => "failed",
-                            Outcome::Cancelled => "cancelled",
-                            Outcome::NeedsAttention => "needs_attention",
-                        }
-                        .to_string(),
+                        |outcome| {
+                            match outcome.outcome {
+                                Outcome::Completed => "completed",
+                                Outcome::Failed => "failed",
+                                Outcome::Cancelled => "cancelled",
+                                Outcome::NeedsAttention => "needs_attention",
+                            }
+                            .to_string()
+                        },
                     )
                 };
                 (
@@ -373,7 +381,9 @@ async fn deliver_envelope(
     envelope: &codex_agent_mailbox::Envelope,
 ) -> Result<(), FunctionCallError> {
     if envelope.recipient != session.thread_id {
-        return Err(mailbox_error("mailbox body is not addressed to this native thread"));
+        return Err(mailbox_error(
+            "mailbox body is not addressed to this native thread",
+        ));
     }
     let pending = PendingAgentMessage::new(
         envelope.communication.clone(),
@@ -519,7 +529,9 @@ async fn handle_mailbox_wait(
     let mut unique = HashSet::new();
     selectors.retain(|selector| unique.insert(selector_key(selector)));
     if selectors.len() > 100 {
-        return Err(mailbox_error("at most 100 exact work/reply joins are supported"));
+        return Err(mailbox_error(
+            "at most 100 exact work/reply joins are supported",
+        ));
     }
 
     // Subscribe before the authoritative reads so no mailbox publication can be missed.
@@ -664,7 +676,8 @@ async fn handle_mailbox_wait(
                 match item {
                     SnapshotItem::Work(work) => {
                         report.wake_ref = Some(work.work_ref.id.clone());
-                        report.wake_sender = Some(readable_agent_name(&session, work.work_ref.agent));
+                        report.wake_sender =
+                            Some(readable_agent_name(&session, work.work_ref.agent));
                     }
                     SnapshotItem::Request(request) => {
                         report.wake_ref = Some(request.request_id.clone());
@@ -847,40 +860,52 @@ async fn handle_mailbox_wait(
         report.condition_satisfied = false;
     }
     update_report(&session, &mut report, &selected);
-    report.quiet_count = mailbox.quiet_count(session.thread_id).await.unwrap_or(report.quiet_count);
+    report.quiet_count = mailbox
+        .quiet_count(session.thread_id)
+        .await
+        .unwrap_or(report.quiet_count);
     validate_wait_report(&report)?;
-    let completed = wait_report_item(&session, &call_id, &report, CollabAgentToolCallStatus::Completed, &agents);
+    let completed = wait_report_item(
+        &session,
+        &call_id,
+        &report,
+        CollabAgentToolCallStatus::Completed,
+        &agents,
+    );
     session.emit_turn_item_completed(&turn, completed).await;
     turn.session_telemetry.record_duration(
         "codex.multi_agent.wait.duration_ms",
         started.elapsed(),
         &[(
             "outcome",
-            match report.completion_reason.unwrap_or(MailboxWakeCause::RuntimeFault) {
-                    MailboxWakeCause::Result
-                    | MailboxWakeCause::Reply
-                    | MailboxWakeCause::AlreadySatisfied => "completed",
-                    MailboxWakeCause::Deadline => "timed_out",
-                    MailboxWakeCause::Human
-                    | MailboxWakeCause::Request
-                    | MailboxWakeCause::NeedsAttention => "interrupted",
-                    _ => "faulted",
+            match report
+                .completion_reason
+                .unwrap_or(MailboxWakeCause::RuntimeFault)
+            {
+                MailboxWakeCause::Result
+                | MailboxWakeCause::Reply
+                | MailboxWakeCause::AlreadySatisfied => "completed",
+                MailboxWakeCause::Deadline => "timed_out",
+                MailboxWakeCause::Human
+                | MailboxWakeCause::Request
+                | MailboxWakeCause::NeedsAttention => "interrupted",
+                _ => "faulted",
             },
         )],
     );
     let timed_out = report.completion_reason == Some(MailboxWakeCause::Deadline);
     let mut message = match report.completion_reason {
         Some(
-            MailboxWakeCause::Result
-            | MailboxWakeCause::Reply
-            | MailboxWakeCause::AlreadySatisfied,
+            MailboxWakeCause::Result | MailboxWakeCause::Reply | MailboxWakeCause::AlreadySatisfied,
         ) => "Wait condition satisfied.".to_string(),
         Some(MailboxWakeCause::Deadline) => "Wait timed out.".to_string(),
         Some(MailboxWakeCause::Human) => "Wait interrupted by new input.".to_string(),
         Some(MailboxWakeCause::Request | MailboxWakeCause::NeedsAttention) => {
             "Wait interrupted by mailbox attention.".to_string()
         }
-        Some(MailboxWakeCause::Cancel | MailboxWakeCause::Interrupted) => "Wait cancelled.".to_string(),
+        Some(MailboxWakeCause::Cancel | MailboxWakeCause::Interrupted) => {
+            "Wait cancelled.".to_string()
+        }
         Some(MailboxWakeCause::NoMatchingWork) => "No matching mailbox work was found.".to_string(),
         Some(MailboxWakeCause::Cycle) => {
             "Wait stopped because the native dependency graph is cyclic.".to_string()

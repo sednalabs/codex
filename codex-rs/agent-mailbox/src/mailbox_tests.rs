@@ -188,7 +188,14 @@ async fn finish(
     continuation: Continuation,
 ) -> TurnOutcomeReceipt {
     mailbox
-        .record_turn_outcome(agent, turn, outcome, response, continuation, /*activate_if_idle*/ false)
+        .record_turn_outcome(
+            agent,
+            turn,
+            outcome,
+            response,
+            continuation,
+            /*activate_if_idle*/ false,
+        )
         .await
         .expect("record turn outcome")
 }
@@ -1664,11 +1671,10 @@ async fn activation_receipt_waits_for_an_existing_writer() {
         .begin_with("BEGIN IMMEDIATE")
         .await
         .unwrap();
-    let receipt = fixture.mailbox.record_activation(
-        sender,
-        &message.id,
-        ActivationDisposition::Denied,
-    );
+    let receipt =
+        fixture
+            .mailbox
+            .record_activation(sender, &message.id, ActivationDisposition::Denied);
     tokio::pin!(receipt);
     let while_locked =
         tokio::time::timeout(std::time::Duration::from_millis(100), &mut receipt).await;

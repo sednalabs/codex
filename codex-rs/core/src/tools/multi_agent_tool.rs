@@ -3,9 +3,8 @@
 
 use crate::session::session::Session;
 use crate::tools::context::ToolInvocation;
-use crate::tools::handlers::multi_agents_spec::{
-    SEND_MESSAGE_TOOL_DESCRIPTION_MAILBOX, SEND_MESSAGE_TOOL_DESCRIPTION_V2,
-};
+use crate::tools::handlers::multi_agents_spec::SEND_MESSAGE_TOOL_DESCRIPTION_MAILBOX;
+use crate::tools::handlers::multi_agents_spec::SEND_MESSAGE_TOOL_DESCRIPTION_V2;
 use crate::tools::registry::CoreToolRuntime;
 use codex_tools::JsonSchema;
 use codex_tools::ResponsesApiNamespace;

@@ -211,7 +211,10 @@ fn weekly_limit_pacing_style_defaults_to_qualitative_and_parses_ratio() {
         WeeklyLimitPacingStyle::Qualitative
     );
 
-    let ratio: Tui = toml::from_str("weekly_limit_pacing_style = 'ratio'")
-        .expect("ratio pacing style");
-    assert_eq!(ratio.weekly_limit_pacing_style, WeeklyLimitPacingStyle::Ratio);
+    let ratio: Tui =
+        toml::from_str("weekly_limit_pacing_style = 'ratio'").expect("ratio pacing style");
+    assert_eq!(
+        ratio.weekly_limit_pacing_style,
+        WeeklyLimitPacingStyle::Ratio
+    );
 }
