@@ -10951,13 +10951,17 @@ async fn model_baseline_overlay_reaches_fresh_root_and_child_request_payloads() 
     const BLOCKING_WAIT_TARGET: &str = "Avoid performing blocking sleep or wait calls longer than 60 seconds, as they may prevent you from communicating with the user for their duration.";
     const COMMENTARY_CADENCE_TARGET: &str = "The user appreciates consistent, frequent communication during your turn, and should not be left without a commentary update for more than 60 seconds during ongoing work.";
     let parent_thread_id = ThreadId::new();
-    for model_slug in ["gpt-6.1-sol", "gpt-6-luna"] {
+    for (model_slug, targets_present) in [
+        ("gpt-6.1-sol", true),
+        ("gpt-6-luna", true),
+        ("gpt-6-astra", true),
+        ("gpt-5.5", false),
+    ] {
         let config_contents = format!(
             "model = {model_slug:?}\n\
              [instruction_overlays.model_baseline]\n\
-             models = [\"gpt-6.1-sol\", \"gpt-6-luna\"]\n\
-             edits = [{{ op = \"remove_exact\", text = {BLOCKING_WAIT_TARGET:?}, expected_matches = 1 }},\n\
-             {{ op = \"remove_exact\", text = {COMMENTARY_CADENCE_TARGET:?}, expected_matches = 1 }}]\n"
+             edits = [{{ op = \"remove_exact_if_present\", text = {BLOCKING_WAIT_TARGET:?}, expected_matches = 1 }},\n\
+             {{ op = \"remove_exact_if_present\", text = {COMMENTARY_CADENCE_TARGET:?}, expected_matches = 1 }}]\n"
         );
         let cases = [
             ("root", SessionSource::Cli),
@@ -10997,12 +11001,7 @@ async fn model_baseline_overlay_reaches_fresh_root_and_child_request_payloads() 
                     .model_baseline
                     .as_ref()
                     .is_some_and(|component| {
-                        component.models.as_deref().is_some_and(|models| {
-                            models
-                                .iter()
-                                .map(String::as_str)
-                                .eq(["gpt-6.1-sol", "gpt-6-luna"])
-                        }) && component.edits.len() == 2
+                        component.models.is_none() && component.edits.len() == 2
                     })
             );
 
@@ -11023,13 +11022,15 @@ async fn model_baseline_overlay_reaches_fresh_root_and_child_request_payloads() 
                 .await?;
             let step_context = StepContext::for_test(Arc::clone(&turn_context));
             let base_instructions = session.get_prompt_base_instructions().await;
-            assert!(
+            assert_eq!(
                 base_instructions.text.contains(BLOCKING_WAIT_TARGET),
-                "the production baseline for {model_slug} / {thread_kind} must contain the exact blocking-wait target"
+                targets_present,
+                "production blocking-wait target presence for {model_slug} / {thread_kind}"
             );
-            assert!(
+            assert_eq!(
                 base_instructions.text.contains(COMMENTARY_CADENCE_TARGET),
-                "the production baseline for {model_slug} / {thread_kind} must contain the exact commentary-cadence target"
+                targets_present,
+                "production commentary-cadence target presence for {model_slug} / {thread_kind}"
             );
             assert!(matches!(
                 base_instructions.provenance.as_ref(),
@@ -11046,6 +11047,8 @@ async fn model_baseline_overlay_reaches_fresh_root_and_child_request_payloads() 
                 base_instructions,
                 /*incremental_tools*/ false,
             );
+            let original_input = prompt.input.clone();
+            let original_baseline = prompt.base_instructions.text.clone();
             let metadata = session
                 .responses_metadata(&step_context, CodexResponsesRequestKind::Turn)
                 .await;
@@ -11059,6 +11062,14 @@ async fn model_baseline_overlay_reaches_fresh_root_and_child_request_payloads() 
                 /*include_internal*/ true,
             )?;
 
+            assert_eq!(
+                prompt.input, original_input,
+                "request assembly must preserve {model_slug} / {thread_kind} history"
+            );
+            assert_eq!(
+                prompt.base_instructions.text, original_baseline,
+                "request assembly must preserve {model_slug} / {thread_kind} baseline"
+            );
             let developer_messages = developer_message_texts(&request.input);
             assert!(
                 developer_messages

@@ -125,6 +125,12 @@ pub enum InstructionOverlayEdit {
         #[schemars(range(min = 1))]
         expected_matches: usize,
     },
+    /// Removes the literal if present; a nonzero occurrence count must match the expectation.
+    RemoveExactIfPresent {
+        text: String,
+        #[schemars(range(min = 1))]
+        expected_matches: usize,
+    },
 }
 
 #[derive(Deserialize)]
@@ -145,6 +151,10 @@ enum RawInstructionOverlayEdit {
         expected_matches: usize,
     },
     RemoveExact {
+        text: String,
+        expected_matches: usize,
+    },
+    RemoveExactIfPresent {
         text: String,
         expected_matches: usize,
     },
@@ -178,6 +188,13 @@ impl<'de> Deserialize<'de> for InstructionOverlayEdit {
                 text,
                 expected_matches,
             },
+            RawInstructionOverlayEdit::RemoveExactIfPresent {
+                text,
+                expected_matches,
+            } => Self::RemoveExactIfPresent {
+                text,
+                expected_matches,
+            },
         })
     }
 }
@@ -190,6 +207,7 @@ impl fmt::Debug for InstructionOverlayEdit {
             Self::Replace { .. } => "replace",
             Self::ReplaceExact { .. } => "replace_exact",
             Self::RemoveExact { .. } => "remove_exact",
+            Self::RemoveExactIfPresent { .. } => "remove_exact_if_present",
         };
         f.debug_struct("InstructionOverlayEdit")
             .field("op", &operation)
@@ -325,7 +343,8 @@ impl InstructionOverlaysToml {
                     InstructionOverlayEdit::Prepend { text }
                     | InstructionOverlayEdit::Append { text }
                     | InstructionOverlayEdit::Replace { text }
-                    | InstructionOverlayEdit::RemoveExact { text, .. } => [text.len(), 0],
+                    | InstructionOverlayEdit::RemoveExact { text, .. }
+                    | InstructionOverlayEdit::RemoveExactIfPresent { text, .. } => [text.len(), 0],
                     InstructionOverlayEdit::ReplaceExact { from, to, .. } => [from.len(), to.len()],
                 };
                 for bytes in literal_sizes {
@@ -344,6 +363,10 @@ impl InstructionOverlaysToml {
                         ..
                     }
                     | InstructionOverlayEdit::RemoveExact {
+                        text: from,
+                        expected_matches,
+                    }
+                    | InstructionOverlayEdit::RemoveExactIfPresent {
                         text: from,
                         expected_matches,
                     } => {
@@ -423,8 +446,31 @@ fn apply_edit(
             text,
             expected_matches,
         } => replace_exact(body, text, "", *expected_matches)?,
+        InstructionOverlayEdit::RemoveExactIfPresent {
+            text,
+            expected_matches,
+        } => remove_exact_if_present(body, text, *expected_matches)?,
     };
     Ok(output)
+}
+
+fn remove_exact_if_present(
+    body: &str,
+    text: &str,
+    expected_matches: usize,
+) -> Result<String, InstructionOverlayError> {
+    let actual = body.match_indices(text).count();
+    if actual == 0 {
+        check_output_length(body.len(), 0)?;
+        return Ok(body.to_owned());
+    }
+    if actual != expected_matches {
+        return Err(InstructionOverlayError::MatchCountMismatch {
+            expected: expected_matches,
+            actual,
+        });
+    }
+    replace_exact(body, text, "", expected_matches)
 }
 
 fn replace_exact(
@@ -539,6 +585,38 @@ mod tests {
                 actual: 0
             })
         ));
+    }
+
+    #[test]
+    fn remove_exact_if_present_accepts_absence_but_rejects_duplicates() {
+        let plan: InstructionOverlaysToml = toml::from_str(
+            "[model_baseline]\nedits = [{ op = \"remove_exact_if_present\", text = \"target\", expected_matches = 1 }]\n",
+        )
+        .expect("parse optional exact removal");
+        assert_eq!(
+            plan.apply_component(
+                InstructionOverlayComponent::ModelBaseline,
+                Some("before target after"),
+            ),
+            Ok(Some("before  after".to_string()))
+        );
+        assert_eq!(
+            plan.apply_component(
+                InstructionOverlayComponent::ModelBaseline,
+                Some("unchanged baseline"),
+            ),
+            Ok(Some("unchanged baseline".to_string()))
+        );
+        assert_eq!(
+            plan.apply_component(
+                InstructionOverlayComponent::ModelBaseline,
+                Some("target and target"),
+            ),
+            Err(InstructionOverlayError::MatchCountMismatch {
+                expected: 1,
+                actual: 2,
+            })
+        );
     }
 
     #[test]

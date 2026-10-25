@@ -701,9 +701,8 @@ fn incremental_model_baseline_overlay_preserves_notice_and_history() -> anyhow::
 }
 
 #[test]
-fn model_baseline_overlay_is_scoped_to_exact_model_slugs() -> anyhow::Result<()> {
-    const BLOCKING_WAIT_TARGET: &str = "Avoid performing blocking sleep or wait calls longer than 60 seconds, as they may prevent you from communicating with the user for their duration.";
-    const COMMENTARY_CADENCE_TARGET: &str = "The user appreciates consistent, frequent communication during your turn, and should not be left without a commentary update for more than 60 seconds during ongoing work.";
+fn model_baseline_selector_is_scoped_to_exact_model_slugs() -> anyhow::Result<()> {
+    const SELECTED_ONLY_MARKER: &str = "Selected-model-only baseline marker.";
     let overlays = InstructionOverlaysToml {
         model_baseline: Some(InstructionOverlayComponentToml {
             on_absent: InstructionOverlayOnAbsent::Error,
@@ -711,16 +710,10 @@ fn model_baseline_overlay_is_scoped_to_exact_model_slugs() -> anyhow::Result<()>
                 "gpt-6.1-sol".to_string(),
                 "gpt-6-luna".to_string(),
             ]),
-            edits: vec![
-                InstructionOverlayEdit::RemoveExact {
-                    text: BLOCKING_WAIT_TARGET.to_string(),
-                    expected_matches: 1,
-                },
-                InstructionOverlayEdit::RemoveExact {
-                    text: COMMENTARY_CADENCE_TARGET.to_string(),
-                    expected_matches: 1,
-                },
-            ],
+            edits: vec![InstructionOverlayEdit::RemoveExact {
+                text: SELECTED_ONLY_MARKER.to_string(),
+                expected_matches: 1,
+            }],
             ..Default::default()
         }),
         ..Default::default()
@@ -758,7 +751,7 @@ fn model_baseline_overlay_is_scoped_to_exact_model_slugs() -> anyhow::Result<()>
         )?)
     };
     let baseline = format!(
-        "Keep this surrounding baseline.\n{BLOCKING_WAIT_TARGET}\n{COMMENTARY_CADENCE_TARGET}\nKeep this closing baseline."
+        "Keep this surrounding baseline.\n{SELECTED_ONLY_MARKER}\nKeep this closing baseline."
     );
 
     for model_slug in ["gpt-6.1-sol", "gpt-6-luna"] {
@@ -769,8 +762,7 @@ fn model_baseline_overlay_is_scoped_to_exact_model_slugs() -> anyhow::Result<()>
             .map(developer_item_text)
             .collect::<Vec<_>>()
             .join("\n");
-        assert!(!visible_text.contains(BLOCKING_WAIT_TARGET));
-        assert!(!visible_text.contains(COMMENTARY_CADENCE_TARGET));
+        assert!(!visible_text.contains(SELECTED_ONLY_MARKER));
         assert!(visible_text.contains("Keep this surrounding baseline."));
         assert!(visible_text.contains("Keep this closing baseline."));
     }
@@ -782,12 +774,131 @@ fn model_baseline_overlay_is_scoped_to_exact_model_slugs() -> anyhow::Result<()>
         .map(developer_item_text)
         .collect::<Vec<_>>()
         .join("\n");
-    assert!(nonselected_text.contains(BLOCKING_WAIT_TARGET));
-    assert!(nonselected_text.contains(COMMENTARY_CADENCE_TARGET));
+    assert!(nonselected_text.contains(SELECTED_ONLY_MARKER));
 
     let selected_mismatch = build_request("gpt-6-luna", "Changed model baseline wording.");
     let error = selected_mismatch.expect_err("selected model drift must remain visible");
     assert!(error.to_string().contains("match count mismatch"));
+    Ok(())
+}
+
+#[test]
+fn optional_model_baseline_removals_apply_to_root_and_child_for_any_model() -> anyhow::Result<()>
+{
+    const BLOCKING_WAIT_TARGET: &str = "Avoid performing blocking sleep or wait calls longer than 60 seconds, as they may prevent you from communicating with the user for their duration.";
+    const COMMENTARY_CADENCE_TARGET: &str = "The user appreciates consistent, frequent communication during your turn, and should not be left without a commentary update for more than 60 seconds during ongoing work.";
+    let overlays = InstructionOverlaysToml {
+        model_baseline: Some(InstructionOverlayComponentToml {
+            on_absent: InstructionOverlayOnAbsent::Error,
+            edits: vec![
+                InstructionOverlayEdit::RemoveExactIfPresent {
+                    text: BLOCKING_WAIT_TARGET.to_string(),
+                    expected_matches: 1,
+                },
+                InstructionOverlayEdit::RemoveExactIfPresent {
+                    text: COMMENTARY_CADENCE_TARGET.to_string(),
+                    expected_matches: 1,
+                },
+            ],
+            ..Default::default()
+        }),
+        ..Default::default()
+    };
+    let baseline_with_targets = format!(
+        "Keep this surrounding baseline.\n{BLOCKING_WAIT_TARGET}\n{COMMENTARY_CADENCE_TARGET}\nKeep this closing baseline."
+    );
+    let model_cases = [
+        ("gpt-6.1-sol", baseline_with_targets.as_str(), true),
+        ("gpt-6-luna", baseline_with_targets.as_str(), true),
+        ("gpt-6-astra", baseline_with_targets.as_str(), true),
+        ("unknown-model", "Unknown model baseline remains unchanged.", false),
+    ];
+    let parent_thread_id = ThreadId::new();
+
+    for (thread_kind, source) in [
+        ("root", SessionSource::Cli),
+        (
+            "ThreadSpawn child",
+            SessionSource::SubAgent(SubAgentSource::ThreadSpawn {
+                parent_thread_id,
+                depth: 1,
+                agent_path: None,
+                agent_nickname: None,
+                agent_role: None,
+            }),
+        ),
+    ] {
+        for (model_slug, baseline, targets_present) in model_cases {
+            let client = test_model_client(source.clone())
+                .with_instruction_overlays(overlays.clone())
+                .with_client_owned_base_instructions(None, /*model_baseline_origin_known*/ true);
+            let mut model_info = test_model_info();
+            model_info.slug = model_slug.to_string();
+            model_info.use_responses_lite = true;
+            let original_history = vec![ResponseItem::Message {
+                encrypted_content: None,
+                status: None,
+                id: None,
+                role: "developer".to_string(),
+                content: vec![ContentItem::InputText {
+                    text: "unchanged prior developer history".to_string(),
+                }],
+                phase: None,
+                internal_chat_message_metadata_passthrough: None,
+            }];
+            let prompt = Prompt {
+                input: original_history.clone(),
+                base_instructions: BaseInstructions {
+                    text: baseline.to_string(),
+                    provenance: Some(BaseInstructionsProvenance::Model {
+                        model: model_slug.to_string(),
+                    }),
+                },
+                ..Default::default()
+            };
+            let request = client.build_responses_request(
+                &prompt,
+                &model_info,
+                /*effort*/ None,
+                codex_protocol::config_types::ReasoningSummary::None,
+                /*service_tier*/ None,
+                &test_responses_metadata_for_client(
+                    &client,
+                    /*turn_id*/ None,
+                    format!("{}:0", client.state.thread_id),
+                    /*parent_thread_id*/ None,
+                    TestCodexResponsesRequestKind::Turn,
+                ),
+                /*include_internal*/ true,
+            )?;
+            let visible_text = request
+                .input
+                .iter()
+                .map(developer_item_text)
+                .collect::<Vec<_>>()
+                .join("\n");
+
+            assert_eq!(
+                prompt.input, original_history,
+                "request construction must not mutate {thread_kind} history for {model_slug}"
+            );
+            assert_eq!(
+                prompt.base_instructions.text, baseline,
+                "request construction must not mutate {thread_kind} baseline for {model_slug}"
+            );
+            if targets_present {
+                assert!(!visible_text.contains(BLOCKING_WAIT_TARGET));
+                assert!(!visible_text.contains(COMMENTARY_CADENCE_TARGET));
+                assert!(visible_text.contains("Keep this surrounding baseline."));
+                assert!(visible_text.contains("Keep this closing baseline."));
+            } else {
+                assert!(visible_text.contains(baseline));
+                assert!(!visible_text.contains(BLOCKING_WAIT_TARGET));
+                assert!(!visible_text.contains(COMMENTARY_CADENCE_TARGET));
+            }
+        }
+    }
+
     Ok(())
 }
 
