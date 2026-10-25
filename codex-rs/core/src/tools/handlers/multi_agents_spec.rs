@@ -300,23 +300,33 @@ pub fn create_wait_agent_tool_v1(options: WaitAgentTimeoutOptions) -> ToolSpec {
     })
 }
 
-pub fn create_wait_agent_tool_v2(options: WaitAgentTimeoutOptions) -> ToolSpec {
+pub fn create_wait_agent_tool_v2(
+    options: WaitAgentTimeoutOptions,
+    mailbox_enabled: bool,
+) -> ToolSpec {
     ToolSpec::Function(ResponsesApiTool {
         name: "wait_agent".to_string(),
-        description: concat!(
-            "Wait on selected durable work references, replies, or all currently issued work. ",
-            "Quiet notifications remain pending without waking early; explicit requests, ",
-            "alerts, selected completion, steered user input, cancellation, or the deadline ",
-            "can end the wait. The result includes resolved completed and pending items, the ",
-            "wake cause, readable agent names, and the number of still-quiet notifications."
-        )
-        .to_string(),
+        description: if mailbox_enabled {
+            WAIT_AGENT_TOOL_DESCRIPTION_MAILBOX.to_string()
+        } else {
+            WAIT_AGENT_TOOL_DESCRIPTION_V2.to_string()
+        },
         strict: false,
         defer_loading: None,
-        parameters: wait_agent_tool_parameters_v2(options),
+        parameters: wait_agent_tool_parameters_v2(options, mailbox_enabled),
         output_schema: Some(wait_output_schema_v2().into()),
     })
 }
+
+pub(crate) const WAIT_AGENT_TOOL_DESCRIPTION_V2: &str = "Wait for a mailbox update from any live agent, including queued messages and final-status notifications. The wait also ends early when new user input is steered into the active turn. Does not return the content; returns either a summary of which agents have updates (if any), an interruption summary for steered input, or a timeout summary if no activity arrives before the deadline.";
+
+pub(crate) const WAIT_AGENT_TOOL_DESCRIPTION_MAILBOX: &str = concat!(
+    "Wait on selected durable work references, replies, or all currently issued work. ",
+    "Quiet notifications remain pending without waking early; explicit requests, ",
+    "alerts, selected completion, steered user input, cancellation, or the deadline ",
+    "can end the wait. The result includes resolved completed and pending items, the ",
+    "wake cause, readable agent names, and the number of still-quiet notifications."
+);
 
 pub fn create_list_agents_tool() -> ToolSpec {
     let properties = BTreeMap::from([(
@@ -966,40 +976,45 @@ fn wait_agent_tool_parameters_v1(options: WaitAgentTimeoutOptions) -> JsonSchema
     )
 }
 
-fn wait_agent_tool_parameters_v2(options: WaitAgentTimeoutOptions) -> JsonSchema {
-    let properties = BTreeMap::from([
-        (
-            "targets".to_string(),
-            JsonSchema::array(
-                JsonSchema::string(None),
-                Some("Optional agent ids or exact work references to join.".to_string()),
+fn wait_agent_tool_parameters_v2(
+    options: WaitAgentTimeoutOptions,
+    mailbox_enabled: bool,
+) -> JsonSchema {
+    let mut properties = BTreeMap::from([(
+        "timeout_ms".to_string(),
+        JsonSchema::number(Some(format!(
+            "Timeout in milliseconds. Defaults to {}, min {}, max {}.",
+            options.default_timeout_ms, options.min_timeout_ms, options.max_timeout_ms,
+        ))),
+    )]);
+    if mailbox_enabled {
+        properties.extend([
+            (
+                "targets".to_string(),
+                JsonSchema::array(
+                    JsonSchema::string(None),
+                    Some("Optional agent ids or exact work references to join.".to_string()),
+                ),
             ),
-        ),
-        (
-            "replies_to".to_string(),
-            JsonSchema::array(
-                JsonSchema::string(None),
-                Some("Optional exact request message ids whose replies to join.".to_string()),
+            (
+                "replies_to".to_string(),
+                JsonSchema::array(
+                    JsonSchema::string(None),
+                    Some("Optional exact request message ids whose replies to join.".to_string()),
+                ),
             ),
-        ),
-        (
-            "return_when".to_string(),
-            JsonSchema::string_enum(
-                vec![json!("any"), json!("all")],
-                Some(concat!(
-                    "Return when any selected item is ready, or wait until all selected items ",
-                    "are ready. Defaults to any."
-                ).to_string()),
+            (
+                "return_when".to_string(),
+                JsonSchema::string_enum(
+                    vec![json!("any"), json!("all")],
+                    Some(concat!(
+                        "Return when any selected item is ready, or wait until all selected items ",
+                        "are ready. Defaults to any."
+                    ).to_string()),
+                ),
             ),
-        ),
-        (
-            "timeout_ms".to_string(),
-            JsonSchema::number(Some(format!(
-                "Timeout in milliseconds. Defaults to {}, min {}, max {}.",
-                options.default_timeout_ms, options.min_timeout_ms, options.max_timeout_ms,
-            ))),
-        ),
-    ]);
+        ]);
+    }
 
     JsonSchema::object(properties, /*required*/ None, Some(false.into()))
 }

@@ -2808,6 +2808,23 @@ async fn multi_agent_feature_selects_one_agent_tool_family() {
     let ToolSpec::Namespace(namespace) = v2.visible_spec(MULTI_AGENT_V2_NAMESPACE) else {
         panic!("expected {MULTI_AGENT_V2_NAMESPACE} namespace");
     };
+    let Some(ResponsesApiNamespaceTool::Function(wait_agent)) = namespace.tools.iter().find(|tool| {
+        matches!(tool, ResponsesApiNamespaceTool::Function(tool) if tool.name == "wait_agent")
+    }) else {
+        panic!("expected wait_agent in {MULTI_AGENT_V2_NAMESPACE} namespace");
+    };
+    let wait_properties = wait_agent
+        .parameters
+        .properties
+        .as_ref()
+        .expect("wait_agent should use object params");
+    assert_eq!(
+        wait_properties
+            .keys()
+            .map(String::as_str)
+            .collect::<Vec<_>>(),
+        ["timeout_ms"]
+    );
     let Some(ResponsesApiNamespaceTool::Function(spawn_agent)) =
         namespace.tools.iter().find(|tool| {
             matches!(
@@ -2834,6 +2851,29 @@ async fn multi_agent_feature_selects_one_agent_tool_family() {
     assert!(spawn_agent_description.contains(
         "Note that passing `fork_turns=\"none\"` will not pass any surrounding context to the spawned subagent"
     ));
+
+    let mailbox_enabled_v2 = probe(|turn| {
+        set_feature(turn, Feature::MultiAgentV2, /*enabled*/ true);
+        set_feature(turn, Feature::AgentMailbox, /*enabled*/ true);
+    })
+    .await;
+    let ToolSpec::Namespace(namespace) = mailbox_enabled_v2.visible_spec(MULTI_AGENT_V2_NAMESPACE)
+    else {
+        panic!("expected v2 multi-agent namespace with native mailbox enabled");
+    };
+    let Some(ResponsesApiNamespaceTool::Function(wait_agent)) = namespace.tools.iter().find(|tool| {
+        matches!(tool, ResponsesApiNamespaceTool::Function(tool) if tool.name == "wait_agent")
+    }) else {
+        panic!("expected wait_agent in {MULTI_AGENT_V2_NAMESPACE} namespace");
+    };
+    let wait_properties = wait_agent
+        .parameters
+        .properties
+        .as_ref()
+        .expect("wait_agent should use object params");
+    for property in ["targets", "replies_to", "return_when", "timeout_ms"] {
+        assert!(wait_properties.contains_key(property));
+    }
 
     let direct_model_only = probe(|turn| {
         set_features(

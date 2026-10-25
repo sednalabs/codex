@@ -31,11 +31,15 @@ use tokio::time::timeout_at;
 #[derive(Default)]
 pub(crate) struct Handler {
     options: WaitAgentTimeoutOptions,
+    mailbox_enabled: bool,
 }
 
 impl Handler {
-    pub(crate) fn new(options: WaitAgentTimeoutOptions) -> Self {
-        Self { options }
+    pub(crate) fn new(options: WaitAgentTimeoutOptions, mailbox_enabled: bool) -> Self {
+        Self {
+            options,
+            mailbox_enabled,
+        }
     }
 }
 
@@ -45,7 +49,7 @@ impl ToolExecutor<ToolInvocation> for Handler {
     }
 
     fn spec(&self) -> ToolSpec {
-        create_wait_agent_tool_v2(self.options)
+        create_wait_agent_tool_v2(self.options, self.mailbox_enabled)
     }
 
     fn handle<'a>(&'a self, invocation: ToolInvocation) -> codex_tools::ToolExecutorFuture<'a>

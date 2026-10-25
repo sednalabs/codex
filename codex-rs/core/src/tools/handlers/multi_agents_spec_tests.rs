@@ -328,11 +328,14 @@ fn wait_agent_tool_v2_exposes_selection_and_typed_wait_report() {
         parameters,
         output_schema,
         ..
-    }) = create_wait_agent_tool_v2(WaitAgentTimeoutOptions {
-        default_timeout_ms: 30_000,
-        min_timeout_ms: 10_000,
-        max_timeout_ms: 3_600_000,
-    })
+    }) = create_wait_agent_tool_v2(
+        WaitAgentTimeoutOptions {
+            default_timeout_ms: 30_000,
+            min_timeout_ms: 10_000,
+            max_timeout_ms: 3_600_000,
+        },
+        /*mailbox_enabled*/ true,
+    )
     else {
         panic!("wait_agent should be a function tool");
     };
@@ -348,7 +351,7 @@ fn wait_agent_tool_v2_exposes_selection_and_typed_wait_report() {
     assert!(properties.contains_key("replies_to"));
     assert!(properties.contains_key("return_when"));
     assert!(properties.contains_key("timeout_ms"));
-    assert!(description.contains("Quiet notifications are admitted without waking early"));
+    assert!(description.contains("Quiet notifications remain pending without waking early"));
     assert_eq!(
         properties
             .get("timeout_ms")
@@ -381,6 +384,35 @@ fn wait_agent_tool_v2_exposes_selection_and_typed_wait_report() {
             null
         ])
     );
+}
+
+#[test]
+fn wait_agent_tool_v2_hides_mailbox_selectors_when_mailbox_is_disabled() {
+    let ToolSpec::Function(ResponsesApiTool {
+        description,
+        parameters,
+        ..
+    }) = create_wait_agent_tool_v2(
+        WaitAgentTimeoutOptions {
+            default_timeout_ms: 30_000,
+            min_timeout_ms: 10_000,
+            max_timeout_ms: 3_600_000,
+        },
+        /*mailbox_enabled*/ false,
+    )
+    else {
+        panic!("wait_agent should be a function tool");
+    };
+    let properties = parameters
+        .properties
+        .as_ref()
+        .expect("wait_agent should use object params");
+    assert_eq!(
+        properties.keys().map(String::as_str).collect::<Vec<_>>(),
+        ["timeout_ms"]
+    );
+    assert!(description.contains("Wait for a mailbox update from any live agent"));
+    assert!(!description.contains("selected durable work references"));
 }
 
 #[test]
