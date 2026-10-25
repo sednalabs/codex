@@ -674,12 +674,7 @@ fn incremental_model_baseline_overlay_preserves_notice_and_history() -> anyhow::
         })
         .collect::<Vec<_>>()
         .join("\n");
-    let request_baselines = request
-        .input
-        .iter()
-        .filter_map(crate::context::BaseInstructionsFragment::text_from_item)
-        .collect::<Vec<_>>();
-    assert_eq!(request_baselines, vec![EDITED_BASELINE]);
+    assert_eq!(developer_text.matches(EDITED_BASELINE).count(), 1);
     assert!(developer_text.contains("The current model is gpt-current."));
     assert!(developer_text.contains(
         "The following instructions replace the previous base instructions:"
