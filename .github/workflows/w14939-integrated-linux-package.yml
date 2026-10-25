@@ -39,8 +39,8 @@ jobs:
         id: identity
         shell: bash
         env:
-          PRODUCT_SHA: c87f876857c9d8c51c43cf19b0b7f557bea0da93
-          PRODUCT_TREE: 122bde73b7565a9276cb9defd5aa42d65377b4fc
+          PRODUCT_SHA: 3fe3424553e801d24d50a9242c710d3faeef5a32
+          PRODUCT_TREE: ee20c450e1796500e49396fc3db096a75c222fd6
           UPSTREAM_SHA: 970111f6cb62cc02fe36a82ea7d71b37a2889c97
           EXPECTED_REF: refs/heads/codex/w14939-integrated-linux-package-20261025
         run: |
