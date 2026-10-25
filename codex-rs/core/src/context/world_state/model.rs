@@ -134,29 +134,30 @@ impl WorldStateSection for ModelInstructionsState {
         if instructions_hash.is_some() && !model_changed && !instructions_changed {
             return (None, Vec::new());
         }
-        let fragment: Option<Box<dyn ContextualUserFragment>> = if instructions_hash.is_some() {
+        let updates = if instructions_hash.is_some() {
             let instructions = ModelInstructions {
                 model: model_changed.then(|| model.clone()),
                 instructions: instructions_changed.then(|| self.instructions.clone()),
             };
             if self.client_owned_base_instructions {
-                Some(
-                    Box::new(ClientOwnedModelInstructions(instructions))
-                        as Box<dyn ContextualUserFragment>,
+                vec![WorldStateUpdate::prefix_item(
+                    ClientOwnedModelInstructions::from_model_instructions(instructions)
+                        .into_response_item(),
                 )
+                .standalone()]
             } else {
-                Some(Box::new(instructions) as Box<dyn ContextualUserFragment>)
+                WorldStateUpdate::optional_standalone_boxed_fragment(Some(Box::new(
+                    instructions,
+                )))
             }
         } else {
-            (model_changed && !self.instructions.is_empty()).then(|| {
+            let fragment = (model_changed && !self.instructions.is_empty()).then(|| {
                 Box::new(ModelSwitchInstructions::new(self.instructions.clone()))
                     as Box<dyn ContextualUserFragment>
-            })
+            });
+            WorldStateUpdate::optional_standalone_boxed_fragment(fragment)
         };
-        (
-            Some(self.snapshot.clone()),
-            WorldStateUpdate::optional_standalone_boxed_fragment(fragment),
-        )
+        (Some(self.snapshot.clone()), updates)
     }
 }
 

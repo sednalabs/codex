@@ -1049,9 +1049,11 @@ impl ModelClient {
             // Incremental world state can already carry this exact model baseline. When this
             // request also supplies the regular base-instructions prefix, keep the prefix as
             // the one active request copy instead of sending the same baseline twice.
-            input.retain(|item| {
-                BaseInstructionsFragment::text_from_item(item)
-                    != Some(prompt.base_instructions.text.as_str())
+            input.retain_mut(|item| {
+                !BaseInstructionsFragment::remove_matching_text_from_item(
+                    item,
+                    &prompt.base_instructions.text,
+                )
             });
         }
         if !self.reasoning_effort_override_enabled(model_info) {

@@ -2,8 +2,12 @@
 
 use super::BaseInstructionsFragment;
 use super::ContextualUserFragment;
+use codex_context_fragments::AnnotatedContent;
+use codex_context_fragments::message_from_parts;
 use codex_protocol::models::ContentItem;
 use codex_protocol::models::ContentItemKind;
+use codex_protocol::models::ContentItemMetadata;
+use codex_protocol::models::ResponseItem;
 use codex_protocol::models::input_text;
 
 const REPLACEMENT_NOTICE: &str =
@@ -55,28 +59,57 @@ impl ContextualUserFragment for ModelInstructions {
 }
 
 /// A model-instruction replacement whose body is client-owned base guidance.
-/// The wrapper keeps the normal model-switch explanation while exposing only the
-/// replaceable baseline body to request-scoped instruction overlays.
+/// It keeps the normal model-switch explanation in separate classified content so
+/// request-scoped overlays can edit only the replaceable baseline body.
 pub(crate) struct ClientOwnedModelInstructions(ModelInstructions);
 
-impl ContextualUserFragment for ClientOwnedModelInstructions {
-    fn content_kind(&self) -> ContentItemKind {
-        ContentItemKind(BaseInstructionsFragment::CLIENT_KIND.to_string())
+impl ClientOwnedModelInstructions {
+    pub(crate) fn from_model_instructions(instructions: ModelInstructions) -> Self {
+        Self(instructions)
     }
 
-    fn role(&self) -> &'static str {
-        self.0.role()
-    }
-
-    fn markers(&self) -> (&'static str, &'static str) {
-        self.0.markers()
-    }
-
-    fn type_markers() -> (&'static str, &'static str) {
-        ModelInstructions::type_markers()
-    }
-
-    fn body(&self) -> ContentItem {
-        self.0.body()
+    pub(crate) fn into_response_item(self) -> ResponseItem {
+        let mut notice = String::from("\n");
+        if let Some(model) = &self.0.model {
+            notice.push_str(&format!("The current model is {model}.\n"));
+        }
+        let model_instruction_kind = ContentItemKind("model.instructions".to_string());
+        let harness_metadata = ContentItemMetadata::harness();
+        let mut parts = Vec::with_capacity(3);
+        match &self.0.instructions {
+            Some(instructions) if !instructions.is_empty() => {
+                notice.push_str(&format!("{REPLACEMENT_NOTICE}\n\n"));
+                parts.push(AnnotatedContent::text(
+                    notice,
+                    model_instruction_kind.clone(),
+                    harness_metadata.clone(),
+                ));
+                parts.push(AnnotatedContent::text(
+                    instructions.clone(),
+                    ContentItemKind(BaseInstructionsFragment::CLIENT_KIND.to_string()),
+                    harness_metadata.clone(),
+                ));
+                parts.push(AnnotatedContent::text(
+                    "\n",
+                    model_instruction_kind,
+                    harness_metadata,
+                ));
+            }
+            Some(_) => {
+                notice.push_str(REMOVAL_NOTICE);
+                notice.push('\n');
+                parts.push(AnnotatedContent::text(
+                    notice,
+                    model_instruction_kind,
+                    harness_metadata,
+                ));
+            }
+            None => parts.push(AnnotatedContent::text(
+                notice,
+                model_instruction_kind,
+                harness_metadata,
+            )),
+        }
+        message_from_parts("developer", parts)
     }
 }

@@ -12,6 +12,7 @@ use super::X_OPENAI_SUBAGENT_HEADER;
 use crate::AttestationContext;
 use crate::AttestationProvider;
 use crate::GenerateAttestationFuture;
+use crate::context::world_state::WorldStateSection;
 use crate::responses_metadata::CodexResponsesMetadata;
 use crate::responses_metadata::MAX_MCP_ATTRIBUTION_BYTES;
 use crate::responses_metadata::MCP_ATTRIBUTION_CLIENT_METADATA_KEY;
@@ -54,6 +55,7 @@ use codex_protocol::mcp::McpAttribution;
 use codex_protocol::mcp::McpAttributionSource;
 use codex_protocol::mcp::McpAttributionStatus;
 use codex_protocol::models::BaseInstructions;
+use codex_protocol::models::BaseInstructionsProvenance;
 use codex_protocol::models::ContentItem;
 use codex_protocol::models::ContentItemKind;
 use codex_protocol::models::ExecutedToolCall;
@@ -581,6 +583,139 @@ fn developer_overlay_reaches_fresh_root_and_child_request_payloads() -> anyhow::
         );
     }
     Ok(())
+}
+
+#[test]
+fn incremental_model_baseline_overlay_preserves_notice_and_history() -> anyhow::Result<()> {
+    const PREVIOUS_BASELINE: &str = "Previous generated baseline.";
+    const CURRENT_BASELINE: &str = "Current generated baseline.";
+    const EDITED_BASELINE: &str = "Operator-edited generated baseline.";
+
+    let previous_state =
+        crate::context::world_state::ModelInstructionsState::for_incremental_tools_with_ownership(
+            "gpt-previous",
+            PREVIOUS_BASELINE.to_string(),
+            /*client_owned_base_instructions*/ true,
+        );
+    let previous_snapshot = previous_state
+        .render_diff(crate::context::world_state::PreviousSectionState::Absent)
+        .0
+        .expect("initial model instructions snapshot");
+    let current_state =
+        crate::context::world_state::ModelInstructionsState::for_incremental_tools_with_ownership(
+            "gpt-current",
+            CURRENT_BASELINE.to_string(),
+            /*client_owned_base_instructions*/ true,
+        );
+    let (_, updates) = current_state.render_diff(
+        crate::context::world_state::PreviousSectionState::Known(&previous_snapshot),
+    );
+    let history = crate::context_manager::updates::merge_world_state_updates(updates);
+    assert_eq!(history.len(), 1, "the model change should be one history item");
+    assert_eq!(
+        crate::context::BaseInstructionsFragment::text_from_item(&history[0]),
+        Some(CURRENT_BASELINE),
+        "only the replaceable baseline component should carry client ownership"
+    );
+    let original_history = history.clone();
+
+    let overlays = InstructionOverlaysToml {
+        model_baseline: Some(InstructionOverlayComponentToml {
+            on_absent: InstructionOverlayOnAbsent::Error,
+            edits: vec![InstructionOverlayEdit::Replace {
+                text: EDITED_BASELINE.to_string(),
+            }],
+            ..Default::default()
+        }),
+        ..Default::default()
+    };
+    let client = test_model_client(SessionSource::Cli)
+        .with_instruction_overlays(overlays)
+        .with_client_owned_base_instructions(None, /*model_baseline_origin_known*/ true);
+    let mut model_info = test_model_info();
+    model_info.use_responses_lite = true;
+    let prompt = Prompt {
+        input: history,
+        base_instructions: BaseInstructions {
+            text: CURRENT_BASELINE.to_string(),
+            provenance: Some(BaseInstructionsProvenance::Model {
+                model: "gpt-current".to_string(),
+            }),
+        },
+        ..Default::default()
+    };
+    let request = client.build_responses_request(
+        &prompt,
+        &model_info,
+        /*effort*/ None,
+        codex_protocol::config_types::ReasoningSummary::None,
+        /*service_tier*/ None,
+        &test_responses_metadata_for_client(
+            &client,
+            /*turn_id*/ None,
+            format!("{}:0", client.state.thread_id),
+            /*parent_thread_id*/ None,
+            TestCodexResponsesRequestKind::Turn,
+        ),
+        /*include_internal*/ true,
+    )?;
+
+    let developer_text = request
+        .input
+        .iter()
+        .filter_map(|item| match item {
+            ResponseItem::Message { role, content, .. } if role == "developer" => Some(content),
+            _ => None,
+        })
+        .flatten()
+        .filter_map(|item| match item {
+            ContentItem::InputText { text } => Some(text.as_str()),
+            _ => None,
+        })
+        .collect::<Vec<_>>()
+        .join("\n");
+    let request_baselines = request
+        .input
+        .iter()
+        .filter_map(crate::context::BaseInstructionsFragment::text_from_item)
+        .collect::<Vec<_>>();
+    assert_eq!(request_baselines, vec![EDITED_BASELINE]);
+    assert!(developer_text.contains("The current model is gpt-current."));
+    assert!(developer_text.contains(
+        "The following instructions replace the previous base instructions:"
+    ));
+    assert!(developer_text.contains(EDITED_BASELINE));
+    assert!(!developer_text.contains(CURRENT_BASELINE));
+
+    assert_eq!(
+        prompt.input, original_history,
+        "request assembly must not mutate history"
+    );
+    assert_eq!(
+        crate::context::BaseInstructionsFragment::text_from_item(&prompt.input[0]),
+        Some(CURRENT_BASELINE),
+        "the retained canonical history keeps its original baseline"
+    );
+    let retained_history_text = developer_item_text(&prompt.input[0]);
+    assert!(retained_history_text.contains("The current model is gpt-current."));
+    assert!(retained_history_text.contains(
+        "The following instructions replace the previous base instructions:"
+    ));
+    Ok(())
+}
+
+fn developer_item_text(item: &ResponseItem) -> String {
+    let ResponseItem::Message { content, .. } = item else {
+        return String::new();
+    };
+    content
+        .iter()
+        .filter_map(|item| match item {
+            ContentItem::InputText { text } => Some(text.as_str()),
+            _ => None,
+        })
+        .collect::<Vec<_>>()
+        .join("\n")
 }
 
 fn output_with_tool_result_metadata(metadata: ToolResultMetadata) -> ResponseItem {
