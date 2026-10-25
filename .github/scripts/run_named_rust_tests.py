@@ -3,9 +3,10 @@
 
 The request is deliberately narrower than a shell command.  It selects a
 Cargo target from the committed command catalog and names fully-qualified
-tests to reconcile.  The runner inventories the target first, refuses to run
-when a requested name is missing or ambiguous, and executes only the
-catalog-owned target argv.  This prevents request data from reaching Cargo.
+tests to run.  The runner inventories the target first, refuses to run when a
+requested name is missing or ambiguous, and then runs each name as one exact
+libtest filter.  Request data reaches Cargo only after inventory reconciliation,
+as one argv element; no shell is involved.
 """
 
 from __future__ import annotations
@@ -256,23 +257,37 @@ def cargo_args(
 ) -> list[str]:
     """Return a complete argv tuple from the closed target command catalog.
 
-    A test name is a reconciliation selector, not an argv fragment.  The
-    runner executes the immutable target command once and matches requested
-    names against its exact per-test output.  Rejecting ``test_name`` here
-    prevents callers from accidentally reintroducing a request-derived sink.
+    The target argv comes from the closed command catalog.  After inventory
+    reconciliation, one requested fully-qualified name is inserted as a Cargo
+    filter and passed to libtest with ``--exact``.  It is a single argv value,
+    never shell text.
     """
 
-    if test_name:
-        raise ValueError("test selectors are not command arguments")
+    if list_only and test_name:
+        raise ValueError("inventory commands cannot select an individual test")
+    if not list_only and (
+        not test_name or test_name not in request.get("tests", [])
+    ):
+        raise ValueError("execution requires one prevalidated requested test name")
     record = command_record
     if record is None:
         manifest_root = Path(__file__).resolve().parents[2]
         record = select_target(request, load_manifest(manifest_root))
     key = "inventory_argv" if list_only else "execution_argv"
     command = record.get(key)
-    if not isinstance(command, tuple) or not all(isinstance(value, str) for value in command):
+        if not isinstance(command, tuple) or not all(
+            isinstance(value, str) for value in command
+        ):
         raise ValueError("command catalog entry is not a complete argv tuple")
-    return list(command)
+    argv = list(command)
+    if not list_only:
+        try:
+            separator = argv.index("--")
+        except ValueError as exc:
+            raise ValueError("execution command is missing the libtest separator") from exc
+        argv.insert(separator, test_name)
+        argv.append("--exact")
+    return argv
 
 
 def listed_tests(stdout: str) -> list[str]:
@@ -360,50 +375,69 @@ def run_request(request: dict[str, Any], repo_root: Path) -> dict[str, Any]:
             }
         )
         return result
-    # Run the complete immutable target command.  This keeps the command
-    # surface closed while the requested names remain exact post-run selectors.
-    test_command = cargo_args(
-        request, list_only=False, command_record=command_record
-    )
-    completed = subprocess.run(
-        test_command,
-        cwd=manifest_root,
-        env=env,
-        text=True,
-        capture_output=True,
-        check=False,
-        shell=False,
-    )
-    output = "\n".join(
-        value for value in (completed.stdout, completed.stderr) if value
-    )
-    counts = test_result_counts(output)
-    outcomes = test_outcomes(output)
+    # Execute one exact inventory-validated test at a time.  Besides keeping
+    # failures attributable, the filtered-count check below proves Cargo did
+    # not silently run the entire target instead of the requested selection.
     for name in request["tests"]:
+        test_command = cargo_args(
+            request,
+            list_only=False,
+            test_name=name,
+            command_record=command_record,
+        )
+        completed = subprocess.run(
+            test_command,
+            cwd=manifest_root,
+            env=env,
+            text=True,
+            capture_output=True,
+            check=False,
+            shell=False,
+        )
+        output = "\n".join(
+            value for value in (completed.stdout, completed.stderr) if value
+        )
+        counts = test_result_counts(output)
+        outcomes = test_outcomes(output)
         observed = outcomes.get(name, [])
         outcome = observed[0] if len(observed) == 1 else ""
+        selected_count = (
+            None
+            if counts is None
+            else (
+                counts["passed"]
+                + counts["failed"]
+                + counts["ignored"]
+                + counts["measured"]
+            )
+        )
+        exact_selection = (
+            counts is not None
+            and selected_count == 1
+            and counts["filtered"] == len(names) - 1
+        )
         execution_reconciled = (
             completed.returncode == 0
-            and counts is not None
+            and exact_selection
             and len(observed) == 1
             and outcome == "ok"
         )
         status = "success" if execution_reconciled else "failure"
         failure_code = ""
-        if len(observed) != 1:
+        if not exact_selection or len(observed) != 1:
             failure_code = "execution_reconciliation_failed"
         elif outcome == "ignored":
             failure_code = "named_test_ignored"
         elif completed.returncode != 0 or outcome == "FAILED":
             failure_code = "named_test_failed"
-        elif counts is None:
-            failure_code = "execution_reconciliation_failed"
         result["tests"].append(
             {
                 "name": name,
                 "status": status,
                 "exit_code": completed.returncode,
                 "execution_reconciled": execution_reconciled,
+                "exact_filter": exact_selection,
+                "expected_filtered_count": len(names) - 1,
                 "observed_outcomes": observed,
                 "result_counts": counts,
                 "diagnostics": command_diagnostics(completed),
@@ -413,7 +447,7 @@ def run_request(request: dict[str, Any], repo_root: Path) -> dict[str, Any]:
             result["status"] = "failure"
             result["failure_code"] = failure_code
             result["message"] = (
-                "named test did not produce exactly one non-ignored passing result; "
+                "exact named test did not produce one isolated non-ignored passing result; "
                 "see bounded diagnostics and the hosted job log"
             )
             break

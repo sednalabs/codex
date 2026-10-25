@@ -95,7 +95,7 @@ class NamedRustTests(TestCase):
         self.assertLessEqual(len(value), MODULE.MAX_DIAGNOSTIC_CHARS + 60)
         self.assertIn("see hosted job log", value)
 
-    def test_command_builder_rejects_untrusted_values_at_the_sink(self) -> None:
+    def test_command_builder_rejects_unvalidated_values_at_the_sink(self) -> None:
         with self.assertRaises(ValueError):
             MODULE.cargo_args({**REQUEST, "package": "--workspace"}, list_only=True)
         with self.assertRaises(ValueError):
@@ -105,14 +105,16 @@ class NamedRustTests(TestCase):
             )
         with self.assertRaises(ValueError):
             MODULE.cargo_args(REQUEST, list_only=False, test_name="suite::known; echo nope")
+        with self.assertRaises(ValueError):
+            MODULE.cargo_args(REQUEST, list_only=False)
 
-    def test_command_builder_returns_only_catalog_commands(self) -> None:
+    def test_command_builder_adds_one_exact_inventory_validated_filter(self) -> None:
         self.assertEqual(
             MODULE.cargo_args(REQUEST, list_only=True),
             ["cargo", "test", "--locked", "-p", "codex-core", "--lib", "--", "--list"],
         )
         self.assertEqual(
-            MODULE.cargo_args(REQUEST, list_only=False),
+            MODULE.cargo_args(REQUEST, list_only=False, test_name="suite::known"),
             [
                 "cargo",
                 "test",
@@ -120,10 +122,81 @@ class NamedRustTests(TestCase):
                 "-p",
                 "codex-core",
                 "--lib",
+                "suite::known",
                 "--",
                 "--test-threads=1",
+                "--exact",
             ],
         )
+
+    def test_request_runs_each_requested_name_with_an_exact_filter(self) -> None:
+        request = {**REQUEST, "tests": ["suite::known", "suite::other"]}
+        inventory = self.completed(stdout="suite::known: test\nsuite::other: test\n")
+        one_test = self.completed(
+            stdout=(
+                "test suite::known ... ok\n"
+                "test result: ok. 1 passed; 0 failed; 0 ignored; "
+                "0 measured; 1 filtered out\n"
+            )
+        )
+        other_test = self.completed(
+            stdout=(
+                "test suite::other ... ok\n"
+                "test result: ok. 1 passed; 0 failed; 0 ignored; "
+                "0 measured; 1 filtered out\n"
+            )
+        )
+        with (
+            mock.patch.object(
+                MODULE.subprocess,
+                "run",
+                side_effect=[inventory, one_test, other_test],
+            ) as run,
+            mock.patch.object(MODULE, "git_sha", return_value="target-sha"),
+            mock.patch.object(MODULE, "load_manifest", return_value=MANIFEST),
+        ):
+            result = MODULE.run_request(request, Path("/validation-target"))
+
+        self.assertEqual(result["status"], "success")
+        self.assertEqual([test["name"] for test in result["tests"]], request["tests"])
+        self.assertEqual(run.call_count, 3)
+        self.assertEqual(
+            run.call_args_list[1].args[0],
+            [
+                "cargo", "test", "--locked", "-p", "codex-core", "--lib",
+                "suite::known", "--", "--test-threads=1", "--exact",
+            ],
+        )
+        self.assertEqual(
+            run.call_args_list[2].args[0],
+            [
+                "cargo", "test", "--locked", "-p", "codex-core", "--lib",
+                "suite::other", "--", "--test-threads=1", "--exact",
+            ],
+        )
+
+    def test_unfiltered_target_cannot_satisfy_exact_named_test(self) -> None:
+        request = {**REQUEST, "tests": ["suite::known"]}
+        inventory = self.completed(stdout="suite::known: test\nsuite::other: test\n")
+        unfiltered = self.completed(
+            stdout=(
+                "test suite::known ... ok\n"
+                "test suite::other ... ok\n"
+                "test result: ok. 2 passed; 0 failed; 0 ignored; "
+                "0 measured; 0 filtered out\n"
+            )
+        )
+        with (
+            mock.patch.object(MODULE.subprocess, "run", side_effect=[inventory, unfiltered]),
+            mock.patch.object(MODULE, "git_sha", return_value="target-sha"),
+            mock.patch.object(MODULE, "load_manifest", return_value=MANIFEST),
+        ):
+            result = MODULE.run_request(request, Path("/validation-target"))
+
+        self.assertEqual(result["status"], "failure")
+        self.assertEqual(result["failure_code"], "execution_reconciliation_failed")
+        self.assertEqual(result["tests"][0]["result_counts"]["filtered"], 0)
+        self.assertEqual(result["tests"][0]["expected_filtered_count"], 1)
 
     def test_unknown_target_fails_before_cargo(self) -> None:
         request = {**REQUEST, "package": "not-in-catalog"}
@@ -146,20 +219,20 @@ class NamedRustTests(TestCase):
         })
 
     def test_nested_summary_retains_named_outcome_and_exit_guards(self) -> None:
-        expected_counts = {
-            "passed": 235, "failed": 0, "ignored": 1, "measured": 0, "filtered": 0,
-        }
         for code, outcome, expected in [(0, "ok", "success"), (1, "ok", "failure"), (0, "ignored", "failure")]:
             with self.subTest(code=code, outcome=outcome):
                 output = (
                     "test child::fixture ... ok\n"
                     "test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 234 filtered out\n"
                     f"test suite::known ... {outcome}\n"
-                    "test result: ok. 235 passed; 0 failed; 1 ignored; 0 measured; 0 filtered out\n"
+                    "test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out\n"
                 )
                 result = self.run_request(output, test_code=code)
                 self.assertEqual(result["status"], expected)
-                self.assertEqual(result["tests"][0]["result_counts"], expected_counts)
+                self.assertEqual(
+                    result["tests"][0]["result_counts"],
+                    {"passed": 1, "failed": 0, "ignored": 0, "measured": 0, "filtered": 0},
+                )
                 self.assertEqual(result["tests"][0]["observed_outcomes"], [outcome])
 
 
