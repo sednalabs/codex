@@ -98,6 +98,30 @@ class RunBazelWithBuildBuddyTest(unittest.TestCase):
             ],
         )
 
+    def test_fork_workflow_keeps_buildbuddy_cache_without_remote_execution(self) -> None:
+        with TemporaryDirectory() as temp_dir:
+            env = self.github_env(temp_dir, fork=True)
+
+            self.assertFalse(run_bazel_with_buildbuddy.allows_remote_execution(env))
+            self.assertEqual(
+                run_bazel_with_buildbuddy.remote_config(
+                    ["build", "--config=ci-linux", "//codex-rs/cli:codex"], env
+                ),
+                "buildbuddy-generic",
+            )
+            self.assertEqual(
+                run_bazel_with_buildbuddy.bazel_args_with_remote_config(
+                    ["build", "--config=ci-linux", "//codex-rs/cli:codex"], env
+                ),
+                [
+                    "build",
+                    "--config=buildbuddy-generic",
+                    "--remote_header=x-buildbuddy-api-key=token",
+                    "--config=ci-linux",
+                    "//codex-rs/cli:codex",
+                ],
+            )
+
     def test_query_remote_configuration_is_inserted_before_expression(self) -> None:
         expression = 'kind("rust_library rule", //codex-rs/...)'
         env = {"BUILDBUDDY_API_KEY": "fork-token"}
@@ -132,6 +156,7 @@ class RunBazelWithBuildBuddyTest(unittest.TestCase):
                 ),
                 "buildbuddy-openai-rbe",
             )
+            self.assertTrue(run_bazel_with_buildbuddy.allows_remote_execution(env))
 
     def test_fork_pull_request_cannot_select_openai_host(self) -> None:
         with TemporaryDirectory() as temp_dir:
@@ -141,8 +166,9 @@ class RunBazelWithBuildBuddyTest(unittest.TestCase):
                 run_bazel_with_buildbuddy.remote_config(
                     ["build", "--config=ci-v8"], env
                 ),
-                "buildbuddy-generic-rbe",
+                "buildbuddy-generic",
             )
+            self.assertFalse(run_bazel_with_buildbuddy.allows_remote_execution(env))
 
     def test_run_in_fork_repository_cannot_select_openai_host(self) -> None:
         with TemporaryDirectory() as temp_dir:
@@ -152,8 +178,9 @@ class RunBazelWithBuildBuddyTest(unittest.TestCase):
                 run_bazel_with_buildbuddy.remote_config(
                     ["build", "--config=ci-v8"], env
                 ),
-                "buildbuddy-generic-rbe",
+                "buildbuddy-generic",
             )
+            self.assertFalse(run_bazel_with_buildbuddy.allows_remote_execution(env))
 
     def test_pull_request_without_readable_event_payload_fails_closed(self) -> None:
         for event_path in (None, "missing-event.json"):
