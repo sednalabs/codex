@@ -544,6 +544,7 @@ fn developer_overlay_reaches_fresh_root_and_child_request_payloads() -> anyhow::
             ],
             ..Default::default()
         };
+        let original_input = prompt.input.clone();
         let request = client.build_responses_request(
             &prompt,
             &test_model_info(),
@@ -577,8 +578,8 @@ fn developer_overlay_reaches_fresh_root_and_child_request_payloads() -> anyhow::
         assert!(developer_text.contains("Guidance before.  Guidance after."));
         assert!(developer_text.contains(UNSELECTED));
         assert_eq!(
-            prompt.input.len(),
-            1,
+            prompt.input,
+            original_input,
             "request overlay must not mutate history"
         );
     }

@@ -7,6 +7,7 @@ use clap::FromArgMatches;
 use clap::Parser;
 use codex_utils_cli::CliConfigOverrides;
 use std::ffi::OsString;
+use std::sync::OnceLock;
 
 pub(super) fn try_parse_from(
     args: impl IntoIterator<Item = impl Into<OsString>>,
@@ -36,8 +37,11 @@ pub(super) fn try_parse_from(
     Ok(cli)
 }
 
-fn cli_display_version() -> String {
-    cli_display_version_from(&codex_build_info::BuildInfo::get())
+fn cli_display_version() -> &'static str {
+    static VERSION: OnceLock<String> = OnceLock::new();
+    VERSION
+        .get_or_init(|| cli_display_version_from(&codex_build_info::BuildInfo::get()))
+        .as_str()
 }
 
 fn cli_display_version_from(build_info: &codex_build_info::BuildInfo) -> String {

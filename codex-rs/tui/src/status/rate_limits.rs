@@ -525,11 +525,15 @@ fn format_credit_amount(raw: &str) -> Option<String> {
 
 #[cfg(test)]
 mod tests {
+    use super::ClockFormat;
     use super::CreditsSnapshotDisplay;
+    use super::RateLimitWindow;
     use super::RateLimitSnapshotDisplay;
     use super::RateLimitWindowDisplay;
     use super::StatusRateLimitData;
     use super::compose_rate_limit_data_many;
+    use super::merge_window_display;
+    use super::ChronoDuration;
     use chrono::Local;
     use pretty_assertions::assert_eq;
 
