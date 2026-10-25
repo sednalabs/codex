@@ -6685,6 +6685,10 @@ fn local_dev_builds_force_file_cli_auth_store_modes() {
         AuthCredentialsStoreMode::Ephemeral,
     );
     assert_eq!(
+        resolve_cli_auth_credentials_store_mode(AuthCredentialsStoreMode::Auto, "0.0.0"),
+        AuthCredentialsStoreMode::File,
+    );
+    assert_eq!(
         resolve_cli_auth_credentials_store_mode(AuthCredentialsStoreMode::Keyring, "1.2.3"),
         AuthCredentialsStoreMode::Keyring,
     );
@@ -6704,6 +6708,10 @@ fn local_dev_builds_force_file_mcp_oauth_store_modes() {
             OAuthCredentialsStoreMode::Auto,
             LOCAL_DEV_BUILD_VERSION,
         ),
+        OAuthCredentialsStoreMode::File,
+    );
+    assert_eq!(
+        resolve_mcp_oauth_credentials_store_mode(OAuthCredentialsStoreMode::Auto, "0.0.0"),
         OAuthCredentialsStoreMode::File,
     );
     assert_eq!(

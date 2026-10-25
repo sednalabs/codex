@@ -7,7 +7,6 @@ use crate::line_truncation::line_width;
 use crate::style::accent_color;
 use crate::token_usage::TokenUsage;
 use crate::token_usage::TokenUsageInfo;
-use crate::version::CODEX_CLI_VERSION;
 use chrono::DateTime;
 use chrono::Local;
 use codex_app_server_protocol::AskForApproval;
@@ -875,7 +874,9 @@ impl StatusHistoryCell {
             ""
         };
         let mut title = vec![indent.into()];
-        title.extend(crate::history_cell::codex_title(CODEX_CLI_VERSION));
+        title.extend(crate::history_cell::codex_title(
+            crate::version::display_version(),
+        ));
         let mut rendered = word_wrap_lines(
             [Line::from(title)],
             RtOptions::new(available_width).subsequent_indent(indent.into()),

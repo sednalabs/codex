@@ -16,7 +16,13 @@ pub(crate) fn extract_version_from_latest_tag(latest_tag_name: &str) -> anyhow::
 
 #[cfg(any(not(debug_assertions), test))]
 pub(crate) fn is_source_build_version(version: &str) -> bool {
-    parse_version(version) == Some((0, 0, 0))
+    let version_without_build = version.split('+').next().unwrap_or(version);
+    if version_without_build == "0.0.0" {
+        return true;
+    }
+    version_without_build
+        .split_once('-')
+        .is_some_and(|(_, prerelease)| prerelease == "dev" || prerelease.starts_with("dev."))
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -87,7 +93,12 @@ mod tests {
     #[test]
     fn source_build_version_is_not_checked() {
         assert!(is_source_build_version("0.0.0"));
+        assert!(is_source_build_version("0.164.0-dev"));
+        assert!(is_source_build_version(
+            "0.164.0-dev.distro.1+build.1"
+        ));
         assert!(!is_source_build_version("0.1.0"));
+        assert!(!is_source_build_version("0.164.0-beta.1"));
     }
 
     #[test]

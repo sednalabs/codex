@@ -194,11 +194,15 @@ fn materialized_file_name(suffix: &str) -> String {
 
 fn helper_version_suffix(source: &Path) -> Result<String> {
     let version = env!("CARGO_PKG_VERSION");
-    if version == DEV_BUILD_VERSION_SENTINEL {
+    if is_dev_build_version(version) {
         dev_build_suffix(source)
     } else {
         Ok(version.to_string())
     }
+}
+
+fn is_dev_build_version(version: &str) -> bool {
+    version == DEV_BUILD_VERSION_SENTINEL || version.ends_with("-dev")
 }
 
 fn dev_build_suffix(source: &Path) -> Result<String> {
@@ -416,7 +420,7 @@ mod tests {
         fs::write(&source, b"runner-v1").expect("write source");
         let suffix = helper_version_suffix(&source).expect("suffix");
 
-        if env!("CARGO_PKG_VERSION") == DEV_BUILD_VERSION_SENTINEL {
+        if is_dev_build_version(env!("CARGO_PKG_VERSION")) {
             assert_eq!(suffix, dev_build_suffix(&source).expect("dev build suffix"));
         } else {
             assert_eq!(suffix, env!("CARGO_PKG_VERSION"));

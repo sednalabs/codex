@@ -268,7 +268,8 @@ pub(crate) const HARD_MIN_MULTI_AGENT_V2_TIMEOUT_MS: i64 = 0;
 pub(crate) const HARD_MAX_MULTI_AGENT_V2_TIMEOUT_MS: i64 =
     DEFAULT_MULTI_AGENT_V2_MAX_WAIT_TIMEOUT_MS;
 pub(crate) const DEFAULT_AGENT_MAX_DEPTH: i32 = 1;
-const LOCAL_DEV_BUILD_VERSION: &str = "0.0.0";
+const LOCAL_DEV_BUILD_VERSION: &str = env!("CARGO_PKG_VERSION");
+const LEGACY_LOCAL_DEV_BUILD_VERSION: &str = "0.0.0";
 
 pub const CONFIG_TOML_FILE: &str = "config.toml";
 const CONFIG_PROFILE_V2_SUFFIX: &str = ".config.toml";
@@ -289,12 +290,13 @@ fn resolve_cli_auth_credentials_store_mode(
     configured: AuthCredentialsStoreMode,
     package_version: &str,
 ) -> AuthCredentialsStoreMode {
-    match (package_version, configured) {
-        (
-            LOCAL_DEV_BUILD_VERSION,
-            AuthCredentialsStoreMode::Keyring | AuthCredentialsStoreMode::Auto,
-        ) => AuthCredentialsStoreMode::File,
-        (_, mode) => mode,
+    match configured {
+        AuthCredentialsStoreMode::Keyring | AuthCredentialsStoreMode::Auto
+            if is_local_dev_build_version(package_version) =>
+        {
+            AuthCredentialsStoreMode::File
+        }
+        mode => mode,
     }
 }
 
@@ -302,13 +304,18 @@ fn resolve_mcp_oauth_credentials_store_mode(
     configured: OAuthCredentialsStoreMode,
     package_version: &str,
 ) -> OAuthCredentialsStoreMode {
-    match (package_version, configured) {
-        (
-            LOCAL_DEV_BUILD_VERSION,
-            OAuthCredentialsStoreMode::Keyring | OAuthCredentialsStoreMode::Auto,
-        ) => OAuthCredentialsStoreMode::File,
-        (_, mode) => mode,
+    match configured {
+        OAuthCredentialsStoreMode::Keyring | OAuthCredentialsStoreMode::Auto
+            if is_local_dev_build_version(package_version) =>
+        {
+            OAuthCredentialsStoreMode::File
+        }
+        mode => mode,
     }
+}
+
+fn is_local_dev_build_version(package_version: &str) -> bool {
+    package_version == LOCAL_DEV_BUILD_VERSION || package_version == LEGACY_LOCAL_DEV_BUILD_VERSION
 }
 
 #[cfg(test)]

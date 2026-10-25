@@ -20,12 +20,10 @@ rustPlatform.buildRustPackage (_: {
   doCheck = false;
   src = ./.;
 
-  # Patch the workspace Cargo.toml so that cargo embeds the correct version in
-  # CARGO_PKG_VERSION (which the binary reads via env!("CARGO_PKG_VERSION")).
-  # On release commits the Cargo.toml already contains the real version and
-  # this sed is a no-op.
+  # Patch the development workspace version so cargo embeds the requested Nix
+  # version in CARGO_PKG_VERSION (which the binary reads via env!("CARGO_PKG_VERSION")).
   postPatch = ''
-    sed -i 's/^version = "0\.0\.0"$/version = "${version}"/' Cargo.toml
+    sed -i 's/^version = "0\.164\.0-dev"$/version = "${version}"/' Cargo.toml
   '';
   nativeBuildInputs = [
     cmake
