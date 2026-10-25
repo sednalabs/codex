@@ -39,8 +39,8 @@ jobs:
         id: identity
         shell: bash
         env:
-          PRODUCT_SHA: c9418355c7bbfb43730309063fafa20c3c5d510d
-          PRODUCT_TREE: baa5ac2c550d229445582480391af74e4ed5ace1
+          PRODUCT_SHA: ec486e1dd6dba9b9b06c9439b0f261b10a448c19
+          PRODUCT_TREE: 0b2ca21435f6f15f626d9c22e6505574faa6b304
           UPSTREAM_SHA: 970111f6cb62cc02fe36a82ea7d71b37a2889c97
           EXPECTED_REF: refs/heads/codex/w14939-integrated-linux-package-20261025
         run: |
@@ -104,6 +104,18 @@ jobs:
         shell: bash
         working-directory: product-source
         run: python3 scripts/test_codex_usage_tree.py
+
+      - name: Compile changed Rust consumers and test targets
+        if: matrix.target == 'x86_64-unknown-linux-gnu'
+        shell: bash
+        working-directory: product-source
+        env:
+          TARGET: ${{ matrix.target }}
+          STABLE_GIT_COMMIT: ${{ steps.identity.outputs.product_sha }}
+        run: |
+          set -euo pipefail
+          cargo check --locked --manifest-path codex-rs/Cargo.toml --target "${TARGET}" \
+            --all-targets -p codex-tui -p codex-cli -p codex-app-server
 
       - name: Build and fingerprint the packaged bwrap resource
         shell: bash
@@ -199,7 +211,7 @@ jobs:
             "Included: device authentication, V2 mailbox opt-in, weekly pacing, same-model capacity retry, targeted client instruction overlays, and read-only usage-tree adapter." \
             "Not established: protected-main landing, live account usage availability, or consumer/session acceptance." \
             "Excluded: Browser and Android MCP consumer adoption." \
-            "Not included: retired-MCP connection cleanup/in-flight completion carry from current main." \
+            "Included: retired-MCP connection cleanup and in-flight completion carry from current main." \
             > "${GITHUB_WORKSPACE}/dist/PROVENANCE-${TARGET}.txt"
 
       - name: Run focused device-auth package tests
