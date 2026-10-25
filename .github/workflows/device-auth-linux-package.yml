@@ -93,20 +93,6 @@ jobs:
         with:
           target: ${{ matrix.target }}
 
-      - name: Run focused device-auth tests
-        shell: bash
-        env:
-          TARGET: ${{ matrix.target }}
-          STABLE_GIT_COMMIT: ${{ steps.identity.outputs.source_sha }}
-        run: |
-          set -euo pipefail
-          cargo test --manifest-path codex-rs/Cargo.toml --target "${TARGET}" \
-            -p codex-rmcp-client --lib
-          cargo test --manifest-path codex-rs/Cargo.toml --target "${TARGET}" \
-            -p codex-mcp --lib
-          cargo test --manifest-path codex-rs/Cargo.toml --target "${TARGET}" \
-            -p codex-cli --test mcp_device_login
-
       - name: Build and fingerprint the packaged bwrap resource
         shell: bash
         env:
@@ -157,6 +143,7 @@ jobs:
           packaged_bwrap_sha="$(sha256sum "${package_dir}/codex-resources/bwrap" | awk '{print $1}')"
           [[ "${packaged_bwrap_sha}" == "${CODEX_BWRAP_SHA256}" ]]
           sha256sum "${archive}" > "${archive}.sha256"
+          echo "CARGO_BIN_EXE_codex=${package_dir}/bin/codex" >> "${GITHUB_ENV}"
 
           printf '%s\n' \
             "Codex Linux CLI progressive package" \
@@ -169,6 +156,20 @@ jobs:
             "Scope: MCP OAuth device authentication candidate only; mailbox integration is not included." \
             "Status: progressive artifact; not protected-main or consumer-install acceptance." \
             > "${GITHUB_WORKSPACE}/dist/PROVENANCE.txt"
+
+      - name: Run focused device-auth tests
+        shell: bash
+        env:
+          TARGET: ${{ matrix.target }}
+          STABLE_GIT_COMMIT: ${{ steps.identity.outputs.source_sha }}
+        run: |
+          set -euo pipefail
+          cargo test --manifest-path codex-rs/Cargo.toml --target "${TARGET}" \
+            -p codex-rmcp-client --lib
+          cargo test --manifest-path codex-rs/Cargo.toml --target "${TARGET}" \
+            -p codex-mcp --lib
+          cargo test --manifest-path codex-rs/Cargo.toml --target "${TARGET}" \
+            -p codex-cli --test mcp_device_login
 
       - uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f # v7.0.0
         with:
