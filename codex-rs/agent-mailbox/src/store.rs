@@ -24,7 +24,10 @@ impl Mailbox {
     /// Open the mailbox's independent `mailbox_1.sqlite` database.
     pub async fn open(config: &codex_state::SqliteConfig) -> MailboxResult<Self> {
         let path = config.home().join("mailbox_1.sqlite");
-        let pool = config.open_read_write_pool(&path).await?;
+        let pool = config
+            .open_read_write_pool(&path)
+            .await
+            .map_err(|error| crate::error::MailboxError::Open(Box::new(error)))?;
         crate::schema::initialize(&pool).await?;
         let (change_tx, _) = watch::channel(0_u64);
         Ok(Self {
