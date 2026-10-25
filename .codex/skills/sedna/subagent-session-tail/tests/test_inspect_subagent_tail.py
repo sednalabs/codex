@@ -30,19 +30,24 @@ class TimestampParsingTest(unittest.TestCase):
 
 
 class OutputSummarizationTest(unittest.TestCase):
-    def test_summarizes_string_list_dict_and_scalar_outputs(self) -> None:
+    def test_summarizes_outputs_without_exposing_payload_text(self) -> None:
         cases = [
-            ("first\nsecond", "first"),
-            (["first", "second"], "[first]"),
-            ([{"type": "text", "text": "ready"}], '[{"type": "text", "text": "ready"}]'),
-            ({"success": True}, '{"success": true}'),
-            (7, "7"),
-            (None, "None"),
+            ("private token\nsecond line", "text output (2 lines)"),
+            (
+                [{"type": "text", "text": "private token"}, {"type": "image", "data": "opaque"}],
+                "list output (2 items: text, image)",
+            ),
+            (["private token"], "list output (1 items: str)"),
+            ({"secret": "private token"}, "object output (1 fields)"),
+            (7, "int output"),
+            (None, "empty output"),
         ]
 
         for output, expected in cases:
             with self.subTest(output=output):
-                self.assertEqual(inspect_subagent_tail.summarize_output(output), expected)
+                summary = inspect_subagent_tail.summarize_output(output)
+                self.assertEqual(summary, expected)
+                self.assertNotIn("private token", summary)
 
 
 if __name__ == "__main__":
