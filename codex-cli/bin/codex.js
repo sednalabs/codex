@@ -149,9 +149,28 @@ function isVitePlusOwnedCodexInstall(packagesDir) {
     // Older installs have no ID or append a #-prefixed ID to the package name;
     // newer installs put the ID in a subdirectory of the package prefix.
     const installId = metadata.installId || "";
+    if (
+      typeof installId !== "string" ||
+      installId === "." ||
+      installId === ".." ||
+      installId.includes("/") ||
+      installId.includes("\\")
+    ) {
+      return false;
+    }
+
+    const packagePrefix = path.resolve(packagesDir, "@openai");
     const installDir = installId.startsWith("#")
-      ? path.join(packagesDir, `@openai/codex${installId}`)
-      : path.join(packagesDir, "@openai/codex", installId);
+      ? path.resolve(packagePrefix, `codex${installId}`)
+      : path.resolve(packagePrefix, "codex", installId);
+    const relativeInstallDir = path.relative(packagePrefix, installDir);
+    if (
+      relativeInstallDir === ".." ||
+      relativeInstallDir.startsWith(`..${path.sep}`) ||
+      path.isAbsolute(relativeInstallDir)
+    ) {
+      return false;
+    }
     for (const nodeModulesDir of [
       path.join(installDir, "lib", "node_modules"),
       path.join(installDir, "node_modules"),
