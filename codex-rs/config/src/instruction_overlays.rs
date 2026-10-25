@@ -543,10 +543,14 @@ mod tests {
 
     #[test]
     fn invalid_edit_config_error_does_not_echo_instruction_text() {
-        let error = toml::from_str::<InstructionOverlaysToml>(
-            "[developer_guidance]\nedits = [{ op = \"unknown\", text = \"private instruction\" }]\n",
-        )
-        .expect_err("unknown edit should fail");
+        let raw = "[instruction_overlays.developer_guidance]\nedits = [{ op = \"unknown\", text = \"private instruction\" }]\n";
+        // Config loading first parses TOML into a value, then performs typed
+        // deserialization. This avoids TOML's source-snippet formatter, which
+        // would otherwise include a valid but rejected prompt literal.
+        let value: toml::Value = toml::from_str(raw).expect("well-formed TOML");
+        let error = value
+            .try_into::<crate::config_toml::ConfigToml>()
+            .expect_err("unknown edit should fail");
         assert!(!error.to_string().contains("private instruction"));
     }
 }
