@@ -7,6 +7,7 @@ print_failed_bazel_action_summary=0
 remote_download_toplevel=0
 windows_msvc_host_platform=0
 windows_cross_compile=0
+remote_execution_allowed=0
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
@@ -68,6 +69,11 @@ run_bazel_with_startup_args() {
 
   run_bazel "$@"
 }
+
+buildbuddy_wrapper="$(dirname "${BASH_SOURCE[0]}")/run_bazel_with_buildbuddy.py"
+if [[ -n "${BUILDBUDDY_API_KEY:-}" ]] && [[ "$("$buildbuddy_wrapper" --remote-execution-allowed)" == "true" ]]; then
+  remote_execution_allowed=1
+fi
 
 ci_config=ci-linux
 case "${RUNNER_OS:-}" in
@@ -255,9 +261,9 @@ if [[ ${#bazel_args[@]} -eq 0 || ${#bazel_targets[@]} -eq 0 ]]; then
   exit 1
 fi
 
-if [[ "${RUNNER_OS:-}" == "Windows" && $windows_cross_compile -eq 1 && -z "${BUILDBUDDY_API_KEY:-}" ]]; then
+if [[ "${RUNNER_OS:-}" == "Windows" && $windows_cross_compile -eq 1 && $remote_execution_allowed -eq 0 ]]; then
   # Windows cross-compilation depends on authenticated RBE. Preserve the local
-  # Windows build shape when credentials are unavailable.
+  # Windows build shape whenever remote execution is not trusted and enabled.
   ci_config=ci-windows
   windows_msvc_host_platform=1
 fi
@@ -287,7 +293,7 @@ if [[ $remote_download_toplevel -eq 1 ]]; then
   post_config_bazel_args+=(--remote_download_toplevel)
 fi
 
-if [[ "${RUNNER_OS:-}" == "Windows" && $windows_cross_compile -eq 1 && -n "${BUILDBUDDY_API_KEY:-}" ]]; then
+if [[ "${RUNNER_OS:-}" == "Windows" && $windows_cross_compile -eq 1 && $remote_execution_allowed -eq 1 ]]; then
   # `--enable_platform_specific_config` expands `common:windows` on Windows
   # hosts after ordinary rc configs, which can override `ci-windows-cross`'s
   # RBE host platform. Repeat the host platform on the command line so V8 and
@@ -299,17 +305,15 @@ if [[ "${RUNNER_OS:-}" == "Windows" && $windows_cross_compile -eq 1 && -n "${BUI
   post_config_bazel_args+=(--host_platform=//:rbe --shell_executable=/bin/bash)
 fi
 
-if [[ "${RUNNER_OS:-}" == "Windows" && $windows_cross_compile -eq 1 && -z "${BUILDBUDDY_API_KEY:-}" ]]; then
-  # The Windows cross-compile config depends on authenticated remote
-  # execution. When credentials are unavailable, keep the local build shape
-  # and its lower concurrency cap.
+if [[ "${RUNNER_OS:-}" == "Windows" && $windows_cross_compile -eq 1 && $remote_execution_allowed -eq 0 ]]; then
+  # The Windows cross-compile config depends on remote execution. When this
+  # workflow run is not trusted to use RBE, keep the local build shape and its
+  # lower concurrency cap.
   post_config_bazel_args+=(--jobs=8)
 fi
 
 if [[ -n "${BAZEL_REPO_CONTENTS_CACHE:-}" ]]; then
-  # Windows self-hosted runners can run multiple Bazel jobs concurrently. Give
-  # each job its own repo contents cache so they do not fight over the shared
-  # path configured in `ci-windows`.
+  # Give each Windows Bazel job its own repo contents cache path.
   post_config_bazel_args+=("--repo_contents_cache=${BAZEL_REPO_CONTENTS_CACHE}")
 fi
 
@@ -325,7 +329,7 @@ fi
 
 if [[ "${RUNNER_OS:-}" == "Windows" ]]; then
   pass_windows_build_env=1
-  if [[ $windows_cross_compile -eq 1 && -n "${BUILDBUDDY_API_KEY:-}" ]]; then
+  if [[ $windows_cross_compile -eq 1 && $remote_execution_allowed -eq 1 ]]; then
     # Remote build actions execute on Linux RBE workers. Passing the Windows
     # runner's build environment there makes Bazel genrules try to execute
     # C:\Program Files\Git\usr\bin\bash.exe on Linux.
@@ -384,7 +388,11 @@ bazel_run_args=(
   "${bazel_args[@]}"
 )
 if [[ -n "${BUILDBUDDY_API_KEY:-}" ]]; then
-  echo "BuildBuddy API key is available; using remote Bazel configuration."
+  if [[ $remote_execution_allowed -eq 1 ]]; then
+    echo "BuildBuddy API key is available; trusted remote Bazel execution is enabled."
+  else
+    echo "BuildBuddy cache credentials are available; remote execution is disabled for this workflow run."
+  fi
   bazel_run_args+=("--config=${ci_config}")
 else
   echo "BuildBuddy API key is not available; using local Bazel configuration."
