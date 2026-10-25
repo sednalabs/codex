@@ -52,14 +52,15 @@ jobs:
             echo "This focused package route is restricted to its exact candidate branch." >&2
             exit 1
           }
-          git fetch --no-tags --depth=2 "https://github.com/${GITHUB_REPOSITORY}.git" "${DEVICE_AUTH_SHA}"
+          git fetch --no-tags --depth=1 "https://github.com/${GITHUB_REPOSITORY}.git" "${DEVICE_AUTH_SHA}"
           git fetch --no-tags --depth=1 "https://github.com/${GITHUB_REPOSITORY}.git" "${LOCAL_UPSTREAM_BASE_SHA}"
           git fetch --no-tags --depth=1 https://github.com/openai/codex.git "${UPSTREAM_BASE_SHA}"
           [[ "$(git rev-parse HEAD)" == "${GITHUB_SHA}" ]]
           [[ "$(git rev-parse "${DEVICE_AUTH_SHA}^{tree}")" == "${DEVICE_AUTH_TREE}" ]]
           [[ "$(git rev-parse "${UPSTREAM_BASE_SHA}^{tree}")" == "${UPSTREAM_TREE}" ]]
           [[ "$(git rev-parse "${LOCAL_UPSTREAM_BASE_SHA}^{tree}")" == "${UPSTREAM_TREE}" ]]
-          [[ "$(git rev-parse "${DEVICE_AUTH_SHA}^")" == "${LOCAL_UPSTREAM_BASE_SHA}" ]]
+          source_parents="$(git cat-file commit "${DEVICE_AUTH_SHA}" | sed -n '/^$/q; s/^parent //p')"
+          [[ "${source_parents}" == "${LOCAL_UPSTREAM_BASE_SHA}" ]]
           git diff --quiet "${DEVICE_AUTH_SHA}" "${GITHUB_SHA}" -- . \
             ':(exclude).github/workflows/device-auth-linux-package.yml' || {
               echo "Only this workflow may differ from the exact device-auth source." >&2
