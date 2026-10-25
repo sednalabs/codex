@@ -52,6 +52,13 @@ jobs:
           persist-credentials: false
           path: .workflow-src
 
+      - name: Test named-test runner
+        working-directory: .workflow-src
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 -m unittest discover -s .github/scripts -p 'test_run_named_rust_tests.py'
+
       - name: Materialize exact B/T worktrees
         working-directory: .workflow-src
         shell: bash

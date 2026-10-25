@@ -378,6 +378,7 @@ def run_request(request: dict[str, Any], repo_root: Path) -> dict[str, Any]:
     # Execute one exact inventory-validated test at a time.  Besides keeping
     # failures attributable, the filtered-count check below proves Cargo did
     # not silently run the entire target instead of the requested selection.
+    first_failure_code = ""
     for name in request["tests"]:
         test_command = cargo_args(
             request,
@@ -444,13 +445,21 @@ def run_request(request: dict[str, Any], repo_root: Path) -> dict[str, Any]:
             }
         )
         if status != "success":
-            result["status"] = "failure"
-            result["failure_code"] = failure_code
-            result["message"] = (
-                "exact named test did not produce one isolated non-ignored passing result; "
-                "see bounded diagnostics and the hosted job log"
-            )
-            break
+            if not first_failure_code:
+                first_failure_code = failure_code
+                result["status"] = "failure"
+                result["failure_code"] = failure_code
+                result["message"] = (
+                    "one or more exact named tests did not produce an isolated non-ignored "
+                    "passing result; see per-test bounded diagnostics and the hosted job log"
+                )
+            # A reconciled assertion failure or ignored test does not prevent
+            # independent requested names from running. Stop when this command
+            # could not be reconciled as exactly one selected test (for example,
+            # compilation or filter failure), because later outcomes are not
+            # useful evidence for this target invocation.
+            if failure_code == "execution_reconciliation_failed":
+                break
     return result
 
 

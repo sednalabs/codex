@@ -175,6 +175,62 @@ class NamedRustTests(TestCase):
             ],
         )
 
+    def test_reconciled_failure_does_not_skip_remaining_requested_names(self) -> None:
+        request = {**REQUEST, "tests": ["suite::known", "suite::other"]}
+        inventory = self.completed(stdout="suite::known: test\nsuite::other: test\n")
+        failed_test = self.completed(
+            stdout=(
+                "test suite::known ... FAILED\n"
+                "failures:\n\n"
+                "test result: FAILED. 0 passed; 1 failed; 0 ignored; "
+                "0 measured; 1 filtered out\n"
+            ),
+            code=101,
+        )
+        passing_test = self.completed(
+            stdout=(
+                "test suite::other ... ok\n"
+                "test result: ok. 1 passed; 0 failed; 0 ignored; "
+                "0 measured; 1 filtered out\n"
+            )
+        )
+        with (
+            mock.patch.object(
+                MODULE.subprocess,
+                "run",
+                side_effect=[inventory, failed_test, passing_test],
+            ) as run,
+            mock.patch.object(MODULE, "git_sha", return_value="target-sha"),
+            mock.patch.object(MODULE, "load_manifest", return_value=MANIFEST),
+        ):
+            result = MODULE.run_request(request, Path("/validation-target"))
+
+        self.assertEqual(result["status"], "failure")
+        self.assertEqual(result["failure_code"], "named_test_failed")
+        self.assertEqual([test["name"] for test in result["tests"]], request["tests"])
+        self.assertEqual([test["status"] for test in result["tests"]], ["failure", "success"])
+        self.assertEqual(run.call_count, 3)
+
+    def test_unreconciled_execution_stops_later_requested_names(self) -> None:
+        request = {**REQUEST, "tests": ["suite::known", "suite::other"]}
+        inventory = self.completed(stdout="suite::known: test\nsuite::other: test\n")
+        compilation_failure = self.completed(stderr="error: could not compile", code=101)
+        with (
+            mock.patch.object(
+                MODULE.subprocess,
+                "run",
+                side_effect=[inventory, compilation_failure],
+            ) as run,
+            mock.patch.object(MODULE, "git_sha", return_value="target-sha"),
+            mock.patch.object(MODULE, "load_manifest", return_value=MANIFEST),
+        ):
+            result = MODULE.run_request(request, Path("/validation-target"))
+
+        self.assertEqual(result["status"], "failure")
+        self.assertEqual(result["failure_code"], "execution_reconciliation_failed")
+        self.assertEqual([test["name"] for test in result["tests"]], ["suite::known"])
+        self.assertEqual(run.call_count, 2)
+
     def test_unfiltered_target_cannot_satisfy_exact_named_test(self) -> None:
         request = {**REQUEST, "tests": ["suite::known"]}
         inventory = self.completed(stdout="suite::known: test\nsuite::other: test\n")
