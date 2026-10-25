@@ -26,7 +26,7 @@ jobs:
           - target: aarch64-unknown-linux-gnu
             runner: ubuntu-24.04-arm
     env:
-      CODEX_REPO_ROOT: ${{ github.workspace }}
+      CODEX_REPO_ROOT: ${{ github.workspace }}/product-source
 
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
@@ -35,16 +35,13 @@ jobs:
           fetch-depth: 1
           persist-credentials: false
 
-      - name: Bind exact product, workflow host, and reconstructed upstream base
+      - name: Bind exact product source and workflow host
         id: identity
         shell: bash
         env:
           PRODUCT_SHA: a643a7ea09a0615b040a436dd630bb3ea7961842
           PRODUCT_TREE: 71cb6d62c5d95ac8d671bbb61b7914220340c8d9
-          LOCAL_BASE_SHA: 98478e3ed34f5104d965fc879f211284f664c524
-          MAIN_BASE_SHA: 7d0a6477497c2224c6f3fb2e42d2b53c6600c556
           UPSTREAM_SHA: 970111f6cb62cc02fe36a82ea7d71b37a2889c97
-          UPSTREAM_TREE: e09c71b9069e689c9c997c766d0de8b7b288583f
           EXPECTED_REF: refs/heads/codex/w14939-integrated-linux-package-20261025
         run: |
           set -euo pipefail
@@ -57,32 +54,24 @@ jobs:
             fi
           }
           assert_equal "workflow ref" "${EXPECTED_REF}" "${GITHUB_REF}"
-          git fetch --no-tags --depth=1 "https://github.com/${GITHUB_REPOSITORY}.git" "${PRODUCT_SHA}"
-          git fetch --no-tags --depth=1 "https://github.com/${GITHUB_REPOSITORY}.git" "${LOCAL_BASE_SHA}"
-          git fetch --no-tags --depth=1 "https://github.com/${GITHUB_REPOSITORY}.git" "${MAIN_BASE_SHA}"
-          git fetch --no-tags --depth=1 https://github.com/openai/codex.git "${UPSTREAM_SHA}"
-
-          assert_equal "checkout HEAD" "${GITHUB_SHA}" "$(git rev-parse HEAD)"
-          assert_equal "product tree" "${PRODUCT_TREE}" "$(git rev-parse "${PRODUCT_SHA}^{tree}")"
-          assert_equal "upstream tree" "${UPSTREAM_TREE}" "$(git rev-parse "${UPSTREAM_SHA}^{tree}")"
-          assert_equal "reconstructed base tree" "${UPSTREAM_TREE}" "$(git rev-parse "${LOCAL_BASE_SHA}^{tree}")"
-          mapfile -t local_base_parents < <(git cat-file commit "${LOCAL_BASE_SHA}" | awk 'NF == 0 { exit } $1 == "parent" { print $2 }')
-          assert_equal "reconstructed base parent count" 2 "${#local_base_parents[@]}"
-          assert_equal "reconstructed base parent order" \
-            "${MAIN_BASE_SHA} ${UPSTREAM_SHA}" "${local_base_parents[*]}"
-          mapfile -t workflow_parents < <(git cat-file commit "${GITHUB_SHA}" | awk 'NF == 0 { exit } $1 == "parent" { print $2 }')
-          assert_equal "workflow host parent count" 1 "${#workflow_parents[@]}"
-          assert_equal "workflow host parent" "${PRODUCT_SHA}" "${workflow_parents[0]}"
-          extra_paths="$(git diff --name-only "${PRODUCT_SHA}" "${GITHUB_SHA}" -- . \
-            ':(exclude).github/workflows/w14939-integrated-linux-package.yml')"
-          assert_equal "workflow host extra paths" "" "${extra_paths}"
-          dirty_paths="$(git status --porcelain --untracked-files=normal)"
-          assert_equal "workflow checkout status" "" "${dirty_paths}"
+          git fetch --no-tags --depth=1 "${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}.git" "${PRODUCT_SHA}"
+          source_dir="${GITHUB_WORKSPACE}/product-source"
+          [[ ! -e "${source_dir}" ]] || {
+            echo "Exact product source directory already exists; refusing ambiguous checkout." >&2
+            exit 1
+          }
+          git worktree add --detach "${source_dir}" "${PRODUCT_SHA}"
+          source_sha="$(git -C "${source_dir}" rev-parse HEAD)"
+          source_tree="$(git -C "${source_dir}" rev-parse 'HEAD^{tree}')"
+          assert_equal "checked-out source commit" "${PRODUCT_SHA}" "${source_sha}"
+          assert_equal "checked-out source tree" "${PRODUCT_TREE}" "${source_tree}"
+          dirty_paths="$(git -C "${source_dir}" status --porcelain --untracked-files=normal)"
+          assert_equal "checked-out source status" "" "${dirty_paths}"
 
           {
-            printf 'product_sha=%s\n' "${PRODUCT_SHA}"
-            printf 'product_tree=%s\n' "${PRODUCT_TREE}"
-            printf 'product_short=%s\n' "${PRODUCT_SHA:0:12}"
+            printf 'product_sha=%s\n' "${source_sha}"
+            printf 'product_tree=%s\n' "${source_tree}"
+            printf 'product_short=%s\n' "${source_sha:0:12}"
             printf 'upstream_sha=%s\n' "${UPSTREAM_SHA}"
             printf 'workflow_host_sha=%s\n' "${GITHUB_SHA}"
           } >> "${GITHUB_OUTPUT}"
@@ -96,23 +85,29 @@ jobs:
             binutils pkg-config libcap-dev
 
       - name: Set up Codex CI tools
-        uses: ./.github/actions/setup-ci
+        uses: ./product-source/.github/actions/setup-ci
+
+      - name: Bind build commands to exact product source
+        shell: bash
+        run: printf 'CODEX_REPO_ROOT=%s\n' "${GITHUB_WORKSPACE}/product-source" >> "${GITHUB_ENV}"
 
       - uses: dtolnay/rust-toolchain@d124f86f28ff42855784ff3319f48ac182c248f8 # 1.99.1
         with:
           targets: ${{ matrix.target }}
 
       - name: Configure source-matched rusty_v8 artifacts
-        uses: ./.github/actions/setup-rusty-v8
+        uses: ./product-source/.github/actions/setup-rusty-v8
         with:
           target: ${{ matrix.target }}
 
       - name: Run accepted usage-tree adapter tests
         shell: bash
+        working-directory: product-source
         run: python3 scripts/test_codex_usage_tree.py
 
       - name: Build and fingerprint the packaged bwrap resource
         shell: bash
+        working-directory: product-source
         env:
           TARGET: ${{ matrix.target }}
           STABLE_GIT_COMMIT: ${{ steps.identity.outputs.product_sha }}
@@ -128,6 +123,7 @@ jobs:
 
       - name: Assemble and verify the integrated CLI package
         shell: bash
+        working-directory: product-source
         env:
           TARGET: ${{ matrix.target }}
           PRODUCT_SHA: ${{ steps.identity.outputs.product_sha }}
@@ -196,6 +192,7 @@ jobs:
 
       - name: Run focused device-auth package tests
         shell: bash
+        working-directory: product-source
         env:
           TARGET: ${{ matrix.target }}
           STABLE_GIT_COMMIT: ${{ steps.identity.outputs.product_sha }}
@@ -205,7 +202,7 @@ jobs:
             -p codex-rmcp-client -p codex-mcp --lib
           cargo test --locked --manifest-path codex-rs/Cargo.toml --target "${TARGET}" \
             -p codex-cli --test mcp_device_login
-          [[ -z "$(git status --porcelain --untracked-files=normal)" ]]
+          [[ -z "$(git -C "${CODEX_REPO_ROOT}" status --porcelain --untracked-files=normal)" ]]
 
       - uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f # v7.0.0
         with:
