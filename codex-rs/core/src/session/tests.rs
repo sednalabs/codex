@@ -10984,6 +10984,8 @@ async fn model_baseline_overlay_reaches_fresh_root_and_child_request_payloads() 
             .without_project_context()
             .build()
             .await?;
+        let mut config = config;
+        config.model_catalog = Some(codex_models_manager::bundled_models_response()?);
         assert_eq!(config.model.as_deref(), Some("gpt-6.1-sol"));
         assert!(config.base_instructions.is_none());
         assert!(
