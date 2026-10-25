@@ -78,7 +78,7 @@ equivalent per-server preference without losing these boundaries.
 Replacing or shutting down a runtime prevents later publication while keeping
 calls that already own its bindings live. The final binding owner schedules
 asynchronous client shutdown, which reaps the stdio child and releases the
-parent's pipe descriptors. `refresh_reaps_superseded_mcp_server_after_in_flight_call_finishes`
+parent's pipe descriptors. `refresh_keeps_superseded_mcp_server_alive_for_in_flight_calls`
 covers refresh and shutdown retirement, including child exit and Linux pipe
 release. Remove this carry when upstream provides equivalent publication
 fencing and last-owner stdio cleanup without interrupting in-flight calls.
