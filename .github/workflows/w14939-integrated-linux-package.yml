@@ -61,10 +61,13 @@ jobs:
           [[ "$(git rev-parse "${PRODUCT_SHA}^{tree}")" == "${PRODUCT_TREE}" ]]
           [[ "$(git rev-parse "${UPSTREAM_SHA}^{tree}")" == "${UPSTREAM_TREE}" ]]
           [[ "$(git rev-parse "${LOCAL_BASE_SHA}^{tree}")" == "${UPSTREAM_TREE}" ]]
-          local_base_parents="$(git cat-file commit "${LOCAL_BASE_SHA}" | sed -n '/^$/q; s/^parent //p')"
-          [[ "${local_base_parents}" == "${MAIN_BASE_SHA} ${UPSTREAM_SHA}" ]]
-          workflow_parents="$(git cat-file commit "${GITHUB_SHA}" | sed -n '/^$/q; s/^parent //p')"
-          [[ "${workflow_parents}" == "${PRODUCT_SHA}" ]]
+          mapfile -t local_base_parents < <(git cat-file commit "${LOCAL_BASE_SHA}" | sed -n '/^$/q; s/^parent //p')
+          [[ "${#local_base_parents[@]}" == 2 ]]
+          [[ "${local_base_parents[0]}" == "${MAIN_BASE_SHA}" ]]
+          [[ "${local_base_parents[1]}" == "${UPSTREAM_SHA}" ]]
+          mapfile -t workflow_parents < <(git cat-file commit "${GITHUB_SHA}" | sed -n '/^$/q; s/^parent //p')
+          [[ "${#workflow_parents[@]}" == 1 ]]
+          [[ "${workflow_parents[0]}" == "${PRODUCT_SHA}" ]]
           git diff --quiet "${PRODUCT_SHA}" "${GITHUB_SHA}" -- . \
             ':(exclude).github/workflows/w14939-integrated-linux-package.yml' || {
               echo "The workflow host contains changes beyond this exact package workflow." >&2
