@@ -38,6 +38,10 @@ class OutputSummarizationTest(unittest.TestCase):
                 "list output (2 items: text, image)",
             ),
             (["private token"], "list output (1 items: str)"),
+            (
+                ["a", "b", "c", "d", "e", "private token"],
+                "list output (6 items: str, str, str, str, str, ...)",
+            ),
             ({"secret": "private token"}, "object output (1 fields)"),
             (7, "int output"),
             (None, "empty output"),

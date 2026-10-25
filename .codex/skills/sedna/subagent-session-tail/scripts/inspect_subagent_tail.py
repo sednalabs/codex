@@ -99,7 +99,7 @@ def summarize_output(output: Any) -> str:
         return f"text output ({len(output.splitlines())} lines)"
     if isinstance(output, list):
         kinds: list[str] = []
-        for item in output:
+        for item in output[:5]:
             if isinstance(item, dict):
                 kind = item.get("type")
                 kinds.append(
@@ -110,6 +110,8 @@ def summarize_output(output: Any) -> str:
                 )
             else:
                 kinds.append(type(item).__name__)
+        if len(output) > 5:
+            kinds.append("...")
         return f"list output ({len(output)} items: {', '.join(kinds) if kinds else 'empty'})"
     if isinstance(output, dict):
         return f"object output ({len(output)} fields)"
