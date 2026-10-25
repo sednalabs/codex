@@ -491,12 +491,14 @@ impl LocalAgentControl {
             .items
             .into_iter()
             .map(|envelope| {
+                let preempts_active_turn = envelope_preempts_active_turn(&envelope);
+                let id = envelope.id;
                 PendingAgentMessage::new(
                     envelope.communication,
                     Some(MessageDelivery::restored_mailbox_message_input(
-                        envelope.id.clone(),
-                        Some(envelope.id),
-                        envelope_preempts_active_turn(&envelope),
+                        id.clone(),
+                        Some(id),
+                        preempts_active_turn,
                     )),
                 )
             })
@@ -669,6 +671,7 @@ impl LocalAgentControl {
         mailbox
             .mark_recovery_needed(work, RecoveryEvidence::DeliveryUnavailable)
             .await
+            .map(|_| ())
             .map_err(storage_error)
     }
 }

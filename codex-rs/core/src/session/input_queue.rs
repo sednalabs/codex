@@ -1,5 +1,4 @@
 use crate::agent::api::AgentControl;
-use crate::agent_communication::MessageDelivery;
 use crate::agent_communication::PENDING_MAILBOX_MESSAGES;
 use crate::state::ActiveTurn;
 use crate::state::MailboxDeliveryPhase;
@@ -516,6 +515,7 @@ impl TurnInputQueue {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::agent_communication::MessageDelivery;
     use codex_history::CodexHarnessMetadata;
     use codex_protocol::AgentPath;
     use codex_protocol::user_input::UserInput;

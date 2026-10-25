@@ -1802,13 +1802,6 @@ async fn run_sampling_request(
         sess.services
             .executed_tool_calls
             .attach_to_prompt(&mut prompt_input, &mut executed_tool_calls_by_output);
-        let mailbox_input_ids = prompt_input
-            .iter()
-            .filter_map(|item| match item {
-                ResponseItem::AgentMessage { id: Some(id), .. } => Some(id.to_string()),
-                _ => None,
-            })
-            .collect::<Vec<_>>();
         let mut prompt = build_prompt(
             prompt_input,
             step_context.as_ref(),
@@ -2691,6 +2684,14 @@ async fn try_run_sampling_request(
     cancellation_token: CancellationToken,
     draining_for_mailbox: &mut bool,
 ) -> CodexResult<SamplingRequestResult> {
+    let mailbox_input_ids = prompt
+        .input
+        .iter()
+        .filter_map(|item| match item {
+            ResponseItem::AgentMessage { id: Some(id), .. } => Some(id.to_string()),
+            _ => None,
+        })
+        .collect::<Vec<_>>();
     let turn_context = Arc::clone(&step_context.turn);
     feedback_tags!(
         model = step_context.settings.model_info.slug.clone(),
