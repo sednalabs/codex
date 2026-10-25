@@ -48,32 +48,36 @@ jobs:
           EXPECTED_REF: refs/heads/codex/w14939-integrated-linux-package-20261025
         run: |
           set -euo pipefail
-          [[ "${GITHUB_REF}" == "${EXPECTED_REF}" ]] || {
-            echo "This package route is restricted to its exact workflow-host branch." >&2
-            exit 1
+          assert_equal() {
+            local label="$1" expected="$2" actual="$3"
+            if [[ "${expected}" != "${actual}" ]]; then
+              printf 'identity mismatch (%s): expected <%s>, got <%s>\n' \
+                "${label}" "${expected}" "${actual}" >&2
+              exit 1
+            fi
           }
+          assert_equal "workflow ref" "${EXPECTED_REF}" "${GITHUB_REF}"
           git fetch --no-tags --depth=1 "https://github.com/${GITHUB_REPOSITORY}.git" "${PRODUCT_SHA}"
           git fetch --no-tags --depth=1 "https://github.com/${GITHUB_REPOSITORY}.git" "${LOCAL_BASE_SHA}"
           git fetch --no-tags --depth=1 "https://github.com/${GITHUB_REPOSITORY}.git" "${MAIN_BASE_SHA}"
           git fetch --no-tags --depth=1 https://github.com/openai/codex.git "${UPSTREAM_SHA}"
 
-          [[ "$(git rev-parse HEAD)" == "${GITHUB_SHA}" ]]
-          [[ "$(git rev-parse "${PRODUCT_SHA}^{tree}")" == "${PRODUCT_TREE}" ]]
-          [[ "$(git rev-parse "${UPSTREAM_SHA}^{tree}")" == "${UPSTREAM_TREE}" ]]
-          [[ "$(git rev-parse "${LOCAL_BASE_SHA}^{tree}")" == "${UPSTREAM_TREE}" ]]
-          mapfile -t local_base_parents < <(git cat-file commit "${LOCAL_BASE_SHA}" | sed -n '/^$/q; s/^parent //p')
-          [[ "${#local_base_parents[@]}" == 2 ]]
-          [[ "${local_base_parents[0]}" == "${MAIN_BASE_SHA}" ]]
-          [[ "${local_base_parents[1]}" == "${UPSTREAM_SHA}" ]]
-          mapfile -t workflow_parents < <(git cat-file commit "${GITHUB_SHA}" | sed -n '/^$/q; s/^parent //p')
-          [[ "${#workflow_parents[@]}" == 1 ]]
-          [[ "${workflow_parents[0]}" == "${PRODUCT_SHA}" ]]
-          git diff --quiet "${PRODUCT_SHA}" "${GITHUB_SHA}" -- . \
-            ':(exclude).github/workflows/w14939-integrated-linux-package.yml' || {
-              echo "The workflow host contains changes beyond this exact package workflow." >&2
-              exit 1
-            }
-          [[ -z "$(git status --porcelain --untracked-files=normal)" ]]
+          assert_equal "checkout HEAD" "${GITHUB_SHA}" "$(git rev-parse HEAD)"
+          assert_equal "product tree" "${PRODUCT_TREE}" "$(git rev-parse "${PRODUCT_SHA}^{tree}")"
+          assert_equal "upstream tree" "${UPSTREAM_TREE}" "$(git rev-parse "${UPSTREAM_SHA}^{tree}")"
+          assert_equal "reconstructed base tree" "${UPSTREAM_TREE}" "$(git rev-parse "${LOCAL_BASE_SHA}^{tree}")"
+          mapfile -t local_base_parents < <(git cat-file commit "${LOCAL_BASE_SHA}" | awk 'NF == 0 { exit } $1 == "parent" { print $2 }')
+          assert_equal "reconstructed base parent count" 2 "${#local_base_parents[@]}"
+          assert_equal "reconstructed base parent order" \
+            "${MAIN_BASE_SHA} ${UPSTREAM_SHA}" "${local_base_parents[*]}"
+          mapfile -t workflow_parents < <(git cat-file commit "${GITHUB_SHA}" | awk 'NF == 0 { exit } $1 == "parent" { print $2 }')
+          assert_equal "workflow host parent count" 1 "${#workflow_parents[@]}"
+          assert_equal "workflow host parent" "${PRODUCT_SHA}" "${workflow_parents[0]}"
+          extra_paths="$(git diff --name-only "${PRODUCT_SHA}" "${GITHUB_SHA}" -- . \
+            ':(exclude).github/workflows/w14939-integrated-linux-package.yml')"
+          assert_equal "workflow host extra paths" "" "${extra_paths}"
+          dirty_paths="$(git status --porcelain --untracked-files=normal)"
+          assert_equal "workflow checkout status" "" "${dirty_paths}"
 
           {
             printf 'product_sha=%s\n' "${PRODUCT_SHA}"
