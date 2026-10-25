@@ -32,6 +32,11 @@ on:
         required: false
         default: false
         type: boolean
+      resolve_workspace_lock:
+        description: Generate and export the workspace-version Cargo.lock patch on a standard hosted runner
+        required: false
+        default: false
+        type: boolean
 
 concurrency:
   group: validation-named-tests/${{ inputs.target_sha }}/${{ inputs.base_ref }}/${{ inputs.profile }}
@@ -50,4 +55,5 @@ jobs:
       profile: ${{ inputs.profile }}
       request_json: ${{ inputs.request_json }}
       resolve_sha2_lock_edge: ${{ inputs.resolve_sha2_lock_edge }}
+      resolve_workspace_lock: ${{ inputs.resolve_workspace_lock }}
       artifact_name: validation-named-tests-${{ github.run_id }}

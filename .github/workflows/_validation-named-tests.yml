@@ -30,6 +30,10 @@ on:
         required: false
         type: boolean
         default: false
+      resolve_workspace_lock:
+        required: false
+        type: boolean
+        default: false
 
 permissions:
   contents: read
@@ -213,8 +217,31 @@ jobs:
           if-no-files-found: error
           retention-days: 3
 
+      - name: Resolve and export the workspace-version lock
+        if: ${{ inputs.resolve_workspace_lock }}
+        working-directory: validation-target
+        shell: bash
+        run: |
+          set -euo pipefail
+          cargo update --workspace --manifest-path codex-rs/Cargo.toml
+          git diff --check -- codex-rs/Cargo.lock
+          mkdir -p "${RUNNER_TEMP}/workspace-lock"
+          git diff --no-ext-diff --binary -- codex-rs/Cargo.lock > "${RUNNER_TEMP}/workspace-lock/Cargo.lock.patch"
+          test -s "${RUNNER_TEMP}/workspace-lock/Cargo.lock.patch"
+          printf 'target_sha=%s\n' "${VALIDATION_TARGET_SHA}" > "${RUNNER_TEMP}/workspace-lock/metadata.txt"
+          sha256sum "${RUNNER_TEMP}/workspace-lock/Cargo.lock.patch" >> "${RUNNER_TEMP}/workspace-lock/metadata.txt"
+
+      - name: Upload workspace-version lock patch
+        if: ${{ inputs.resolve_workspace_lock }}
+        uses: actions/upload-artifact@v7
+        with:
+          name: validation-workspace-lock-${{ github.run_id }}
+          path: ${{ runner.temp }}/workspace-lock
+          if-no-files-found: error
+          retention-days: 3
+
       - name: Inventory and run exact named tests
-        if: ${{ inputs.resolve_sha2_lock_edge != true }}
+        if: ${{ inputs.resolve_sha2_lock_edge != true && inputs.resolve_workspace_lock != true }}
         id: named_tests
         continue-on-error: true
         working-directory: validation-target
@@ -224,7 +251,7 @@ jobs:
           python3 ../.workflow-src/.github/scripts/run_named_rust_tests.py
 
       - name: Append named-test evidence
-        if: ${{ always() && inputs.resolve_sha2_lock_edge != true }}
+        if: ${{ always() && inputs.resolve_sha2_lock_edge != true && inputs.resolve_workspace_lock != true }}
         shell: bash
         env:
           RESULT_PATH: ${{ github.workspace }}/validation-target/rust-tests-v1-results.json
@@ -253,7 +280,7 @@ jobs:
           PY
 
       - name: Upload named-test evidence
-        if: ${{ always() && inputs.resolve_sha2_lock_edge != true }}
+        if: ${{ always() && inputs.resolve_sha2_lock_edge != true && inputs.resolve_workspace_lock != true }}
         uses: actions/upload-artifact@v7
         with:
           name: ${{ inputs.artifact_name }}
@@ -262,6 +289,6 @@ jobs:
           retention-days: 3
 
       - name: Preserve failed exact-test result
-        if: ${{ inputs.resolve_sha2_lock_edge != true && steps.named_tests.outcome == 'failure' }}
+        if: ${{ inputs.resolve_sha2_lock_edge != true && inputs.resolve_workspace_lock != true && steps.named_tests.outcome == 'failure' }}
         shell: bash
         run: exit 1
