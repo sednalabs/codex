@@ -74,6 +74,9 @@ pub enum InstructionOverlaySelection {
 pub struct InstructionOverlayComponentToml {
     #[serde(default)]
     pub on_absent: InstructionOverlayOnAbsent,
+    /// Exact model slugs for this target; omitted means the target applies to every model.
+    #[serde(default)]
+    pub models: Option<Vec<String>>,
     #[serde(default)]
     pub selection: InstructionOverlaySelection,
     #[serde(default)]
@@ -84,9 +87,19 @@ impl fmt::Debug for InstructionOverlayComponentToml {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("InstructionOverlayComponentToml")
             .field("on_absent", &self.on_absent)
+            .field("models", &self.models)
             .field("selection", &self.selection)
             .field("edits", &self.edits)
             .finish()
+    }
+}
+
+impl InstructionOverlayComponentToml {
+    /// Returns whether this overlay target is enabled for the exact model slug.
+    pub fn applies_to_model(&self, model_slug: &str) -> bool {
+        self.models
+            .as_ref()
+            .is_none_or(|models| models.iter().any(|model| model == model_slug))
     }
 }
 
@@ -222,6 +235,7 @@ pub enum InstructionOverlayError {
     LiteralTooLarge,
     TotalLiteralTooLarge,
     EmptySearch,
+    InvalidModelSelectors,
     ZeroExpectedMatches,
     TargetAbsent,
     MatchCountMismatch { expected: usize, actual: usize },
@@ -237,6 +251,9 @@ impl fmt::Display for InstructionOverlayError {
                 f.write_str("instruction overlay total literal size limit exceeded")
             }
             Self::EmptySearch => f.write_str("instruction overlay search text must not be empty"),
+            Self::InvalidModelSelectors => {
+                f.write_str("instruction overlay models must contain nonempty exact model slugs")
+            }
             Self::ZeroExpectedMatches => {
                 f.write_str("instruction overlay expected_matches must be greater than zero")
             }
@@ -288,6 +305,13 @@ impl InstructionOverlaysToml {
             let Some(plan) = self.component(*component) else {
                 continue;
             };
+            if plan
+                .models
+                .as_ref()
+                .is_some_and(|models| models.is_empty() || models.iter().any(String::is_empty))
+            {
+                return Err(InstructionOverlayError::InvalidModelSelectors);
+            }
             // An empty higher-precedence edits array deliberately disables an inherited plan.
             if plan.edits.is_empty() {
                 continue;
@@ -455,6 +479,42 @@ mod tests {
             Some("prefix  suffix")
         );
         assert!(!format!("{plan:?}").contains("sensitive prompt text"));
+    }
+
+    #[test]
+    fn model_applicability_defaults_to_all_and_matches_exact_slugs() {
+        let unscoped = InstructionOverlayComponentToml::default();
+        assert!(unscoped.applies_to_model("gpt-6.1-sol"));
+
+        let plan: InstructionOverlaysToml = toml::from_str(
+            "[model_baseline]\nmodels = [\"gpt-6.1-sol\", \"gpt-6-luna\"]\nedits = [{ op = \"remove_exact\", text = \"target\", expected_matches = 1 }]\n",
+        )
+        .expect("parse model-scoped overlay");
+        let model_baseline = plan
+            .component(InstructionOverlayComponent::ModelBaseline)
+            .expect("model baseline overlay");
+        assert!(model_baseline.applies_to_model("gpt-6.1-sol"));
+        assert!(model_baseline.applies_to_model("gpt-6-luna"));
+        assert!(!model_baseline.applies_to_model("gpt-6.1-sol-preview"));
+    }
+
+    #[test]
+    fn empty_model_applicability_list_is_invalid() {
+        let plan = InstructionOverlaysToml {
+            model_baseline: Some(InstructionOverlayComponentToml {
+                models: Some(Vec::new()),
+                edits: vec![InstructionOverlayEdit::RemoveExact {
+                    text: "target".to_string(),
+                    expected_matches: 1,
+                }],
+                ..Default::default()
+            }),
+            ..Default::default()
+        };
+        assert_eq!(
+            plan.validate_all(),
+            Err(InstructionOverlayError::InvalidModelSelectors)
+        );
     }
 
     #[test]

@@ -10948,118 +10948,140 @@ async fn build_initial_context_omits_prompt_fragments_without_extension_state() 
 #[tokio::test]
 async fn model_baseline_overlay_reaches_fresh_root_and_child_request_payloads() -> anyhow::Result<()>
 {
-    const TARGET: &str = "Avoid performing blocking sleep or wait calls longer than 60 seconds, as they may prevent you from communicating with the user for their duration.";
-
-    let config_contents = format!(
-        "model = \"gpt-6.1-sol\"\n\
-         [instruction_overlays.model_baseline]\n\
-         edits = [{{ op = \"remove_exact\", text = {TARGET:?}, expected_matches = 1 }}]\n"
-    );
+    const BLOCKING_WAIT_TARGET: &str = "Avoid performing blocking sleep or wait calls longer than 60 seconds, as they may prevent you from communicating with the user for their duration.";
+    const COMMENTARY_CADENCE_TARGET: &str = "The user appreciates consistent, frequent communication during your turn, and should not be left without a commentary update for more than 60 seconds during ongoing work.";
     let parent_thread_id = ThreadId::new();
-    let cases = [
-        ("root", SessionSource::Cli),
-        (
-            "ThreadSpawn child",
-            SessionSource::SubAgent(SubAgentSource::ThreadSpawn {
-                parent_thread_id,
-                depth: 1,
-                agent_path: Some(
-                    AgentPath::try_from("/root/worker").expect("agent path should parse"),
-                ),
-                agent_nickname: Some("worker".to_string()),
-                agent_role: None,
-            }),
-        ),
-    ];
+    for model_slug in ["gpt-6.1-sol", "gpt-6-luna"] {
+        let config_contents = format!(
+            "model = {model_slug:?}\n\
+             [instruction_overlays.model_baseline]\n\
+             models = [\"gpt-6.1-sol\", \"gpt-6-luna\"]\n\
+             edits = [{{ op = \"remove_exact\", text = {BLOCKING_WAIT_TARGET:?}, expected_matches = 1 }},\n\
+             {{ op = \"remove_exact\", text = {COMMENTARY_CADENCE_TARGET:?}, expected_matches = 1 }}]\n"
+        );
+        let cases = [
+            ("root", SessionSource::Cli),
+            (
+                "ThreadSpawn child",
+                SessionSource::SubAgent(SubAgentSource::ThreadSpawn {
+                    parent_thread_id: parent_thread_id.clone(),
+                    depth: 1,
+                    agent_path: Some(
+                        AgentPath::try_from("/root/worker").expect("agent path should parse"),
+                    ),
+                    agent_nickname: Some("worker".to_string()),
+                    agent_role: None,
+                }),
+            ),
+        ];
 
-    for (thread_kind, session_source) in cases {
-        let codex_home = tempfile::tempdir().expect("create temporary config home");
-        std::fs::write(
-            codex_home.path().join(crate::config::CONFIG_TOML_FILE),
-            &config_contents,
-        )?;
-        let config = ConfigBuilder::without_managed_config_for_tests()
-            .codex_home(codex_home.path().to_path_buf())
-            .fallback_cwd(Some(codex_home.path().to_path_buf()))
-            .without_project_context()
-            .build()
-            .await?;
-        let mut config = config;
-        config.model_catalog = Some(codex_models_manager::bundled_models_response()?);
-        assert_eq!(config.model.as_deref(), Some("gpt-6.1-sol"));
-        assert!(config.base_instructions.is_none());
-        assert!(
-            config
-                .instruction_overlays
-                .model_baseline
-                .as_ref()
-                .is_some_and(|component| component.edits.len() == 1)
-        );
+        for (thread_kind, session_source) in cases {
+            let codex_home = tempfile::tempdir().expect("create temporary config home");
+            std::fs::write(
+                codex_home.path().join(crate::config::CONFIG_TOML_FILE),
+                &config_contents,
+            )?;
+            let config = ConfigBuilder::without_managed_config_for_tests()
+                .codex_home(codex_home.path().to_path_buf())
+                .fallback_cwd(Some(codex_home.path().to_path_buf()))
+                .without_project_context()
+                .build()
+                .await?;
+            let mut config = config;
+            config.model_catalog = Some(codex_models_manager::bundled_models_response()?);
+            assert_eq!(config.model.as_deref(), Some(model_slug));
+            assert!(config.base_instructions.is_none());
+            assert!(
+                config
+                    .instruction_overlays
+                    .model_baseline
+                    .as_ref()
+                    .is_some_and(|component| {
+                        component.models.as_deref().is_some_and(|models| {
+                            models
+                                .iter()
+                                .map(String::as_str)
+                                .eq(["gpt-6.1-sol", "gpt-6-luna"])
+                        }) && component.edits.len() == 2
+                    })
+            );
 
-        let (session, _rx_event) =
-            make_session_with_config_and_history_source_and_agent_control_and_rx(
-                config,
-                InitialHistory::New,
-                session_source,
-                LocalAgentControl::default(),
-            )
-            .await?;
-        let (turn_context, _) = session
-            .new_turn_with_sub_id(
-                format!("model-baseline-overlay-{thread_kind}"),
-                SessionSettingsUpdate::default(),
-                Default::default(),
-            )
-            .await?;
-        let step_context = StepContext::for_test(Arc::clone(&turn_context));
-        let base_instructions = session.get_prompt_base_instructions().await;
-        assert!(
-            base_instructions.text.contains(TARGET),
-            "the production model baseline for {thread_kind} must contain the exact configured target"
-        );
-        assert!(matches!(
-            base_instructions.provenance.as_ref(),
-            Some(codex_protocol::models::BaseInstructionsProvenance::Model { .. })
-        ));
-        let expected_baseline = base_instructions.text.replace(TARGET, "");
-        let initial_context = build_initial_context(&session, &turn_context).await;
-        let prompt = super::turn::build_prompt(
-            initial_context,
-            &step_context,
-            base_instructions,
-            /*incremental_tools*/ false,
-        );
-        let metadata = session
-            .responses_metadata(&step_context, CodexResponsesRequestKind::Turn)
-            .await;
-        let request = session.services.model_client.build_responses_request(
-            &prompt,
-            &step_context.settings.model_info,
-            /*effort*/ None,
-            codex_protocol::config_types::ReasoningSummary::None,
-            /*service_tier*/ None,
-            &metadata,
-            /*include_internal*/ true,
-        )?;
+            let (session, _rx_event) =
+                make_session_with_config_and_history_source_and_agent_control_and_rx(
+                    config,
+                    InitialHistory::New,
+                    session_source,
+                    LocalAgentControl::default(),
+                )
+                .await?;
+            let (turn_context, _) = session
+                .new_turn_with_sub_id(
+                    format!("model-baseline-overlay-{model_slug}-{thread_kind}"),
+                    SessionSettingsUpdate::default(),
+                    Default::default(),
+                )
+                .await?;
+            let step_context = StepContext::for_test(Arc::clone(&turn_context));
+            let base_instructions = session.get_prompt_base_instructions().await;
+            assert!(
+                base_instructions.text.contains(BLOCKING_WAIT_TARGET),
+                "the production baseline for {model_slug} / {thread_kind} must contain the exact blocking-wait target"
+            );
+            assert!(
+                base_instructions.text.contains(COMMENTARY_CADENCE_TARGET),
+                "the production baseline for {model_slug} / {thread_kind} must contain the exact commentary-cadence target"
+            );
+            assert!(matches!(
+                base_instructions.provenance.as_ref(),
+                Some(codex_protocol::models::BaseInstructionsProvenance::Model { .. })
+            ));
+            let expected_baseline = base_instructions
+                .text
+                .replace(BLOCKING_WAIT_TARGET, "")
+                .replace(COMMENTARY_CADENCE_TARGET, "");
+            let initial_context = build_initial_context(&session, &turn_context).await;
+            let prompt = super::turn::build_prompt(
+                initial_context,
+                &step_context,
+                base_instructions,
+                /*incremental_tools*/ false,
+            );
+            let metadata = session
+                .responses_metadata(&step_context, CodexResponsesRequestKind::Turn)
+                .await;
+            let request = session.services.model_client.build_responses_request(
+                &prompt,
+                &step_context.settings.model_info,
+                /*effort*/ None,
+                codex_protocol::config_types::ReasoningSummary::None,
+                /*service_tier*/ None,
+                &metadata,
+                /*include_internal*/ true,
+            )?;
 
-        let developer_messages = developer_message_texts(&request.input);
-        assert!(
-            developer_messages
-                .iter()
-                .flatten()
-                .all(|text| !text.contains(TARGET)),
-            "the final {thread_kind} developer payload must omit the configured target"
-        );
-        assert!(
-            developer_messages
-                .iter()
-                .any(|message| message.join("") == expected_baseline),
-            "the final {thread_kind} payload must preserve the rest of the production model baseline"
-        );
-        assert!(
-            prompt.base_instructions.text.contains(TARGET),
-            "request transformation must not mutate the production prompt history"
-        );
+            let developer_messages = developer_message_texts(&request.input);
+            assert!(
+                developer_messages
+                    .iter()
+                    .flatten()
+                    .all(|text| {
+                        !text.contains(BLOCKING_WAIT_TARGET)
+                            && !text.contains(COMMENTARY_CADENCE_TARGET)
+                    }),
+                "the final {model_slug} {thread_kind} developer payload must omit both configured targets"
+            );
+            assert!(
+                developer_messages
+                    .iter()
+                    .any(|message| message.join("") == expected_baseline),
+                "the final {model_slug} {thread_kind} payload must preserve the rest of the production model baseline"
+            );
+            assert!(
+                prompt.base_instructions.text.contains(BLOCKING_WAIT_TARGET)
+                    && prompt.base_instructions.text.contains(COMMENTARY_CADENCE_TARGET),
+                "request transformation must not mutate the production prompt history"
+            );
+        }
     }
 
     Ok(())

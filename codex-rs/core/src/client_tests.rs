@@ -699,6 +699,97 @@ fn incremental_model_baseline_overlay_preserves_notice_and_history() -> anyhow::
     Ok(())
 }
 
+#[test]
+fn model_baseline_overlay_is_scoped_to_exact_model_slugs() -> anyhow::Result<()> {
+    const BLOCKING_WAIT_TARGET: &str = "Avoid performing blocking sleep or wait calls longer than 60 seconds, as they may prevent you from communicating with the user for their duration.";
+    const COMMENTARY_CADENCE_TARGET: &str = "The user appreciates consistent, frequent communication during your turn, and should not be left without a commentary update for more than 60 seconds during ongoing work.";
+    let overlays = InstructionOverlaysToml {
+        model_baseline: Some(InstructionOverlayComponentToml {
+            on_absent: InstructionOverlayOnAbsent::Error,
+            models: Some(vec![
+                "gpt-6.1-sol".to_string(),
+                "gpt-6-luna".to_string(),
+            ]),
+            edits: vec![
+                InstructionOverlayEdit::RemoveExact {
+                    text: BLOCKING_WAIT_TARGET.to_string(),
+                    expected_matches: 1,
+                },
+                InstructionOverlayEdit::RemoveExact {
+                    text: COMMENTARY_CADENCE_TARGET.to_string(),
+                    expected_matches: 1,
+                },
+            ],
+            ..Default::default()
+        }),
+        ..Default::default()
+    };
+    let build_request = |model_slug: &str, baseline: &str| {
+        let client = test_model_client(SessionSource::Cli)
+            .with_instruction_overlays(overlays.clone())
+            .with_client_owned_base_instructions(None, /*model_baseline_origin_known*/ true);
+        let mut model_info = test_model_info();
+        model_info.slug = model_slug.to_string();
+        model_info.use_responses_lite = true;
+        let prompt = Prompt {
+            base_instructions: BaseInstructions {
+                text: baseline.to_string(),
+                provenance: Some(BaseInstructionsProvenance::Model {
+                    model: model_slug.to_string(),
+                }),
+            },
+            ..Default::default()
+        };
+        Ok::<_, anyhow::Error>(client.build_responses_request(
+            &prompt,
+            &model_info,
+            /*effort*/ None,
+            codex_protocol::config_types::ReasoningSummary::None,
+            /*service_tier*/ None,
+            &test_responses_metadata_for_client(
+                &client,
+                /*turn_id*/ None,
+                format!("{}:0", client.state.thread_id),
+                /*parent_thread_id*/ None,
+                TestCodexResponsesRequestKind::Turn,
+            ),
+            /*include_internal*/ true,
+        )?)
+    };
+    let baseline = format!(
+        "Keep this surrounding baseline.\n{BLOCKING_WAIT_TARGET}\n{COMMENTARY_CADENCE_TARGET}\nKeep this closing baseline."
+    );
+
+    for model_slug in ["gpt-6.1-sol", "gpt-6-luna"] {
+        let request = build_request(model_slug, &baseline)?;
+        let visible_text = request
+            .input
+            .iter()
+            .map(developer_item_text)
+            .collect::<Vec<_>>()
+            .join("\n");
+        assert!(!visible_text.contains(BLOCKING_WAIT_TARGET));
+        assert!(!visible_text.contains(COMMENTARY_CADENCE_TARGET));
+        assert!(visible_text.contains("Keep this surrounding baseline."));
+        assert!(visible_text.contains("Keep this closing baseline."));
+    }
+
+    let nonselected_request = build_request("gpt-6.1-sol-preview", &baseline)?;
+    let nonselected_text = nonselected_request
+        .input
+        .iter()
+        .map(developer_item_text)
+        .collect::<Vec<_>>()
+        .join("\n");
+    assert!(nonselected_text.contains(BLOCKING_WAIT_TARGET));
+    assert!(nonselected_text.contains(COMMENTARY_CADENCE_TARGET));
+
+    let selected_mismatch = build_request("gpt-6-luna", "Changed model baseline wording.");
+    let error = selected_mismatch.expect_err("selected model drift must remain visible");
+    assert!(error.to_string().contains("match count mismatch"));
+    Ok(())
+}
+
 fn developer_item_text(item: &ResponseItem) -> String {
     let ResponseItem::Message { content, .. } = item else {
         return String::new();

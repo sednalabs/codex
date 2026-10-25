@@ -29,6 +29,7 @@ const REVIEW_COMPONENTS: &[InstructionOverlayComponent] =
 pub(super) fn transform_request(
     source: &SessionSource,
     plan: &InstructionOverlaysToml,
+    model_slug: &str,
     baseline_is_client_owned: bool,
     fenced_components: &[InstructionOverlayComponent],
     input: Vec<ResponseItem>,
@@ -45,9 +46,10 @@ pub(super) fn transform_request(
         .iter()
         .filter(|component| fenced_components.contains(component))
     {
-        if plan
-            .component(*component)
-            .is_some_and(|component| !component.edits.is_empty())
+        if component_applies_to_model(plan, *component, model_slug)
+            && plan
+                .component(*component)
+                .is_some_and(|component| !component.edits.is_empty())
         {
             let _ = apply_component(plan, *component, /*body*/ None)?;
         }
@@ -62,6 +64,7 @@ pub(super) fn transform_request(
         InstructionOverlayComponent::ModelBaseline
     };
     if !fenced_components.contains(&baseline_component)
+        && component_applies_to_model(plan, baseline_component, model_slug)
         && plan
             .component(baseline_component)
             .is_some_and(|component| !component.edits.is_empty())
@@ -80,6 +83,7 @@ pub(super) fn transform_request(
     }
     for component in components.iter().copied().filter(|component| {
         !fenced_components.contains(component)
+            && component_applies_to_model(plan, *component, model_slug)
             && !matches!(
                 component,
                 InstructionOverlayComponent::ModelBaseline
@@ -120,6 +124,15 @@ fn apply_component(
 ) -> Result<Option<String>> {
     plan.apply_component(component, body)
         .map_err(|error| anyhow::anyhow!("instruction overlay for {}: {error}", component.as_str()))
+}
+
+fn component_applies_to_model(
+    plan: &InstructionOverlaysToml,
+    component: InstructionOverlayComponent,
+    model_slug: &str,
+) -> bool {
+    plan.component(component)
+        .is_some_and(|component_plan| component_plan.applies_to_model(model_slug))
 }
 
 fn apply_tagged_component(

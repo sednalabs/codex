@@ -1119,6 +1119,7 @@ impl ModelClient {
         input = instruction_overlays::transform_request(
             &self.state.session_source,
             self.instruction_overlays.as_ref(),
+            &model_info.slug,
             base_instructions_are_client_owned,
             &fenced_components,
             input,
