@@ -27,7 +27,7 @@ impl Mailbox {
         let pool = config
             .open_read_write_pool(&path)
             .await
-            .map_err(|error| crate::error::MailboxError::Open(Box::new(error)))?;
+            .map_err(|error| crate::error::MailboxError::Open(format!("{error:#}")))?;
         crate::schema::initialize(&pool).await?;
         let (change_tx, _) = watch::channel(0_u64);
         Ok(Self {

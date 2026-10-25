@@ -5,7 +5,7 @@ pub type MailboxResult<T> = Result<T, MailboxError>;
 #[derive(Debug, Error)]
 pub enum MailboxError {
     #[error("mailbox SQLite database open failed: {0}")]
-    Open(#[source] Box<dyn std::error::Error + Send + Sync>),
+    Open(String),
     #[error("mailbox SQLite operation failed: {0}")]
     Sqlite(#[from] sqlx::Error),
     #[error("mailbox JSON encoding failed: {0}")]
