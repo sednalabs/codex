@@ -3073,7 +3073,7 @@ async fn try_run_sampling_request(
                         .config
                         .features
                         .enabled(Feature::DeferMailboxPreemption)
-                    && sess.input_queue.has_pending_mailbox_items().await
+                    && sess.input_queue.has_preempting_mailbox_items().await
                 {
                     tracing::event!(
                         name: "codex.mailbox_preemption",

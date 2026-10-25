@@ -259,6 +259,8 @@ fn send_message_tool_requires_message_and_has_no_output_schema() {
         .expect("send_message should use object params");
     assert!(properties.contains_key("target"));
     assert!(properties.contains_key("message"));
+    assert!(properties.contains_key("kind"));
+    assert!(properties.contains_key("reply_to"));
     assert_eq!(
         properties
             .get("message")

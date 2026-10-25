@@ -1,11 +1,12 @@
 use crate::TurnInputRequest;
 use crate::TurnInputSubmission;
 use crate::TurnStartOptions;
+use self::mailbox_v2::envelope_preempts_active_turn;
+use self::mailbox_v2::MailboxActivationPlan;
 use crate::agent::AgentStatus;
 use crate::agent::role::DEFAULT_ROLE_NAME;
 use crate::agent::role::resolve_role_config;
 use crate::agent::status::is_final;
-use self::mailbox_v2::MailboxActivationPlan;
 use crate::agent::types::AgentMetadata;
 use crate::agent::types::LiveAgent;
 use crate::agent_communication::AgentCommunicationContext;
@@ -319,6 +320,9 @@ impl LocalAgentControl {
             .and_then(|_| communication.id.as_ref().map(ToString::to_string))
             .or_else(|| durable_message.as_ref().map(|envelope| envelope.id.clone()));
         let durable_message_id = durable_message.as_ref().map(|envelope| envelope.id.clone());
+        let preempts_active_turn = durable_message
+            .as_ref()
+            .is_none_or(envelope_preempts_active_turn);
 
         let observers = state.extensions.message_lifecycle_contributors();
         let delivery = (!observers.is_empty() || durable_input_id.is_some()).then(|| {
@@ -334,6 +338,7 @@ impl LocalAgentControl {
                 observers,
                 durable_input_id.clone(),
                 durable_message_id.clone(),
+                preempts_active_turn,
             )
         });
         let communication_for_log =

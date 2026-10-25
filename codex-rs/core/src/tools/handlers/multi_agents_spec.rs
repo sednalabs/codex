@@ -216,12 +216,37 @@ pub fn create_send_message_tool() -> ToolSpec {
             ))
             .with_encrypted(),
         ),
+        (
+            "kind".to_string(),
+            JsonSchema::string_enum(
+                vec![
+                    json!("note"),
+                    json!("progress"),
+                    json!("request"),
+                    json!("alert"),
+                ],
+                Some(
+                    "Durable mailbox message kind. Defaults to note; request and alert messages are actionable."
+                        .to_string(),
+                ),
+            ),
+        ),
+        (
+            "reply_to".to_string(),
+            JsonSchema::string(Some(
+                "Exact stable message id returned when sending the request being answered."
+                    .to_string(),
+            )),
+        ),
     ]);
 
     ToolSpec::Function(ResponsesApiTool {
         name: "send_message".to_string(),
-        description: "Send a message to an existing agent. The message will be delivered promptly. Does not trigger a new turn."
-            .to_string(),
+        description: concat!(
+            "Send a message to an existing agent. Request, alert, or reply messages may activate ",
+            "an idle recipient only when that recipient has opted in to mailbox idle activation."
+        )
+        .to_string(),
         strict: false,
         defer_loading: None,
         parameters: JsonSchema::object(

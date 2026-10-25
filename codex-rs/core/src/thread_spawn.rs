@@ -149,6 +149,8 @@ pub(crate) async fn spawn(
                     .features
                     .enabled(Feature::AgentMailbox)
                     .then(|| call_id.to_string()),
+                message_kind: None,
+                reply_to: None,
             },
             source: spawn_source,
             options: SpawnAgentOptions {

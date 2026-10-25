@@ -1147,6 +1147,101 @@ async fn resumed_recipient_lazily_reopens_durable_mailbox_before_first_turn_read
 }
 
 #[tokio::test]
+async fn native_send_message_returns_stable_request_id_and_accepts_exact_reply() {
+    let (home, mut config) = test_config().await;
+    config.features.enable(Feature::MultiAgentV2).unwrap();
+    config.features.enable(Feature::Sqlite).unwrap();
+    config.features.enable(Feature::AgentMailbox).unwrap();
+    let harness = AgentControlHarness::new_with_config(home, config).await;
+    let (parent_id, parent) = harness.start_paginated_thread().await;
+    let control = parent
+        .session
+        .services
+        .local_agent_runtime
+        .control(parent.session.session_id());
+    let child =
+        spawn_v2_reload_test_child(&control, harness.config.clone(), &parent, "worker").await;
+
+    let request_receipt = control
+        .send(SendRequest {
+            caller: parent_id,
+            target: AgentTarget::Id(child.thread_id),
+            resume_config: harness.config.clone(),
+            input: AgentInput::Message {
+                message: AgentMessage::Plaintext("please review this".to_string()),
+                mode: MessageDeliveryMode::QueueOnly,
+                native_key: Some("request-call-id".to_string()),
+                message_kind: Some(codex_agent_mailbox::MessageKind::Request),
+                reply_to: None,
+            },
+            start_options: Default::default(),
+        })
+        .await
+        .expect("native request should be accepted");
+    let mailbox = control.mailbox_v2().expect("durable mailbox should open");
+    let request = mailbox
+        .get_message(child.thread_id, &request_receipt.submission_id)
+        .await
+        .unwrap()
+        .expect("request envelope should be durable");
+    assert_eq!(request.id, request_receipt.submission_id);
+    assert_eq!(request.sender, parent_id);
+    assert_eq!(request.kind, codex_agent_mailbox::MessageKind::Request);
+    assert!(super::mailbox_v2::envelope_preempts_active_turn(&request));
+
+    // Model admission normally commits the stable message id before a reply can cite it.
+    mailbox
+        .mark_canonical(child.thread_id, &request.id)
+        .await
+        .unwrap();
+    let reply_receipt = control
+        .send(SendRequest {
+            caller: child.thread_id,
+            target: AgentTarget::Id(parent_id),
+            resume_config: harness.config.clone(),
+            input: AgentInput::Message {
+                message: AgentMessage::Plaintext("review complete".to_string()),
+                mode: MessageDeliveryMode::QueueOnly,
+                native_key: Some("reply-call-id".to_string()),
+                message_kind: Some(codex_agent_mailbox::MessageKind::Note),
+                reply_to: Some(request.id.clone()),
+            },
+            start_options: Default::default(),
+        })
+        .await
+        .expect("reply to exact request should be accepted");
+    let reply = mailbox
+        .get_message(parent_id, &reply_receipt.submission_id)
+        .await
+        .unwrap()
+        .expect("reply envelope should be durable");
+    assert_eq!(reply.reply_to.as_deref(), Some(request.id.as_str()));
+    assert!(super::mailbox_v2::envelope_preempts_active_turn(&reply));
+
+    let snapshot = mailbox
+        .snapshot(&codex_agent_mailbox::Selection {
+            caller: parent_id,
+            agent: Some(child.thread_id),
+            selectors: vec![codex_agent_mailbox::Selector::Reply(request.id.clone())],
+            return_when: codex_agent_mailbox::ReturnWhen::All,
+            limit: 1,
+        })
+        .await
+        .unwrap();
+    assert_eq!(
+        snapshot.state,
+        codex_agent_mailbox::SnapshotState::AlreadySatisfied
+    );
+    let codex_agent_mailbox::SnapshotItem::Request(joined_request) = &snapshot.items[0] else {
+        panic!("reply selector should resolve to its exact request");
+    };
+    assert_eq!(
+        joined_request.reply.as_ref().map(|reply| reply.id.as_str()),
+        Some(reply_receipt.submission_id.as_str())
+    );
+}
+
+#[tokio::test]
 async fn cancelled_v2_send_finishes_reload_registration() {
     let (home, mut config) = test_config().await;
     config.features.enable(Feature::MultiAgentV2).unwrap();
@@ -1194,6 +1289,8 @@ async fn cancelled_v2_send_finishes_reload_registration() {
             message: AgentMessage::Plaintext(message.to_string()),
             mode: MessageDeliveryMode::TriggerTurn,
             native_key: None,
+            message_kind: None,
+            reply_to: None,
         },
         start_options: Default::default(),
     };
@@ -1859,6 +1956,8 @@ async fn cold_resume_with_thread_instructions_preserves_lazy_v2_child_inheritanc
                     message: AgentMessage::Plaintext("hello after resume".to_string()),
                     mode: MessageDeliveryMode::QueueOnly,
                     native_key: None,
+                    message_kind: None,
+                    reply_to: None,
                 },
                 start_options: TurnStartOptions {
                     root_turn_id: turn.turn_metadata_state.root_turn_id(),
@@ -2009,6 +2108,8 @@ async fn v2_reload_preserves_shared_instructions_after_root_unloads(
                 message: AgentMessage::Plaintext("wake the unloaded target".to_string()),
                 mode: MessageDeliveryMode::QueueOnly,
                 native_key: None,
+                message_kind: None,
+                reply_to: None,
             },
             start_options: TurnStartOptions {
                 root_turn_id: sender_turn.turn_metadata_state.root_turn_id(),
@@ -2182,6 +2283,8 @@ async fn v2_spawn_resolves_reported_effort_without_changing_child_selection(
                 message: AgentMessage::Plaintext("child task".to_string()),
                 mode: MessageDeliveryMode::TriggerTurn,
                 native_key: None,
+                message_kind: None,
+                reply_to: None,
             },
             source,
             options: SpawnAgentOptions {

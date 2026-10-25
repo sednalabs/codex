@@ -14,6 +14,7 @@ use crate::codex_thread::GuardianRootSnapshot;
 use crate::codex_thread::ThreadConfigSnapshot;
 use crate::config::Config;
 use crate::rollout_budget::RolloutBudgetReminder;
+use codex_agent_mailbox::MessageKind;
 use codex_protocol::AgentPath;
 use codex_protocol::SessionId;
 use codex_protocol::ThreadId;
@@ -282,6 +283,10 @@ pub enum AgentInput {
         /// Exact native invocation identity for durable V2 acceptance. Legacy and
         /// non-native callers leave this unset and retain their existing delivery path.
         native_key: Option<String>,
+        /// Explicit V2 durable message class. Unset retains the default quiet note.
+        message_kind: Option<MessageKind>,
+        /// Exact stable request-envelope id this message replies to.
+        reply_to: Option<String>,
     },
 }
 

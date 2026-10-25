@@ -1,6 +1,7 @@
 //! Direct-message diagnostics and delivery ownership across queues and eviction.
 //! Only history commitment consumes mail; dropping its last owner releases its attachments.
 
+use codex_agent_mailbox::MessageKind;
 use codex_extension_api::ExtensionData;
 use codex_extension_api::MessageLifecycleContributor;
 use codex_extension_api::MessageLifecycleInput;
@@ -44,6 +45,8 @@ pub(crate) struct AgentCommunicationContext {
     kind: AgentCommunicationKind,
     pub(crate) sender_thread_id: ThreadId,
     pub(crate) native_key: Option<String>,
+    pub(crate) message_kind: Option<MessageKind>,
+    pub(crate) reply_to: Option<String>,
 }
 
 impl AgentCommunicationContext {
@@ -52,11 +55,23 @@ impl AgentCommunicationContext {
             kind,
             sender_thread_id,
             native_key: None,
+            message_kind: None,
+            reply_to: None,
         }
     }
 
     pub(crate) fn with_native_key(mut self, native_key: Option<String>) -> Self {
         self.native_key = native_key.filter(|key| !key.trim().is_empty());
+        self
+    }
+
+    pub(crate) fn with_mailbox_message(
+        mut self,
+        message_kind: Option<MessageKind>,
+        reply_to: Option<String>,
+    ) -> Self {
+        self.message_kind = message_kind;
+        self.reply_to = reply_to;
         self
     }
 
@@ -163,6 +178,12 @@ impl PendingAgentMessage {
             .as_ref()
             .and_then(MessageDelivery::durable_input_id)
     }
+
+    pub(crate) fn preempts_active_turn(&self) -> bool {
+        self.delivery
+            .as_ref()
+            .is_none_or(MessageDelivery::preempts_active_turn)
+    }
 }
 
 /// The publication state retained until this delivery is consumed or abandoned.
@@ -177,6 +198,7 @@ pub(crate) struct MessageDelivery {
     publication: Arc<Mutex<Option<MessagePublication>>>,
     durable_input_id: Option<String>,
     durable_message_id: Option<String>,
+    preempts_active_turn: bool,
 }
 
 impl MessageDelivery {
@@ -186,6 +208,7 @@ impl MessageDelivery {
         observers: &[Arc<dyn MessageLifecycleContributor>],
         durable_input_id: Option<String>,
         durable_message_id: Option<String>,
+        preempts_active_turn: bool,
     ) -> Self {
         let input = MessageLifecycleInput {
             sender,
@@ -203,6 +226,7 @@ impl MessageDelivery {
             publication: Arc::new(Mutex::new(Some(publication))),
             durable_input_id,
             durable_message_id,
+            preempts_active_turn,
         }
     }
 
@@ -212,10 +236,25 @@ impl MessageDelivery {
         durable_input_id: String,
         durable_message_id: Option<String>,
     ) -> Self {
+        Self::restored_mailbox_message_input(
+            durable_input_id,
+            durable_message_id,
+            /*preempts_active_turn*/ true,
+        )
+    }
+
+    /// Restored durable messages retain their attention class without republishing lifecycle
+    /// state. Work inputs use `restored_mailbox_input`, which remains actionable by default.
+    pub(crate) fn restored_mailbox_message_input(
+        durable_input_id: String,
+        durable_message_id: Option<String>,
+        preempts_active_turn: bool,
+    ) -> Self {
         Self {
             publication: Arc::new(Mutex::new(None)),
             durable_input_id: Some(durable_input_id),
             durable_message_id,
+            preempts_active_turn,
         }
     }
 
@@ -225,6 +264,10 @@ impl MessageDelivery {
 
     pub(crate) fn durable_message_id(&self) -> Option<&str> {
         self.durable_message_id.as_deref()
+    }
+
+    pub(crate) fn preempts_active_turn(&self) -> bool {
+        self.preempts_active_turn
     }
 
     /// Commit this delivery and release its publication state, even if clones remain.

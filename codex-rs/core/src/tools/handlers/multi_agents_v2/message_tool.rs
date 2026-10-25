@@ -1,7 +1,7 @@
 //! Shared argument parsing and dispatch for the v2 agent messaging tools.
 //!
-//! `send_message` and `followup_task` share the same submission path and differ only in whether the
-//! resulting `InterAgentCommunication` should wake the target immediately.
+//! `send_message` and `followup_task` share submission mechanics. Follow-ups start work, while
+//! `send_message` may additionally carry native mailbox classification and exact reply identity.
 
 use super::analytics::ToolCallAnalytics;
 use super::*;
@@ -12,6 +12,7 @@ use crate::agent::api::SendRequest;
 use crate::agent::child_config::build_agent_resume_config;
 use crate::agent::types::MessageDeliveryMode;
 use crate::tools::context::FunctionToolOutput;
+use codex_agent_mailbox::MessageKind;
 use codex_features::Feature;
 
 #[derive(Debug, Deserialize)]
@@ -20,6 +21,10 @@ use codex_features::Feature;
 pub(crate) struct SendMessageArgs {
     pub(crate) target: String,
     pub(crate) message: String,
+    #[serde(default)]
+    pub(crate) kind: Option<MessageKind>,
+    #[serde(default)]
+    pub(crate) reply_to: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -45,6 +50,8 @@ pub(super) async fn handle_message_string_tool(
     mode: MessageDeliveryMode,
     target: String,
     message: String,
+    message_kind: Option<MessageKind>,
+    reply_to: Option<String>,
     analytics: &mut ToolCallAnalytics,
 ) -> Result<FunctionToolOutput, FunctionCallError> {
     let message = message_content(message)?;
@@ -55,6 +62,12 @@ pub(super) async fn handle_message_string_tool(
         source,
         ..
     } = invocation;
+    let mailbox_enabled = turn.config.features.enabled(Feature::AgentMailbox);
+    if !mailbox_enabled && (message_kind.is_some() || reply_to.is_some()) {
+        return Err(FunctionCallError::RespondToModel(
+            "typed message kinds and replies require agent_mailbox to be enabled".to_string(),
+        ));
+    }
     let receiver_thread_id = resolve_agent_target(&session, &turn, &target).await?;
     analytics.set_receiver(receiver_thread_id);
     let resume_config =
@@ -69,11 +82,9 @@ pub(super) async fn handle_message_string_tool(
             input: AgentInput::Message {
                 message: agent_message_from_tool(message, &source),
                 mode,
-                native_key: turn
-                    .config
-                    .features
-                    .enabled(Feature::AgentMailbox)
-                    .then(|| call_id.clone()),
+                native_key: mailbox_enabled.then(|| call_id.clone()),
+                message_kind,
+                reply_to,
             },
             start_options: TurnStartOptions {
                 parent_turn_id: (mode == MessageDeliveryMode::TriggerTurn)
@@ -103,5 +114,30 @@ pub(super) async fn handle_message_string_tool(
     )
     .await;
 
-    Ok(FunctionToolOutput::from_text(String::new(), Some(true)))
+    let output = if message_kind == Some(MessageKind::Request) {
+        format!("Accepted request with stable id {}.", receipt.submission_id)
+    } else {
+        String::new()
+    };
+    Ok(FunctionToolOutput::from_text(output, Some(true)))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::SendMessageArgs;
+    use codex_agent_mailbox::MessageKind;
+
+    #[test]
+    fn send_message_args_keep_exact_request_and_reply_fields() {
+        let args: SendMessageArgs = serde_json::from_value(serde_json::json!({
+            "target": "/root/worker",
+            "message": "please review this",
+            "kind": "request",
+            "reply_to": "amsg_exact-request-id"
+        }))
+        .expect("typed mailbox fields should parse");
+
+        assert_eq!(args.kind, Some(MessageKind::Request));
+        assert_eq!(args.reply_to.as_deref(), Some("amsg_exact-request-id"));
+    }
 }

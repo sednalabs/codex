@@ -47,6 +47,12 @@ fn compatible(config: &Config) -> bool {
         && config.features.enabled(Feature::AgentMailbox)
 }
 
+pub(super) fn envelope_preempts_active_turn(envelope: &Envelope) -> bool {
+    envelope.legacy_attention
+        || envelope.reply_to.is_some()
+        || matches!(envelope.kind, MessageKind::Request | MessageKind::Alert)
+}
+
 fn dedupe_pending_inputs(inputs: Vec<PendingAgentMessage>) -> Vec<PendingAgentMessage> {
     let mut seen = HashSet::new();
     inputs
@@ -261,9 +267,10 @@ impl LocalAgentControl {
             if plan == MailboxActivationPlan::StartIdleRecipient {
                 communication.trigger_turn = true;
             }
-            let delivery = MessageDelivery::restored_mailbox_input(
+            let delivery = MessageDelivery::restored_mailbox_message_input(
                 envelope.id.clone(),
                 Some(envelope.id.clone()),
+                envelope_preempts_active_turn(&envelope),
             );
             let result = state
                 .send_op(
@@ -322,7 +329,19 @@ impl LocalAgentControl {
                     .to_string(),
             )
         })?;
-        let activate_if_idle = context.is_completion_result()
+        let kind = if context.is_completion_result() {
+            MessageKind::Alert
+        } else {
+            context.message_kind.unwrap_or_default()
+        };
+        let reply_to = if context.is_completion_result() {
+            None
+        } else {
+            context.reply_to.clone()
+        };
+        let activate_if_idle = (context.is_completion_result()
+            || matches!(kind, MessageKind::Request | MessageKind::Alert)
+            || reply_to.is_some())
             && recipient_config
                 .features
                 .enabled(Feature::AgentMailboxIdleActivation);
@@ -335,14 +354,10 @@ impl LocalAgentControl {
                 sender: context.sender_thread_id,
                 recipient,
                 communication: communication.clone(),
-                kind: if context.is_completion_result() {
-                    MessageKind::Alert
-                } else {
-                    MessageKind::Note
-                },
+                kind,
                 activate_if_idle,
                 work_ref: None,
-                reply_to: None,
+                reply_to,
                 supersedes: None,
                 legacy_attention: false,
             })
@@ -372,11 +387,14 @@ impl LocalAgentControl {
             .into_iter()
             .filter(|envelope| !envelope.canonical)
             .map(|envelope| {
+                let preempts_active_turn = envelope_preempts_active_turn(&envelope);
+                let id = envelope.id.clone();
                 PendingAgentMessage::new(
                     envelope.communication,
-                    Some(MessageDelivery::restored_mailbox_input(
-                        envelope.id.clone(),
-                        Some(envelope.id),
+                    Some(MessageDelivery::restored_mailbox_message_input(
+                        id.clone(),
+                        Some(id),
+                        preempts_active_turn,
                     )),
                 )
             })
@@ -427,11 +445,13 @@ impl LocalAgentControl {
                 .await
                 .map_err(storage_error)?
             {
+                let preempts_active_turn = envelope_preempts_active_turn(&envelope);
                 messages.push(PendingAgentMessage::new(
                     envelope.communication,
-                    Some(MessageDelivery::restored_mailbox_input(
+                    Some(MessageDelivery::restored_mailbox_message_input(
                         id.clone(),
                         Some(id),
+                        preempts_active_turn,
                     )),
                 ));
                 continue;
@@ -473,9 +493,10 @@ impl LocalAgentControl {
             .map(|envelope| {
                 PendingAgentMessage::new(
                     envelope.communication,
-                    Some(MessageDelivery::restored_mailbox_input(
+                    Some(MessageDelivery::restored_mailbox_message_input(
                         envelope.id.clone(),
                         Some(envelope.id),
+                        envelope_preempts_active_turn(&envelope),
                     )),
                 )
             })

@@ -1,4 +1,5 @@
 use crate::agent::api::AgentControl;
+use crate::agent_communication::MessageDelivery;
 use crate::agent_communication::PENDING_MAILBOX_MESSAGES;
 use crate::state::ActiveTurn;
 use crate::state::MailboxDeliveryPhase;
@@ -222,6 +223,18 @@ impl InputQueue {
 
     pub(crate) async fn has_pending_mailbox_items(&self) -> bool {
         !self.mailbox_pending_mails.lock().await.is_empty()
+            || self
+                .controller
+                .as_ref()
+                .is_some_and(|(_, _, updates)| *updates.borrow())
+    }
+
+    pub(crate) async fn has_preempting_mailbox_items(&self) -> bool {
+        self.mailbox_pending_mails
+            .lock()
+            .await
+            .iter()
+            .any(|mail| mail.communication.preempts_active_turn())
             || self
                 .controller
                 .as_ref()
@@ -737,6 +750,62 @@ mod tests {
             ]
         );
         assert!(!input_queue.has_pending_mailbox_items().await);
+    }
+
+    #[tokio::test]
+    async fn quiet_durable_mail_does_not_preempt_but_legacy_and_actionable_mail_do() {
+        let legacy_queue = InputQueue::new();
+        legacy_queue
+            .enqueue_mailbox_communication(
+                make_mail(
+                    AgentPath::root(),
+                    AgentPath::try_from("/root/worker").expect("agent path"),
+                    "legacy mail",
+                    /*trigger_turn*/ false,
+                )
+                .into(),
+                Default::default(),
+            )
+            .await;
+        assert!(legacy_queue.has_preempting_mailbox_items().await);
+
+        let input_queue = InputQueue::new();
+        let quiet = crate::PendingAgentMessage::new(
+            make_mail(
+                AgentPath::root(),
+                AgentPath::try_from("/root/worker").expect("agent path"),
+                "quiet note",
+                /*trigger_turn*/ false,
+            ),
+            Some(MessageDelivery::restored_mailbox_message_input(
+                "quiet-note".to_string(),
+                None,
+                /*preempts_active_turn*/ false,
+            )),
+        );
+        input_queue
+            .enqueue_mailbox_communication(quiet, Default::default())
+            .await;
+        assert!(input_queue.has_pending_mailbox_items().await);
+        assert!(!input_queue.has_preempting_mailbox_items().await);
+
+        let actionable = crate::PendingAgentMessage::new(
+            make_mail(
+                AgentPath::root(),
+                AgentPath::try_from("/root/worker").expect("agent path"),
+                "request or reply",
+                /*trigger_turn*/ false,
+            ),
+            Some(MessageDelivery::restored_mailbox_message_input(
+                "actionable-message".to_string(),
+                None,
+                /*preempts_active_turn*/ true,
+            )),
+        );
+        input_queue
+            .enqueue_mailbox_communication(actionable, Default::default())
+            .await;
+        assert!(input_queue.has_preempting_mailbox_items().await);
     }
 
     #[tokio::test]

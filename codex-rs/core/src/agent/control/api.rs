@@ -71,6 +71,18 @@ impl AgentControl for LocalAgentControl {
                 source,
                 options,
             } = request;
+            if let AgentInput::Message {
+                message_kind,
+                reply_to,
+                ..
+            } = &input
+                && (message_kind.is_some() || reply_to.is_some())
+            {
+                return Err(CodexErr::InvalidRequest(
+                    "typed mailbox message metadata is only supported for native V2 sends"
+                        .to_string(),
+                ));
+            }
             if matches!(
                 &input,
                 AgentInput::Message {
@@ -86,6 +98,7 @@ impl AgentControl for LocalAgentControl {
                     message,
                     mode,
                     native_key,
+                    ..
                 } => {
                     if mode != MessageDeliveryMode::TriggerTurn {
                         return Err(CodexErr::InvalidRequest(
@@ -124,6 +137,22 @@ impl AgentControl for LocalAgentControl {
                 input,
                 mut start_options,
             } = request;
+            if let AgentInput::Message {
+                native_key,
+                message_kind,
+                reply_to,
+                ..
+            } = &input
+                && native_key
+                    .as_deref()
+                    .is_none_or(|key| key.trim().is_empty())
+                && (message_kind.is_some() || reply_to.is_some())
+            {
+                return Err(CodexErr::InvalidRequest(
+                    "typed mailbox message metadata requires a native V2 invocation key"
+                        .to_string(),
+                ));
+            }
             if matches!(
                 &input,
                 AgentInput::Message {
@@ -150,6 +179,8 @@ impl AgentControl for LocalAgentControl {
                     message,
                     mode,
                     native_key,
+                    message_kind,
+                    reply_to,
                 } => {
                     let receiver = self.runtime.ensure_agent_known(target)?;
                     let author = self
@@ -195,7 +226,8 @@ impl AgentControl for LocalAgentControl {
                             target,
                             communication,
                             AgentCommunicationContext::new(kind, caller)
-                                .with_native_key(native_key),
+                                .with_native_key(native_key)
+                                .with_mailbox_message(message_kind, reply_to),
                             start_options,
                         )
                         .await?;
