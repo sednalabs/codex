@@ -16,11 +16,14 @@ use axum::response::sse::Event;
 use axum::response::sse::Sse;
 use axum::routing::post;
 use codex_app_server_protocol::ClientRequest;
+use codex_app_server_protocol::ListMcpServerStatusParams;
+use codex_app_server_protocol::ListMcpServerStatusResponse;
 use codex_app_server_protocol::McpServerEventNotification;
 use codex_app_server_protocol::McpServerEventStreamNotification;
 use codex_app_server_protocol::McpServerEventStreamStartResponse;
 use codex_app_server_protocol::McpServerEventStreamStopParams;
 use codex_app_server_protocol::McpServerEventStreamStopResponse;
+use codex_app_server_protocol::McpServerStatusDetail;
 use codex_app_server_protocol::RequestId;
 use codex_app_server_protocol::ThreadStartParams;
 use codex_app_server_protocol::ThreadStartResponse;
@@ -39,7 +42,7 @@ use tokio::sync::mpsc;
 use tokio::time::timeout;
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn mcp_event_stream_waits_for_activation_forwards_events_and_cancels() -> Result<()> {
+async fn mcp_event_stream_survives_retained_server_refresh_and_cancels() -> Result<()> {
     let responses_server = responses::start_mock_server().await;
     let listener = TcpListener::bind("127.0.0.1:0").await?;
     let apps_url = format!("http://{}", listener.local_addr()?);
@@ -119,6 +122,52 @@ async fn mcp_event_stream_waits_for_activation_forwards_events_and_cancels() -> 
             }
         }),
     );
+    let replacement_listener = TcpListener::bind("127.0.0.1:0").await?;
+    let replacement_apps_url = format!("http://{}", replacement_listener.local_addr()?);
+    let (replacement_initialized_tx, mut replacement_initialized_rx) =
+        mpsc::unbounded_channel::<()>();
+    let replacement_router = Router::new().route(
+        "/api/codex/ps/mcp",
+        post(move |Json(message): Json<Value>| {
+            let replacement_initialized_tx = replacement_initialized_tx.clone();
+            async move {
+                match message["method"].as_str() {
+                    Some("initialize") => {
+                        replacement_initialized_tx
+                            .send(())
+                            .expect("replacement initialize receiver must remain open");
+                        (
+                            [("mcp-session-id", "replacement-event-test-session")],
+                            Json(json!({
+                                "jsonrpc": "2.0",
+                                "id": message["id"],
+                                "result": {
+                                    "protocolVersion": "2025-06-18",
+                                    "capabilities": {},
+                                    "serverInfo": {
+                                        "name": "replacement-event-test-server",
+                                        "version": "1.0.0",
+                                    },
+                                },
+                            })),
+                        )
+                            .into_response()
+                    }
+                    Some("notifications/initialized") => StatusCode::ACCEPTED.into_response(),
+                    Some("tools/list") => Json(json!({
+                        "jsonrpc": "2.0",
+                        "id": message["id"],
+                        "result": { "tools": [] },
+                    }))
+                    .into_response(),
+                    method => panic!("unexpected replacement MCP request: {method:?}"),
+                }
+            }
+        }),
+    );
+    let replacement_mcp_server = tokio::spawn(async move {
+        axum::serve(replacement_listener, replacement_router).await
+    });
     let mcp_server = tokio::spawn(async move { axum::serve(listener, router).await });
 
     let codex_home = TempDir::new()?;
@@ -186,6 +235,34 @@ async fn mcp_event_stream_waits_for_activation_forwards_events_and_cancels() -> 
         "subscription start must not complete before the active notification"
     );
 
+    MockResponsesConfig::new(&responses_server.uri())
+        .with_root_config(&format!("chatgpt_base_url = \"{replacement_apps_url}\""))
+        .enable_feature(Feature::Apps)
+        .write(codex_home.path())?;
+    let reload_id = app_server
+        .send_raw_request("config/mcpServer/reload", /*params*/ None)
+        .await?;
+    timeout(
+        Duration::from_secs(5),
+        app_server.read_stream_until_response_message(RequestId::Integer(reload_id)),
+    )
+    .await??;
+    let _: ListMcpServerStatusResponse = app_server
+        .request(|request_id| ClientRequest::McpServerStatusList {
+            request_id,
+            params: ListMcpServerStatusParams {
+                cursor: None,
+                limit: None,
+                detail: Some(McpServerStatusDetail::ToolsAndAuthOnly),
+                thread_id: Some(thread.id.clone()),
+                server_name: Some("codex_apps".to_string()),
+            },
+        })
+        .await?;
+    timeout(Duration::from_secs(5), replacement_initialized_rx.recv())
+        .await?
+        .context("retained Apps server was not reconnected during MCP refresh")?;
+
     allow_activation.notify_one();
     let _: McpServerEventStreamStartResponse = timeout(
         Duration::from_secs(5),
@@ -242,5 +319,7 @@ async fn mcp_event_stream_waits_for_activation_forwards_events_and_cancels() -> 
 
     mcp_server.abort();
     let _ = mcp_server.await;
+    replacement_mcp_server.abort();
+    let _ = replacement_mcp_server.await;
     Ok(())
 }
