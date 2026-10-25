@@ -14,6 +14,7 @@ use std::path::PathBuf;
 use std::sync::Arc;
 use std::sync::Mutex;
 use std::sync::OnceLock;
+use std::sync::RwLock;
 use std::sync::Weak;
 use std::sync::atomic::AtomicBool;
 use std::sync::atomic::AtomicU64;
@@ -112,6 +113,8 @@ pub struct McpRuntimeInput {
 pub struct McpRuntime {
     current: ArcSwap<PublishedMcpRuntime>,
     event_stream_cancellation: Mutex<EventStreamCancellation>,
+    connection_access: RwLock<()>,
+    retired: AtomicBool,
     reconnect_pending: AtomicBool,
     resource_cache_generation: AtomicU64,
     elicitation_router: ElicitationRequestRouter,
@@ -137,6 +140,24 @@ struct PublishedMcpRuntime {
     environment_selections: Arc<[TurnEnvironmentSelection]>,
     ready_environments: HashMap<String, Arc<Environment>>,
     cached_binding: Mutex<Option<CachedMcpBinding>>,
+}
+
+impl PublishedMcpRuntime {
+    fn empty(prefix_mcp_tool_names: bool) -> Self {
+        Self {
+            connections: Arc::new(McpConnectionSet::empty(prefix_mcp_tool_names)),
+            config: None,
+            auth: None,
+            auth_token: None,
+            auth_manager: None,
+            auth_generation: Arc::new(()),
+            plugins_available: false,
+            ready_selected_capability_roots: Vec::new(),
+            environment_selections: Arc::default(),
+            ready_environments: HashMap::new(),
+            cached_binding: Mutex::new(None),
+        }
+    }
 }
 
 fn ensure_host_owned_apps_registration(
@@ -254,6 +275,8 @@ impl McpRuntime {
                 cancel_event_streams_on_server_removal: watch::channel(()).0,
                 retained_subscription_cancellation: None,
             }),
+            connection_access: RwLock::new(()),
+            retired: AtomicBool::new(false),
             reconnect_pending: AtomicBool::new(false),
             resource_cache_generation: AtomicU64::new(0),
             elicitation_router: ElicitationRequestRouter::default(),
@@ -323,14 +346,20 @@ impl McpRuntime {
 
     /// Reconciles configured servers and publishes their immutable runtime snapshot.
     pub async fn replace(&self, input: McpRuntimeInput) {
-        let current = self.current.load_full();
+        let previous = {
+            let _access = self
+                .connection_access
+                .read()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            Arc::clone(&self.current.load_full().connections)
+        };
         let mut reconnect = McpReconnectGuard {
             pending: &self.reconnect_pending,
             claimed: self.reconnect_pending.swap(false, Ordering::AcqRel),
         };
         self.publish(
             input,
-            (!reconnect.claimed).then_some(current.connections.as_ref()),
+            (!reconnect.claimed).then_some(previous.as_ref()),
         )
         .await;
         reconnect.claimed = false;
@@ -415,7 +444,7 @@ impl McpRuntime {
             .event_stream_cancellation
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
-        self.current.store(Arc::new(PublishedMcpRuntime {
+        let published_runtime = Arc::new(PublishedMcpRuntime {
             connections,
             config: Some(config),
             auth,
@@ -427,17 +456,25 @@ impl McpRuntime {
             environment_selections,
             ready_environments,
             cached_binding: Mutex::new(None),
-        }));
-        let _ = publish.send(true);
-        cancellation.event_server_available = hosted_event_server_retained;
-        if !hosted_event_server_retained {
-            cancellation
-                .cancel_event_streams_on_server_removal
-                .send_replace(());
-            if let Some(retained) = &cancellation.retained_subscription_cancellation {
-                retained.send_replace(());
+        });
+        let _access = self
+            .connection_access
+            .write()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let is_retired = self.retired.load(Ordering::Acquire);
+        if !is_retired {
+            self.current.store(published_runtime);
+            cancellation.event_server_available = hosted_event_server_retained;
+            if !hosted_event_server_retained {
+                cancellation
+                    .cancel_event_streams_on_server_removal
+                    .send_replace(());
+                if let Some(retained) = &cancellation.retained_subscription_cancellation {
+                    retained.send_replace(());
+                }
             }
         }
+        let _ = publish.send(!is_retired);
     }
 
     /// Ensures the next refresh creates fresh connections for every configured server.
@@ -470,7 +507,13 @@ impl McpRuntime {
         required_servers: &[String],
         required_plugins: &HashSet<String>,
     ) -> Option<Arc<McpBinding>> {
-        let current = self.current.load_full();
+        let current = {
+            let _access = self
+                .connection_access
+                .read()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            self.current.load_full()
+        };
         current.connections.record_startup_readiness(
             "model_binding",
             required_servers,
@@ -820,13 +863,21 @@ impl McpRuntime {
     }
 
     pub(crate) fn latest_connections(&self) -> Arc<McpConnectionSet> {
-        Arc::clone(&self.current.load().connections)
+        let _access = self
+            .connection_access
+            .read()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        Arc::clone(&self.current.load_full().connections)
     }
 
     pub(crate) fn latest_host_owned_codex_apps_connections(
         &self,
     ) -> anyhow::Result<Arc<McpConnectionSet>> {
-        let current = self.current.load();
+        let _access = self
+            .connection_access
+            .read()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let current = self.current.load_full();
         ensure_host_owned_apps_registration(&current, CODEX_APPS_MCP_SERVER_NAME)?;
         Ok(Arc::clone(&current.connections))
     }
@@ -842,7 +893,11 @@ impl McpRuntime {
         let cancel_event_streams_on_server_removal = cancellation
             .cancel_event_streams_on_server_removal
             .subscribe();
-        let current = self.current.load();
+        let _access = self
+            .connection_access
+            .read()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let current = self.current.load_full();
         if server == CODEX_APPS_MCP_SERVER_NAME {
             ensure_host_owned_apps_registration(&current, server)?;
         }
@@ -856,6 +911,10 @@ impl McpRuntime {
         let cancellation = self
             .event_stream_cancellation
             .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let _access = self
+            .connection_access
+            .read()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
         let connection = self
             .current
@@ -888,8 +947,33 @@ impl McpRuntime {
     }
 
     pub async fn shutdown(&self) {
+        let connections = {
+            let mut cancellation = self
+                .event_stream_cancellation
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            let _access = self
+                .connection_access
+                .write()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            self.retired.store(true, Ordering::Release);
+            let retired = self.current.swap(Arc::new(PublishedMcpRuntime::empty(
+                /*prefix_mcp_tool_names*/ false,
+            )));
+            cancellation.event_server_available = false;
+            cancellation
+                .cancel_event_streams_on_server_removal
+                .send_replace(());
+            if let Some(retained) = &cancellation.retained_subscription_cancellation {
+                retained.send_replace(());
+            }
+            Arc::clone(&retired.connections)
+        };
+
         self.elicitation_router.close().await;
-        self.latest_connections().shutdown().await;
+        if Arc::strong_count(&connections) == 1 {
+            connections.shutdown().await;
+        }
     }
 }
 
