@@ -1,0 +1,211 @@
+name: w14939 integrated Linux package
+
+on:
+  push:
+    branches:
+      - codex/w14939-integrated-linux-package-20261025
+
+concurrency:
+  group: w14939-integrated-linux-package-${{ github.ref }}
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  package:
+    name: ${{ matrix.target }} focused proof and package
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 180
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - target: x86_64-unknown-linux-gnu
+            runner: ubuntu-24.04
+          - target: aarch64-unknown-linux-gnu
+            runner: ubuntu-24.04-arm
+    env:
+      CODEX_REPO_ROOT: ${{ github.workspace }}
+
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          ref: ${{ github.sha }}
+          fetch-depth: 1
+          persist-credentials: false
+
+      - name: Bind exact product, workflow host, and reconstructed upstream base
+        id: identity
+        shell: bash
+        env:
+          PRODUCT_SHA: a643a7ea09a0615b040a436dd630bb3ea7961842
+          PRODUCT_TREE: 71cb6d62c5d95ac8d671bbb61b7914220340c8d9
+          LOCAL_BASE_SHA: 98478e3ed34f5104d965fc879f211284f664c524
+          MAIN_BASE_SHA: 7d0a6477497c2224c6f3fb2e42d2b53c6600c556
+          UPSTREAM_SHA: 970111f6cb62cc02fe36a82ea7d71b37a2889c97
+          UPSTREAM_TREE: e09c71b9069e689c9c997c766d0de8b7b288583f
+          EXPECTED_REF: refs/heads/codex/w14939-integrated-linux-package-20261025
+        run: |
+          set -euo pipefail
+          [[ "${GITHUB_REF}" == "${EXPECTED_REF}" ]] || {
+            echo "This package route is restricted to its exact workflow-host branch." >&2
+            exit 1
+          }
+          git fetch --no-tags --depth=1 "https://github.com/${GITHUB_REPOSITORY}.git" "${PRODUCT_SHA}"
+          git fetch --no-tags --depth=1 "https://github.com/${GITHUB_REPOSITORY}.git" "${LOCAL_BASE_SHA}"
+          git fetch --no-tags --depth=1 "https://github.com/${GITHUB_REPOSITORY}.git" "${MAIN_BASE_SHA}"
+          git fetch --no-tags --depth=1 https://github.com/openai/codex.git "${UPSTREAM_SHA}"
+
+          [[ "$(git rev-parse HEAD)" == "${GITHUB_SHA}" ]]
+          [[ "$(git rev-parse "${PRODUCT_SHA}^{tree}")" == "${PRODUCT_TREE}" ]]
+          [[ "$(git rev-parse "${UPSTREAM_SHA}^{tree}")" == "${UPSTREAM_TREE}" ]]
+          [[ "$(git rev-parse "${LOCAL_BASE_SHA}^{tree}")" == "${UPSTREAM_TREE}" ]]
+          local_base_parents="$(git cat-file commit "${LOCAL_BASE_SHA}" | sed -n '/^$/q; s/^parent //p')"
+          [[ "${local_base_parents}" == "${MAIN_BASE_SHA} ${UPSTREAM_SHA}" ]]
+          workflow_parents="$(git cat-file commit "${GITHUB_SHA}" | sed -n '/^$/q; s/^parent //p')"
+          [[ "${workflow_parents}" == "${PRODUCT_SHA}" ]]
+          git diff --quiet "${PRODUCT_SHA}" "${GITHUB_SHA}" -- . \
+            ':(exclude).github/workflows/w14939-integrated-linux-package.yml' || {
+              echo "The workflow host contains changes beyond this exact package workflow." >&2
+              exit 1
+            }
+          [[ -z "$(git status --porcelain --untracked-files=normal)" ]]
+
+          {
+            printf 'product_sha=%s\n' "${PRODUCT_SHA}"
+            printf 'product_tree=%s\n' "${PRODUCT_TREE}"
+            printf 'product_short=%s\n' "${PRODUCT_SHA:0:12}"
+            printf 'upstream_sha=%s\n' "${UPSTREAM_SHA}"
+            printf 'workflow_host_sha=%s\n' "${GITHUB_SHA}"
+          } >> "${GITHUB_OUTPUT}"
+
+      - name: Install Linux package build dependencies
+        shell: bash
+        run: |
+          set -euo pipefail
+          sudo apt-get update -y
+          sudo DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
+            binutils pkg-config libcap-dev
+
+      - name: Set up Codex CI tools
+        uses: ./.github/actions/setup-ci
+
+      - uses: dtolnay/rust-toolchain@d124f86f28ff42855784ff3319f48ac182c248f8 # 1.99.1
+        with:
+          targets: ${{ matrix.target }}
+
+      - name: Configure source-matched rusty_v8 artifacts
+        uses: ./.github/actions/setup-rusty-v8
+        with:
+          target: ${{ matrix.target }}
+
+      - name: Run accepted usage-tree adapter tests
+        shell: bash
+        run: python3 scripts/test_codex_usage_tree.py
+
+      - name: Build and fingerprint the packaged bwrap resource
+        shell: bash
+        env:
+          TARGET: ${{ matrix.target }}
+          STABLE_GIT_COMMIT: ${{ steps.identity.outputs.product_sha }}
+        run: |
+          set -euo pipefail
+          cargo build --locked --manifest-path codex-rs/Cargo.toml --target "${TARGET}" \
+            --release --bin bwrap
+          bwrap_path="${CARGO_TARGET_DIR}/${TARGET}/release/bwrap"
+          [[ -f "${bwrap_path}" ]]
+          strip --strip-debug --strip-unneeded "${bwrap_path}"
+          digest="$(sha256sum "${bwrap_path}" | awk '{print $1}')"
+          echo "CODEX_BWRAP_SHA256=${digest}" >> "${GITHUB_ENV}"
+
+      - name: Assemble and verify the integrated CLI package
+        shell: bash
+        env:
+          TARGET: ${{ matrix.target }}
+          PRODUCT_SHA: ${{ steps.identity.outputs.product_sha }}
+          PRODUCT_TREE: ${{ steps.identity.outputs.product_tree }}
+          PRODUCT_SHORT: ${{ steps.identity.outputs.product_short }}
+          UPSTREAM_SHA: ${{ steps.identity.outputs.upstream_sha }}
+          WORKFLOW_HOST_SHA: ${{ steps.identity.outputs.workflow_host_sha }}
+          STABLE_GIT_COMMIT: ${{ steps.identity.outputs.product_sha }}
+        run: |
+          set -euo pipefail
+          package_version="0.164.0-dev.sedna.1+u970111f6.g${PRODUCT_SHORT}.ci${GITHUB_RUN_NUMBER}"
+          package_dir="${GITHUB_WORKSPACE}/dist/package-${TARGET}"
+          archive="${GITHUB_WORKSPACE}/dist/codex-package-${TARGET}.tar.gz"
+          bwrap_path="${CARGO_TARGET_DIR}/${TARGET}/release/bwrap"
+          mkdir -p "${GITHUB_WORKSPACE}/dist"
+
+          just assemble-codex-package \
+            --target "${TARGET}" \
+            --variant codex \
+            --package-version "${package_version}" \
+            --cargo-profile release \
+            --package-dir "${package_dir}" \
+            --archive-output "${archive}" \
+            --bwrap-bin "${bwrap_path}" \
+            --force
+
+          python3 - "${package_dir}/codex-package.json" "${package_version}" "${TARGET}" <<'PY'
+          import json
+          import sys
+
+          path, expected_version, expected_target = sys.argv[1:]
+          with open(path, encoding="utf-8") as package_file:
+              manifest = json.load(package_file)
+          assert manifest["version"] == expected_version, manifest
+          assert manifest["target"] == expected_target, manifest
+          assert manifest["variant"] == "codex", manifest
+          PY
+
+          actual_version="$("${package_dir}/bin/codex" --version)"
+          expected_version="codex-cli ${package_version}"
+          [[ "${actual_version}" == "${expected_version}" ]] || {
+            echo "Packaged CLI version does not match package manifest: ${actual_version}" >&2
+            exit 1
+          }
+          "${package_dir}/bin/codex" --help >/dev/null
+          "${package_dir}/bin/codex" mcp login --help >/dev/null
+          [[ -f "${package_dir}/codex-resources/bwrap" ]]
+          packaged_bwrap_sha="$(sha256sum "${package_dir}/codex-resources/bwrap" | awk '{print $1}')"
+          [[ "${packaged_bwrap_sha}" == "${CODEX_BWRAP_SHA256}" ]]
+          sha256sum "${archive}" > "${archive}.sha256"
+          echo "CARGO_BIN_EXE_codex=${package_dir}/bin/codex" >> "${GITHUB_ENV}"
+
+          printf '%s\n' \
+            "Codex Linux integrated progressive package" \
+            "Product source commit: ${PRODUCT_SHA}" \
+            "Product source tree: ${PRODUCT_TREE}" \
+            "Exact upstream base: ${UPSTREAM_SHA}" \
+            "Workflow host commit: ${WORKFLOW_HOST_SHA}" \
+            "Target: ${TARGET}" \
+            "Package and executable version: ${package_version}" \
+            "Version basis: Sedna development-series identity; not a claim of upstream release equivalence." \
+            "Included: device authentication, V2 mailbox opt-in, weekly pacing, same-model capacity retry, targeted client instruction overlays, and read-only usage-tree adapter." \
+            "Not established: protected-main landing, live account usage availability, or consumer/session acceptance." \
+            "Excluded: Browser and Android MCP consumer adoption." \
+            > "${GITHUB_WORKSPACE}/dist/PROVENANCE-${TARGET}.txt"
+
+      - name: Run focused device-auth package tests
+        shell: bash
+        env:
+          TARGET: ${{ matrix.target }}
+          STABLE_GIT_COMMIT: ${{ steps.identity.outputs.product_sha }}
+        run: |
+          set -euo pipefail
+          cargo test --locked --manifest-path codex-rs/Cargo.toml --target "${TARGET}" \
+            -p codex-rmcp-client -p codex-mcp --lib
+          cargo test --locked --manifest-path codex-rs/Cargo.toml --target "${TARGET}" \
+            -p codex-cli --test mcp_device_login
+          [[ -z "$(git status --porcelain --untracked-files=normal)" ]]
+
+      - uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f # v7.0.0
+        with:
+          name: codex-integrated-${{ matrix.target }}-${{ steps.identity.outputs.product_short }}-${{ github.run_id }}-${{ github.run_attempt }}
+          path: |
+            dist/codex-package-${{ matrix.target }}.tar.gz
+            dist/codex-package-${{ matrix.target }}.tar.gz.sha256
+            dist/PROVENANCE-${{ matrix.target }}.txt
+          if-no-files-found: error
+          retention-days: 30
