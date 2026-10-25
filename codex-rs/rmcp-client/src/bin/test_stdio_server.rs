@@ -291,6 +291,7 @@ impl TestToolServer {
             "properties": {
                 "sleep_before_ms": { "type": "number" },
                 "sleep_after_ms": { "type": "number" },
+                "report_pipe_ids": { "type": "boolean" },
                 "barrier": {
                     "type": "object",
                     "properties": {
@@ -317,7 +318,11 @@ impl TestToolServer {
         let output_schema: JsonObject = serde_json::from_value(json!({
             "type": "object",
             "properties": {
-                "result": { "type": "string" }
+                "result": { "type": "string" },
+                "pipe_ids": {
+                    "type": "array",
+                    "items": { "type": "string" }
+                }
             },
             "required": ["result"],
             "additionalProperties": false
@@ -465,6 +470,8 @@ struct SyncArgs {
     sleep_before_ms: Option<u64>,
     #[serde(default)]
     sleep_after_ms: Option<u64>,
+    #[serde(default)]
+    report_pipe_ids: bool,
     #[serde(default)]
     barrier: Option<SyncBarrierArgs>,
 }
@@ -902,7 +909,30 @@ impl TestToolServer {
             sleep(Duration::from_millis(delay)).await;
         }
 
-        Ok(Self::structured_result(json!({ "result": "ok" })))
+        let mut result = json!({ "result": "ok" });
+        if args.report_pipe_ids {
+            result["pipe_ids"] = json!(Self::stdio_pipe_ids());
+        }
+        Ok(Self::structured_result(result))
+    }
+
+    fn stdio_pipe_ids() -> Vec<String> {
+        #[cfg(target_os = "linux")]
+        let pipe_ids = {
+            use std::os::unix::fs::FileTypeExt;
+            use std::os::unix::fs::MetadataExt;
+
+            ["/proc/self/fd/0", "/proc/self/fd/1"]
+                .into_iter()
+                .filter_map(|descriptor| std::fs::metadata(descriptor).ok())
+                .filter(|metadata| metadata.file_type().is_fifo())
+                .map(|metadata| format!("{}:{}", metadata.dev(), metadata.ino()))
+                .collect()
+        };
+        #[cfg(not(target_os = "linux"))]
+        let pipe_ids: Vec<String> = Vec::new();
+
+        pipe_ids
     }
 
     fn structured_result(value: serde_json::Value) -> CallToolResult {

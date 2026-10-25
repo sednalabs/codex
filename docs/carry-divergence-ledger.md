@@ -73,6 +73,16 @@ protect this adapter alongside native transport tests. Installed first use is
 separate acceptance. Remove the config adapter when upstream provides an
 equivalent per-server preference without losing these boundaries.
 
+## Retired stdio MCP runtime cleanup
+
+Replacing or shutting down a runtime prevents later publication while keeping
+calls that already own its bindings live. The final binding owner schedules
+asynchronous client shutdown, which reaps the stdio child and releases the
+parent's pipe descriptors. `refresh_reaps_superseded_mcp_server_after_in_flight_call_finishes`
+covers refresh and shutdown retirement, including child exit and Linux pipe
+release. Remove this carry when upstream provides equivalent publication
+fencing and last-owner stdio cleanup without interrupting in-flight calls.
+
 ## Callback-input authentication boundaries
 
 Native MCP callback input retains the configured server's issuer, resource,
