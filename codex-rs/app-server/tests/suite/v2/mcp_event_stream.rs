@@ -165,9 +165,8 @@ async fn mcp_event_stream_survives_retained_server_refresh_and_cancels() -> Resu
             }
         }),
     );
-    let replacement_mcp_server = tokio::spawn(async move {
-        axum::serve(replacement_listener, replacement_router).await
-    });
+    let replacement_mcp_server =
+        tokio::spawn(async move { axum::serve(replacement_listener, replacement_router).await });
     let mcp_server = tokio::spawn(async move { axum::serve(listener, router).await });
 
     let codex_home = TempDir::new()?;
