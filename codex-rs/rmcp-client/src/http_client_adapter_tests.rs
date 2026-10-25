@@ -303,7 +303,7 @@ fn http_failure_displays_only_validated_transport_hints() {
         header("www-authenticate", "Bearer realm=internal"),
         header("cf-ray", "poisoned-value.internal.example"),
     ];
-    let error = http_status_error(502, b"existing bounded body preview", &headers);
+    let error = http_status_error(/*status*/ 502, b"existing bounded body preview", &headers);
     let StreamableHttpError::UnexpectedServerResponse(rendered) = error else {
         panic!("expected the native HTTP failure classification");
     };
