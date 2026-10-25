@@ -98,7 +98,9 @@ class RunBazelWithBuildBuddyTest(unittest.TestCase):
             ],
         )
 
-    def test_fork_workflow_keeps_buildbuddy_cache_without_remote_execution(self) -> None:
+    def test_fork_workflow_keeps_buildbuddy_cache_without_remote_execution(
+        self,
+    ) -> None:
         with TemporaryDirectory() as temp_dir:
             env = self.github_env(temp_dir, fork=True)
 

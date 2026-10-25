@@ -37,7 +37,9 @@ class SyntheticAppServer:
     def __init__(self):
         self.calls = []
         self.usage_by_id = {
-            "root": usage("root", uncached=1_000_000, cached=1_000_000, output=1_000_000),
+            "root": usage(
+                "root", uncached=1_000_000, cached=1_000_000, output=1_000_000
+            ),
             "child-a": usage("child-a", uncached=1_000_000, cached=None, output=0),
             "child-b": usage("child-b", model="gpt-unpriced", uncached=1_000_000),
             "child-c": {"threadUsage": None},
@@ -143,9 +145,14 @@ class UsageTreeTests(unittest.TestCase):
         ]
         self.assertEqual(usage_calls, ["root", "child-a", "child-b", "child-c"])
         list_calls = [params for method, params in api.calls if method == "thread/list"]
-        self.assertTrue(all(params["ancestorThreadId"] == "root" for params in list_calls))
         self.assertTrue(
-            all(params["sourceKinds"] == ["subAgentThreadSpawn"] for params in list_calls)
+            all(params["ancestorThreadId"] == "root" for params in list_calls)
+        )
+        self.assertTrue(
+            all(
+                params["sourceKinds"] == ["subAgentThreadSpawn"]
+                for params in list_calls
+            )
         )
         self.assertTrue(all(params["useStateDbOnly"] for params in list_calls))
         self.assertEqual(result["lineage"]["unresolvedParentThreadIds"], [])
@@ -163,7 +170,9 @@ class UsageTreeTests(unittest.TestCase):
         self.assertFalse(child_sol["tokenTotals"]["cachedInput"]["complete"])
         self.assertIsNone(child_sol["calculatedCredits"]["credits"])
         self.assertEqual(child_sol["calculatedCredits"]["knownSubtotal"], "50")
-        self.assertEqual(result["totals"]["children"]["missingUsageThreadIds"], ["child-c"])
+        self.assertEqual(
+            result["totals"]["children"]["missingUsageThreadIds"], ["child-c"]
+        )
 
         unpriced = next(
             group
@@ -172,7 +181,9 @@ class UsageTreeTests(unittest.TestCase):
         )
         self.assertIsNone(unpriced["calculatedCredits"]["credits"])
         self.assertEqual(unpriced["calculatedCredits"]["knownSubtotal"], "0")
-        self.assertEqual(unpriced["calculatedCredits"]["missingRates"], ["gpt-unpriced:input"])
+        self.assertEqual(
+            unpriced["calculatedCredits"]["missingRates"], ["gpt-unpriced:input"]
+        )
 
     def test_a_list_cap_marks_lineage_incomplete_instead_of_claiming_full_tree(self):
         class CappedAppServer(SyntheticAppServer):
@@ -189,7 +200,9 @@ class UsageTreeTests(unittest.TestCase):
                     return {"data": [], "nextCursor": None}
                 raise AssertionError(f"unexpected app-server method: {method}")
 
-        result = collect_tree(CappedAppServer(), "root", load_rates(None), max_per_state=1)
+        result = collect_tree(
+            CappedAppServer(), "root", load_rates(None), max_per_state=1
+        )
 
         self.assertEqual(result["status"], "partial")
         self.assertFalse(result["completeness"]["lineageComplete"])

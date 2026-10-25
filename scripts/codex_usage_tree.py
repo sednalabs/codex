@@ -113,7 +113,9 @@ class AppServer:
                 continue
             if "error" in message:
                 error = message["error"]
-                raise RpcError(method, error.get("code") if isinstance(error, dict) else None)
+                raise RpcError(
+                    method, error.get("code") if isinstance(error, dict) else None
+                )
             result = message.get("result")
             if not isinstance(result, dict):
                 raise UsageError(f"{method} returned a non-object result")
@@ -164,24 +166,36 @@ def load_rates(path: str | None) -> dict[str, Any]:
         raw = _default_rates() if path is None else json.loads(Path(path).read_text())
     except (OSError, json.JSONDecodeError) as exc:
         raise UsageError("could not read or parse the rate map JSON") from exc
-    if not isinstance(raw, dict) or not isinstance(raw.get("credits_per_million_tokens"), dict):
-        raise UsageError("rate map requires credits_per_million_tokens by exact model name")
-    if not all(isinstance(raw.get(key), str) and raw[key].strip() for key in ("source", "date")):
+    if not isinstance(raw, dict) or not isinstance(
+        raw.get("credits_per_million_tokens"), dict
+    ):
+        raise UsageError(
+            "rate map requires credits_per_million_tokens by exact model name"
+        )
+    if not all(
+        isinstance(raw.get(key), str) and raw[key].strip() for key in ("source", "date")
+    ):
         raise UsageError("rate map requires non-empty source and date")
     models = {}
     try:
         for model, entries in raw["credits_per_million_tokens"].items():
             if not isinstance(model, str) or not isinstance(entries, dict):
-                raise UsageError("each rate entry must map an exact model name to token classes")
+                raise UsageError(
+                    "each rate entry must map an exact model name to token classes"
+                )
             models[model] = {}
             for dimension in ("input", "cached_input", "output"):
                 if dimension in entries:
                     value = Decimal(str(entries[dimension]))
                     if not value.is_finite() or value < 0:
-                        raise UsageError("rates must be finite, non-negative credits per million")
+                        raise UsageError(
+                            "rates must be finite, non-negative credits per million"
+                        )
                     models[model][dimension] = value
     except (InvalidOperation, TypeError) as exc:
-        raise UsageError("rates must be finite, non-negative credits per million") from exc
+        raise UsageError(
+            "rates must be finite, non-negative credits per million"
+        ) from exc
     return {"source": raw["source"], "date": raw["date"], "models": models}
 
 
@@ -204,7 +218,9 @@ def _normalize(response: dict[str, Any], thread_id: str) -> dict[str, Any] | Non
     if usage is None:
         return None
     if not isinstance(usage, dict) or usage.get("threadId") != thread_id:
-        raise UsageError("account/usage/read returned malformed or mismatched thread usage")
+        raise UsageError(
+            "account/usage/read returned malformed or mismatched thread usage"
+        )
     groups = usage.get("groups")
     if not isinstance(groups, list):
         raise UsageError("account/usage/read returned malformed groups")
@@ -225,9 +241,12 @@ def _normalize(response: dict[str, Any], thread_id: str) -> dict[str, Any] | Non
                 "cachedInputTokens": _optional_int(
                     group.get("cachedInputTokens"), "cachedInputTokens"
                 ),
-                "outputTokens": _optional_int(group.get("outputTokens"), "outputTokens"),
+                "outputTokens": _optional_int(
+                    group.get("outputTokens"), "outputTokens"
+                ),
                 "estimatedUsageCreditsMicros": _optional_int(
-                    group.get("estimatedUsageCreditsMicros"), "estimatedUsageCreditsMicros"
+                    group.get("estimatedUsageCreditsMicros"),
+                    "estimatedUsageCreditsMicros",
                 ),
             }
         )
@@ -250,7 +269,9 @@ def _cost(group: dict[str, Any], rates: dict[str, Any]) -> dict[str, Any]:
         elif tokens:
             rate = model_rates.get(rate_name)
             if rate is None:
-                missing_rates.append(f"{group['model'] or '<unknown model>'}:{rate_name}")
+                missing_rates.append(
+                    f"{group['model'] or '<unknown model>'}:{rate_name}"
+                )
             else:
                 known += Decimal(tokens) * rate / Decimal(1_000_000)
     complete = not missing_tokens and not missing_rates
@@ -276,7 +297,9 @@ def aggregate(rows: list[dict[str, Any]], rates: dict[str, Any]) -> dict[str, An
                 grouped.setdefault(_key(group), []).append(group)
 
     totals = []
-    for key, groups in sorted(grouped.items(), key=lambda item: tuple(x or "" for x in item[0])):
+    for key, groups in sorted(
+        grouped.items(), key=lambda item: tuple(x or "" for x in item[0])
+    ):
         tokens = {}
         for name, (field, _) in TOKEN_FIELDS.items():
             values = [group[field] for group in groups]
@@ -314,7 +337,11 @@ def aggregate(rows: list[dict[str, Any]], rates: dict[str, Any]) -> dict[str, An
                     "complete": cost_complete,
                     "missingUsageThreadIds": missing_ids,
                     "missingTokenDimensions": sorted(
-                        {item for part in cost_parts for item in part["missingTokenDimensions"]}
+                        {
+                            item
+                            for part in cost_parts
+                            for item in part["missingTokenDimensions"]
+                        }
                     ),
                     "missingRates": sorted(
                         {item for part in cost_parts for item in part["missingRates"]}
@@ -330,7 +357,9 @@ def aggregate(rows: list[dict[str, Any]], rates: dict[str, Any]) -> dict[str, An
 
 
 def fetch_usage(api: Any, thread_id: str) -> dict[str, Any] | None:
-    return _normalize(api.request("account/usage/read", {"threadId": thread_id}), thread_id)
+    return _normalize(
+        api.request("account/usage/read", {"threadId": thread_id}), thread_id
+    )
 
 
 def fetch_descendants(api: Any, root_id: str, max_per_state: int):
@@ -400,7 +429,9 @@ def fetch_descendants(api: Any, root_id: str, max_per_state: int):
         "maxThreadsPerArchivedState": max_per_state,
         "truncated": any(truncated_states),
         "truncatedArchivedStates": [
-            state for state, truncated in zip((False, True), truncated_states) if truncated
+            state
+            for state, truncated in zip((False, True), truncated_states)
+            if truncated
         ],
         "conflictingParentThreadIds": sorted(conflicts),
     }
@@ -418,18 +449,21 @@ def collect_tree(api: Any, root_id: str, rates: dict[str, Any], max_per_state: i
         children, lineage = fetch_descendants(api, root_id, max_per_state)
         lineage_error = None
     except RpcError as exc:
-        children, lineage = [], {
-            "source": "thread/list",
-            "sourceKinds": ["subAgentThreadSpawn"],
-            "useStateDbOnly": True,
-            "archivedStatesQueried": [False, True],
-            "pagesRead": 0,
-            "maxPagesPerArchivedState": max_per_state,
-            "maxThreadsPerArchivedState": max_per_state,
-            "truncated": True,
-            "errorRpcCode": exc.code,
-            "conflictingParentThreadIds": [],
-        }
+        children, lineage = (
+            [],
+            {
+                "source": "thread/list",
+                "sourceKinds": ["subAgentThreadSpawn"],
+                "useStateDbOnly": True,
+                "archivedStatesQueried": [False, True],
+                "pagesRead": 0,
+                "maxPagesPerArchivedState": max_per_state,
+                "maxThreadsPerArchivedState": max_per_state,
+                "truncated": True,
+                "errorRpcCode": exc.code,
+                "conflictingParentThreadIds": [],
+            },
+        )
         lineage_error = {"method": exc.method, "rpcCode": exc.code}
 
     known_ids = {root_id, *(row["threadId"] for row in children)}
@@ -452,7 +486,11 @@ def collect_tree(api: Any, root_id: str, rates: dict[str, Any], max_per_state: i
         except RpcError as exc:
             usage, status, stop = None, "rpc_error", True
             errors.append(
-                {"threadId": child["threadId"], "method": exc.method, "rpcCode": exc.code}
+                {
+                    "threadId": child["threadId"],
+                    "method": exc.method,
+                    "rpcCode": exc.code,
+                }
             )
         rows.append({**child, "role": "child", "usageStatus": status, "usage": usage})
 
@@ -556,8 +594,12 @@ def main(argv: list[str] | None = None) -> int:
         action="store_true",
         help="allow normal app-server startup, which can initialize SQLite and backfill rollouts",
     )
-    parser.add_argument("--rates-json", help="rate map JSON replacing the embedded dated map")
-    parser.add_argument("--max-threads-per-state", type=int, default=DEFAULT_MAX_THREADS_PER_STATE)
+    parser.add_argument(
+        "--rates-json", help="rate map JSON replacing the embedded dated map"
+    )
+    parser.add_argument(
+        "--max-threads-per-state", type=int, default=DEFAULT_MAX_THREADS_PER_STATE
+    )
     parser.add_argument("--timeout-seconds", type=int, default=20)
     parser.add_argument("--overall-timeout-seconds", type=int, default=300)
     args = parser.parse_args(argv)
