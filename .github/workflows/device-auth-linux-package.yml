@@ -1,0 +1,181 @@
+name: Codex device-auth Linux package
+
+on:
+  push:
+    branches:
+      - codex/device-auth-linux-package-20261025
+  workflow_dispatch:
+
+concurrency:
+  group: device-auth-linux-package-${{ github.ref }}
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  package:
+    name: ${{ matrix.target }} focused proof and package
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 180
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - target: x86_64-unknown-linux-gnu
+            runner: ubuntu-24.04
+          - target: aarch64-unknown-linux-gnu
+            runner: ubuntu-24.04-arm
+    env:
+      CODEX_REPO_ROOT: ${{ github.workspace }}
+
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          ref: ${{ github.sha }}
+          fetch-depth: 3
+          persist-credentials: false
+
+      - name: Bind the exact device-auth source and workflow host
+        id: identity
+        shell: bash
+        env:
+          DEVICE_AUTH_SHA: 9c76e6a17cb4a6908b6714ae4532094486edcbc9
+          DEVICE_AUTH_TREE: d55253240e97706b7558ecdd3819ce3a5770ffc3
+          LOCAL_UPSTREAM_BASE_SHA: 98478e3ed34f5104d965fc879f211284f664c524
+          UPSTREAM_BASE_SHA: 970111f6cb62cc02fe36a82ea7d71b37a2889c97
+          UPSTREAM_TREE: e09c71b9069e689c9c997c766d0de8b7b288583f
+          EXPECTED_REF: refs/heads/codex/device-auth-linux-package-20261025
+        run: |
+          set -euo pipefail
+          [[ "${GITHUB_REF}" == "${EXPECTED_REF}" ]] || {
+            echo "This focused package route is restricted to its exact candidate branch." >&2
+            exit 1
+          }
+          git fetch --no-tags --depth=1 https://github.com/openai/codex.git "${UPSTREAM_BASE_SHA}"
+          [[ "$(git rev-parse HEAD)" == "${GITHUB_SHA}" ]]
+          [[ "$(git rev-parse "${DEVICE_AUTH_SHA}^{tree}")" == "${DEVICE_AUTH_TREE}" ]]
+          [[ "$(git rev-parse "${UPSTREAM_BASE_SHA}^{tree}")" == "${UPSTREAM_TREE}" ]]
+          [[ "$(git rev-parse "${LOCAL_UPSTREAM_BASE_SHA}^{tree}")" == "${UPSTREAM_TREE}" ]]
+          [[ "$(git rev-parse "${DEVICE_AUTH_SHA}^")" == "${LOCAL_UPSTREAM_BASE_SHA}" ]]
+          git merge-base --is-ancestor "${DEVICE_AUTH_SHA}" "${GITHUB_SHA}"
+          git diff --quiet "${DEVICE_AUTH_SHA}" "${GITHUB_SHA}" -- . \
+            ':(exclude).github/workflows/device-auth-linux-package.yml' || {
+              echo "Only this workflow may differ from the exact device-auth source." >&2
+              exit 1
+            }
+          [[ -z "$(git status --porcelain --untracked-files=normal)" ]]
+
+          {
+            printf 'source_sha=%s\n' "${DEVICE_AUTH_SHA}"
+            printf 'source_tree=%s\n' "${DEVICE_AUTH_TREE}"
+            printf 'source_short=%s\n' "${DEVICE_AUTH_SHA:0:12}"
+            printf 'workflow_host_sha=%s\n' "${GITHUB_SHA}"
+          } >> "${GITHUB_OUTPUT}"
+
+      - name: Install Linux package build dependencies
+        shell: bash
+        run: |
+          set -euo pipefail
+          sudo apt-get update -y
+          sudo DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
+            binutils pkg-config libcap-dev
+
+      - name: Set up Codex CI tools
+        uses: ./.github/actions/setup-ci
+
+      - uses: dtolnay/rust-toolchain@d124f86f28ff42855784ff3319f48ac182c248f8 # 1.99.1
+        with:
+          targets: ${{ matrix.target }}
+
+      - name: Configure source-matched rusty_v8 artifacts
+        uses: ./.github/actions/setup-rusty-v8
+        with:
+          target: ${{ matrix.target }}
+
+      - name: Run focused device-auth tests
+        shell: bash
+        env:
+          TARGET: ${{ matrix.target }}
+          STABLE_GIT_COMMIT: ${{ steps.identity.outputs.source_sha }}
+        run: |
+          set -euo pipefail
+          cargo test --manifest-path codex-rs/Cargo.toml --target "${TARGET}" \
+            -p codex-rmcp-client --lib
+          cargo test --manifest-path codex-rs/Cargo.toml --target "${TARGET}" \
+            -p codex-mcp --lib
+          cargo test --manifest-path codex-rs/Cargo.toml --target "${TARGET}" \
+            -p codex-cli --test mcp_device_login
+
+      - name: Build and fingerprint the packaged bwrap resource
+        shell: bash
+        env:
+          TARGET: ${{ matrix.target }}
+          STABLE_GIT_COMMIT: ${{ steps.identity.outputs.source_sha }}
+        run: |
+          set -euo pipefail
+          cargo build --manifest-path codex-rs/Cargo.toml --target "${TARGET}" \
+            --release --bin bwrap
+          bwrap_path="${CARGO_TARGET_DIR}/${TARGET}/release/bwrap"
+          [[ -f "${bwrap_path}" ]]
+          strip --strip-debug --strip-unneeded "${bwrap_path}"
+          digest="$(sha256sum "${bwrap_path}" | awk '{print $1}')"
+          echo "CODEX_BWRAP_SHA256=${digest}" >> "${GITHUB_ENV}"
+          echo "Built and fingerprinted bwrap for ${TARGET}: ${digest}"
+
+      - name: Assemble and verify the Linux CLI package
+        shell: bash
+        env:
+          TARGET: ${{ matrix.target }}
+          SOURCE_SHA: ${{ steps.identity.outputs.source_sha }}
+          SOURCE_TREE: ${{ steps.identity.outputs.source_tree }}
+          WORKFLOW_HOST_SHA: ${{ steps.identity.outputs.workflow_host_sha }}
+          SOURCE_SHORT: ${{ steps.identity.outputs.source_short }}
+          UPSTREAM_BASE_SHA: 970111f6cb62cc02fe36a82ea7d71b37a2889c97
+          STABLE_GIT_COMMIT: ${{ steps.identity.outputs.source_sha }}
+        run: |
+          set -euo pipefail
+          package_version="0.0.0-device-auth.${GITHUB_RUN_NUMBER}+g${SOURCE_SHORT}"
+          package_dir="${GITHUB_WORKSPACE}/dist/package-${TARGET}"
+          archive="${GITHUB_WORKSPACE}/dist/codex-package-${TARGET}.tar.gz"
+          bwrap_path="${CARGO_TARGET_DIR}/${TARGET}/release/bwrap"
+          mkdir -p "${GITHUB_WORKSPACE}/dist"
+
+          just assemble-codex-package \
+            --target "${TARGET}" \
+            --variant codex \
+            --package-version "${package_version}" \
+            --cargo-profile release \
+            --package-dir "${package_dir}" \
+            --archive-output "${archive}" \
+            --bwrap-bin "${bwrap_path}" \
+            --force
+
+          "${package_dir}/bin/codex" --version
+          "${package_dir}/bin/codex" --help >/dev/null
+          [[ -f "${package_dir}/codex-resources/bwrap" ]]
+          packaged_bwrap_sha="$(sha256sum "${package_dir}/codex-resources/bwrap" | awk '{print $1}')"
+          [[ "${packaged_bwrap_sha}" == "${CODEX_BWRAP_SHA256}" ]]
+          sha256sum "${archive}" > "${archive}.sha256"
+
+          printf '%s\n' \
+            "Codex Linux CLI progressive package" \
+            "Product source commit: ${SOURCE_SHA}" \
+            "Product source tree: ${SOURCE_TREE}" \
+            "Exact upstream base: ${UPSTREAM_BASE_SHA}" \
+            "Workflow host commit: ${WORKFLOW_HOST_SHA}" \
+            "Target: ${TARGET}" \
+            "Package version: ${package_version}" \
+            "Scope: MCP OAuth device authentication candidate only; mailbox integration is not included." \
+            "Status: progressive artifact; not protected-main or consumer-install acceptance." \
+            > "${GITHUB_WORKSPACE}/dist/PROVENANCE.txt"
+
+      - uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f # v7.0.0
+        with:
+          name: codex-device-auth-${{ matrix.target }}-${{ steps.identity.outputs.source_short }}-${{ github.run_id }}-${{ github.run_attempt }}
+          path: |
+            dist/codex-package-${{ matrix.target }}.tar.gz
+            dist/codex-package-${{ matrix.target }}.tar.gz.sha256
+            dist/PROVENANCE.txt
+          if-no-files-found: error
+          retention-days: 30
