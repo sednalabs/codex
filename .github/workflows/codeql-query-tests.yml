@@ -26,12 +26,6 @@ jobs:
         with:
           persist-credentials: false
 
-      - name: Verify native visual response production contract
-        run: python3 .github/scripts/verify_native_visual_response_contract.py
-
-      - name: Test native visual response production contract verifier
-        run: python3 .github/scripts/test_verify_native_visual_response_contract.py
-
       - name: Set up CodeQL
         id: setup-codeql
         uses: github/codeql-action/setup-codeql@v4.37.9

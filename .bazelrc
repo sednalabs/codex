@@ -185,11 +185,13 @@ common:ci-windows --test_env=CODEX_BAZEL_TEST_SKIP_FILTERS=suite::code_mode::cod
 common:ci-linux --config=ci-bazel
 common:ci-linux --build_metadata=TAG_os=linux
 common:ci-linux --platforms=//:rbe
+common:ci-linux --extra_toolchains=//:linux_local_tests_toolchain
 
 # On mac, we can run all the build actions remotely but test actions locally.
 common:ci-macos --config=ci-bazel
 common:ci-macos --build_metadata=TAG_os=macos
 common:ci-macos --strategy=TestRunner=darwin-sandbox,local
+common:ci-macos --extra_toolchains=//:macos_local_tests_toolchain
 
 # On Windows, use Linux remote execution for build actions but keep test actions
 # on the Windows runner so Bazel's normal test sharding and flaky-test retries

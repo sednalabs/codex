@@ -123,7 +123,10 @@ impl McpServerProcess {
     }
 }
 
-fn stdio_server_config(command: std::path::PathBuf, env: HashMap<String, String>) -> McpServerConfig {
+fn stdio_server_config(
+    command: std::path::PathBuf,
+    env: HashMap<String, String>,
+) -> McpServerConfig {
     McpServerConfig {
         auth: Default::default(),
         transport: McpServerTransportConfig::Stdio {
@@ -398,7 +401,8 @@ async fn refresh_reaps_superseded_mcp_server_after_in_flight_call_finishes() -> 
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn shutdown_cancels_pending_mcp_startup_while_in_flight_call_finishes() -> anyhow::Result<()> {
+async fn shutdown_cancels_pending_mcp_startup_while_in_flight_call_finishes() -> anyhow::Result<()>
+{
     skip_if_no_network!(Ok(()));
 
     let server = responses::start_mock_server().await;
@@ -515,13 +519,17 @@ async fn shutdown_cancels_pending_mcp_startup_while_in_flight_call_finishes() ->
     });
     tokio::time::timeout(Duration::from_secs(2), shutdown).await???;
     tokio::time::timeout(Duration::from_secs(5), pending.wait_for_exit()).await???;
-    anyhow::ensure!(ready.is_alive()?, "shutdown cancelled a ready in-flight MCP call");
+    anyhow::ensure!(
+        ready.is_alive()?,
+        "shutdown cancelled a ready in-flight MCP call"
+    );
     anyhow::ensure!(
         !pending.is_alive()?,
         "shutdown left an optional MCP startup alive"
     );
 
-    let in_flight_result = tokio::time::timeout(Duration::from_secs(20), in_flight_call).await???;
+    let in_flight_result =
+        tokio::time::timeout(Duration::from_secs(20), in_flight_call).await???;
     anyhow::ensure!(
         in_flight_result.is_error == Some(false),
         "shutdown interrupted the ready in-flight MCP request"

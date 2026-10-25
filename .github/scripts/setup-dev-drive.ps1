@@ -9,7 +9,9 @@ function Test-DevDrive {
     param([string]$Drive)
 
     & fsutil devdrv query $Drive *> $null
-    return $LASTEXITCODE -eq 0
+    $IsDevDrive = $LASTEXITCODE -eq 0
+    $global:LASTEXITCODE = 0
+    return $IsDevDrive
 }
 
 function Invoke-BestEffort {

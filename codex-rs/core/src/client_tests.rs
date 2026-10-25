@@ -785,8 +785,7 @@ fn model_baseline_selector_is_scoped_to_exact_model_slugs() -> anyhow::Result<()
 }
 
 #[test]
-fn optional_model_baseline_removals_apply_to_root_and_child_for_any_model() -> anyhow::Result<()>
-{
+fn optional_model_baseline_removals_apply_to_root_and_child_for_any_model() -> anyhow::Result<()> {
     const BLOCKING_WAIT_TARGET: &str = "Avoid performing blocking sleep or wait calls longer than 60 seconds, as they may prevent you from communicating with the user for their duration.";
     const COMMENTARY_CADENCE_TARGET: &str = "The user appreciates consistent, frequent communication during your turn, and should not be left without a commentary update for more than 60 seconds during ongoing work.";
     let overlays = InstructionOverlaysToml {
@@ -813,7 +812,11 @@ fn optional_model_baseline_removals_apply_to_root_and_child_for_any_model() -> a
         ("gpt-6.1-sol", baseline_with_targets.as_str(), true),
         ("gpt-6-luna", baseline_with_targets.as_str(), true),
         ("gpt-6-astra", baseline_with_targets.as_str(), true),
-        ("unknown-model", "Unknown model baseline remains unchanged.", false),
+        (
+            "unknown-model",
+            "Unknown model baseline remains unchanged.",
+            false,
+        ),
     ];
     let parent_thread_id = ThreadId::new();
 
@@ -833,7 +836,9 @@ fn optional_model_baseline_removals_apply_to_root_and_child_for_any_model() -> a
         for (model_slug, baseline, targets_present) in model_cases {
             let client = test_model_client(source.clone())
                 .with_instruction_overlays(overlays.clone())
-                .with_client_owned_base_instructions(None, /*model_baseline_origin_known*/ true);
+                .with_client_owned_base_instructions(
+                    None, /*model_baseline_origin_known*/ true,
+                );
             let mut model_info = test_model_info();
             model_info.slug = model_slug.to_string();
             model_info.use_responses_lite = true;

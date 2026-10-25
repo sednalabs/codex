@@ -3519,7 +3519,6 @@ mod tests {
                 )]
                 .into_iter()
                 .collect(),
-                mailbox_wait_report: None,
                 status: CorePatchApplyStatus::Declined,
             }),
         ];
@@ -4220,7 +4219,6 @@ mod tests {
                 )]
                 .into_iter()
                 .collect(),
-                mailbox_wait_report: None,
             }),
         ];
 
@@ -4291,7 +4289,6 @@ mod tests {
                 )]
                 .into_iter()
                 .collect(),
-                mailbox_wait_report: None,
                 reason: None,
                 grant_root: None,
             }),
