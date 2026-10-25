@@ -52,8 +52,8 @@ jobs:
             echo "This focused package route is restricted to its exact candidate branch." >&2
             exit 1
           }
-          git fetch --no-tags --depth=1 "https://github.com/${GITHUB_REPOSITORY}.git" \
-            "${DEVICE_AUTH_SHA}" "${LOCAL_UPSTREAM_BASE_SHA}"
+          git fetch --no-tags --depth=2 "https://github.com/${GITHUB_REPOSITORY}.git" "${DEVICE_AUTH_SHA}"
+          git fetch --no-tags --depth=1 "https://github.com/${GITHUB_REPOSITORY}.git" "${LOCAL_UPSTREAM_BASE_SHA}"
           git fetch --no-tags --depth=1 https://github.com/openai/codex.git "${UPSTREAM_BASE_SHA}"
           [[ "$(git rev-parse HEAD)" == "${GITHUB_SHA}" ]]
           [[ "$(git rev-parse "${DEVICE_AUTH_SHA}^{tree}")" == "${DEVICE_AUTH_TREE}" ]]
