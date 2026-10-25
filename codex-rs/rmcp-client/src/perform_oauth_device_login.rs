@@ -188,9 +188,8 @@ async fn resolve_device_oauth_client_id(
         return Ok(client_id.trim().to_string());
     }
     let registration_endpoint = metadata
-        .additional_fields
-        .get("registration_endpoint")
-        .and_then(serde_json::Value::as_str)
+        .registration_endpoint
+        .as_deref()
         .filter(|endpoint| !endpoint.trim().is_empty())
         .ok_or_else(|| {
             anyhow!(
@@ -212,7 +211,7 @@ async fn resolve_device_oauth_client_id(
     register_device_oauth_client(
         http_client.as_ref(),
         &registration_headers,
-        registration_endpoint,
+        registration_endpoint.trim(),
         scopes,
         supports_refresh_token,
     )
