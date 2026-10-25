@@ -669,10 +669,11 @@ impl ModelClient {
 
     fn base_instructions_are_client_owned(&self, instructions: &BaseInstructions) -> bool {
         (self.model_baseline_origin_known
-            && matches!(
-                instructions.provenance,
-                Some(BaseInstructionsProvenance::Model { .. })
-            ))
+            && (instructions.text.is_empty()
+                || matches!(
+                    instructions.provenance,
+                    Some(BaseInstructionsProvenance::Model { .. })
+                )))
             || self.client_owned_base_instructions
                 == Some(Sha256::digest(instructions.text.as_bytes()).into())
     }
@@ -1044,6 +1045,15 @@ impl ModelClient {
         let mut input = prompt.get_formatted_input_for_request(model_info);
         let base_instructions_are_client_owned =
             self.base_instructions_are_client_owned(&prompt.base_instructions);
+        if base_instructions_are_client_owned && !prompt.base_instructions.text.is_empty() {
+            // Incremental world state can already carry this exact model baseline. When this
+            // request also supplies the regular base-instructions prefix, keep the prefix as
+            // the one active request copy instead of sending the same baseline twice.
+            input.retain(|item| {
+                BaseInstructionsFragment::text_from_item(item)
+                    != Some(prompt.base_instructions.text.as_str())
+            });
+        }
         if !self.reasoning_effort_override_enabled(model_info) {
             // Unsupported models and disabled overrides must also accept saved history.
             // Filter only the request copy; persisted history remains unchanged.

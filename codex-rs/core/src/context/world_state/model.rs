@@ -7,6 +7,7 @@ use super::WorldStateHash;
 use super::WorldStateSection;
 use super::WorldStateUpdate;
 use crate::context::BaseInstructionsFragment;
+use crate::context::ClientOwnedModelInstructions;
 use crate::context::ContextualUserFragment;
 use crate::context::ModelInstructions;
 use crate::context::ModelSwitchInstructions;
@@ -32,6 +33,7 @@ pub(crate) struct ModelInstructionsState {
     /// Ordinary-window fallback when the saved model snapshot is unavailable.
     previous_model: Option<String>,
     instructions: String,
+    client_owned_base_instructions: bool,
 }
 
 impl ModelInstructionsState {
@@ -40,10 +42,23 @@ impl ModelInstructionsState {
             snapshot: ModelInstructionsSnapshot::ModelOnly(model.to_string()),
             previous_model: previous_model.map(str::to_string),
             instructions,
+            client_owned_base_instructions: false,
         }
     }
 
     pub(crate) fn for_incremental_tools(model: &str, instructions: String) -> Self {
+        Self::for_incremental_tools_with_ownership(
+            model,
+            instructions,
+            /*client_owned_base_instructions*/ false,
+        )
+    }
+
+    pub(crate) fn for_incremental_tools_with_ownership(
+        model: &str,
+        instructions: String,
+        client_owned_base_instructions: bool,
+    ) -> Self {
         let instructions = BaseInstructionsFragment(instructions);
         let instructions_hash = WorldStateHash::from_fragment(&instructions);
         Self {
@@ -53,6 +68,7 @@ impl ModelInstructionsState {
             },
             previous_model: None,
             instructions: instructions.0,
+            client_owned_base_instructions,
         }
     }
 }
@@ -92,7 +108,8 @@ impl WorldStateSection for ModelInstructionsState {
             return (
                 Some(self.snapshot.clone()),
                 vec![WorldStateUpdate::prefix_item(ContextualUserFragment::into(
-                    BaseInstructionsFragment(self.instructions.clone()),
+                    BaseInstructionsFragment(self.instructions.clone())
+                        .with_client_ownership(self.client_owned_base_instructions),
                 ))],
             );
         }
@@ -118,10 +135,18 @@ impl WorldStateSection for ModelInstructionsState {
             return (None, Vec::new());
         }
         let fragment: Option<Box<dyn ContextualUserFragment>> = if instructions_hash.is_some() {
-            Some(Box::new(ModelInstructions {
+            let instructions = ModelInstructions {
                 model: model_changed.then(|| model.clone()),
                 instructions: instructions_changed.then(|| self.instructions.clone()),
-            }))
+            };
+            if self.client_owned_base_instructions {
+                Some(
+                    Box::new(ClientOwnedModelInstructions(instructions))
+                        as Box<dyn ContextualUserFragment>,
+                )
+            } else {
+                Some(Box::new(instructions) as Box<dyn ContextualUserFragment>)
+            }
         } else {
             (model_changed && !self.instructions.is_empty()).then(|| {
                 Box::new(ModelSwitchInstructions::new(self.instructions.clone()))

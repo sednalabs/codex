@@ -96,11 +96,21 @@ impl Session {
         };
         let model_state = if incremental_tools {
             let base_instructions = self.get_base_instructions().await;
+            let client_owned_base_instructions =
+                turn_context.config.client_owned_base_instructions
+                    || matches!(
+                        &base_instructions.provenance,
+                        Some(BaseInstructionsProvenance::Model { .. })
+                    );
             let instructions = match base_instructions.provenance {
                 Some(BaseInstructionsProvenance::Model { .. }) => render_current_instructions(),
                 Some(BaseInstructionsProvenance::Custom) | None => base_instructions.text,
             };
-            ModelInstructionsState::for_incremental_tools(&model_info.slug, instructions)
+            ModelInstructionsState::for_incremental_tools_with_ownership(
+                &model_info.slug,
+                instructions,
+                client_owned_base_instructions,
+            )
         } else {
             let model_instructions = render_current_instructions();
             let base_instructions = self.get_prompt_base_instructions().await.text;
