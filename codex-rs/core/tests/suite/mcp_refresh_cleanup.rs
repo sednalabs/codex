@@ -193,7 +193,7 @@ async fn refresh_keeps_superseded_mcp_server_alive_for_in_flight_calls() -> anyh
                     "sync",
                     Some(serde_json::json!({
                         "barrier": barrier,
-                        "sleep_after_ms": 300_000
+                        "sleep_after_ms": 10_000
                     })),
                     /*meta*/ None,
                 )
@@ -228,13 +228,7 @@ async fn refresh_keeps_superseded_mcp_server_alive_for_in_flight_calls() -> anyh
     assert_ne!(replacement.pid, superseded.pid);
     let superseded_alive = superseded.is_alive()?;
     assert!(superseded_alive);
-    long_call.abort();
-    assert!(
-        long_call
-            .await
-            .expect_err("call should be aborted")
-            .is_cancelled()
-    );
+    long_call.await??;
     superseded.wait_for_exit().await?;
     let replacement_alive = replacement.is_alive()?;
     assert!(replacement_alive);

@@ -179,7 +179,16 @@ impl McpServerConnection {
 
 impl Drop for McpServerConnection {
     fn drop(&mut self) {
-        self.client.cancel_token.cancel();
+        // A retired connection is dropped only after its published set and any
+        // in-flight users have released it. Shut it down then so stdio children
+        // and their pipes are reclaimed without cancelling calls in progress.
+        let client = self.client.clone();
+        match tokio::runtime::Handle::try_current() {
+            Ok(handle) => {
+                handle.spawn(async move { client.shutdown().await });
+            }
+            Err(_) => self.client.cancel_token.cancel(),
+        }
     }
 }
 
