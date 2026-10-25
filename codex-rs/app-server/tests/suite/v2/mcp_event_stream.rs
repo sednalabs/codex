@@ -87,11 +87,39 @@ async fn mcp_event_stream_survives_retained_server_refresh_and_cancels() -> Resu
                         )
                             .into_response()
                     }
+                    Some("server/discover") => {
+                        let protocol_version = message
+                            .pointer("/params/_meta/io.modelcontextprotocol~1protocolVersion")
+                            .and_then(Value::as_str)
+                            .expect("modern Apps discovery must declare its protocol version");
+                        assert_eq!(protocol_version, "2026-07-28");
+                        apps_initialized_tx
+                            .send(protocol_version.to_string())
+                            .expect("Apps discovery receiver must remain open");
+                        Json(json!({
+                            "jsonrpc": "2.0",
+                            "id": message["id"],
+                            "result": {
+                                "resultType": "complete",
+                                "supportedVersions": [protocol_version],
+                                "capabilities": { "tools": {} },
+                                "_meta": {
+                                    "io.modelcontextprotocol/serverInfo": {
+                                        "name": "event-test-server",
+                                        "version": "1.0.0",
+                                    },
+                                },
+                                "ttlMs": 0,
+                                "cacheScope": "private",
+                            },
+                        }))
+                        .into_response()
+                    }
                     Some("notifications/initialized") => StatusCode::ACCEPTED.into_response(),
                     Some("tools/list") => Json(json!({
                         "jsonrpc": "2.0",
                         "id": message["id"],
-                        "result": { "tools": [] },
+                        "result": { "resultType": "complete", "tools": [] },
                     }))
                     .into_response(),
                     Some("events/stream") => {
@@ -209,12 +237,15 @@ async fn mcp_event_stream_survives_retained_server_refresh_and_cancels() -> Resu
 
     let enablement = BTreeMap::from([(Feature::CodexAppsMcp20260728.key().to_string(), true)]);
     let enablement_id = app_server
-        .send_experimental_feature_enablement_set_request(
-            ExperimentalFeatureEnablementSetParams { enablement },
-        )
+        .send_experimental_feature_enablement_set_request(ExperimentalFeatureEnablementSetParams {
+            enablement,
+        })
         .await?;
-    let _: ExperimentalFeatureEnablementSetResponse =
-        timeout(Duration::from_secs(5), app_server.read_response(enablement_id)).await??;
+    let _: ExperimentalFeatureEnablementSetResponse = timeout(
+        Duration::from_secs(5),
+        app_server.read_response(enablement_id),
+    )
+    .await??;
     let _: ListMcpServerStatusResponse = app_server
         .request(|request_id| ClientRequest::McpServerStatusList {
             request_id,
