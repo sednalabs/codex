@@ -96,20 +96,28 @@ def time_since(timestamp: str | None, now: datetime) -> str | None:
 
 def summarize_output(output: Any) -> str:
     if isinstance(output, str):
-        first = output.splitlines()[0] if output else ""
-        return shorten(first)
+        return f"text output ({len(output.splitlines())} lines)"
     if isinstance(output, list):
-        if not output:
-            return "[]"
-        first = output[0]
-        if isinstance(first, str):
-            summary = shorten(first)
-        else:
-            summary = shorten(json.dumps(first, ensure_ascii=False))
-        return f"[{summary}]"
+        kinds: list[str] = []
+        for item in output[:5]:
+            if isinstance(item, dict):
+                kind = item.get("type")
+                kinds.append(
+                    kind
+                    if isinstance(kind, str)
+                    and kind in {"text", "image", "audio", "resource", "resource_link"}
+                    else "object"
+                )
+            else:
+                kinds.append(type(item).__name__)
+        if len(output) > 5:
+            kinds.append("...")
+        return f"list output ({len(output)} items: {', '.join(kinds) if kinds else 'empty'})"
     if isinstance(output, dict):
-        return shorten(json.dumps(output, ensure_ascii=False))
-    return shorten(str(output))
+        return f"object output ({len(output)} fields)"
+    if output is None:
+        return "empty output"
+    return f"{type(output).__name__} output"
 
 
 def summarize_record(obj: dict) -> str | None:
