@@ -33,7 +33,7 @@ jobs:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
         with:
           ref: ${{ github.sha }}
-          fetch-depth: 3
+          fetch-depth: 1
           persist-credentials: false
 
       - name: Bind the exact device-auth source and workflow host
@@ -52,13 +52,14 @@ jobs:
             echo "This focused package route is restricted to its exact candidate branch." >&2
             exit 1
           }
+          git fetch --no-tags --depth=1 "https://github.com/${GITHUB_REPOSITORY}.git" \
+            "${DEVICE_AUTH_SHA}" "${LOCAL_UPSTREAM_BASE_SHA}"
           git fetch --no-tags --depth=1 https://github.com/openai/codex.git "${UPSTREAM_BASE_SHA}"
           [[ "$(git rev-parse HEAD)" == "${GITHUB_SHA}" ]]
           [[ "$(git rev-parse "${DEVICE_AUTH_SHA}^{tree}")" == "${DEVICE_AUTH_TREE}" ]]
           [[ "$(git rev-parse "${UPSTREAM_BASE_SHA}^{tree}")" == "${UPSTREAM_TREE}" ]]
           [[ "$(git rev-parse "${LOCAL_UPSTREAM_BASE_SHA}^{tree}")" == "${UPSTREAM_TREE}" ]]
           [[ "$(git rev-parse "${DEVICE_AUTH_SHA}^")" == "${LOCAL_UPSTREAM_BASE_SHA}" ]]
-          git merge-base --is-ancestor "${DEVICE_AUTH_SHA}" "${GITHUB_SHA}"
           git diff --quiet "${DEVICE_AUTH_SHA}" "${GITHUB_SHA}" -- . \
             ':(exclude).github/workflows/device-auth-linux-package.yml' || {
               echo "Only this workflow may differ from the exact device-auth source." >&2
@@ -121,7 +122,7 @@ jobs:
           STABLE_GIT_COMMIT: ${{ steps.identity.outputs.source_sha }}
         run: |
           set -euo pipefail
-          package_version="0.0.0-device-auth.${GITHUB_RUN_NUMBER}+g${SOURCE_SHORT}"
+          package_version="0.164.0-dev.sedna.1+u970111f6.g${SOURCE_SHORT}.ci${GITHUB_RUN_NUMBER}"
           package_dir="${GITHUB_WORKSPACE}/dist/package-${TARGET}"
           archive="${GITHUB_WORKSPACE}/dist/codex-package-${TARGET}.tar.gz"
           bwrap_path="${CARGO_TARGET_DIR}/${TARGET}/release/bwrap"
@@ -153,6 +154,7 @@ jobs:
             "Workflow host commit: ${WORKFLOW_HOST_SHA}" \
             "Target: ${TARGET}" \
             "Package version: ${package_version}" \
+            "Version basis: Sedna-assigned development-series label; not a claim of upstream release equivalence." \
             "Scope: MCP OAuth device authentication candidate only; mailbox integration is not included." \
             "Status: progressive artifact; not protected-main or consumer-install acceptance." \
             > "${GITHUB_WORKSPACE}/dist/PROVENANCE.txt"
