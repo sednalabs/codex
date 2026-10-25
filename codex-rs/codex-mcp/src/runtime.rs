@@ -970,6 +970,12 @@ impl McpRuntime {
             Arc::clone(&retired.connections)
         };
 
+        // A retained binding may keep this set alive while a ready request
+        // finishes. Cancel only unfinished startups now so an unrelated
+        // optional server cannot start after the runtime has been retired.
+        // Ready connections remain usable until the last binding releases the
+        // set, at which point the normal asynchronous shutdown reaps them.
+        connections.cancel_startup();
         self.elicitation_router.close().await;
         if Arc::strong_count(&connections) == 1 {
             connections.shutdown().await;

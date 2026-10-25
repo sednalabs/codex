@@ -123,6 +123,36 @@ impl McpServerProcess {
     }
 }
 
+fn stdio_server_config(command: std::path::PathBuf, env: HashMap<String, String>) -> McpServerConfig {
+    McpServerConfig {
+        auth: Default::default(),
+        transport: McpServerTransportConfig::Stdio {
+            command,
+            args: Vec::new(),
+            env: Some(env),
+            env_vars: Vec::new(),
+            cwd: None,
+        },
+        environment_id: DEFAULT_MCP_SERVER_ENVIRONMENT_ID.to_string(),
+        enabled: true,
+        required: false,
+        startup_readiness: Default::default(),
+        supports_parallel_tool_calls: false,
+        tool_input_schema_max_bytes: None,
+        omit_tools_from: None,
+        disabled_reason: None,
+        startup_timeout_sec: Some(Duration::from_secs(30)),
+        tool_timeout_sec: None,
+        default_tools_approval_mode: None,
+        enabled_tools: None,
+        disabled_tools: None,
+        scopes: None,
+        oauth: None,
+        oauth_resource: None,
+        tools: HashMap::new(),
+    }
+}
+
 #[cfg(target_os = "linux")]
 fn open_stdio_pipe_ids() -> anyhow::Result<HashSet<String>> {
     use std::os::unix::fs::FileTypeExt;
@@ -364,5 +394,140 @@ async fn refresh_reaps_superseded_mcp_server_after_in_flight_call_finishes() -> 
     replacement.wait_for_exit().await?;
     #[cfg(target_os = "linux")]
     wait_for_stdio_pipe_release(&replacement_pipe_ids).await?;
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn shutdown_cancels_pending_mcp_startup_while_in_flight_call_finishes() -> anyhow::Result<()> {
+    skip_if_no_network!(Ok(()));
+
+    let server = responses::start_mock_server().await;
+    let temp_dir = tempfile::tempdir()?;
+    let ready_pid_file = temp_dir.path().join("ready-mcp.pid");
+    let pending_pid_file = temp_dir.path().join("pending-mcp.pid");
+    let pending_initialize_barrier = temp_dir.path().join("allow-pending-initialize");
+    let ready_pid_for_config = ready_pid_file.clone();
+    let pending_pid_for_config = pending_pid_file.clone();
+    let pending_barrier_for_config = pending_initialize_barrier.clone();
+    let command = stdio_server_bin()?;
+    let fixture = test_codex()
+        .with_config(move |config| {
+            let mut servers = config.mcp_servers.get().clone();
+            servers.insert(
+                "ready_mcp".to_string(),
+                stdio_server_config(
+                    command.clone(),
+                    HashMap::from([(
+                        "MCP_TEST_PID_FILE".to_string(),
+                        ready_pid_for_config.to_string_lossy().into_owned(),
+                    )]),
+                ),
+            );
+            servers.insert(
+                "pending_mcp".to_string(),
+                stdio_server_config(
+                    command,
+                    HashMap::from([
+                        (
+                            "MCP_TEST_INITIALIZE_BARRIER_FILE".to_string(),
+                            pending_barrier_for_config.to_string_lossy().into_owned(),
+                        ),
+                        (
+                            "MCP_TEST_PID_FILE".to_string(),
+                            pending_pid_for_config.to_string_lossy().into_owned(),
+                        ),
+                    ]),
+                ),
+            );
+            config
+                .mcp_servers
+                .set(servers)
+                .expect("test MCP servers should accept any configuration");
+        })
+        .build(&server)
+        .await?;
+
+    wait_for_mcp_server(&fixture.codex, "ready_mcp").await?;
+    let ready_pid = wait_for_pid_file(&ready_pid_file).await?;
+    let ready = McpServerProcess::observe_running(ready_pid)?;
+    let pending_pid = wait_for_pid_file(&pending_pid_file).await?;
+    let pending = McpServerProcess::observe_running(pending_pid)?;
+    anyhow::ensure!(
+        !pending_initialize_barrier.exists(),
+        "pending MCP initialize barrier must remain closed before shutdown"
+    );
+
+    #[cfg(target_os = "linux")]
+    let ready_pipe_ids = {
+        let child_pipe_ids = fixture
+            .codex
+            .call_mcp_tool(
+                "ready_mcp",
+                "sync",
+                Some(serde_json::json!({ "report_pipe_ids": true })),
+                /*meta*/ None,
+            )
+            .await?
+            .structured_content
+            .and_then(|content| content.get("pipe_ids").cloned())
+            .ok_or_else(|| anyhow::anyhow!("expected stdio pipe ids from the ready MCP server"))?;
+        let child_pipe_ids: HashSet<String> = serde_json::from_value(child_pipe_ids)?;
+        let pipe_ids = shared_stdio_pipe_ids(&child_pipe_ids)?;
+        anyhow::ensure!(!pipe_ids.is_empty(), "expected ready MCP stdio pipes");
+        pipe_ids
+    };
+
+    let barrier = serde_json::json!({
+        "id": "mcp-shutdown-ready-call",
+        "participants": 2,
+        "timeout_ms": 1_000
+    });
+    let in_flight_call = tokio::spawn({
+        let codex = Arc::clone(&fixture.codex);
+        let barrier = barrier.clone();
+        async move {
+            codex
+                .call_mcp_tool(
+                    "ready_mcp",
+                    "sync",
+                    Some(serde_json::json!({
+                        "barrier": barrier,
+                        "sleep_after_ms": 5_000
+                    })),
+                    /*meta*/ None,
+                )
+                .await
+        }
+    });
+    fixture
+        .codex
+        .call_mcp_tool(
+            "ready_mcp",
+            "sync",
+            Some(serde_json::json!({ "barrier": barrier })),
+            /*meta*/ None,
+        )
+        .await?;
+
+    let shutdown = tokio::spawn({
+        let codex = Arc::clone(&fixture.codex);
+        async move { codex.shutdown_and_wait().await }
+    });
+    tokio::time::timeout(Duration::from_secs(2), shutdown).await???;
+    tokio::time::timeout(Duration::from_secs(5), pending.wait_for_exit()).await???;
+    anyhow::ensure!(ready.is_alive()?, "shutdown cancelled a ready in-flight MCP call");
+    anyhow::ensure!(
+        !pending.is_alive()?,
+        "shutdown left an optional MCP startup alive"
+    );
+
+    let in_flight_result = tokio::time::timeout(Duration::from_secs(20), in_flight_call).await???;
+    anyhow::ensure!(
+        in_flight_result.is_error == Some(false),
+        "shutdown interrupted the ready in-flight MCP request"
+    );
+    ready.wait_for_exit().await?;
+    #[cfg(target_os = "linux")]
+    wait_for_stdio_pipe_release(&ready_pipe_ids).await?;
     Ok(())
 }
