@@ -179,9 +179,12 @@ impl McpServerConnection {
 
 impl Drop for McpServerConnection {
     fn drop(&mut self) {
+        self.cancel_startup();
         // A retired connection is dropped only after its published set and any
         // in-flight users have released it. Shut it down then so stdio children
         // and their pipes are reclaimed without cancelling calls in progress.
+        // The synchronous cancellation above only applies to an unfinished
+        // startup, which has not published a usable connection.
         let client = self.client.clone();
         match tokio::runtime::Handle::try_current() {
             Ok(handle) => {
