@@ -129,6 +129,8 @@ use codex_protocol::permissions::FileSystemSandboxPolicyContext;
 use codex_protocol::permissions::NetworkSandboxPolicy;
 use codex_protocol::protocol::AskForApproval;
 use codex_protocol::protocol::MultiAgentVersion;
+use codex_protocol::protocol::SessionSource;
+use codex_protocol::protocol::SubAgentSource;
 use codex_protocol::protocol::SandboxPolicy;
 use codex_rmcp_client::McpOAuthRefreshMode;
 use codex_sandboxing::SandboxType;
@@ -714,6 +716,15 @@ pub struct Config {
     /// Developer instructions override injected as a separate message.
     pub developer_instructions: Option<String>,
 
+    /// Eligibility resolved before ordinary developer guidance loses its layer origin.
+    pub client_owned_developer_instructions: bool,
+
+    /// Eligibility resolved before model baseline instructions lose their layer origin.
+    pub client_owned_base_instructions: bool,
+
+    /// Request-local edits for explicitly selected client-owned instruction components.
+    pub instruction_overlays: codex_config::InstructionOverlaysToml,
+
     /// Guardian-specific policy config override from requirements.toml or config.toml.
     /// This is inserted into the fixed guardian prompt template under the
     /// `# Policy Configuration` section rather than replacing the whole
@@ -856,6 +867,9 @@ pub struct Config {
     ///
     /// When unset, the TUI defaults to: `model-with-reasoning` and `current-dir`.
     pub tui_status_line: Option<Vec<String>>,
+
+    /// Presentation used for weekly rate-limit pacing in the status line.
+    pub tui_weekly_limit_pacing_style: codex_config::types::WeeklyLimitPacingStyle,
 
     /// Whether to color status line items with colors from the active syntax theme.
     pub tui_status_line_use_colors: bool,
@@ -1631,6 +1645,84 @@ async fn config_toml_from_layers(layers: &ConfigLayerStack) -> std::io::Result<C
 }
 
 impl Config {
+    pub(crate) fn instruction_origin_is_client_owned(stack: &ConfigLayerStack, key: &str) -> bool {
+        stack
+            .origins_with_path_filter(|path| path.iter().map(String::as_str).eq(key.split('.')))
+            .get(key)
+            .is_some_and(|origin| {
+                matches!(
+                    origin.name,
+                    ConfigLayerSource::PackagedDefaults { .. }
+                        | ConfigLayerSource::User { .. }
+                        | ConfigLayerSource::Project { .. }
+                        | ConfigLayerSource::SessionFlags
+                )
+            })
+    }
+
+    pub(crate) fn multi_agent_text_is_client_owned(&self, key: &str, text: &str) -> bool {
+        let path = format!("features.multi_agent_v2.{key}");
+        if !Self::instruction_origin_is_client_owned(&self.config_layer_stack, &path) {
+            return false;
+        }
+        let effective = self.config_layer_stack.effective_config();
+        effective
+            .get("features")
+            .and_then(|features| features.get("multi_agent_v2"))
+            .and_then(|config| config.get(key))
+            .and_then(TomlValue::as_str)
+            .is_some_and(|value| {
+                if key == "subagent_developer_instructions" {
+                    value.trim() == text
+                } else {
+                    value == text
+                }
+            })
+    }
+
+    pub(crate) fn instruction_overlay_origin_fences(
+        &self,
+        source: &SessionSource,
+    ) -> Vec<codex_config::InstructionOverlayComponent> {
+        use codex_config::InstructionOverlayComponent;
+
+        let mut fenced = Vec::new();
+        if self.developer_instructions.is_some() && !self.client_owned_developer_instructions {
+            fenced.push(InstructionOverlayComponent::DeveloperGuidance);
+        }
+        if self
+            .multi_agent_v2
+            .multi_agent_mode_hint_text
+            .as_deref()
+            .is_some_and(|text| {
+                !self.multi_agent_text_is_client_owned("multi_agent_mode_hint_text", text)
+            })
+        {
+            fenced.push(InstructionOverlayComponent::MultiAgentMode);
+        }
+        let (key, text) = if matches!(
+            source,
+            SessionSource::SubAgent(SubAgentSource::ThreadSpawn { .. })
+        ) {
+            (
+                "subagent_usage_hint_text",
+                self.multi_agent_v2.subagent_usage_hint_text.as_deref(),
+            )
+        } else {
+            (
+                "root_agent_usage_hint_text",
+                self.multi_agent_v2.root_agent_usage_hint_text.as_deref(),
+            )
+        };
+        if text.is_some_and(|text| !self.multi_agent_text_is_client_owned(key, text)) {
+            fenced.extend([
+                InstructionOverlayComponent::MultiAgentRole,
+                InstructionOverlayComponent::MultiAgentUsageHint,
+            ]);
+        }
+        fenced
+    }
+
     pub fn sqlite_config(&self) -> &codex_state::SqliteConfig {
         &self.sqlite
     }
@@ -4185,6 +4277,20 @@ impl Config {
             "model instructions file",
         )
         .await?;
+        let client_owned_base_instructions = base_instructions.is_none()
+            && Self::instruction_origin_is_client_owned(
+                &config_layer_stack,
+                if file_base_instructions.is_some() {
+                    "model_instructions_file"
+                } else {
+                    "instructions"
+                },
+            );
+        let client_owned_developer_instructions = developer_instructions.is_none()
+            && Self::instruction_origin_is_client_owned(
+                &config_layer_stack,
+                "developer_instructions",
+            );
         let base_instructions = base_instructions
             .or(file_base_instructions)
             .or(cfg.instructions.clone());
@@ -4514,8 +4620,11 @@ impl Config {
             notify: cfg.notify,
             base_instructions,
             base_instructions_provenance,
+            client_owned_base_instructions,
             personality,
             developer_instructions,
+            client_owned_developer_instructions,
+            instruction_overlays: cfg.instruction_overlays.unwrap_or_default(),
             compact_prompt,
             include_permissions_instructions,
             include_apps_instructions,
@@ -4757,6 +4866,11 @@ impl Config {
                 .map(|t| t.alternate_screen)
                 .unwrap_or_default(),
             tui_status_line: cfg.tui.as_ref().and_then(|t| t.status_line.clone()),
+            tui_weekly_limit_pacing_style: cfg
+                .tui
+                .as_ref()
+                .map(|t| t.weekly_limit_pacing_style)
+                .unwrap_or_default(),
             tui_status_line_use_colors: cfg
                 .tui
                 .as_ref()
@@ -5216,3 +5330,51 @@ mod tests;
 #[cfg(test)]
 #[path = "config_loader_tests.rs"]
 mod config_loader_tests;
+
+#[cfg(test)]
+mod instruction_overlay_origin_tests {
+    use super::*;
+    use codex_config::ConfigLayerEntry;
+
+    #[test]
+    fn developer_instruction_overlay_eligibility_uses_the_winning_origin() {
+        let home = tempfile::tempdir().expect("temporary config home");
+        let path = AbsolutePathBuf::from_absolute_path(home.path()).expect("absolute path");
+        let config: TomlValue = toml::from_str("developer_instructions = 'guidance'")
+            .expect("parse config value");
+        let user = ConfigLayerEntry::new(
+            ConfigLayerSource::User {
+                file: path.join("config.toml"),
+                profile: None,
+            },
+            config.clone(),
+        );
+        let managed = ConfigLayerEntry::new(
+            ConfigLayerSource::LegacyManagedConfigTomlFromFile {
+                file: path.join("managed.toml"),
+            },
+            config,
+        );
+        let user_stack = ConfigLayerStack::new(
+            vec![user.clone()],
+            Default::default(),
+            Default::default(),
+        )
+        .expect("user stack");
+        assert!(Config::instruction_origin_is_client_owned(
+            &user_stack,
+            "developer_instructions"
+        ));
+
+        let managed_winner = ConfigLayerStack::new(
+            vec![user, managed],
+            Default::default(),
+            Default::default(),
+        )
+        .expect("managed stack");
+        assert!(!Config::instruction_origin_is_client_owned(
+            &managed_winner,
+            "developer_instructions"
+        ));
+    }
+}

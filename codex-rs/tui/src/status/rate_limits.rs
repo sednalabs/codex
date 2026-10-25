@@ -72,8 +72,12 @@ pub(crate) struct RateLimitWindowDisplay {
     pub used_percent: f64,
     /// Human-readable local reset time.
     pub resets_at: Option<String>,
+    /// Provider reset instant in Unix seconds, retained for pacing calculations.
+    pub resets_at_unix_seconds: Option<i64>,
     /// Window length in minutes when provided by the server.
     pub window_minutes: Option<i64>,
+    /// Capture time for this window; carried windows retain their original age.
+    pub captured_at: DateTime<Local>,
 }
 
 impl RateLimitWindowDisplay {
@@ -88,11 +92,16 @@ impl RateLimitWindowDisplay {
             .map(|dt| dt.with_timezone(&Local));
         let resets_at =
             resets_at_utc.map(|dt| format_reset_timestamp(dt, captured_at, clock_format));
+        let resets_at_unix_seconds = window
+            .resets_at
+            .filter(|seconds| DateTime::<Utc>::from_timestamp(*seconds, 0).is_some());
 
         Self {
             used_percent: f64::from(window.used_percent),
             resets_at,
+            resets_at_unix_seconds,
             window_minutes: window.window_duration_mins,
+            captured_at,
         }
     }
 }
@@ -113,6 +122,13 @@ pub(crate) struct RateLimitSnapshotDisplay {
     pub credits: Option<CreditsSnapshotDisplay>,
     /// Optional effective monthly credit limit from workspace spend controls.
     pub individual_limit: Option<SpendControlLimitSnapshotDisplay>,
+}
+
+impl RateLimitSnapshotDisplay {
+    pub(crate) fn is_stale_at(&self, now: DateTime<Local>) -> bool {
+        now.signed_duration_since(self.captured_at)
+            > ChronoDuration::minutes(RATE_LIMIT_STALE_THRESHOLD_MINUTES)
+    }
 }
 
 /// Display-ready credits state extracted from protocol snapshots.
@@ -151,6 +167,7 @@ pub(crate) fn rate_limit_snapshot_display(
         "codex".to_string(),
         captured_at,
         ClockFormat::TwentyFourHour,
+        None,
     )
 }
 
@@ -159,24 +176,78 @@ pub(crate) fn rate_limit_snapshot_display_for_limit(
     limit_name: String,
     captured_at: DateTime<Local>,
     clock_format: ClockFormat,
+    previous: Option<&RateLimitSnapshotDisplay>,
 ) -> RateLimitSnapshotDisplay {
     RateLimitSnapshotDisplay {
         normal_model_slug: snapshot.normal_model_slug.clone(),
         limit_name,
         captured_at,
-        primary: snapshot
-            .primary
-            .as_ref()
-            .map(|window| RateLimitWindowDisplay::from_window(window, captured_at, clock_format)),
-        secondary: snapshot
-            .secondary
-            .as_ref()
-            .map(|window| RateLimitWindowDisplay::from_window(window, captured_at, clock_format)),
+        primary: merge_window_display(
+            previous.and_then(|display| display.primary.as_ref()),
+            snapshot.primary.as_ref(),
+            captured_at,
+            clock_format,
+        ),
+        secondary: merge_window_display(
+            previous.and_then(|display| display.secondary.as_ref()),
+            snapshot.secondary.as_ref(),
+            captured_at,
+            clock_format,
+        ),
         credits: snapshot.credits.as_ref().map(CreditsSnapshotDisplay::from),
         individual_limit: snapshot.individual_limit.as_ref().and_then(|limit| {
             SpendControlLimitSnapshotDisplay::from_limit(limit, captured_at, clock_format)
         }),
     }
+}
+
+fn merge_window_display(
+    previous: Option<&RateLimitWindowDisplay>,
+    incoming: Option<&RateLimitWindow>,
+    captured_at: DateTime<Local>,
+    clock_format: ClockFormat,
+) -> Option<RateLimitWindowDisplay> {
+    let Some(incoming) = incoming else {
+        return previous
+            .filter(|window| window_has_future_reset(window, captured_at))
+            .cloned();
+    };
+
+    let mut display = RateLimitWindowDisplay::from_window(incoming, captured_at, clock_format);
+    let Some(previous) = previous.filter(|window| {
+        window_has_future_reset(window, captured_at)
+            && incoming
+                .resets_at
+                .is_none_or(|reset| window.resets_at_unix_seconds == Some(reset))
+            && incoming
+                .window_duration_mins
+                .is_none_or(|duration| window.window_minutes == Some(duration))
+    }) else {
+        return Some(display);
+    };
+
+    if incoming.resets_at.is_none() {
+        display.resets_at_unix_seconds = previous.resets_at_unix_seconds;
+        display.resets_at = previous
+            .resets_at_unix_seconds
+            .and_then(|seconds| DateTime::<Utc>::from_timestamp(seconds, 0))
+            .map(|dt| {
+                format_reset_timestamp(dt.with_timezone(&Local), captured_at, clock_format)
+            });
+    }
+    if incoming.window_duration_mins.is_none() {
+        display.window_minutes = previous.window_minutes;
+    }
+    Some(display)
+}
+
+fn window_has_future_reset(window: &RateLimitWindowDisplay, captured_at: DateTime<Local>) -> bool {
+    let Some(reset) = window.resets_at_unix_seconds else {
+        return false;
+    };
+    DateTime::<Utc>::from_timestamp(reset, 0).is_some()
+        && reset > captured_at.timestamp()
+        && window.window_minutes.is_some_and(|minutes| minutes > 0)
 }
 
 impl From<&CoreCreditsSnapshot> for CreditsSnapshotDisplay {
@@ -245,8 +316,14 @@ pub(crate) fn compose_rate_limit_data_many(
         {
             continue;
         }
-        stale |= now.signed_duration_since(snapshot.captured_at)
-            > ChronoDuration::minutes(RATE_LIMIT_STALE_THRESHOLD_MINUTES);
+        stale |= snapshot.is_stale_at(now);
+        stale |= [&snapshot.primary, &snapshot.secondary]
+            .into_iter()
+            .flatten()
+            .any(|window| {
+                now.signed_duration_since(window.captured_at)
+                    > ChronoDuration::minutes(RATE_LIMIT_STALE_THRESHOLD_MINUTES)
+            });
         stale |= snapshot
             .individual_limit
             .as_ref()
@@ -460,7 +537,9 @@ mod tests {
         RateLimitWindowDisplay {
             used_percent,
             resets_at: Some("soon".to_string()),
+            resets_at_unix_seconds: None,
             window_minutes: Some(300),
+            captured_at: Local::now(),
         }
     }
 
@@ -522,12 +601,16 @@ mod tests {
             primary: Some(RateLimitWindowDisplay {
                 used_percent: 20.0,
                 resets_at: Some("soon".to_string()),
+                resets_at_unix_seconds: None,
                 window_minutes: Some(60),
+                captured_at: now,
             }),
             secondary: Some(RateLimitWindowDisplay {
                 used_percent: 40.0,
                 resets_at: Some("later".to_string()),
+                resets_at_unix_seconds: None,
                 window_minutes: Some(2 * 60),
+                captured_at: now,
             }),
             credits: None,
             individual_limit: None,
@@ -546,5 +629,66 @@ mod tests {
                 "Secondary usage limit".to_string(),
             ]
         );
+    }
+
+    #[test]
+    fn omitted_window_is_carried_only_within_its_live_reset_cycle() {
+        let now = Local::now();
+        let reset_at = now.timestamp() + 3_600;
+        let previous = RateLimitWindowDisplay {
+            used_percent: 40.0,
+            resets_at: Some("soon".to_string()),
+            resets_at_unix_seconds: Some(reset_at),
+            window_minutes: Some(10_080),
+            captured_at: now,
+        };
+
+        let carried = merge_window_display(
+            Some(&previous),
+            None,
+            now + ChronoDuration::minutes(1),
+            ClockFormat::TwentyFourHour,
+        )
+        .expect("an omitted window in the same live cycle should carry");
+        assert_eq!(carried.resets_at_unix_seconds, Some(reset_at));
+        assert_eq!(carried.captured_at, previous.captured_at);
+
+        assert!(merge_window_display(
+            Some(&previous),
+            None,
+            now + ChronoDuration::hours(2),
+            ClockFormat::TwentyFourHour,
+        )
+        .is_none());
+    }
+
+    #[test]
+    fn partial_window_refresh_keeps_metadata_for_the_same_cycle() {
+        let now = Local::now();
+        let reset_at = now.timestamp() + 3_600;
+        let previous = RateLimitWindowDisplay {
+            used_percent: 40.0,
+            resets_at: Some("soon".to_string()),
+            resets_at_unix_seconds: Some(reset_at),
+            window_minutes: Some(10_080),
+            captured_at: now,
+        };
+        let incoming = RateLimitWindow {
+            used_percent: 45,
+            resets_at: None,
+            window_duration_mins: None,
+        };
+
+        let refreshed = merge_window_display(
+            Some(&previous),
+            Some(&incoming),
+            now + ChronoDuration::minutes(1),
+            ClockFormat::TwentyFourHour,
+        )
+        .expect("incoming usage should remain visible");
+        assert_eq!(refreshed.used_percent, 45.0);
+        assert_eq!(refreshed.resets_at_unix_seconds, Some(reset_at));
+        assert_eq!(refreshed.window_minutes, Some(10_080));
+        assert_eq!(refreshed.captured_at, now + ChronoDuration::minutes(1));
     }
 }

@@ -11,6 +11,14 @@ pub(crate) struct BaseInstructionsFragment(pub(crate) String);
 
 impl BaseInstructionsFragment {
     pub(crate) const KIND: &str = "model.base_instructions";
+    pub(crate) const CLIENT_KIND: &str = "client.base_instructions";
+
+    pub(crate) fn with_client_ownership(self, client_owned: bool) -> impl ContextualUserFragment {
+        ClassifiedBaseInstructionsFragment {
+            fragment: self,
+            client_owned,
+        }
+    }
 
     /// Reads only a dedicated, harness-classified base item, including an explicitly empty base.
     pub(crate) fn text_from_item(item: &ResponseItem) -> Option<&str> {
@@ -29,12 +37,46 @@ impl BaseInstructionsFragment {
             metadata.content_item_kinds.as_deref(),
         ) {
             ("developer", [ContentItem::InputText { text }], Some([kind]))
-                if kind.as_str() == Self::KIND =>
+                if matches!(kind.as_str(), Self::KIND | Self::CLIENT_KIND) =>
             {
                 Some(text)
             }
             _ => None,
         }
+    }
+}
+
+struct ClassifiedBaseInstructionsFragment {
+    fragment: BaseInstructionsFragment,
+    client_owned: bool,
+}
+
+impl ContextualUserFragment for ClassifiedBaseInstructionsFragment {
+    fn content_kind(&self) -> ContentItemKind {
+        ContentItemKind(
+            if self.client_owned {
+                BaseInstructionsFragment::CLIENT_KIND
+            } else {
+                BaseInstructionsFragment::KIND
+            }
+            .to_string(),
+        )
+    }
+
+    fn role(&self) -> &'static str {
+        self.fragment.role()
+    }
+
+    fn markers(&self) -> (&'static str, &'static str) {
+        Self::type_markers()
+    }
+
+    fn type_markers() -> (&'static str, &'static str) {
+        ("", "")
+    }
+
+    fn body(&self) -> ContentItem {
+        self.fragment.body()
     }
 }
 

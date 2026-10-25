@@ -25,6 +25,8 @@
 //! WebSocket prewarm is treated as the first websocket connection attempt for a turn. If it
 //! fails, normal stream retry/fallback logic handles recovery on the same turn.
 
+use sha2::Digest;
+use sha2::Sha256;
 use std::collections::HashMap;
 use std::sync::Arc;
 use std::sync::Mutex as StdMutex;
@@ -32,6 +34,8 @@ use std::sync::OnceLock;
 use std::sync::atomic::AtomicBool;
 use std::sync::atomic::Ordering;
 
+#[path = "client/instruction_overlays.rs"]
+mod instruction_overlays;
 #[path = "client_tool_metadata.rs"]
 mod tool_metadata;
 
@@ -70,6 +74,8 @@ use codex_api::auth_header_telemetry;
 use codex_api::build_session_headers;
 use codex_api::create_text_param_for_request;
 use codex_api::response_create_client_metadata;
+use codex_config::InstructionOverlayComponent;
+use codex_config::InstructionOverlaysToml;
 use codex_http_client::ClientRouteClass;
 use codex_http_client::HttpClientFactory;
 use codex_login::AuthManager;
@@ -88,6 +94,8 @@ use codex_protocol::auth::AuthMode;
 use codex_protocol::ThreadId;
 use codex_protocol::config_types::ReasoningSummary as ReasoningSummaryConfig;
 use codex_protocol::config_types::Verbosity as VerbosityConfig;
+use codex_protocol::models::BaseInstructions;
+use codex_protocol::models::BaseInstructionsProvenance;
 use codex_protocol::models::ResponseItem;
 use codex_protocol::openai_models::ModelInfo;
 use codex_protocol::openai_models::ReasoningEffort as ReasoningEffortConfig;
@@ -268,6 +276,10 @@ impl RequestRouteTelemetry {
 #[derive(Debug, Clone)]
 pub struct ModelClient {
     state: Arc<ModelClientState>,
+    instruction_overlays: Arc<InstructionOverlaysToml>,
+    instruction_overlay_origin_fences: Arc<[InstructionOverlayComponent]>,
+    client_owned_base_instructions: Option<[u8; 32]>,
+    model_baseline_origin_known: bool,
     agent_identity_policy: AgentIdentityAuthPolicy,
     prompt_cache_key_policy: PromptCacheKey,
     session_id_override: Option<String>,
@@ -604,6 +616,10 @@ impl ModelClient {
                 cached_websocket_session: StdMutex::new(WebsocketSession::default()),
                 last_inference_tools: StdMutex::new(None),
             }),
+            instruction_overlays: Arc::new(InstructionOverlaysToml::default()),
+            instruction_overlay_origin_fences: Arc::default(),
+            client_owned_base_instructions: None,
+            model_baseline_origin_known: true,
             agent_identity_policy,
             prompt_cache_key_policy: PromptCacheKey::default(),
             session_id_override: None,
@@ -621,6 +637,44 @@ impl ModelClient {
     pub(crate) fn with_executed_tool_calls(mut self, recorder: ExecutedToolCalls) -> Self {
         self.executed_tool_calls = Some(recorder);
         self
+    }
+
+    pub(crate) fn with_instruction_overlays(
+        mut self,
+        instruction_overlays: InstructionOverlaysToml,
+    ) -> Self {
+        self.instruction_overlays = Arc::new(instruction_overlays);
+        self
+    }
+
+    pub(crate) fn with_instruction_overlay_origin_fences(
+        mut self,
+        fences: Vec<InstructionOverlayComponent>,
+    ) -> Self {
+        self.instruction_overlay_origin_fences = fences.into();
+        self
+    }
+
+    pub(crate) fn with_client_owned_base_instructions(
+        mut self,
+        instructions: Option<String>,
+        model_baseline_origin_known: bool,
+    ) -> Self {
+        // Retain value identity without adding instruction literals to ModelClient's Debug output.
+        self.client_owned_base_instructions =
+            instructions.map(|instructions| Sha256::digest(instructions.as_bytes()).into());
+        self.model_baseline_origin_known = model_baseline_origin_known;
+        self
+    }
+
+    fn base_instructions_are_client_owned(&self, instructions: &BaseInstructions) -> bool {
+        (self.model_baseline_origin_known
+            && matches!(
+                instructions.provenance,
+                Some(BaseInstructionsProvenance::Model { .. })
+            ))
+            || self.client_owned_base_instructions
+                == Some(Sha256::digest(instructions.text.as_bytes()).into())
     }
 
     pub(crate) fn reasoning_effort_override_enabled(&self, model_info: &ModelInfo) -> bool {
@@ -988,6 +1042,8 @@ impl ModelClient {
         include_internal: bool,
     ) -> Result<ResponsesApiRequest> {
         let mut input = prompt.get_formatted_input_for_request(model_info);
+        let base_instructions_are_client_owned =
+            self.base_instructions_are_client_owned(&prompt.base_instructions);
         if !self.reasoning_effort_override_enabled(model_info) {
             // Unsupported models and disabled overrides must also accept saved history.
             // Filter only the request copy; persisted history remains unchanged.
@@ -1030,9 +1086,10 @@ impl ModelClient {
             Some(create_tools_raw_json_for_responses_api(&prompt.tools)?.into())
         };
         if !prompt.base_instructions.text.is_empty() {
-            let mut instructions = ContextualUserFragment::into(BaseInstructionsFragment(
-                prompt.base_instructions.text.clone(),
-            ));
+            let mut instructions = ContextualUserFragment::into(
+                BaseInstructionsFragment(prompt.base_instructions.text.clone())
+                    .with_client_ownership(base_instructions_are_client_owned),
+            );
             instructions.set_id(Some(ResponseItemId::with_suffix(
                 "msg",
                 Uuid::new_v5(&prefix_namespace, prompt.base_instructions.text.as_bytes()),
@@ -1040,6 +1097,21 @@ impl ModelClient {
             prefix.push(instructions);
         }
         input.splice(0..0, prefix);
+        let mut fenced_components = self.instruction_overlay_origin_fences.to_vec();
+        if !self.model_baseline_origin_known && self.client_owned_base_instructions.is_none() {
+            fenced_components.extend([
+                InstructionOverlayComponent::ModelBaseline,
+                InstructionOverlayComponent::ReviewBaseline,
+            ]);
+        }
+        input = instruction_overlays::transform_request(
+            &self.state.session_source,
+            self.instruction_overlays.as_ref(),
+            base_instructions_are_client_owned,
+            &fenced_components,
+            input,
+        )
+        .map_err(|error| CodexErr::InvalidRequest(error.to_string()))?;
         if !model_info.use_responses_lite {
             // Only RLite accepts per-content attribution until the Responses API schema expands.
             for item in &mut input {

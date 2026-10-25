@@ -119,3 +119,32 @@ pub(crate) fn effective_multi_agent_mode(step_context: &StepContext) -> Option<M
         SessionSource::Internal(_) | SessionSource::SubAgent(_) => None,
     }
 }
+
+pub(super) fn multi_agent_mode_is_client_owned(step_context: &StepContext) -> bool {
+    let config = &step_context.turn.as_ref().config;
+    config
+        .multi_agent_v2
+        .multi_agent_mode_hint_text
+        .as_deref()
+        .is_none_or(|text| {
+            config.multi_agent_text_is_client_owned("multi_agent_mode_hint_text", text)
+        })
+}
+
+pub(super) fn usage_hint_is_client_owned(step_context: &StepContext) -> bool {
+    let turn_context = step_context.turn.as_ref();
+    let config = &turn_context.config;
+    let key = if matches!(
+        &turn_context.session_source,
+        SessionSource::SubAgent(SubAgentSource::ThreadSpawn { .. })
+    ) {
+        "subagent_usage_hint_text"
+    } else {
+        "root_agent_usage_hint_text"
+    };
+    let text = match key {
+        "subagent_usage_hint_text" => config.multi_agent_v2.subagent_usage_hint_text.as_deref(),
+        _ => config.multi_agent_v2.root_agent_usage_hint_text.as_deref(),
+    };
+    text.is_none_or(|text| config.multi_agent_text_is_client_owned(key, text))
+}

@@ -22,6 +22,10 @@ use codex_api::AgentIdentityTelemetry;
 use codex_api::ApiError;
 use codex_api::ResponseEvent;
 use codex_api::TransportError;
+use codex_config::InstructionOverlayComponentToml;
+use codex_config::InstructionOverlayEdit;
+use codex_config::InstructionOverlayOnAbsent;
+use codex_config::InstructionOverlaysToml;
 use codex_history::HistoryInitialization;
 use codex_http_client::HttpClientFactory;
 use codex_http_client::OutboundProxyPolicy;
@@ -51,8 +55,10 @@ use codex_protocol::mcp::McpAttributionSource;
 use codex_protocol::mcp::McpAttributionStatus;
 use codex_protocol::models::BaseInstructions;
 use codex_protocol::models::ContentItem;
+use codex_protocol::models::ContentItemKind;
 use codex_protocol::models::ExecutedToolCall;
 use codex_protocol::models::FunctionCallOutputPayload;
+use codex_protocol::models::InternalChatMessageMetadataPassthrough;
 use codex_protocol::models::ResponseInputItem;
 use codex_protocol::models::ResponseItem;
 use codex_protocol::models::ToolResultMetadata;
@@ -473,6 +479,108 @@ fn test_model_info() -> ModelInfo {
         "experimental_supported_tools": []
     }))
     .expect("deserialize test model info")
+}
+
+#[test]
+fn developer_overlay_reaches_fresh_root_and_child_request_payloads() -> anyhow::Result<()> {
+    const TARGET: &str = "Avoid performing blocking sleep or wait calls longer than 60 seconds, as they may prevent you from communicating with the user for their duration.";
+    const UNSELECTED: &str = "Keep this other client-owned developer component unchanged.";
+    let overlays = InstructionOverlaysToml {
+        developer_guidance: Some(InstructionOverlayComponentToml {
+            on_absent: InstructionOverlayOnAbsent::Error,
+            edits: vec![InstructionOverlayEdit::RemoveExact {
+                text: TARGET.to_string(),
+                expected_matches: 1,
+            }],
+            ..Default::default()
+        }),
+        ..Default::default()
+    };
+    let parent_thread_id = ThreadId::new();
+    let cases = [
+        (SessionSource::Cli, None),
+        (
+            SessionSource::SubAgent(SubAgentSource::ThreadSpawn {
+                parent_thread_id: parent_thread_id.clone(),
+                depth: 1,
+                agent_path: None,
+                agent_nickname: None,
+                agent_role: None,
+            }),
+            Some(parent_thread_id),
+        ),
+    ];
+
+    for (source, parent_thread_id) in cases {
+        let client = test_model_client(source).with_instruction_overlays(overlays.clone());
+        let target_guidance = super::ContextualUserFragment::into(
+            crate::context::DeveloperInstructions::client_owned(format!(
+                "Guidance before. {TARGET} Guidance after."
+            )),
+        );
+        let prompt = Prompt {
+            input: vec![
+                target_guidance,
+                ResponseItem::Message {
+                    encrypted_content: None,
+                    status: None,
+                    id: None,
+                    role: "developer".to_string(),
+                    content: vec![ContentItem::InputText {
+                        text: UNSELECTED.to_string(),
+                    }],
+                    phase: None,
+                    internal_chat_message_metadata_passthrough: Some(
+                        InternalChatMessageMetadataPassthrough {
+                            content_item_kinds: Some(vec![ContentItemKind(
+                                "generic.developer_instructions".to_string(),
+                            )]),
+                            ..Default::default()
+                        },
+                    ),
+                },
+            ],
+            ..Default::default()
+        };
+        let request = client.build_responses_request(
+            &prompt,
+            &test_model_info(),
+            /*effort*/ None,
+            codex_protocol::config_types::ReasoningSummary::None,
+            /*service_tier*/ None,
+            &test_responses_metadata_for_client(
+                &client,
+                /*turn_id*/ None,
+                format!("{}:0", client.state.thread_id),
+                parent_thread_id,
+                TestCodexResponsesRequestKind::Turn,
+            ),
+            /*include_internal*/ true,
+        )?;
+        let developer_text = request
+            .input
+            .iter()
+            .filter_map(|item| match item {
+                ResponseItem::Message { role, content, .. } if role == "developer" => Some(content),
+                _ => None,
+            })
+            .flatten()
+            .filter_map(|item| match item {
+                ContentItem::InputText { text } => Some(text.as_str()),
+                _ => None,
+            })
+            .collect::<Vec<_>>()
+            .join("\n");
+        assert!(!developer_text.contains(TARGET));
+        assert!(developer_text.contains("Guidance before.  Guidance after."));
+        assert!(developer_text.contains(UNSELECTED));
+        assert_eq!(
+            prompt.input.len(),
+            1,
+            "request overlay must not mutate history"
+        );
+    }
+    Ok(())
 }
 
 fn output_with_tool_result_metadata(metadata: ToolResultMetadata) -> ResponseItem {

@@ -186,6 +186,9 @@ mod role_overrides {
         }
         if let Some(instructions) = &overrides.developer_instructions {
             next_config.developer_instructions = Some(instructions.clone());
+            // A role can replace inherited guidance, so do not carry the parent's
+            // client-owned classification onto different text.
+            next_config.client_owned_developer_instructions = false;
         }
         if let Some(effort) = overrides.model_reasoning_effort.clone() {
             next_config.model_reasoning_effort = Some(effort);

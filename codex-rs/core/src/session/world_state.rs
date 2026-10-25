@@ -374,10 +374,14 @@ impl Session {
         let mut multi_agent_mode = MultiAgentModeState::new(
             super::multi_agents::effective_multi_agent_mode(step_context),
         )
+        .with_client_ownership(
+            super::multi_agents::multi_agent_mode_is_client_owned(step_context),
+        )
         .with_namespace(v2_namespace.clone());
         if let Some(usage_hint_text) = super::multi_agents::usage_hint_text(step_context) {
-            let usage_hint =
-                MultiAgentUsageHintState::new(usage_hint_text).with_namespace(v2_namespace.clone());
+            let usage_hint = MultiAgentUsageHintState::new(usage_hint_text)
+                .with_client_ownership(super::multi_agents::usage_hint_is_client_owned(step_context))
+                .with_namespace(v2_namespace.clone());
             multi_agent_mode = multi_agent_mode.with_usage_hint(&usage_hint);
             world_state.add_section(usage_hint);
         }

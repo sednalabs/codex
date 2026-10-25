@@ -950,6 +950,55 @@ async fn status_line_single_monthly_primary_omits_weekly_limit_item() {
 }
 
 #[tokio::test]
+async fn weekly_status_line_paces_fresh_usage_and_marks_stale_windows() {
+    let (mut chat, _rx, _op_rx) = make_chatwidget_manual(/*model_override*/ None).await;
+    let now = chrono::Local::now();
+    let reset_at = now.timestamp() + 302_400;
+    chat.rate_limit_snapshots_by_limit_id.insert(
+        "codex".to_string(),
+        crate::status::RateLimitSnapshotDisplay {
+            limit_name: "codex".to_string(),
+            normal_model_slug: None,
+            captured_at: now,
+            primary: Some(crate::status::RateLimitWindowDisplay {
+                used_percent: 60.0,
+                resets_at: Some("later".to_string()),
+                resets_at_unix_seconds: Some(reset_at),
+                window_minutes: Some(10_080),
+                captured_at: now,
+            }),
+            secondary: None,
+            credits: None,
+            individual_limit: None,
+        },
+    );
+    let item = crate::bottom_pane::StatusLineItem::WeeklyLimit;
+
+    assert_eq!(
+        chat.status_line_value_for_item_at(item, now),
+        Some("weekly 40% left (over 10%)".to_string())
+    );
+    chat.local_settings.tui.weekly_limit_pacing_style =
+        codex_config::types::WeeklyLimitPacingStyle::Ratio;
+    assert_eq!(
+        chat.status_line_value_for_item_at(item, now),
+        Some("weekly 40%/50%".to_string())
+    );
+
+    chat.rate_limit_snapshots_by_limit_id
+        .get_mut("codex")
+        .expect("usage snapshot should be retained")
+        .primary
+        .as_mut()
+        .expect("weekly window should be retained")
+        .captured_at = now - chrono::Duration::minutes(16);
+    assert_eq!(
+        chat.status_line_value_for_item_at(item, now),
+        Some("weekly 40% left (stale)".to_string())
+    );
+}
+
+#[tokio::test]
 async fn status_line_secondary_only_non_weekly_limit_omits_primary_limit_item() {
     let (mut chat, _rx, _op_rx) = make_chatwidget_manual(/*model_override*/ None).await;
 

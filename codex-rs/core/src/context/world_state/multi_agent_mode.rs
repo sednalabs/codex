@@ -23,6 +23,8 @@ pub(crate) struct MultiAgentModeState {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     usage_hint_hash: Option<WorldStateHash>,
     #[serde(skip)]
+    client_owned: bool,
+    #[serde(skip)]
     namespace: Option<ContentItemNamespace>,
 }
 
@@ -37,12 +39,18 @@ impl MultiAgentModeState {
                 mode @ (MultiAgentMode::ExplicitRequestOnly | MultiAgentMode::Proactive) => mode,
             }),
             usage_hint_hash: None,
+            client_owned: false,
             namespace: None,
         }
     }
 
     pub(crate) fn with_namespace(mut self, namespace: ContentItemNamespace) -> Self {
         self.namespace = Some(namespace);
+        self
+    }
+
+    pub(crate) fn with_client_ownership(mut self, client_owned: bool) -> Self {
+        self.client_owned = client_owned;
         self
     }
 
@@ -75,7 +83,8 @@ impl WorldStateSection for MultiAgentModeState {
         let mode = match (&self.mode, previous) {
             (Some(mode), PreviousSectionState::Known(previous))
                 if previous.mode.as_ref() == Some(mode)
-                    && previous.usage_hint_hash == self.usage_hint_hash =>
+                    && previous.usage_hint_hash == self.usage_hint_hash
+                    && previous.client_owned == self.client_owned =>
             {
                 return (None, Vec::new());
             }
@@ -92,8 +101,11 @@ impl WorldStateSection for MultiAgentModeState {
         };
 
         let fragment = MultiAgentModeInstructions::from_mode(mode).map(|instructions| {
-            Box::new(instructions.with_metadata(ContentItemMetadata::tool(self.namespace.clone())))
-                as Box<dyn ContextualUserFragment>
+            Box::new(
+                instructions
+                    .with_client_ownership(self.client_owned)
+                    .with_metadata(ContentItemMetadata::tool(self.namespace.clone())),
+            ) as Box<dyn ContextualUserFragment>
         });
         (
             Some(self.clone()),

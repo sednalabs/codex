@@ -9,6 +9,7 @@ use std::path::Path;
 use crate::HooksToml;
 use crate::browser_use::BrowserUseConfigToml;
 use crate::computer_use::ComputerUseConfigToml;
+use crate::instruction_overlays::InstructionOverlaysToml;
 use crate::permissions_toml::PermissionsToml;
 use crate::profile_toml::ConfigProfile;
 use crate::types::AnalyticsConfigToml;
@@ -254,6 +255,10 @@ pub struct ConfigToml {
     /// Developer instructions inserted as a `developer` role message.
     #[serde(default)]
     pub developer_instructions: Option<String>,
+
+    /// Bounded edits for explicitly selected client-owned instruction components.
+    #[serde(default)]
+    pub instruction_overlays: Option<InstructionOverlaysToml>,
 
     /// Whether to inject the `<permissions instructions>` developer block.
     pub include_permissions_instructions: Option<bool>,

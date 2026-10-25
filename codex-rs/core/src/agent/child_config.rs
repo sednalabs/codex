@@ -149,7 +149,10 @@ fn build_agent_shared_config(turn: &TurnContext) -> Result<Config, String> {
         .or(turn.model_info().default_reasoning_level.as_ref())
         .cloned();
     config.model_reasoning_summary = Some(turn.reasoning_summary());
-    config.developer_instructions = turn.developer_instructions.clone();
+    let inherited_developer_instructions = turn.developer_instructions.clone();
+    config.client_owned_developer_instructions = config.client_owned_developer_instructions
+        && config.developer_instructions == inherited_developer_instructions;
+    config.developer_instructions = inherited_developer_instructions;
     if turn.multi_agent_version == MultiAgentVersion::V2
         && let Some(developer_instructions) = turn
             .config
@@ -157,6 +160,11 @@ fn build_agent_shared_config(turn: &TurnContext) -> Result<Config, String> {
             .subagent_developer_instructions
             .clone()
     {
+        config.client_owned_developer_instructions = config
+            .multi_agent_text_is_client_owned(
+                "subagent_developer_instructions",
+                &developer_instructions,
+            );
         config.developer_instructions = Some(developer_instructions);
     }
     apply_spawn_agent_runtime_overrides(&mut config, turn)?;

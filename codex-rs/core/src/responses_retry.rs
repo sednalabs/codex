@@ -11,17 +11,21 @@ use crate::session::session::Session;
 use crate::session::step_context::StepContext;
 use crate::session::turn_context::TurnContext;
 use codex_client::RetryOperation;
+use codex_client::backoff;
 use codex_features::Feature;
 use codex_http_client::RetryAfter;
 use codex_protocol::error::CodexErr;
 use codex_protocol::error::CodexErrorDetails;
 use codex_protocol::protocol::EventMsg;
 use codex_protocol::protocol::WarningEvent;
+use http::StatusCode;
 use tokio::time::Instant;
 use tracing::warn;
 
 const INITIAL_CONNECTION_RETRY_DELAY: Duration = Duration::from_secs(5);
 const MAX_CONNECTION_RETRY_DELAY: Duration = Duration::from_secs(60);
+const MAX_CAPACITY_RETRY_DELAY: Duration = Duration::from_secs(60);
+const CAPACITY_BACKOFF_CAP_ATTEMPT: u64 = 10;
 
 #[derive(Debug, Clone, Copy)]
 pub(crate) enum ResponsesStreamRequest {
@@ -33,6 +37,7 @@ pub(crate) struct ResponsesStreamRetryState {
     retries: u64,
     connection_retries: u64,
     connection_retry_delay: Duration,
+    capacity_retries: u64,
 }
 
 impl Default for ResponsesStreamRetryState {
@@ -41,6 +46,7 @@ impl Default for ResponsesStreamRetryState {
             retries: 0,
             connection_retries: 0,
             connection_retry_delay: INITIAL_CONNECTION_RETRY_DELAY,
+            capacity_retries: 0,
         }
     }
 }
@@ -85,6 +91,42 @@ pub(crate) async fn handle_response_stream_error(
         ResponsesStreamRequest::Sampling => RetryOperation::Sampling,
         ResponsesStreamRequest::RemoteCompactionV2 => RetryOperation::RemoteCompactionV2,
     };
+    if is_transient_capacity_or_availability(&err) {
+        retry_state.capacity_retries = retry_state.capacity_retries.saturating_add(1);
+        let attempt = retry_state.capacity_retries;
+        let local_delay = capacity_backoff(attempt);
+        let now = Instant::now();
+        let retry_at = err
+            .retry_after()
+            .map(|advice| (now + local_delay).max(advice.deadline()))
+            .unwrap_or(now + local_delay);
+        let delay = retry_at.saturating_duration_since(now);
+        let capacity = matches!(err.details(), CodexErrorDetails::ServerOverloaded);
+        warn!(
+            turn_id = %turn_context.sub_id,
+            attempt,
+            ?delay,
+            error = %err,
+            "transient provider capacity or availability; waiting to retry the same request"
+        );
+        let reason = if capacity {
+            "Model at capacity"
+        } else {
+            "Service temporarily unavailable"
+        };
+        sess.notify_stream_error(
+            turn_context,
+            format!(
+                "{reason}; retrying in {}s (attempt {attempt})",
+                delay.as_secs().max(1)
+            ),
+            err,
+        )
+        .await;
+        codex_client::record_retry!(attempt, delay, operation);
+        tokio::time::sleep_until(retry_at).await;
+        return Ok(());
+    }
     let retry_count = retry_state.retries.saturating_add(1);
     let Some(delay) = err.retry_delay(retry_count) else {
         return Err(err);
@@ -174,6 +216,93 @@ pub(crate) async fn handle_response_stream_error(
             retry_at: retry_after.map(RetryAfter::deadline),
         });
     Err(err)
+}
+
+/// Use structured provider status and error codes, never plaintext error copy.
+/// Typed quota, policy, invalid-request, and Flex denials remain outside this path.
+fn is_transient_capacity_or_availability(err: &CodexErr) -> bool {
+    match err.details() {
+        CodexErrorDetails::ServerOverloaded => true,
+        CodexErrorDetails::UnexpectedStatus(response) => {
+            response.status == StatusCode::SERVICE_UNAVAILABLE
+        }
+        CodexErrorDetails::RetryLimit(retries) => retries.status == StatusCode::SERVICE_UNAVAILABLE,
+        _ => false,
+    }
+}
+
+fn capacity_backoff(attempt: u64) -> Duration {
+    backoff(
+        Duration::from_secs(1),
+        attempt.min(CAPACITY_BACKOFF_CAP_ATTEMPT),
+    )
+    .min(MAX_CAPACITY_RETRY_DELAY)
+}
+
+#[cfg(test)]
+mod capacity_retry_tests {
+    use super::*;
+    use codex_protocol::error::RetryLimitReachedError;
+    use codex_protocol::error::UnexpectedResponseError;
+
+    #[test]
+    fn jittered_capacity_interval_is_capped_even_after_a_long_retry_lifetime() {
+        for attempt in [10, 11, 100, u64::MAX] {
+            let delay = capacity_backoff(attempt);
+            assert!(delay <= MAX_CAPACITY_RETRY_DELAY);
+            assert!(delay >= Duration::from_secs(1));
+        }
+    }
+
+    #[test]
+    fn only_structured_capacity_and_service_unavailable_errors_are_retried() {
+        let unavailable = || {
+            CodexErr::new(CodexErrorDetails::UnexpectedStatus(
+                UnexpectedResponseError {
+                    status: StatusCode::SERVICE_UNAVAILABLE,
+                    body: String::new(),
+                    user_message: None,
+                    url: None,
+                    cf_ray: None,
+                    request_id: None,
+                    identity_authorization_error: None,
+                    identity_error_code: None,
+                },
+            ))
+        };
+        assert!(is_transient_capacity_or_availability(&CodexErr::new(
+            CodexErrorDetails::ServerOverloaded
+        )));
+        assert!(is_transient_capacity_or_availability(&unavailable()));
+        assert!(is_transient_capacity_or_availability(&CodexErr::new(
+            CodexErrorDetails::RetryLimit(RetryLimitReachedError {
+                status: StatusCode::SERVICE_UNAVAILABLE,
+                request_id: None,
+            })
+        )));
+
+        for err in [
+            CodexErr::new(CodexErrorDetails::QuotaExceeded),
+            CodexErr::new(CodexErrorDetails::FlexUnavailable),
+            CodexErr::new(CodexErrorDetails::CyberPolicy {
+                message: "blocked by policy".to_string(),
+            }),
+            CodexErr::new(CodexErrorDetails::UnexpectedStatus(
+                UnexpectedResponseError {
+                    status: StatusCode::UNAUTHORIZED,
+                    body: String::new(),
+                    user_message: None,
+                    url: None,
+                    cf_ray: None,
+                    request_id: None,
+                    identity_authorization_error: None,
+                    identity_error_code: None,
+                },
+            )),
+        ] {
+            assert!(!is_transient_capacity_or_availability(&err));
+        }
+    }
 }
 
 fn log_retry(

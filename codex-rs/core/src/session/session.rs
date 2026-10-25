@@ -1838,6 +1838,27 @@ impl Session {
                     extensions.model_request_contributors().to_vec(),
                 )
                 .with_executed_tool_calls(executed_tool_calls.clone())
+                .with_instruction_overlays(config.instruction_overlays.clone())
+                .with_instruction_overlay_origin_fences(
+                    config.instruction_overlay_origin_fences(&session_configuration.session_source),
+                )
+                .with_client_owned_base_instructions(
+                    config
+                        .base_instructions
+                        .clone()
+                        .filter(|_| config.client_owned_base_instructions),
+                    if config.base_instructions.is_some() {
+                        config.client_owned_base_instructions
+                            || matches!(
+                                &config.base_instructions_provenance,
+                                Some(BaseInstructionsProvenance::Model { .. })
+                            )
+                    } else if let Some(base) = initial_history.get_base_instructions() {
+                        matches!(base.provenance, Some(BaseInstructionsProvenance::Model { .. }))
+                    } else {
+                        matches!(&initial_history, InitialHistory::New | InitialHistory::Cleared)
+                    },
+                )
                 .with_restored_history(matches!(
                     &initial_history,
                     InitialHistory::Resumed(_) | InitialHistory::Forked(_)
