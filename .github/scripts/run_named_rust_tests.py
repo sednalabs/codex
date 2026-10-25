@@ -275,9 +275,9 @@ def cargo_args(
         record = select_target(request, load_manifest(manifest_root))
     key = "inventory_argv" if list_only else "execution_argv"
     command = record.get(key)
-        if not isinstance(command, tuple) or not all(
-            isinstance(value, str) for value in command
-        ):
+    if not isinstance(command, tuple) or not all(
+        isinstance(value, str) for value in command
+    ):
         raise ValueError("command catalog entry is not a complete argv tuple")
     argv = list(command)
     if not list_only:
