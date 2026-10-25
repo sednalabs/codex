@@ -181,14 +181,23 @@ jobs:
           fi
 
           source_short="$(git rev-parse --short=8 "${SOURCE_SHA}")"
-          latest_tag="$(git tag --merged "${SOURCE_SHA}" --list 'v*-sedna.*' --sort=-version:refname | head -n 1)"
-          if [[ -n "${latest_tag}" ]]; then
-            base_version="${latest_tag#v}"
+          if [[ "${native_830_source}" == "true" ]]; then
+            base_version="$(
+              git show "${SOURCE_SHA}:codex-rs/Cargo.toml" |
+                python3 -c 'import sys, tomllib; print(tomllib.loads(sys.stdin.read())["workspace"]["package"]["version"])'
+            )"
           else
-            base_version="0.0.0-sedna.0"
+            latest_tag="$(git tag --merged "${SOURCE_SHA}" --list 'v*-sedna.*' --sort=-version:refname | head -n 1)"
+            if [[ -n "${latest_tag}" ]]; then
+              base_version="${latest_tag#v}"
+            else
+              base_version="0.0.0-sedna.0"
+            fi
           fi
           if [[ "${base_version}" == *+* ]]; then
             package_version="${base_version}.ci.${GITHUB_RUN_NUMBER}.g${source_short}"
+          elif [[ "${native_830_source}" == "true" ]]; then
+            package_version="${base_version}+ci.${GITHUB_RUN_NUMBER}.g${source_short}"
           else
             package_version="${base_version}-ci.${GITHUB_RUN_NUMBER}+g${source_short}"
           fi
@@ -719,6 +728,7 @@ jobs:
       SOURCE_SHA: ${{ needs.identity.outputs.source_sha }}
       SOURCE_TREE: ${{ needs.identity.outputs.source_tree }}
       PACKAGE_VERSION: ${{ needs.identity.outputs.package_version }}
+      NATIVE_830_SOURCE: ${{ needs.identity.outputs.native_830_source }}
       WORKFLOW_HOST_SHA: ${{ needs.identity.outputs.workflow_host_sha }}
       WORKFLOW_HOST_TREE: ${{ needs.identity.outputs.workflow_host_tree }}
       OPENAI_API_KEY: ""
@@ -782,6 +792,19 @@ jobs:
           for key, value in expected.items():
               if manifest.get(key) != value:
                   raise SystemExit(f"Artifact identity mismatch for {key}.")
+
+          if os.environ["NATIVE_830_SOURCE"] == "true":
+              import tomllib
+
+              source_manifest = tomllib.loads(
+                  Path("codex-rs/Cargo.toml").read_text(encoding="utf-8")
+              )
+              source_version = source_manifest["workspace"]["package"]["version"]
+              package_version = manifest["packageVersion"]
+              if package_version.partition("+")[0] != source_version.partition("+")[0]:
+                  raise SystemExit(
+                      "Package version does not preserve the exact source workspace version."
+                  )
 
           checksum_artifacts = {}
           for line in Path("dist/SHA256SUMS.txt").read_text().splitlines():

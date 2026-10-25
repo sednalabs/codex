@@ -1,3 +1,4 @@
+use std::collections::BTreeMap;
 use std::convert::Infallible;
 use std::sync::Arc;
 use std::time::Duration;
@@ -16,11 +17,16 @@ use axum::response::sse::Event;
 use axum::response::sse::Sse;
 use axum::routing::post;
 use codex_app_server_protocol::ClientRequest;
+use codex_app_server_protocol::ExperimentalFeatureEnablementSetParams;
+use codex_app_server_protocol::ExperimentalFeatureEnablementSetResponse;
+use codex_app_server_protocol::ListMcpServerStatusParams;
+use codex_app_server_protocol::ListMcpServerStatusResponse;
 use codex_app_server_protocol::McpServerEventNotification;
 use codex_app_server_protocol::McpServerEventStreamNotification;
 use codex_app_server_protocol::McpServerEventStreamStartResponse;
 use codex_app_server_protocol::McpServerEventStreamStopParams;
 use codex_app_server_protocol::McpServerEventStreamStopResponse;
+use codex_app_server_protocol::McpServerStatusDetail;
 use codex_app_server_protocol::RequestId;
 use codex_app_server_protocol::ThreadStartParams;
 use codex_app_server_protocol::ThreadStartResponse;
@@ -39,42 +45,81 @@ use tokio::sync::mpsc;
 use tokio::time::timeout;
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn mcp_event_stream_waits_for_activation_forwards_events_and_cancels() -> Result<()> {
+async fn mcp_event_stream_survives_retained_server_refresh_and_cancels() -> Result<()> {
     let responses_server = responses::start_mock_server().await;
     let listener = TcpListener::bind("127.0.0.1:0").await?;
     let apps_url = format!("http://{}", listener.local_addr()?);
     let (stream_started_tx, mut stream_started_rx) = mpsc::unbounded_channel::<Value>();
+    let (apps_initialized_tx, mut apps_initialized_rx) = mpsc::unbounded_channel::<String>();
     let allow_activation = Arc::new(Notify::new());
     let activation_gate = Arc::clone(&allow_activation);
     let router = Router::new().route(
         "/api/codex/ps/mcp",
         post(move |Json(message): Json<Value>| {
             let stream_started_tx = stream_started_tx.clone();
+            let apps_initialized_tx = apps_initialized_tx.clone();
             let allow_activation = Arc::clone(&activation_gate);
 
             async move {
                 match message["method"].as_str() {
-                    Some("initialize") => (
-                        [("mcp-session-id", "event-test-session")],
+                    Some("initialize") => {
+                        let protocol_version = message["params"]["protocolVersion"]
+                            .as_str()
+                            .unwrap_or("2025-06-18")
+                            .to_string();
+                        apps_initialized_tx
+                            .send(protocol_version.clone())
+                            .expect("Apps initialize receiver must remain open");
+                        (
+                            [("mcp-session-id", "event-test-session")],
+                            Json(json!({
+                                "jsonrpc": "2.0",
+                                "id": message["id"],
+                                "result": {
+                                    "protocolVersion": protocol_version,
+                                    "capabilities": {},
+                                    "serverInfo": {
+                                        "name": "event-test-server",
+                                        "version": "1.0.0",
+                                    },
+                                },
+                            })),
+                        )
+                            .into_response()
+                    }
+                    Some("server/discover") => {
+                        let protocol_version = message
+                            .pointer("/params/_meta/io.modelcontextprotocol~1protocolVersion")
+                            .and_then(Value::as_str)
+                            .expect("modern Apps discovery must declare its protocol version");
+                        assert_eq!(protocol_version, "2026-07-28");
+                        apps_initialized_tx
+                            .send(protocol_version.to_string())
+                            .expect("Apps discovery receiver must remain open");
                         Json(json!({
                             "jsonrpc": "2.0",
                             "id": message["id"],
                             "result": {
-                                "protocolVersion": "2025-06-18",
-                                "capabilities": {},
-                                "serverInfo": {
-                                    "name": "event-test-server",
-                                    "version": "1.0.0",
+                                "resultType": "complete",
+                                "supportedVersions": [protocol_version],
+                                "capabilities": { "tools": {} },
+                                "_meta": {
+                                    "io.modelcontextprotocol/serverInfo": {
+                                        "name": "event-test-server",
+                                        "version": "1.0.0",
+                                    },
                                 },
+                                "ttlMs": 0,
+                                "cacheScope": "private",
                             },
-                        })),
-                    )
-                        .into_response(),
+                        }))
+                        .into_response()
+                    }
                     Some("notifications/initialized") => StatusCode::ACCEPTED.into_response(),
                     Some("tools/list") => Json(json!({
                         "jsonrpc": "2.0",
                         "id": message["id"],
-                        "result": { "tools": [] },
+                        "result": { "resultType": "complete", "tools": [] },
                     }))
                     .into_response(),
                     Some("events/stream") => {
@@ -155,6 +200,10 @@ async fn mcp_event_stream_waits_for_activation_forwards_events_and_cancels() -> 
     let stream_request = timeout(Duration::from_secs(5), stream_started_rx.recv())
         .await?
         .context("MCP event stream was not requested")?;
+    let initial_protocol_version = timeout(Duration::from_secs(5), apps_initialized_rx.recv())
+        .await?
+        .context("hosted Apps connection was not initialized")?;
+    assert_eq!(initial_protocol_version, "2025-06-18");
 
     assert_eq!(
         stream_request["params"],
@@ -185,6 +234,34 @@ async fn mcp_event_stream_waits_for_activation_forwards_events_and_cancels() -> 
         .is_err(),
         "subscription start must not complete before the active notification"
     );
+
+    let enablement = BTreeMap::from([(Feature::CodexAppsMcp20260728.key().to_string(), true)]);
+    let enablement_id = app_server
+        .send_experimental_feature_enablement_set_request(ExperimentalFeatureEnablementSetParams {
+            enablement,
+        })
+        .await?;
+    let _: ExperimentalFeatureEnablementSetResponse = timeout(
+        Duration::from_secs(5),
+        app_server.read_response(enablement_id),
+    )
+    .await??;
+    let _: ListMcpServerStatusResponse = app_server
+        .request(|request_id| ClientRequest::McpServerStatusList {
+            request_id,
+            params: ListMcpServerStatusParams {
+                cursor: None,
+                limit: None,
+                detail: Some(McpServerStatusDetail::ToolsAndAuthOnly),
+                thread_id: Some(thread.id.clone()),
+                server_name: Some("codex_apps".to_string()),
+            },
+        })
+        .await?;
+    let refreshed_protocol_version = timeout(Duration::from_secs(5), apps_initialized_rx.recv())
+        .await?
+        .context("retained Apps server was not reconnected during MCP refresh")?;
+    assert_eq!(refreshed_protocol_version, "2026-07-28");
 
     allow_activation.notify_one();
     let _: McpServerEventStreamStartResponse = timeout(

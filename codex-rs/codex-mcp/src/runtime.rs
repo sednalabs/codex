@@ -12,6 +12,7 @@ use std::collections::HashSet;
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::sync::Mutex;
+use std::sync::RwLock;
 use std::sync::Weak;
 use std::sync::atomic::AtomicBool;
 use std::sync::atomic::AtomicU64;
@@ -99,6 +100,8 @@ pub struct McpRuntimeInput {
 /// their exact connections and configuration for as long as they are needed.
 pub struct McpRuntime {
     current: ArcSwap<PublishedMcpRuntime>,
+    connection_access: RwLock<()>,
+    retired: AtomicBool,
     event_stream_cancellation: Mutex<EventStreamCancellation>,
     reconnect_pending: AtomicBool,
     resource_cache_generation: AtomicU64,
@@ -123,6 +126,23 @@ struct PublishedMcpRuntime {
     environment_selections: Arc<[TurnEnvironmentSelection]>,
     ready_environments: HashMap<String, Arc<Environment>>,
     cached_binding: Mutex<Option<CachedMcpBinding>>,
+}
+
+impl PublishedMcpRuntime {
+    fn empty(prefix_mcp_tool_names: bool) -> Self {
+        Self {
+            connections: Arc::new(McpConnectionSet::empty(prefix_mcp_tool_names)),
+            config: None,
+            auth: None,
+            auth_token: None,
+            auth_generation: Arc::new(()),
+            plugins_available: false,
+            ready_selected_capability_roots: Vec::new(),
+            environment_selections: Arc::default(),
+            ready_environments: HashMap::new(),
+            cached_binding: Mutex::new(None),
+        }
+    }
 }
 
 fn ensure_host_owned_apps_registration(
@@ -222,18 +242,9 @@ impl McpRuntime {
     /// runtime handle before its full MCP inputs are available.
     pub fn empty(prefix_mcp_tool_names: bool) -> Self {
         Self {
-            current: ArcSwap::from_pointee(PublishedMcpRuntime {
-                connections: Arc::new(McpConnectionSet::empty(prefix_mcp_tool_names)),
-                config: None,
-                auth: None,
-                auth_token: None,
-                auth_generation: Arc::new(()),
-                plugins_available: false,
-                ready_selected_capability_roots: Vec::new(),
-                environment_selections: Arc::default(),
-                ready_environments: HashMap::new(),
-                cached_binding: Mutex::new(None),
-            }),
+            current: ArcSwap::from_pointee(PublishedMcpRuntime::empty(prefix_mcp_tool_names)),
+            connection_access: RwLock::new(()),
+            retired: AtomicBool::new(false),
             event_stream_cancellation: Mutex::new(EventStreamCancellation {
                 event_server_available: false,
                 cancel_event_streams_on_server_removal: watch::channel(()).0,
@@ -307,16 +318,20 @@ impl McpRuntime {
 
     /// Reconciles configured servers and publishes their immutable runtime snapshot.
     pub async fn replace(&self, input: McpRuntimeInput) {
-        let current = self.current.load_full();
+        let previous = {
+            let _access = self
+                .connection_access
+                .read()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            let current = self.current.load_full();
+            Arc::clone(&current.connections)
+        };
         let mut reconnect = McpReconnectGuard {
             pending: &self.reconnect_pending,
             claimed: self.reconnect_pending.swap(false, Ordering::AcqRel),
         };
-        self.publish(
-            input,
-            (!reconnect.claimed).then_some(current.connections.as_ref()),
-        )
-        .await;
+        self.publish(input, (!reconnect.claimed).then_some(previous.as_ref()))
+            .await;
         reconnect.claimed = false;
     }
 
@@ -327,6 +342,9 @@ impl McpRuntime {
     }
 
     async fn publish(&self, input: McpRuntimeInput, previous: Option<&McpConnectionSet>) {
+        if self.retired.load(Ordering::Acquire) {
+            return;
+        }
         let (publish, publication_gate) = McpPublicationGate::pending();
         let config = Arc::clone(&input.config);
         let auth = input.auth.clone();
@@ -359,6 +377,13 @@ impl McpRuntime {
                         .source()
                         .is_host_owned_apps(CODEX_APPS_MCP_SERVER_NAME, registration.config())
                 });
+        let _access = self
+            .connection_access
+            .write()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if self.retired.load(Ordering::Acquire) {
+            return;
+        }
         let mut cancellation = self
             .event_stream_cancellation
             .lock()
@@ -417,7 +442,13 @@ impl McpRuntime {
         required_servers: &[String],
         required_plugins: &HashSet<String>,
     ) -> Option<Arc<McpBinding>> {
-        let current = self.current.load_full();
+        let current = {
+            let _access = self
+                .connection_access
+                .read()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            self.current.load_full()
+        };
         current.connections.record_startup_readiness(
             "model_binding",
             required_servers,
@@ -707,7 +738,12 @@ impl McpRuntime {
     }
 
     pub(crate) fn latest_connections(&self) -> Arc<McpConnectionSet> {
-        Arc::clone(&self.current.load().connections)
+        let _access = self
+            .connection_access
+            .read()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let current = self.current.load_full();
+        Arc::clone(&current.connections)
     }
 
     pub(crate) fn latest_host_owned_codex_apps_connections(
@@ -775,8 +811,21 @@ impl McpRuntime {
     }
 
     pub async fn shutdown(&self) {
+        let connections = {
+            let _access = self
+                .connection_access
+                .write()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            self.retired.store(true, Ordering::Release);
+            let retired = self.current.swap(Arc::new(PublishedMcpRuntime::empty(
+                /*prefix_mcp_tool_names*/ false,
+            )));
+            Arc::clone(&retired.connections)
+        };
         self.elicitation_router.close().await;
-        self.latest_connections().shutdown().await;
+        if Arc::strong_count(&connections) == 1 {
+            connections.shutdown().await;
+        }
     }
 }
 

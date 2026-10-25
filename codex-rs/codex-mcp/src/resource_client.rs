@@ -85,6 +85,7 @@ pub struct McpEventStream {
     request: Option<CancellableEventStreamRequest>,
     runtime_handle: Handle,
     client: Option<Arc<RmcpClient>>,
+    connection_owner: Option<Arc<McpServerConnection>>,
     cancel_event_streams_on_server_removal: watch::Receiver<()>,
 }
 
@@ -108,6 +109,7 @@ impl McpEventStream {
             request: Some(request),
             runtime_handle: Handle::current(),
             client: Some(client),
+            connection_owner: None,
             cancel_event_streams_on_server_removal,
         })
     }
@@ -139,6 +141,7 @@ impl McpEventStream {
             response = &mut request.handle.rx => {
                 self.request = None;
                 self.client = None;
+                self.connection_owner = None;
 
                 match response {
                     Ok(Ok(_))
@@ -159,6 +162,7 @@ impl McpEventStream {
         {
             drop(notifications);
             let client = self.client.take();
+            let connection_owner = self.connection_owner.take();
             self.runtime_handle.spawn(async move {
                 let _ = tokio::time::timeout(
                     Duration::from_secs(30),
@@ -166,6 +170,7 @@ impl McpEventStream {
                 )
                 .await;
                 drop(client);
+                drop(connection_owner);
             });
         }
     }
@@ -386,17 +391,19 @@ impl McpResourceClient {
         let (connections, cancel_event_streams_on_server_removal) = self
             .runtime
             .latest_connections_for_event_server(CODEX_APPS_MCP_SERVER_NAME)?;
-        let (managed, _) = connections
-            .client_by_name(CODEX_APPS_MCP_SERVER_NAME)
+        let (connection, managed, _) = connections
+            .client_and_connection_by_name(CODEX_APPS_MCP_SERVER_NAME)
             .await?;
-        McpEventStream::open(
+        let mut stream = McpEventStream::open(
             managed.client,
             cancel_event_streams_on_server_removal,
             event_name,
             arguments,
             request_meta,
         )
-        .await
+        .await?;
+        stream.connection_owner = Some(connection);
+        Ok(stream)
     }
 
     /// Creates an event stream opener using the task's event server settings.
