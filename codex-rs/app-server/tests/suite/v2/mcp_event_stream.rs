@@ -1,3 +1,4 @@
+use std::collections::BTreeMap;
 use std::convert::Infallible;
 use std::sync::Arc;
 use std::time::Duration;
@@ -16,6 +17,8 @@ use axum::response::sse::Event;
 use axum::response::sse::Sse;
 use axum::routing::post;
 use codex_app_server_protocol::ClientRequest;
+use codex_app_server_protocol::ExperimentalFeatureEnablementSetParams;
+use codex_app_server_protocol::ExperimentalFeatureEnablementSetResponse;
 use codex_app_server_protocol::ListMcpServerStatusParams;
 use codex_app_server_protocol::ListMcpServerStatusResponse;
 use codex_app_server_protocol::McpServerEventNotification;
@@ -47,32 +50,43 @@ async fn mcp_event_stream_survives_retained_server_refresh_and_cancels() -> Resu
     let listener = TcpListener::bind("127.0.0.1:0").await?;
     let apps_url = format!("http://{}", listener.local_addr()?);
     let (stream_started_tx, mut stream_started_rx) = mpsc::unbounded_channel::<Value>();
+    let (apps_initialized_tx, mut apps_initialized_rx) = mpsc::unbounded_channel::<String>();
     let allow_activation = Arc::new(Notify::new());
     let activation_gate = Arc::clone(&allow_activation);
     let router = Router::new().route(
         "/api/codex/ps/mcp",
         post(move |Json(message): Json<Value>| {
             let stream_started_tx = stream_started_tx.clone();
+            let apps_initialized_tx = apps_initialized_tx.clone();
             let allow_activation = Arc::clone(&activation_gate);
 
             async move {
                 match message["method"].as_str() {
-                    Some("initialize") => (
-                        [("mcp-session-id", "event-test-session")],
-                        Json(json!({
-                            "jsonrpc": "2.0",
-                            "id": message["id"],
-                            "result": {
-                                "protocolVersion": "2025-06-18",
-                                "capabilities": {},
-                                "serverInfo": {
-                                    "name": "event-test-server",
-                                    "version": "1.0.0",
+                    Some("initialize") => {
+                        let protocol_version = message["params"]["protocolVersion"]
+                            .as_str()
+                            .unwrap_or("2025-06-18")
+                            .to_string();
+                        apps_initialized_tx
+                            .send(protocol_version.clone())
+                            .expect("Apps initialize receiver must remain open");
+                        (
+                            [("mcp-session-id", "event-test-session")],
+                            Json(json!({
+                                "jsonrpc": "2.0",
+                                "id": message["id"],
+                                "result": {
+                                    "protocolVersion": protocol_version,
+                                    "capabilities": {},
+                                    "serverInfo": {
+                                        "name": "event-test-server",
+                                        "version": "1.0.0",
+                                    },
                                 },
-                            },
-                        })),
-                    )
-                        .into_response(),
+                            })),
+                        )
+                            .into_response()
+                    }
                     Some("notifications/initialized") => StatusCode::ACCEPTED.into_response(),
                     Some("tools/list") => Json(json!({
                         "jsonrpc": "2.0",
@@ -122,51 +136,6 @@ async fn mcp_event_stream_survives_retained_server_refresh_and_cancels() -> Resu
             }
         }),
     );
-    let replacement_listener = TcpListener::bind("127.0.0.1:0").await?;
-    let replacement_apps_url = format!("http://{}", replacement_listener.local_addr()?);
-    let (replacement_initialized_tx, mut replacement_initialized_rx) =
-        mpsc::unbounded_channel::<()>();
-    let replacement_router = Router::new().route(
-        "/api/codex/ps/mcp",
-        post(move |Json(message): Json<Value>| {
-            let replacement_initialized_tx = replacement_initialized_tx.clone();
-            async move {
-                match message["method"].as_str() {
-                    Some("initialize") => {
-                        replacement_initialized_tx
-                            .send(())
-                            .expect("replacement initialize receiver must remain open");
-                        (
-                            [("mcp-session-id", "replacement-event-test-session")],
-                            Json(json!({
-                                "jsonrpc": "2.0",
-                                "id": message["id"],
-                                "result": {
-                                    "protocolVersion": "2025-06-18",
-                                    "capabilities": {},
-                                    "serverInfo": {
-                                        "name": "replacement-event-test-server",
-                                        "version": "1.0.0",
-                                    },
-                                },
-                            })),
-                        )
-                            .into_response()
-                    }
-                    Some("notifications/initialized") => StatusCode::ACCEPTED.into_response(),
-                    Some("tools/list") => Json(json!({
-                        "jsonrpc": "2.0",
-                        "id": message["id"],
-                        "result": { "tools": [] },
-                    }))
-                    .into_response(),
-                    method => panic!("unexpected replacement MCP request: {method:?}"),
-                }
-            }
-        }),
-    );
-    let replacement_mcp_server =
-        tokio::spawn(async move { axum::serve(replacement_listener, replacement_router).await });
     let mcp_server = tokio::spawn(async move { axum::serve(listener, router).await });
 
     let codex_home = TempDir::new()?;
@@ -203,6 +172,10 @@ async fn mcp_event_stream_survives_retained_server_refresh_and_cancels() -> Resu
     let stream_request = timeout(Duration::from_secs(5), stream_started_rx.recv())
         .await?
         .context("MCP event stream was not requested")?;
+    let initial_protocol_version = timeout(Duration::from_secs(5), apps_initialized_rx.recv())
+        .await?
+        .context("hosted Apps connection was not initialized")?;
+    assert_eq!(initial_protocol_version, "2025-06-18");
 
     assert_eq!(
         stream_request["params"],
@@ -234,18 +207,14 @@ async fn mcp_event_stream_survives_retained_server_refresh_and_cancels() -> Resu
         "subscription start must not complete before the active notification"
     );
 
-    MockResponsesConfig::new(&responses_server.uri())
-        .with_root_config(&format!("chatgpt_base_url = \"{replacement_apps_url}\""))
-        .enable_feature(Feature::Apps)
-        .write(codex_home.path())?;
-    let reload_id = app_server
-        .send_raw_request("config/mcpServer/reload", /*params*/ None)
+    let enablement = BTreeMap::from([(Feature::CodexAppsMcp20260728.key().to_string(), true)]);
+    let enablement_id = app_server
+        .send_experimental_feature_enablement_set_request(
+            ExperimentalFeatureEnablementSetParams { enablement },
+        )
         .await?;
-    timeout(
-        Duration::from_secs(5),
-        app_server.read_stream_until_response_message(RequestId::Integer(reload_id)),
-    )
-    .await??;
+    let _: ExperimentalFeatureEnablementSetResponse =
+        timeout(Duration::from_secs(5), app_server.read_response(enablement_id)).await??;
     let _: ListMcpServerStatusResponse = app_server
         .request(|request_id| ClientRequest::McpServerStatusList {
             request_id,
@@ -258,9 +227,10 @@ async fn mcp_event_stream_survives_retained_server_refresh_and_cancels() -> Resu
             },
         })
         .await?;
-    timeout(Duration::from_secs(5), replacement_initialized_rx.recv())
+    let refreshed_protocol_version = timeout(Duration::from_secs(5), apps_initialized_rx.recv())
         .await?
         .context("retained Apps server was not reconnected during MCP refresh")?;
+    assert_eq!(refreshed_protocol_version, "2026-07-28");
 
     allow_activation.notify_one();
     let _: McpServerEventStreamStartResponse = timeout(
@@ -318,7 +288,5 @@ async fn mcp_event_stream_survives_retained_server_refresh_and_cancels() -> Resu
 
     mcp_server.abort();
     let _ = mcp_server.await;
-    replacement_mcp_server.abort();
-    let _ = replacement_mcp_server.await;
     Ok(())
 }
