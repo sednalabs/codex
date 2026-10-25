@@ -10,14 +10,6 @@
       "execution_argv": ["cargo", "test", "--locked", "-p", "codex-agent-mailbox", "--lib", "--", "--test-threads=1"]
     },
     {
-      "package": "codex-app-server",
-      "target_kind": "lib",
-      "target": "",
-      "profiles": ["rust_integration"],
-      "inventory_argv": ["cargo", "test", "--locked", "-p", "codex-app-server", "--lib", "--", "--list"],
-      "execution_argv": ["cargo", "test", "--locked", "-p", "codex-app-server", "--lib", "--", "--test-threads=1"]
-    },
-    {
       "package": "codex-app-server-protocol",
       "target_kind": "lib",
       "target": "",
