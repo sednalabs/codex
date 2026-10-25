@@ -820,19 +820,7 @@ impl McpRuntime {
             let retired = self.current.swap(Arc::new(PublishedMcpRuntime::empty(
                 /*prefix_mcp_tool_names*/ false,
             )));
-            let connections = Arc::clone(&retired.connections);
-            let mut cancellation = self
-                .event_stream_cancellation
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner);
-            cancellation.event_server_available = false;
-            cancellation
-                .cancel_event_streams_on_server_removal
-                .send_replace(());
-            if let Some(retained) = &cancellation.retained_subscription_cancellation {
-                retained.send_replace(());
-            }
-            connections
+            Arc::clone(&retired.connections)
         };
         self.elicitation_router.close().await;
         if Arc::strong_count(&connections) == 1 {
