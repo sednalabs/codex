@@ -40,12 +40,12 @@ jobs:
         id: identity
         shell: bash
         env:
-          DEVICE_AUTH_SHA: 9c76e6a17cb4a6908b6714ae4532094486edcbc9
-          DEVICE_AUTH_TREE: d55253240e97706b7558ecdd3819ce3a5770ffc3
+          DEVICE_AUTH_SHA: 0bcaf145970053bb9a459c6a4c18aa722b8179b2
+          DEVICE_AUTH_TREE: 9ea32e2b551fd358f163f82226ed2c3f48951974
           LOCAL_UPSTREAM_BASE_SHA: 98478e3ed34f5104d965fc879f211284f664c524
           UPSTREAM_BASE_SHA: 970111f6cb62cc02fe36a82ea7d71b37a2889c97
           UPSTREAM_TREE: e09c71b9069e689c9c997c766d0de8b7b288583f
-          EXPECTED_REF: refs/heads/codex/device-auth-linux-package-20261025
+          EXPECTED_REF: refs/heads/codex/device-auth-linux-package-retry-20261025
         run: |
           set -euo pipefail
           [[ "${GITHUB_REF}" == "${EXPECTED_REF}" ]] || {
