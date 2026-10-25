@@ -3,6 +3,9 @@
 
 use crate::session::session::Session;
 use crate::tools::context::ToolInvocation;
+use crate::tools::handlers::multi_agents_spec::{
+    SEND_MESSAGE_TOOL_DESCRIPTION_MAILBOX, SEND_MESSAGE_TOOL_DESCRIPTION_V2,
+};
 use crate::tools::registry::CoreToolRuntime;
 use codex_tools::JsonSchema;
 use codex_tools::ResponsesApiNamespace;
@@ -34,6 +37,14 @@ pub(super) fn multi_agent_v2_handler(
         "send_message" => &["kind", "reply_to"],
         _ => &[],
     };
+    let needs_mailbox_gate = !mailbox_enabled
+        && !mailbox_native_fields.is_empty()
+        && matches!(handler.spec(), ToolSpec::Function(tool) if mailbox_native_fields.iter().any(|name| {
+            tool.parameters
+                .properties
+                .as_ref()
+                .is_some_and(|properties| properties.contains_key(*name))
+        }));
     let mailbox_native = (mailbox_enabled && !mailbox_native_fields.is_empty())
         .then(|| handler.spec())
         .and_then(|spec| match spec {
@@ -86,7 +97,11 @@ pub(super) fn multi_agent_v2_handler(
             |canonical| append_mailbox_native_guidance(description, canonical),
         )
     });
-    if namespace.is_none() && description_override.is_none() && parameters_override.is_none() {
+    if namespace.is_none()
+        && description_override.is_none()
+        && parameters_override.is_none()
+        && !needs_mailbox_gate
+    {
         return Arc::new(handler);
     }
     Arc::new(MultiAgentV2ToolOverrides {
@@ -94,6 +109,7 @@ pub(super) fn multi_agent_v2_handler(
         namespace: namespace.map(str::to_owned),
         description_override,
         parameters_override,
+        mailbox_enabled,
     })
 }
 
@@ -145,6 +161,7 @@ struct MultiAgentV2ToolOverrides {
     namespace: Option<String>,
     description_override: Option<String>,
     parameters_override: Option<JsonSchema>,
+    mailbox_enabled: bool,
 }
 
 impl ToolExecutor<ToolInvocation> for MultiAgentV2ToolOverrides {
@@ -164,6 +181,33 @@ impl ToolExecutor<ToolInvocation> for MultiAgentV2ToolOverrides {
             }
             if let Some(parameters) = &self.parameters_override {
                 tool.parameters.clone_from(parameters);
+            }
+            if !self.mailbox_enabled {
+                let fields: &[&str] = match tool.name.as_str() {
+                    "wait_agent" => &["targets", "replies_to", "return_when"],
+                    "send_message" => &["kind", "reply_to"],
+                    _ => &[],
+                };
+                if let Some(properties) = tool.parameters.properties.as_mut() {
+                    for field in fields {
+                        properties.remove(*field);
+                    }
+                }
+                if let Some(required) = tool.parameters.required.take() {
+                    let retained = required
+                        .into_vec()
+                        .into_iter()
+                        .filter(|name| !fields.contains(&name.as_str()))
+                        .collect::<Vec<_>>();
+                    if !retained.is_empty() {
+                        tool.parameters.required = Some(retained.into_boxed_slice());
+                    }
+                }
+                if tool.name == "send_message"
+                    && tool.description == SEND_MESSAGE_TOOL_DESCRIPTION_MAILBOX
+                {
+                    tool.description = SEND_MESSAGE_TOOL_DESCRIPTION_V2.to_string();
+                }
             }
         }
         match (&self.namespace, spec) {
@@ -219,6 +263,7 @@ mod tests {
     use super::*;
     use crate::tools::handlers::multi_agents_spec::WAIT_AGENT_TOOL_DESCRIPTION_MAILBOX;
     use crate::tools::handlers::multi_agents_spec::WaitAgentTimeoutOptions;
+    use crate::tools::handlers::multi_agents_v2::SendMessageHandler;
     use crate::tools::handlers::multi_agents_v2::WaitAgentHandler;
     use codex_tools::ResponsesApiNamespaceTool;
     use codex_tools::collect_code_mode_exec_prompt_tool_definitions;
@@ -242,6 +287,20 @@ mod tests {
             .find(|tool| matches!(tool, ResponsesApiNamespaceTool::Function(tool) if tool.name == "wait_agent"))
         else {
             panic!("expected namespaced wait_agent function");
+        };
+        tool
+    }
+
+    fn namespaced_send_message_function(spec: ToolSpec) -> codex_tools::ResponsesApiTool {
+        let ToolSpec::Namespace(namespace) = spec else {
+            panic!("expected send_message namespace");
+        };
+        let Some(ResponsesApiNamespaceTool::Function(tool)) = namespace
+            .tools
+            .into_iter()
+            .find(|tool| matches!(tool, ResponsesApiNamespaceTool::Function(tool) if tool.name == "send_message"))
+        else {
+            panic!("expected namespaced send_message function");
         };
         tool
     }
@@ -339,6 +398,142 @@ mod tests {
             ["catalog_tag"]
         );
         assert_eq!(tool.description, "Catalog-specific wait description.");
+    }
+
+    #[test]
+    fn mailbox_send_message_fields_survive_catalog_override_when_enabled() {
+        let catalog_parameters = json!({
+            "type": "object",
+            "properties": {
+                "target": {"type": "string"},
+                "message": {"type": "string"},
+                "kind": {"type": "string", "description": "stale kind schema"},
+                "reply_to": {"type": "string", "description": "stale reply schema"},
+                "catalog_tag": {"type": "string"}
+            },
+            "required": ["target", "message", "kind", "catalog_tag"],
+            "additionalProperties": false
+        })
+        .to_string();
+        let wrapped = multi_agent_v2_handler(
+            SendMessageHandler,
+            Some("collaboration"),
+            Some("Catalog-specific send description."),
+            Some(&catalog_parameters),
+            /*mailbox_enabled*/ true,
+        );
+        let spec = wrapped.spec();
+        let tool = namespaced_send_message_function(spec.clone());
+        let properties = tool.parameters.properties.as_ref().unwrap();
+
+        assert!(
+            tool.description
+                .contains("Catalog-specific send description.")
+        );
+        assert!(
+            tool.description
+                .contains("opted in to mailbox idle activation")
+        );
+        assert_eq!(
+            properties["kind"].description.as_deref(),
+            Some(
+                "Durable mailbox message kind. Defaults to note; request and alert messages are actionable."
+            )
+        );
+        assert_eq!(
+            properties["reply_to"].description.as_deref(),
+            Some("Exact stable message id returned when sending the request being answered.")
+        );
+        assert_eq!(properties["message"].encrypted, Some(true));
+        assert!(properties.contains_key("catalog_tag"));
+        assert_eq!(
+            tool.parameters.required.as_deref(),
+            Some(
+                [
+                    "target".to_string(),
+                    "message".to_string(),
+                    "catalog_tag".to_string()
+                ]
+                .as_slice()
+            )
+        );
+
+        let code_mode = collect_code_mode_exec_prompt_tool_definitions([&spec], Some(64 * 1024));
+        let definition = code_mode
+            .iter()
+            .find(|definition| {
+                definition.tool_name.namespace.as_deref() == Some("collaboration")
+                    && definition.tool_name.name == "send_message"
+            })
+            .expect("Code Mode should advertise namespaced send_message");
+        let advertised = definition
+            .input_schema
+            .as_ref()
+            .expect("send_message input schema");
+        assert!(advertised["properties"].get("kind").is_some());
+        assert!(advertised["properties"].get("reply_to").is_some());
+    }
+
+    #[test]
+    fn mailbox_send_message_fields_are_hidden_when_disabled() {
+        let wrapped = multi_agent_v2_handler(
+            SendMessageHandler,
+            /*namespace*/ None,
+            /*description_override*/ None,
+            /*parameters_override*/ None,
+            /*mailbox_enabled*/ false,
+        );
+        let ToolSpec::Function(tool) = wrapped.spec() else {
+            panic!("expected send_message function");
+        };
+        let properties = tool.parameters.properties.as_ref().unwrap();
+        assert_eq!(
+            properties.keys().map(String::as_str).collect::<Vec<_>>(),
+            ["message", "target"]
+        );
+        assert_eq!(tool.description, SEND_MESSAGE_TOOL_DESCRIPTION_V2);
+    }
+
+    #[test]
+    fn mailbox_send_message_catalog_replacement_is_filtered_when_disabled() {
+        let catalog_parameters = json!({
+            "type": "object",
+            "properties": {
+                "target": {"type": "string"},
+                "message": {"type": "string"},
+                "kind": {"type": "string"},
+                "reply_to": {"type": "string"},
+                "catalog_tag": {"type": "string"}
+            },
+            "required": ["target", "message", "kind", "catalog_tag"],
+            "additionalProperties": false
+        })
+        .to_string();
+        let wrapped = multi_agent_v2_handler(
+            SendMessageHandler,
+            Some("collaboration"),
+            Some("Catalog-specific send description."),
+            Some(&catalog_parameters),
+            /*mailbox_enabled*/ false,
+        );
+        let tool = namespaced_send_message_function(wrapped.spec());
+        let properties = tool.parameters.properties.as_ref().unwrap();
+        assert_eq!(tool.description, "Catalog-specific send description.");
+        assert!(!properties.contains_key("kind"));
+        assert!(!properties.contains_key("reply_to"));
+        assert_eq!(properties["message"].encrypted, Some(true));
+        assert!(properties.contains_key("catalog_tag"));
+        assert_eq!(
+            tool.parameters.required.as_deref(),
+            Some(
+                [
+                    "target".to_string(),
+                    "message".to_string(),
+                    "catalog_tag".to_string()
+                ]
+                .as_slice()
+            )
+        );
     }
 
     fn canonical_array_schema() -> JsonSchema {

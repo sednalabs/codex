@@ -201,6 +201,12 @@ pub fn create_send_input_tool_v1() -> ToolSpec {
     })
 }
 
+pub const SEND_MESSAGE_TOOL_DESCRIPTION_V2: &str = "Send a message to an existing agent. The message will be delivered promptly. Does not trigger a new turn.";
+pub const SEND_MESSAGE_TOOL_DESCRIPTION_MAILBOX: &str = concat!(
+    "Send a message to an existing agent. Request, alert, or reply messages may activate ",
+    "an idle recipient only when that recipient has opted in to mailbox idle activation."
+);
+
 pub fn create_send_message_tool() -> ToolSpec {
     let properties = BTreeMap::from([
         (
@@ -242,11 +248,7 @@ pub fn create_send_message_tool() -> ToolSpec {
 
     ToolSpec::Function(ResponsesApiTool {
         name: "send_message".to_string(),
-        description: concat!(
-            "Send a message to an existing agent. Request, alert, or reply messages may activate ",
-            "an idle recipient only when that recipient has opted in to mailbox idle activation."
-        )
-        .to_string(),
+        description: SEND_MESSAGE_TOOL_DESCRIPTION_MAILBOX.to_string(),
         strict: false,
         defer_loading: None,
         parameters: JsonSchema::object(
