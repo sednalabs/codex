@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Read one root thread and its spawned descendants through Codex app-server."""
+"""Query one root thread and its spawned descendants through Codex app-server."""
 
 from __future__ import annotations
 
@@ -23,6 +23,17 @@ TOKEN_FIELDS = {
 }
 
 
+def app_server_argv(executable: str) -> list[str]:
+    """Return the supported normal CLI invocation for the app-server stdio transport."""
+    return [executable, "app-server", "--listen", "stdio://"]
+
+
+def rpc_request_document(
+    request_id: int, method: str, params: dict[str, Any]
+) -> dict[str, Any]:
+    return {"jsonrpc": "2.0", "id": request_id, "method": method, "params": params}
+
+
 class UsageError(Exception):
     pass
 
@@ -36,20 +47,14 @@ class RpcError(UsageError):
 class AppServer:
     """One bounded JSON-RPC stdio client; app-server logs are not copied to output."""
 
-    def __init__(self, executable: str, timeout: int):
+    def __init__(self, executable: str, timeout: int, overall_timeout: int):
         self.timeout = timeout
+        self.deadline = time.monotonic() + overall_timeout
         self.next_id = 0
         self.messages: queue.Queue[Any] = queue.Queue()
         try:
             self.process = subprocess.Popen(
-                [
-                    executable,
-                    "app-server",
-                    "--listen",
-                    "stdio://",
-                    "--session-source",
-                    "cli",
-                ],
+                app_server_argv(executable),
                 stdin=subprocess.PIPE,
                 stdout=subprocess.PIPE,
                 stderr=subprocess.DEVNULL,
@@ -85,17 +90,18 @@ class AppServer:
         request_id = self.next_id
         assert self.process.stdin is not None
         self.process.stdin.write(
-            json.dumps(
-                {"jsonrpc": "2.0", "id": request_id, "method": method, "params": params}
-            )
-            + "\n"
+            json.dumps(rpc_request_document(request_id, method, params)) + "\n"
         )
         self.process.stdin.flush()
-        deadline = time.monotonic() + self.timeout
         while True:
+            remaining = min(self.timeout, self.deadline - time.monotonic())
+            if remaining <= 0:
+                raise UsageError("overall usage query timed out")
             try:
-                message = self.messages.get(timeout=max(0, deadline - time.monotonic()))
+                message = self.messages.get(timeout=remaining)
             except queue.Empty as exc:
+                if time.monotonic() >= self.deadline:
+                    raise UsageError("overall usage query timed out") from exc
                 raise UsageError(f"timed out waiting for {method}") from exc
             if message is None:
                 raise UsageError("app-server closed its output")
@@ -545,9 +551,15 @@ def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--thread-id", required=True, help="root thread UUID")
     parser.add_argument("--codex-bin", default="codex", help="Codex executable")
+    parser.add_argument(
+        "--allow-local-app-server-startup",
+        action="store_true",
+        help="allow normal app-server startup, which can initialize SQLite and backfill rollouts",
+    )
     parser.add_argument("--rates-json", help="rate map JSON replacing the embedded dated map")
     parser.add_argument("--max-threads-per-state", type=int, default=DEFAULT_MAX_THREADS_PER_STATE)
     parser.add_argument("--timeout-seconds", type=int, default=20)
+    parser.add_argument("--overall-timeout-seconds", type=int, default=300)
     args = parser.parse_args(argv)
     if not args.thread_id.strip():
         parser.error("--thread-id cannot be empty")
@@ -555,10 +567,19 @@ def main(argv: list[str] | None = None) -> int:
         parser.error(f"--max-threads-per-state must be in 1..{MAX_THREADS_PER_STATE}")
     if not 1 <= args.timeout_seconds <= 120:
         parser.error("--timeout-seconds must be in 1..120")
+    if not 1 <= args.overall_timeout_seconds <= 3600:
+        parser.error("--overall-timeout-seconds must be in 1..3600")
+    if not args.allow_local_app_server_startup:
+        parser.error(
+            "starting a local app-server is not strictly read-only; pass "
+            "--allow-local-app-server-startup only if its normal state initialization is acceptable"
+        )
     client = None
     try:
         rates = load_rates(args.rates_json)
-        client = AppServer(args.codex_bin, args.timeout_seconds)
+        client = AppServer(
+            args.codex_bin, args.timeout_seconds, args.overall_timeout_seconds
+        )
         client.initialize()
         result = collect_tree(client, args.thread_id, rates, args.max_threads_per_state)
         print(json.dumps(result, indent=2, sort_keys=True))

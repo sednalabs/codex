@@ -1,6 +1,13 @@
 import unittest
 
-from codex_usage_tree import RpcError, collect_tree, error_document, load_rates
+from codex_usage_tree import (
+    RpcError,
+    app_server_argv,
+    collect_tree,
+    error_document,
+    load_rates,
+    rpc_request_document,
+)
 
 
 def usage(thread_id, *, model="gpt-6.1-sol", uncached=0, cached=0, output=0):
@@ -77,6 +84,46 @@ class SyntheticErrorAppServer:
 
 
 class UsageTreeTests(unittest.TestCase):
+    def test_supported_cli_argv_and_wire_field_names(self):
+        self.assertEqual(
+            app_server_argv("codex"),
+            ["codex", "app-server", "--listen", "stdio://"],
+        )
+        self.assertEqual(
+            rpc_request_document(
+                7,
+                "thread/list",
+                {
+                    "limit": 100,
+                    "sourceKinds": ["subAgentThreadSpawn"],
+                    "archived": False,
+                    "useStateDbOnly": True,
+                    "ancestorThreadId": "root",
+                },
+            ),
+            {
+                "jsonrpc": "2.0",
+                "id": 7,
+                "method": "thread/list",
+                "params": {
+                    "limit": 100,
+                    "sourceKinds": ["subAgentThreadSpawn"],
+                    "archived": False,
+                    "useStateDbOnly": True,
+                    "ancestorThreadId": "root",
+                },
+            },
+        )
+        self.assertEqual(
+            rpc_request_document(8, "account/usage/read", {"threadId": "root"}),
+            {
+                "jsonrpc": "2.0",
+                "id": 8,
+                "method": "account/usage/read",
+                "params": {"threadId": "root"},
+            },
+        )
+
     def test_root_child_totals_deduplicate_and_preserve_nulls_and_missing_rates(self):
         api = SyntheticAppServer()
         result = collect_tree(api, "root", load_rates(None), max_per_state=4)
