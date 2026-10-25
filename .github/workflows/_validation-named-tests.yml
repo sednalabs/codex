@@ -143,6 +143,15 @@ jobs:
         with:
           targets: x86_64-unknown-linux-gnu
 
+      - name: Build the stdio test server for core integration tests
+        if: ${{ contains(inputs.request_json, '"package":"codex-core"') && contains(inputs.request_json, '"target_kind":"integration"') }}
+        working-directory: validation-target/codex-rs
+        shell: bash
+        run: |
+          set -euo pipefail
+          cargo build --locked -p codex-rmcp-client --bin test_stdio_server
+          echo "CARGO_BIN_EXE_test_stdio_server=${GITHUB_WORKSPACE}/validation-target/codex-rs/target/debug/test_stdio_server" >> "${GITHUB_ENV}"
+
       - name: Inventory and run exact named tests
         id: named_tests
         continue-on-error: true
