@@ -26,6 +26,10 @@ on:
         required: false
         type: string
         default: validation-named-tests
+      resolve_sha2_lock_edge:
+        required: false
+        type: boolean
+        default: false
 
 permissions:
   contents: read
@@ -136,7 +140,81 @@ jobs:
         with:
           targets: x86_64-unknown-linux-gnu
 
+      - name: Resolve and validate the focused sha2 lock edge
+        if: ${{ inputs.resolve_sha2_lock_edge }}
+        working-directory: validation-target
+        shell: bash
+        run: |
+          set -euo pipefail
+          cargo update --manifest-path codex-rs/Cargo.toml --package sha2@0.10.9
+          python3 - <<'PY'
+          import subprocess
+          import tomllib
+          from pathlib import Path
+
+          before_text = subprocess.run(
+              ["git", "show", "HEAD:codex-rs/Cargo.lock"],
+              check=True,
+              capture_output=True,
+              text=True,
+          ).stdout
+          after_text = Path("codex-rs/Cargo.lock").read_text(encoding="utf-8")
+          before = tomllib.loads(before_text)
+          after = tomllib.loads(after_text)
+
+          def package_map(lock):
+              return {
+                  (item["name"], item["version"], item.get("source")): item
+                  for item in lock.get("package", [])
+              }
+
+          old_packages = package_map(before)
+          new_packages = package_map(after)
+          if old_packages.keys() != new_packages.keys():
+              raise SystemExit("Cargo.lock package identities changed unexpectedly")
+
+          core_key = ("codex-core", "0.0.0", None)
+          if core_key not in old_packages:
+              raise SystemExit("Cargo.lock does not contain the expected codex-core entry")
+
+          for key, old in old_packages.items():
+              new = new_packages[key]
+              if key != core_key:
+                  if old != new:
+                      raise SystemExit(f"unexpected Cargo.lock change in package {key[0]}")
+                  continue
+              old_dependencies = set(old.get("dependencies", []))
+              new_dependencies = set(new.get("dependencies", []))
+              added = new_dependencies - old_dependencies
+              removed = old_dependencies - new_dependencies
+              if removed or len(added) != 1 or not next(iter(added), "").startswith("sha2 "):
+                  raise SystemExit(
+                      "expected only one new codex-core dependency on sha2 0.10.x"
+                  )
+              old_without_dependencies = {k: v for k, v in old.items() if k != "dependencies"}
+              new_without_dependencies = {k: v for k, v in new.items() if k != "dependencies"}
+              if old_without_dependencies != new_without_dependencies:
+                  raise SystemExit("unexpected non-dependency codex-core lock change")
+
+          print(f"accepted focused lock edge: {next(iter(added))}")
+          PY
+          mkdir -p "${RUNNER_TEMP}/sha2-lock"
+          git diff --no-ext-diff --binary -- codex-rs/Cargo.lock > "${RUNNER_TEMP}/sha2-lock/codex-core-sha2.lock.patch"
+          test -s "${RUNNER_TEMP}/sha2-lock/codex-core-sha2.lock.patch"
+          printf 'target_sha=%s\n' "${VALIDATION_TARGET_SHA}" > "${RUNNER_TEMP}/sha2-lock/metadata.txt"
+          sha256sum "${RUNNER_TEMP}/sha2-lock/codex-core-sha2.lock.patch" >> "${RUNNER_TEMP}/sha2-lock/metadata.txt"
+
+      - name: Upload focused sha2 lock patch
+        if: ${{ inputs.resolve_sha2_lock_edge }}
+        uses: actions/upload-artifact@v7
+        with:
+          name: validation-sha2-lock-${{ github.run_id }}
+          path: ${{ runner.temp }}/sha2-lock
+          if-no-files-found: error
+          retention-days: 3
+
       - name: Inventory and run exact named tests
+        if: ${{ inputs.resolve_sha2_lock_edge != true }}
         id: named_tests
         continue-on-error: true
         working-directory: validation-target
@@ -146,7 +224,7 @@ jobs:
           python3 ../.workflow-src/.github/scripts/run_named_rust_tests.py
 
       - name: Append named-test evidence
-        if: ${{ always() }}
+        if: ${{ always() && inputs.resolve_sha2_lock_edge != true }}
         shell: bash
         env:
           RESULT_PATH: ${{ github.workspace }}/validation-target/rust-tests-v1-results.json
@@ -175,7 +253,7 @@ jobs:
           PY
 
       - name: Upload named-test evidence
-        if: ${{ always() }}
+        if: ${{ always() && inputs.resolve_sha2_lock_edge != true }}
         uses: actions/upload-artifact@v7
         with:
           name: ${{ inputs.artifact_name }}
@@ -184,6 +262,6 @@ jobs:
           retention-days: 3
 
       - name: Preserve failed exact-test result
-        if: ${{ steps.named_tests.outcome == 'failure' }}
+        if: ${{ inputs.resolve_sha2_lock_edge != true && steps.named_tests.outcome == 'failure' }}
         shell: bash
         run: exit 1

@@ -27,6 +27,11 @@ on:
         description: JSON rust-tests-v1 typed request (no shell commands or flags)
         required: true
         type: string
+      resolve_sha2_lock_edge:
+        description: Generate a focused hosted Cargo.lock patch for the codex-core sha2 dependency
+        required: false
+        default: false
+        type: boolean
 
 concurrency:
   group: validation-named-tests/${{ inputs.target_sha }}/${{ inputs.base_ref }}/${{ inputs.profile }}
@@ -44,4 +49,5 @@ jobs:
       harness_sha: ${{ github.sha }}
       profile: ${{ inputs.profile }}
       request_json: ${{ inputs.request_json }}
+      resolve_sha2_lock_edge: ${{ inputs.resolve_sha2_lock_edge }}
       artifact_name: validation-named-tests-${{ github.run_id }}
