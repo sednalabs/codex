@@ -817,9 +817,9 @@ impl McpRuntime {
                 .write()
                 .unwrap_or_else(std::sync::PoisonError::into_inner);
             self.retired.store(true, Ordering::Release);
-            let retired = self
-                .current
-                .swap(Arc::new(PublishedMcpRuntime::empty(/*prefix_mcp_tool_names*/ false)));
+            let retired = self.current.swap(Arc::new(PublishedMcpRuntime::empty(
+                /*prefix_mcp_tool_names*/ false,
+            )));
             let connections = Arc::clone(&retired.connections);
             let mut cancellation = self
                 .event_stream_cancellation
