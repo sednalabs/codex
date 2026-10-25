@@ -87,6 +87,16 @@ direct event stream across a retained-server refresh. Remove this carry when
 upstream provides equivalent publication fencing and last-owner stdio cleanup
 without interrupting in-flight calls or active direct event streams.
 
+## MCP HTTP failure diagnostics
+
+Non-success MCP HTTP responses retain the validated `cf-ray` identifier and
+presence-only `Via` hint accepted in [#984](https://github.com/sednalabs/codex/pull/984).
+Arbitrary header values are excluded. The existing bounded body preview,
+native error classification, discovery fallback and call behavior remain
+unchanged. The adapter's two diagnostics tests cover allowed hints and secret
+omission. Remove this carry when upstream provides equivalent bounded,
+validated transport diagnostics.
+
 ## Callback-input authentication boundaries
 
 Native MCP callback input retains the configured server's issuer, resource,
@@ -123,6 +133,13 @@ archive. Retain the producer run and artifact digest separately, and qualify
 each updated companion source before consumer adoption. Building or retaining
 this source does not authorize bearer provisioning, credential installation or
 live use.
+
+Protected-main source `5fd462f880e12b03885ae30617c8c49ddbb01e71` retains the
+later accepted companion authentication, custody, fixed-API lifecycle,
+installer and safe session-tail changes. The existing producer can select that
+immutable source by exact `ref`; this preserves source availability without
+adding those components to the native package or claiming new companion
+artifact or consumer acceptance.
 
 Upstream's `sedna_branch_build_installer_smoke_noexec_run_stage` additionally
 qualifies the companion installer from a noexec `/run` stage, including its
@@ -175,6 +192,11 @@ downstream `main` and its accepted capabilities. First look for equivalent
 upstream behavior or a documented native interface; assess each remaining
 behavioral difference as a candidate residual carry. Preserve current-main
 ancestry and accepted capabilities when composing the upgrade.
+
+The native graph retains the `ctutils` 0.4.4 registry checksum and Bazel
+metadata accepted in [#986](https://github.com/sednalabs/codex/pull/986), as
+preserved by protected-main source `5fd462f880e12b03885ae30617c8c49ddbb01e71`.
+This targeted dependency intake preserves the native dependency graph.
 
 Use existing hosted lockfile, schema, and focused-consumer validation routes
 for the exact candidate. Validate the exact package artifact with its consumer
