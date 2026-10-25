@@ -116,6 +116,7 @@ impl Handler {
                     model: None,
                     reasoning_effort: None,
                     agents_states: Default::default(),
+                    mailbox_wait_report: None,
                 }),
             )
             .await;
@@ -161,6 +162,7 @@ impl Handler {
                                 model: None,
                                 reasoning_effort: None,
                                 agents_states: statuses,
+                                mailbox_wait_report: None,
                             }),
                         )
                         .await;
@@ -232,6 +234,7 @@ impl Handler {
                     model: None,
                     reasoning_effort: None,
                     agents_states: statuses_by_id,
+                    mailbox_wait_report: None,
                 }),
             )
             .await;

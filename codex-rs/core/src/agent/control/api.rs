@@ -37,6 +37,10 @@ impl AgentControl for LocalAgentControl {
         self.session_id()
     }
 
+    fn agent_metadata(&self, agent: ThreadId) -> Option<crate::agent::types::AgentMetadata> {
+        self.get_agent_metadata(agent)
+    }
+
     fn resolve<'a>(
         &'a self,
         caller: ThreadId,
@@ -67,9 +71,22 @@ impl AgentControl for LocalAgentControl {
                 source,
                 options,
             } = request;
+            if matches!(
+                &input,
+                AgentInput::Message {
+                    native_key: Some(_),
+                    ..
+                }
+            ) {
+                self.mailbox_v2_initialize(&config).await?;
+            }
             let input = match input {
                 AgentInput::UserInput(input) => SpawnInitialInput::UserInput(input),
-                AgentInput::Message { message, mode } => {
+                AgentInput::Message {
+                    message,
+                    mode,
+                    native_key,
+                } => {
                     if mode != MessageDeliveryMode::TriggerTurn {
                         return Err(CodexErr::InvalidRequest(
                             "spawn input must start the child turn".to_string(),
@@ -89,7 +106,8 @@ impl AgentControl for LocalAgentControl {
                         })?;
                     SpawnInitialInput::InterAgentCommunication(
                         message.into_communication(author, recipient, mode),
-                        AgentCommunicationContext::new(AgentCommunicationKind::Spawn, caller),
+                        AgentCommunicationContext::new(AgentCommunicationKind::Spawn, caller)
+                            .with_native_key(native_key),
                     )
                 }
             };
@@ -106,6 +124,15 @@ impl AgentControl for LocalAgentControl {
                 input,
                 mut start_options,
             } = request;
+            if matches!(
+                &input,
+                AgentInput::Message {
+                    native_key: Some(_),
+                    ..
+                }
+            ) {
+                self.mailbox_v2_initialize(&resume_config).await?;
+            }
             let target = self.resolve_target(caller, &target)?;
             let (metadata, submission_id) = match input {
                 AgentInput::UserInput(input) => {
@@ -119,7 +146,11 @@ impl AgentControl for LocalAgentControl {
                     let submission_id = self.send_input(target, input, start_options).await?;
                     (receiver.unwrap_or_default(), submission_id)
                 }
-                AgentInput::Message { message, mode } => {
+                AgentInput::Message {
+                    message,
+                    mode,
+                    native_key,
+                } => {
                     let receiver = self.runtime.ensure_agent_known(target)?;
                     let author = self
                         .runtime
@@ -163,7 +194,8 @@ impl AgentControl for LocalAgentControl {
                         .send_inter_agent_communication(
                             target,
                             communication,
-                            AgentCommunicationContext::new(kind, caller),
+                            AgentCommunicationContext::new(kind, caller)
+                                .with_native_key(native_key),
                             start_options,
                         )
                         .await?;
@@ -180,6 +212,66 @@ impl AgentControl for LocalAgentControl {
 
     fn take_mailbox(&self, agent: ThreadId) -> Vec<crate::PendingAgentMessage> {
         self.runtime.mailboxes.take(agent)
+    }
+
+    fn mailbox_pending_inputs(
+        &self,
+        agent: ThreadId,
+    ) -> BoxFuture<'_, Result<Vec<crate::PendingAgentMessage>>> {
+        Box::pin(self.mailbox_v2_pending_inputs(agent))
+    }
+
+    fn mailbox_inputs_for_ids(
+        &self,
+        agent: ThreadId,
+        ids: Vec<String>,
+    ) -> BoxFuture<'_, Result<Vec<crate::PendingAgentMessage>>> {
+        Box::pin(async move { self.mailbox_v2_inputs_for_ids(agent, &ids).await })
+    }
+
+    fn mailbox_unadmitted_inputs(
+        &self,
+        agent: ThreadId,
+    ) -> BoxFuture<'_, Result<Vec<crate::PendingAgentMessage>>> {
+        Box::pin(self.mailbox_v2_unadmitted_inputs(agent))
+    }
+
+    fn mailbox_confirm_input_canonical<'a>(
+        &'a self,
+        agent: ThreadId,
+        id: &'a str,
+    ) -> BoxFuture<'a, Result<()>> {
+        Box::pin(self.mailbox_v2_confirm_input_canonical(agent, id))
+    }
+
+    fn mailbox_record_admission<'a>(
+        &'a self,
+        agent: ThreadId,
+        turn_id: &'a str,
+        ids: Vec<String>,
+    ) -> BoxFuture<'a, Result<()>> {
+        Box::pin(async move {
+            self.mailbox_v2_record_admission(agent, turn_id, &ids).await
+        })
+    }
+
+    fn mailbox_v2(&self) -> Option<std::sync::Arc<codex_agent_mailbox::Mailbox>> {
+        LocalAgentControl::mailbox_v2(self)
+    }
+
+    fn mailbox_v2_open<'a>(
+        &'a self,
+        config: &'a crate::config::Config,
+    ) -> BoxFuture<'a, Result<Option<std::sync::Arc<codex_agent_mailbox::Mailbox>>>> {
+        Box::pin(async move {
+            if config.multi_agent_version_from_features() != MultiAgentVersion::V2
+                || !config.features.enabled(codex_features::Feature::AgentMailbox)
+            {
+                return Ok(None);
+            }
+            self.mailbox_v2_initialize(config).await?;
+            Ok(self.mailbox_v2())
+        })
     }
 
     fn watch_mailbox(&self, agent: ThreadId) -> tokio::sync::watch::Receiver<bool> {

@@ -10,6 +10,10 @@ use crate::agent_communication::AgentCommunicationContext;
 use crate::agent_communication::AgentCommunicationKind;
 use crate::session_prefix::format_guardian_interruption_message;
 use crate::session_prefix::format_inter_agent_completion_message;
+use codex_agent_mailbox::Continuation;
+use codex_agent_mailbox::GoalBinding;
+use codex_agent_mailbox::Outcome;
+use codex_features::Feature;
 use codex_protocol::AgentPath;
 use codex_protocol::items::SubAgentActivityItem;
 use codex_protocol::protocol::AgentStatus;
@@ -38,7 +42,7 @@ impl LocalAgentControl {
             return;
         };
         let parent_thread_id = *parent_thread_id;
-        let status = outcome.status;
+        let status = outcome.status.clone();
         let Some(parent_agent_path) = child_agent_path
             .as_str()
             .rsplit_once('/')
@@ -106,9 +110,111 @@ impl LocalAgentControl {
         let Some(message) = message else {
             return;
         };
+        let trace_message = trace.is_enabled().then(|| message.clone());
+
+        if let Some(mailbox) = self.mailbox_v2() {
+            let logical_goal = match outcome.logical_goal.as_ref() {
+                Ok(goal) => goal,
+                Err(error) => {
+                    debug!("failed to capture native logical goal for terminal work outcome: {error}");
+                    return;
+                }
+            };
+            let native_outcome = match &status {
+                AgentStatus::Completed(_) => Outcome::Completed,
+                AgentStatus::Errored(_) => Outcome::NeedsAttention,
+                AgentStatus::Interrupted | AgentStatus::Shutdown => Outcome::Cancelled,
+                AgentStatus::PendingInit | AgentStatus::Running | AgentStatus::NotFound => return,
+            };
+            let continuation = logical_goal.as_ref().map_or(Continuation::None, |goal| {
+                let binding = GoalBinding {
+                    goal_id: goal.goal_id.clone(),
+                    parent_thread_id,
+                    child_thread_id: outcome.thread_id,
+                    // The base goal store has no separate control-generation column;
+                    // the immutable goal ID and child incarnation are its exact binding.
+                    control_generation: 0,
+                    incarnation: Some(outcome.thread_id),
+                };
+                match goal.status {
+                    codex_protocol::protocol::ThreadGoalStatus::Active => {
+                        Continuation::PendingGoalBinding(binding)
+                    }
+                    codex_protocol::protocol::ThreadGoalStatus::Paused
+                    | codex_protocol::protocol::ThreadGoalStatus::Blocked
+                    | codex_protocol::protocol::ThreadGoalStatus::UsageLimited => {
+                        Continuation::Deferred(binding)
+                    }
+                    codex_protocol::protocol::ThreadGoalStatus::BudgetLimited
+                    | codex_protocol::protocol::ThreadGoalStatus::Complete => {
+                        Continuation::Terminal(binding)
+                    }
+                }
+            });
+            let activate_if_idle = match self.runtime.upgrade() {
+                Ok(state) => match state.get_thread(parent_thread_id).await {
+                    Ok(thread) => {
+                        let config = thread.session.get_config().await;
+                        config.features.enabled(Feature::AgentMailbox)
+                            && config.features.enabled(Feature::AgentMailboxIdleActivation)
+                    }
+                    Err(_) => false,
+                },
+                Err(_) => false,
+            };
+            let response = (message.len() <= 8_192).then(|| {
+                InterAgentCommunication::new(
+                    child_agent_path.clone(),
+                    parent_agent_path.clone(),
+                    Vec::new(),
+                    message.clone(),
+                    /*trigger_turn*/ false,
+                )
+            });
+            let receipt = match mailbox
+                .record_turn_outcome(
+                    outcome.thread_id,
+                    &outcome.turn_id,
+                    native_outcome,
+                    response,
+                    continuation,
+                    activate_if_idle,
+                )
+                .await
+            {
+                Ok(receipt) => receipt,
+                Err(error) => {
+                    debug!("failed to persist native terminal work outcome: {error}");
+                    return;
+                }
+            };
+            if !receipt.no_matching_work {
+                if let Err(error) = self
+                    .mailbox_v2_deliver_outcome_messages(
+                        parent_thread_id,
+                        &receipt.response_message_ids,
+                    )
+                    .await
+                {
+                    debug!("failed to admit durable terminal response to parent input queue: {error}");
+                    return;
+                }
+                if let Some(message) = trace_message.as_ref() {
+                    trace.record_agent_result_interaction(
+                        outcome.turn_id.as_str(),
+                        parent_thread_id,
+                        &AgentResultTracePayload {
+                            child_agent_path: child_agent_path.as_str(),
+                            message,
+                            status: &status,
+                        },
+                    );
+                }
+                return;
+            }
+        }
         // `communication` owns the message. Keep a second copy only when the
         // recorder will actually need it after parent delivery succeeds.
-        let trace_message = trace.is_enabled().then(|| message.clone());
         let communication = InterAgentCommunication::new(
             child_agent_path.clone(),
             parent_agent_path,
@@ -116,8 +222,11 @@ impl LocalAgentControl {
             message,
             /*trigger_turn*/ false,
         );
-        let context =
-            AgentCommunicationContext::new(AgentCommunicationKind::Result, outcome.thread_id);
+        let context = AgentCommunicationContext::new(
+            AgentCommunicationKind::Result,
+            outcome.thread_id,
+        )
+        .with_native_key(Some(outcome.turn_id.clone()));
         let delivery = self
             .send_inter_agent_communication(
                 parent_thread_id,

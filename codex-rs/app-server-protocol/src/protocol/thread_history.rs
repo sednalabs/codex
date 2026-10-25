@@ -945,6 +945,7 @@ impl ThreadHistoryBuilder {
             model: Some(payload.model.clone()),
             reasoning_effort: Some(payload.reasoning_effort.clone()),
             agents_states: HashMap::new(),
+            mailbox_wait_report: None,
         };
         self.upsert_item_in_current_turn(item);
     }
@@ -980,6 +981,7 @@ impl ThreadHistoryBuilder {
             model: Some(payload.model.clone()),
             reasoning_effort: Some(payload.reasoning_effort.clone()),
             agents_states,
+            mailbox_wait_report: None,
         });
     }
 
@@ -997,6 +999,7 @@ impl ThreadHistoryBuilder {
             model: None,
             reasoning_effort: None,
             agents_states: HashMap::new(),
+            mailbox_wait_report: None,
         };
         self.upsert_item_in_current_turn(item);
     }
@@ -1021,6 +1024,7 @@ impl ThreadHistoryBuilder {
             model: None,
             reasoning_effort: None,
             agents_states: [(receiver_id, received_status)].into_iter().collect(),
+            mailbox_wait_report: None,
         });
     }
 
@@ -1056,6 +1060,7 @@ impl ThreadHistoryBuilder {
             model: None,
             reasoning_effort: None,
             agents_states: HashMap::new(),
+            mailbox_wait_report: None,
         };
         self.upsert_item_in_current_turn(item);
     }
@@ -1091,6 +1096,7 @@ impl ThreadHistoryBuilder {
             model: None,
             reasoning_effort: None,
             agents_states,
+            mailbox_wait_report: None,
         });
     }
 
@@ -1108,6 +1114,7 @@ impl ThreadHistoryBuilder {
             model: None,
             reasoning_effort: None,
             agents_states: HashMap::new(),
+            mailbox_wait_report: None,
         };
         self.upsert_item_in_current_turn(item);
     }
@@ -1134,6 +1141,7 @@ impl ThreadHistoryBuilder {
             model: None,
             reasoning_effort: None,
             agents_states,
+            mailbox_wait_report: None,
         });
     }
 
@@ -1151,6 +1159,7 @@ impl ThreadHistoryBuilder {
             model: None,
             reasoning_effort: None,
             agents_states: HashMap::new(),
+            mailbox_wait_report: None,
         };
         self.upsert_item_in_current_turn(item);
     }
@@ -1180,6 +1189,7 @@ impl ThreadHistoryBuilder {
             model: None,
             reasoning_effort: None,
             agents_states,
+            mailbox_wait_report: None,
         });
     }
 
@@ -3509,6 +3519,8 @@ mod tests {
                 )]
                 .into_iter()
                 .collect(),
+                mailbox_wait_report: None,
+                mailbox_wait_report: None,
                 status: CorePatchApplyStatus::Declined,
             }),
         ];
@@ -4209,6 +4221,8 @@ mod tests {
                 )]
                 .into_iter()
                 .collect(),
+                mailbox_wait_report: None,
+                mailbox_wait_report: None,
             }),
         ];
 
@@ -4279,6 +4293,8 @@ mod tests {
                 )]
                 .into_iter()
                 .collect(),
+                mailbox_wait_report: None,
+                mailbox_wait_report: None,
                 reason: None,
                 grant_root: None,
             }),

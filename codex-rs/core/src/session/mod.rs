@@ -15,6 +15,7 @@ use std::time::UNIX_EPOCH;
 use crate::agent::AgentStatus;
 use crate::agent::agent_status_from_event;
 use crate::agent::api::AgentConfigUpdate;
+use crate::agent::api::AgentLogicalGoal;
 use crate::agent::api::AgentTurnOutcome;
 use crate::agent::control::AgentControlInit;
 use crate::agent::status::is_final;
@@ -2613,6 +2614,44 @@ impl Session {
             return;
         }
 
+        let logical_goal = if self.enabled(Feature::AgentMailbox) {
+            match self.state_db() {
+                Some(state_db) => state_db
+                    .thread_goals()
+                    .get_thread_goal(self.thread_id)
+                    .await
+                    .map(|goal| {
+                        goal.map(|goal| AgentLogicalGoal {
+                            goal_id: goal.goal_id,
+                            status: match goal.status {
+                                codex_state::ThreadGoalStatus::Active => {
+                                    codex_protocol::protocol::ThreadGoalStatus::Active
+                                }
+                                codex_state::ThreadGoalStatus::Paused => {
+                                    codex_protocol::protocol::ThreadGoalStatus::Paused
+                                }
+                                codex_state::ThreadGoalStatus::Blocked => {
+                                    codex_protocol::protocol::ThreadGoalStatus::Blocked
+                                }
+                                codex_state::ThreadGoalStatus::UsageLimited => {
+                                    codex_protocol::protocol::ThreadGoalStatus::UsageLimited
+                                }
+                                codex_state::ThreadGoalStatus::BudgetLimited => {
+                                    codex_protocol::protocol::ThreadGoalStatus::BudgetLimited
+                                }
+                                codex_state::ThreadGoalStatus::Complete => {
+                                    codex_protocol::protocol::ThreadGoalStatus::Complete
+                                }
+                            },
+                        })
+                    })
+                    .map_err(|error| error.to_string()),
+                None => Err("native goal state database is unavailable".to_string()),
+            }
+        } else {
+            Ok(None)
+        };
+
         self.services
             .agent_control
             .turn_finished(
@@ -2627,6 +2666,7 @@ impl Session {
                         .cloned(),
                     status,
                     error_info,
+                    logical_goal,
                 },
                 &self.services.rollout_thread_trace,
             )
@@ -4179,8 +4219,40 @@ impl Session {
         model_info: &ModelInfo,
         communication: impl Into<crate::PendingAgentMessage>,
     ) {
+        let _ = self
+            .record_inter_agent_communication_checked(turn_context, model_info, communication)
+            .await;
+    }
+
+    pub(crate) async fn record_inter_agent_communication_checked(
+        &self,
+        turn_context: &TurnContext,
+        model_info: &ModelInfo,
+        communication: impl Into<crate::PendingAgentMessage>,
+    ) -> codex_protocol::error::Result<()> {
         let communication = communication.into();
+        let durable_input_id = communication
+            .durable_input_id()
+            .map(str::to_string);
+        let durable_message_id = communication
+            .delivery
+            .as_ref()
+            .and_then(crate::agent_communication::MessageDelivery::durable_message_id)
+            .map(str::to_string);
         let mut response_item = communication.to_model_input_item();
+        if durable_input_id.is_some() && response_item.id().is_none() {
+            return Err(codex_protocol::error::CodexErr::Fatal(
+                "accepted durable agent mailbox input has no stable response-item ID".into(),
+            ));
+        }
+        if durable_message_id.as_deref().is_some_and(|message_id| {
+            response_item.id().is_none_or(|id| id.as_str() != message_id)
+        }) {
+            return Err(codex_protocol::error::CodexErr::Fatal(
+                "accepted durable mailbox message ID does not match its canonical response item"
+                    .into(),
+            ));
+        }
         if let ResponseItem::AgentMessage {
             content,
             internal_chat_message_metadata_passthrough,
@@ -4224,21 +4296,47 @@ impl Session {
             .unwrap_or_else(|_| unreachable!("communication boundary remains open"));
         // Older readers assign delivered assistant messages to the next physical
         // communication boundary, so persist earlier confirmed sends first.
-        let (order, pending) = {
+        let (order, pending, already_present, append_pending, existing_item) = {
             let mut state = self.state.lock().await;
-            (
-                state.history.reserve_input_order(),
-                self.pending_code_mode_message_recordings(),
-            )
+            let incoming_id = response_item.id().map(ToString::to_string);
+            let existing_item = incoming_id.as_ref().and_then(|incoming_id| {
+                state
+                    .history
+                    .raw_items()
+                    .find(|item| {
+                        item.id()
+                            .is_some_and(|id| id.as_str() == incoming_id.as_str())
+                    })
+                    .cloned()
+            });
+            let already_present = existing_item.is_some();
+            let append_pending = durable_input_id.as_ref().is_some_and(|id| {
+                let mut pending_appends = self
+                    .mailbox_rollout_appends
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner);
+                if already_present {
+                    pending_appends.contains(id)
+                } else {
+                    pending_appends.insert(id.clone());
+                    true
+                }
+            });
+            let order = (!already_present).then(|| state.history.reserve_input_order());
+            let pending = (!already_present).then(|| self.pending_code_mode_message_recordings());
+            (order, pending, already_present, append_pending, existing_item)
         };
-        response_item
-            .metadata
-            .get_or_insert_default()
-            .user_input_order = Some(order);
-        for mut recording in pending {
-            let _ = recording.changed().await;
+        if already_present && append_pending && let Some(existing_item) = existing_item {
+            response_item = ResponseItemEnvelope::new(existing_item);
         }
-        {
+        if let (Some(order), Some(pending)) = (order, pending) {
+            response_item
+                .metadata
+                .get_or_insert_default()
+                .user_input_order = Some(order);
+            for mut recording in pending {
+                let _ = recording.changed().await;
+            }
             let mut state = self.state.lock().await;
             state.current_time_reminder.note_recorded_items(items);
             state.history.record_annotated_items(
@@ -4246,18 +4344,70 @@ impl Session {
                 model_info.truncation_policy.into(),
             );
         }
-        if let Some(delivery) = &communication.delivery {
-            delivery.consumed(self.thread_id);
+        if durable_input_id.is_some() {
+            let should_append = !already_present || append_pending;
+            if should_append {
+                if !self
+                    .persist_rollout_items(&[
+                        RolloutItem::InterAgentCommunicationMetadata {
+                            trigger_turn: communication.trigger_turn,
+                        },
+                        RolloutItem::ResponseItem(response_item.clone()),
+                    ])
+                    .await
+                {
+                    return Err(codex_protocol::error::CodexErr::Fatal(
+                        "failed to append accepted agent mailbox input to canonical history".into(),
+                    ));
+                }
+                if let Some(id) = durable_input_id.as_deref() {
+                    self.mailbox_rollout_appends
+                        .lock()
+                        .unwrap_or_else(std::sync::PoisonError::into_inner)
+                        .remove(id);
+                }
+            }
+            self.flush_rollout().await.map_err(|error| {
+                codex_protocol::error::CodexErr::Fatal(format!(
+                    "failed to flush accepted agent mailbox input before acknowledgement: {error}"
+                ))
+            })?;
+            if let Some(id) = durable_message_id.as_deref() {
+                self.services
+                    .agent_control
+                    .mailbox_confirm_input_canonical(self.thread_id, id)
+                    .await?;
+            }
+            if let Some(delivery) = &communication.delivery {
+                delivery.consumed(self.thread_id);
+            }
+        } else {
+            if !already_present
+                && !self
+                    .persist_rollout_items(&[
+                        RolloutItem::InterAgentCommunicationMetadata {
+                            trigger_turn: communication.trigger_turn,
+                        },
+                        RolloutItem::ResponseItem(response_item.clone()),
+                    ])
+                    .await
+            {
+                return Err(codex_protocol::error::CodexErr::Fatal(
+                    "failed to append accepted agent mailbox input to canonical history".into(),
+                ));
+            }
+            if let Some(delivery) = &communication.delivery {
+                delivery.consumed(self.thread_id);
+            }
         }
-        self.persist_rollout_items(&[
-            RolloutItem::InterAgentCommunicationMetadata {
-                trigger_turn: communication.trigger_turn,
-            },
-            RolloutItem::ResponseItem(response_item),
-        ])
-        .await;
+        let should_publish_item = !already_present || (durable_input_id.is_some() && append_pending);
+        let raw_item = response_item.item.clone();
         drop(boundary);
-        self.send_raw_response_items(turn_context, items).await;
+        if should_publish_item {
+            self.send_raw_response_items(turn_context, std::slice::from_ref(&raw_item))
+                .await;
+        }
+        Ok(())
     }
 
     async fn maybe_warn_on_server_model_mismatch(
@@ -4339,6 +4489,94 @@ impl Session {
         installation: impl Into<CompactedHistoryInstallation<'a>>,
     ) -> bool {
         let installation = installation.into();
+        // Serialize compaction with accepted mailbox history recording. A durable arrival after
+        // this snapshot remains in SQLite and waits behind the boundary; it is never inferred
+        // from a volatile queue drain.
+        let _mailbox_boundary = if self.enabled(Feature::AgentMailbox) {
+            Some(
+                self.code_mode_message_tasks
+                    .communication_boundary
+                    .acquire()
+                    .await
+                    .unwrap_or_else(|_| unreachable!("communication boundary remains open")),
+            )
+        } else {
+            None
+        };
+        let mut mailbox_items = Vec::new();
+        let mut mailbox_input_ids = Vec::new();
+        let mut mailbox_message_ids = Vec::new();
+        if self.enabled(Feature::AgentMailbox) {
+            let pending = match self
+                .services
+                .agent_control
+                .mailbox_unadmitted_inputs(self.thread_id)
+                .await
+            {
+                Ok(pending) => pending,
+                Err(error) => {
+                    tracing::error!(%error, "failed to preserve durable mailbox inputs during compaction");
+                    return false;
+                }
+            };
+            let config = self
+                .state
+                .lock()
+                .await
+                .session_configuration
+                .original_config_do_not_use
+                .clone();
+            for pending in pending {
+                let Some(input_id) = pending.durable_input_id().map(str::to_string) else {
+                    tracing::error!("durable mailbox compaction input is missing its stable ID");
+                    return false;
+                };
+                let message_id = pending
+                    .delivery
+                    .as_ref()
+                    .and_then(crate::agent_communication::MessageDelivery::durable_message_id)
+                    .map(str::to_string);
+                let mut response_item = pending.to_model_input_item();
+                if response_item
+                    .id()
+                    .is_none_or(|id| id.as_str() != input_id)
+                    || message_id
+                        .as_deref()
+                        .is_some_and(|id| response_item.id().is_none_or(|item_id| item_id.as_str() != id))
+                {
+                    tracing::error!("durable mailbox compaction input has mismatched stable IDs");
+                    return false;
+                }
+                if let ResponseItem::AgentMessage {
+                    content,
+                    internal_chat_message_metadata_passthrough,
+                    ..
+                } = &mut response_item
+                {
+                    internal_chat_message_metadata_passthrough
+                        .get_or_insert_default()
+                        .content_item_metadata
+                        .get_or_insert_with(|| {
+                            vec![
+                                ContentItemMetadata::tool(Some(
+                                    config
+                                        .multi_agent_v2
+                                        .tool_namespace
+                                        .clone()
+                                        .map(ContentItemNamespace::from)
+                                        .unwrap_or(ContentItemNamespace::Functions),
+                                ));
+                                content.len()
+                            ]
+                        });
+                }
+                mailbox_input_ids.push(input_id);
+                if let Some(message_id) = message_id {
+                    mailbox_message_ids.push(message_id);
+                }
+                mailbox_items.push(response_item);
+            }
+        }
         let compaction_model_hash = match &installation {
             CompactedHistoryInstallation::Complete(metadata) => &metadata.compaction_model_hash,
             CompactedHistoryInstallation::Prefix { model_info, .. } => &model_info.comp_hash,
@@ -4454,6 +4692,19 @@ impl Session {
                         .cloned(),
                 );
             }
+            for mailbox_item in mailbox_items {
+                let Some(item_id) = mailbox_item.id().map(ToString::to_string) else {
+                    return false;
+                };
+                if !items.iter().any(|existing| {
+                    existing
+                        .item
+                        .id()
+                        .is_some_and(|existing_id| existing_id.as_str() == item_id)
+                }) {
+                    items.push(ResponseItemEnvelope::new(mailbox_item));
+                }
+            }
             let replacement_history = items.clone();
             state.replace_annotated_history(
                 items,
@@ -4503,12 +4754,37 @@ impl Session {
             // The frozen turn context must not override current settings in persisted metadata.
             RolloutItem::EventMsg(thread_settings::applied_event(self).await),
         ];
-        if self.persist_rollout_items(&rollout_items).await
-            && let Some(revision) = mcp_revision
-        {
+        let persisted = self.persist_rollout_items(&rollout_items).await;
+        if persisted && let Some(revision) = mcp_revision {
             self.services
                 .executed_tool_calls
                 .mark_mcp_attribution_persisted(revision);
+        }
+        if !mailbox_input_ids.is_empty() {
+            if !persisted {
+                return false;
+            }
+            if let Err(error) = self.flush_rollout().await {
+                tracing::error!(%error, "failed to flush compacted durable mailbox inputs before acknowledgement");
+                return false;
+            }
+            for id in mailbox_input_ids {
+                self.mailbox_rollout_appends
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner)
+                    .remove(&id);
+            }
+            for id in mailbox_message_ids {
+                if let Err(error) = self
+                    .services
+                    .agent_control
+                    .mailbox_confirm_input_canonical(self.thread_id, &id)
+                    .await
+                {
+                    tracing::error!(%error, message_id = %id, "failed to acknowledge compacted durable mailbox message");
+                    return false;
+                }
+            }
         }
         {
             let mut state = self.state.lock().await;

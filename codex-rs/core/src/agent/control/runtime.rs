@@ -199,6 +199,8 @@ pub(crate) struct LocalAgentRuntime {
     pub(super) registry: Arc<AgentRegistry>,
     pub(super) residency: Arc<V2Residency>,
     pub(super) mailboxes: Arc<super::mailbox::Mailboxes>,
+    /// Durable V2 custody is separate from the synchronous, destructive V1 mailbox shim.
+    pub(super) mailbox_v2: Arc<tokio::sync::OnceCell<Arc<codex_agent_mailbox::Mailbox>>>,
     /// Shared by every session in this tree, including private delegates.
     pub(crate) shutdown: CancellationToken,
     shutdown_state: Arc<AgentTreeShutdownState>,
@@ -216,6 +218,7 @@ impl LocalAgentRuntime {
             registry: Arc::default(),
             residency: Arc::default(),
             mailboxes: Arc::default(),
+            mailbox_v2: Arc::default(),
             shutdown: CancellationToken::new(),
             shutdown_state: Arc::default(),
             agent_execution_limiter: Arc::default(),

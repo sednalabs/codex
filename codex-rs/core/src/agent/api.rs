@@ -22,6 +22,7 @@ use codex_protocol::protocol::AgentStatus;
 use codex_protocol::protocol::CodexErrorInfo;
 use codex_protocol::protocol::MultiAgentVersion;
 use codex_protocol::protocol::SessionSource;
+use codex_protocol::protocol::ThreadGoalStatus;
 use codex_protocol::protocol::TokenUsage;
 use codex_protocol::turn_input::TurnStartOptions;
 use codex_protocol::user_input::UserInput;
@@ -40,6 +41,12 @@ const _: Option<&dyn AgentControl> = None;
 /// Boxed Send futures allow callers to use `Arc<dyn AgentControl>`.
 pub trait AgentControl: Send + Sync {
     fn identity(&self) -> SessionId;
+
+    /// Read an existing native reference name without loading the thread.
+    fn agent_metadata(&self, agent: ThreadId) -> Option<AgentMetadata> {
+        let _ = agent;
+        None
+    }
 
     /// Resolve an ID or a name relative to the caller's captured source, without loading.
     /// The local backend lazily registers callers with no parent before resolving, including
@@ -71,6 +78,75 @@ pub trait AgentControl: Send + Sync {
     /// Take queued, non-turn-starting mail in order, without loading the recipient.
     /// This in-memory operation performs no I/O; returning transfers ownership to the caller.
     fn take_mailbox(&self, agent: ThreadId) -> Vec<crate::PendingAgentMessage>;
+
+    /// Read durable V2 mail without consuming its SQLite record. The returned
+    /// copy is only an input candidate; canonical history settlement remains
+    /// recipient-owned and must be explicitly acknowledged after flush.
+    fn mailbox_pending_inputs(
+        &self,
+        agent: ThreadId,
+    ) -> BoxFuture<'_, Result<Vec<crate::PendingAgentMessage>>> {
+        Box::pin(async { Ok(Vec::new()) })
+    }
+
+    /// Resolve only exact stable IDs from a provider prompt to durable accepted
+    /// inputs. Unrelated AgentMessage history is ignored.
+    fn mailbox_inputs_for_ids(
+        &self,
+        agent: ThreadId,
+        ids: Vec<String>,
+    ) -> BoxFuture<'_, Result<Vec<crate::PendingAgentMessage>>> {
+        let _ = (agent, ids);
+        Box::pin(async { Ok(Vec::new()) })
+    }
+
+    /// Return durable inputs not yet admitted to a provider request so compaction
+    /// can preserve their exact bodies in the replacement history.
+    fn mailbox_unadmitted_inputs(
+        &self,
+        agent: ThreadId,
+    ) -> BoxFuture<'_, Result<Vec<crate::PendingAgentMessage>>> {
+        Box::pin(async { Ok(Vec::new()) })
+    }
+
+    /// Confirm an exact recipient-owned message only after canonical append and
+    /// successful rollout flush. Work inputs are settled by provider admission.
+    fn mailbox_confirm_input_canonical<'a>(
+        &'a self,
+        agent: ThreadId,
+        id: &'a str,
+    ) -> BoxFuture<'a, Result<()>> {
+        let _ = (agent, id);
+        Box::pin(async { Ok(()) })
+    }
+
+    /// Record only mailbox-owned IDs present in the provider request accepted at
+    /// ResponseEvent::Created.
+    fn mailbox_record_admission<'a>(
+        &'a self,
+        agent: ThreadId,
+        turn_id: &'a str,
+        ids: Vec<String>,
+    ) -> BoxFuture<'a, Result<()>> {
+        let _ = (agent, turn_id, ids);
+        Box::pin(async { Ok(()) })
+    }
+
+    /// Expose the already-open local durable store to native V2 wait tools.
+    /// Other backends may leave it unavailable without changing legacy waits.
+    fn mailbox_v2(&self) -> Option<std::sync::Arc<codex_agent_mailbox::Mailbox>> {
+        None
+    }
+
+    /// Open the recipient's local durable store only for an enabled native V2
+    /// session; feature-off and nonlocal implementations retain legacy waits.
+    fn mailbox_v2_open<'a>(
+        &'a self,
+        config: &'a Config,
+    ) -> BoxFuture<'a, Result<Option<std::sync::Arc<codex_agent_mailbox::Mailbox>>>> {
+        let _ = config;
+        Box::pin(async { Ok(None) })
+    }
 
     /// Observe whether unread mail is available. Subscribe before the first read so
     /// arrivals cannot be missed; notifications do not consume mail or start a turn.
@@ -203,6 +279,9 @@ pub enum AgentInput {
     Message {
         message: AgentMessage,
         mode: MessageDeliveryMode,
+        /// Exact native invocation identity for durable V2 acceptance. Legacy and
+        /// non-native callers leave this unset and retain their existing delivery path.
+        native_key: Option<String>,
     },
 }
 
@@ -241,6 +320,18 @@ pub struct AgentTurnOutcome {
     pub status: AgentStatus,
     /// Typed reason used to choose guidance in the parent notification.
     pub error_info: Option<CodexErrorInfo>,
+    /// Exact lower-level goal projection captured when the terminal event is reduced.
+    /// `Err` means the native goal state could not be read and must not be inferred.
+    pub logical_goal: std::result::Result<Option<AgentLogicalGoal>, String>,
+}
+
+/// Minimal typed goal state needed to bind durable work continuation. The core
+/// goal store is authoritative for identity/status; mailbox policy stays in the
+/// adapter rather than rebuilding a second goal-notification controller.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct AgentLogicalGoal {
+    pub goal_id: String,
+    pub status: ThreadGoalStatus,
 }
 
 /// Settings shared by the tree. A service tier of `None` restores the default tier.

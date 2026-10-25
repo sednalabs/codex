@@ -14,6 +14,10 @@ use codex_protocol::items::DynamicToolCallItem;
 use codex_protocol::items::DynamicToolCallStatus as CoreDynamicToolCallStatus;
 use codex_protocol::items::FileChangeItem;
 use codex_protocol::items::ImageViewItem;
+use codex_protocol::items::MailboxWaitReport;
+use codex_protocol::items::MailboxWaitReturnWhen;
+use codex_protocol::items::MailboxWaitSelectionItem;
+use codex_protocol::items::MailboxWakeCause;
 use codex_protocol::items::McpToolCallItem;
 use codex_protocol::items::McpToolCallStatus as CoreMcpToolCallStatus;
 use codex_protocol::items::ReasoningItem;
@@ -3416,6 +3420,23 @@ fn core_turn_item_into_thread_item_converts_supported_variants() {
 
     let sender_thread_id = codex_protocol::ThreadId::default();
     let receiver_thread_id = codex_protocol::ThreadId::default();
+    let mailbox_wait_report = MailboxWaitReport {
+        requested_targets: vec!["work_1".to_string()],
+        requested_replies_to: Vec::new(),
+        return_when: MailboxWaitReturnWhen::Any,
+        completed: vec![MailboxWaitSelectionItem {
+            work_ref: Some("work_1".to_string()),
+            message_id: None,
+            agent: Some("worker".to_string()),
+            status: "completed".to_string(),
+        }],
+        pending: Vec::new(),
+        completion_reason: Some(MailboxWakeCause::Result),
+        condition_satisfied: true,
+        quiet_count: 2,
+        wake_sender: None,
+        wake_ref: Some("work_1".to_string()),
+    };
     let collab_item = TurnItem::CollabAgentToolCall(CollabAgentToolCallItem {
         id: "collab-1".to_string(),
         tool: CoreCollabAgentTool::SendInput,
@@ -3429,6 +3450,7 @@ fn core_turn_item_into_thread_item_converts_supported_variants() {
         agents_states: [(receiver_thread_id, CoreAgentStatus::Completed(None))]
             .into_iter()
             .collect(),
+        mailbox_wait_report: Some(mailbox_wait_report.clone()),
     });
 
     assert_eq!(
@@ -3451,6 +3473,7 @@ fn core_turn_item_into_thread_item_converts_supported_variants() {
             )]
             .into_iter()
             .collect(),
+            mailbox_wait_report: Some(mailbox_wait_report),
         }
     );
 

@@ -322,7 +322,7 @@ fn followup_task_tool_requires_message_and_has_no_output_schema() {
 }
 
 #[test]
-fn wait_agent_tool_v2_uses_timeout_only_summary_output() {
+fn wait_agent_tool_v2_exposes_selection_and_typed_wait_report() {
     let ToolSpec::Function(ResponsesApiTool {
         description,
         parameters,
@@ -344,11 +344,11 @@ fn wait_agent_tool_v2_uses_timeout_only_summary_output() {
         .properties
         .as_ref()
         .expect("wait_agent should use object params");
-    assert!(!properties.contains_key("targets"));
+    assert!(properties.contains_key("targets"));
+    assert!(properties.contains_key("replies_to"));
+    assert!(properties.contains_key("return_when"));
     assert!(properties.contains_key("timeout_ms"));
-    assert!(description.contains(
-        "Does not return the content; returns either a summary of which agents have updates (if any)"
-    ));
+    assert!(description.contains("Quiet notifications are admitted without waking early"));
     assert_eq!(
         properties
             .get("timeout_ms")
@@ -356,11 +356,30 @@ fn wait_agent_tool_v2_uses_timeout_only_summary_output() {
         Some("Timeout in milliseconds. Defaults to 30000, min 10000, max 3600000.")
     );
     assert_eq!(parameters.required.as_ref(), None);
+    let output_schema = output_schema.expect("wait output schema").to_value();
     assert_eq!(
-        output_schema.expect("wait output schema").to_value()["properties"]["message"]["description"],
-        json!(
-            "Brief wait summary without the agent's final content, including any timeout adjustment."
-        )
+        output_schema["properties"]["message"]["description"],
+        json!("Brief wait summary, including any timeout adjustment.")
+    );
+    assert_eq!(
+        output_schema["properties"]["mailbox_wait_report"]["properties"]["completionReason"]["enum"],
+        json!([
+            "result",
+            "reply",
+            "request",
+            "human",
+            "tool",
+            "deadline",
+            "cancel",
+            "interrupted",
+            "subscription_loss",
+            "runtime_fault",
+            "no_matching_work",
+            "already_satisfied",
+            "cycle",
+            "needs_attention",
+            null
+        ])
     );
 }
 

@@ -61,6 +61,7 @@ async fn handle_close_agent(
                 model: None,
                 reasoning_effort: None,
                 agents_states: Default::default(),
+                mailbox_wait_report: None,
             }),
         )
         .await;
@@ -92,6 +93,7 @@ async fn handle_close_agent(
                 model: None,
                 reasoning_effort: None,
                 agents_states: [(agent_id, status.clone())].into_iter().collect(),
+                mailbox_wait_report: None,
             }),
         )
         .await;

@@ -362,6 +362,73 @@ pub struct CollabAgentToolCallItem {
     pub reasoning_effort: Option<ReasoningEffortConfig>,
     #[serde(default)]
     pub agents_states: HashMap<ThreadId, AgentStatus>,
+    /// Structured native V2 selection state, updated while the wait is asleep
+    /// and retained on the canonical history item for replay.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub mailbox_wait_report: Option<MailboxWaitReport>,
+}
+
+#[derive(Debug, Clone, Copy, Default, Deserialize, Serialize, TS, JsonSchema, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum MailboxWaitReturnWhen {
+    #[default]
+    Any,
+    All,
+}
+
+#[derive(Debug, Clone, Copy, Deserialize, Serialize, TS, JsonSchema, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum MailboxWakeCause {
+    Result,
+    Reply,
+    Request,
+    Human,
+    Tool,
+    Deadline,
+    Cancel,
+    Interrupted,
+    SubscriptionLoss,
+    RuntimeFault,
+    NoMatchingWork,
+    AlreadySatisfied,
+    Cycle,
+    NeedsAttention,
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize, TS, JsonSchema, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct MailboxWaitSelectionItem {
+    #[serde(default, alias = "work_ref")]
+    #[ts(optional = false)]
+    pub work_ref: Option<String>,
+    #[serde(default, alias = "message_id")]
+    #[ts(optional = false)]
+    pub message_id: Option<String>,
+    #[serde(default)]
+    #[ts(optional = false)]
+    pub agent: Option<String>,
+    pub status: String,
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize, TS, JsonSchema, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct MailboxWaitReport {
+    #[serde(alias = "requested_targets")]
+    pub requested_targets: Vec<String>,
+    #[serde(alias = "requested_replies_to")]
+    pub requested_replies_to: Vec<String>,
+    pub return_when: MailboxWaitReturnWhen,
+    pub completed: Vec<MailboxWaitSelectionItem>,
+    pub pending: Vec<MailboxWaitSelectionItem>,
+    #[serde(default)]
+    pub completion_reason: Option<MailboxWakeCause>,
+    pub condition_satisfied: bool,
+    pub quiet_count: usize,
+    #[serde(default)]
+    pub wake_sender: Option<String>,
+    #[serde(default)]
+    pub wake_ref: Option<String>,
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize, TS, JsonSchema, PartialEq, Eq)]

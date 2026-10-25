@@ -32,6 +32,7 @@ impl ToolCallAnalytics {
                 model: None,
                 reasoning_effort: None,
                 agents_states: Default::default(),
+                mailbox_wait_report: None,
             },
             started_at_ms: now_unix_timestamp_ms(),
         }

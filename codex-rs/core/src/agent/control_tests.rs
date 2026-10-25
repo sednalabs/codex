@@ -1092,6 +1092,61 @@ async fn ensure_v2_child_loaded_preserves_evicted_parent_authority() {
 }
 
 #[tokio::test]
+async fn resumed_recipient_lazily_reopens_durable_mailbox_before_first_turn_read() {
+    let (home, mut config) = test_config().await;
+    config.features.enable(Feature::MultiAgentV2).unwrap();
+    config.features.enable(Feature::Sqlite).unwrap();
+    config.features.enable(Feature::AgentMailbox).unwrap();
+    let harness = AgentControlHarness::new_with_config(home, config.clone()).await;
+    let (recipient, thread) = harness.start_thread().await;
+    let control = thread
+        .session
+        .services
+        .local_agent_runtime
+        .control(thread.session.session_id());
+    control.runtime.register_session_root(recipient, None);
+    control.mailbox_v2_initialize(&config).await.unwrap();
+
+    let mut communication = InterAgentCommunication::new(
+        AgentPath::root(),
+        AgentPath::root(),
+        Vec::new(),
+        "accepted native input survives runtime restart".to_string(),
+        /*trigger_turn*/ true,
+    );
+    let context = AgentCommunicationContext::new(AgentCommunicationKind::Followup, recipient)
+        .with_native_key(Some("restart-replay".to_string()));
+    let mut submission_id = "original-submission".to_string();
+    control
+        .mailbox_v2_accept_native_submission(
+            recipient,
+            &context,
+            &mut communication,
+            &mut submission_id,
+        )
+        .await
+        .unwrap()
+        .expect("native follow-up should be accepted durably");
+    let input_id = communication.id.clone().expect("stable input id");
+
+    // A new control/runtime has no in-memory handle yet. Its first active-turn
+    // read must open the store from the recipient's captured configuration.
+    let resumed_control = LocalAgentControl::new(
+        control.runtime.manager.clone(),
+        control.runtime.thread_id_generator.clone(),
+        /*rollout_budget*/ None,
+    );
+    assert!(resumed_control.mailbox_v2().is_none());
+    let pending = resumed_control
+        .mailbox_v2_pending_inputs(recipient)
+        .await
+        .unwrap();
+    assert_eq!(pending.len(), 1);
+    assert_eq!(pending[0].durable_input_id(), Some(input_id.as_str()));
+    assert!(resumed_control.mailbox_v2().is_some());
+}
+
+#[tokio::test]
 async fn cancelled_v2_send_finishes_reload_registration() {
     let (home, mut config) = test_config().await;
     config.features.enable(Feature::MultiAgentV2).unwrap();
@@ -1138,6 +1193,7 @@ async fn cancelled_v2_send_finishes_reload_registration() {
         input: AgentInput::Message {
             message: AgentMessage::Plaintext(message.to_string()),
             mode: MessageDeliveryMode::TriggerTurn,
+            native_key: None,
         },
         start_options: Default::default(),
     };
@@ -1802,6 +1858,7 @@ async fn cold_resume_with_thread_instructions_preserves_lazy_v2_child_inheritanc
                 input: crate::AgentInput::Message {
                     message: AgentMessage::Plaintext("hello after resume".to_string()),
                     mode: MessageDeliveryMode::QueueOnly,
+                    native_key: None,
                 },
                 start_options: TurnStartOptions {
                     root_turn_id: turn.turn_metadata_state.root_turn_id(),
@@ -1951,6 +2008,7 @@ async fn v2_reload_preserves_shared_instructions_after_root_unloads(
             input: crate::AgentInput::Message {
                 message: AgentMessage::Plaintext("wake the unloaded target".to_string()),
                 mode: MessageDeliveryMode::QueueOnly,
+                native_key: None,
             },
             start_options: TurnStartOptions {
                 root_turn_id: sender_turn.turn_metadata_state.root_turn_id(),
@@ -2123,6 +2181,7 @@ async fn v2_spawn_resolves_reported_effort_without_changing_child_selection(
             input: AgentInput::Message {
                 message: AgentMessage::Plaintext("child task".to_string()),
                 mode: MessageDeliveryMode::TriggerTurn,
+                native_key: None,
             },
             source,
             options: SpawnAgentOptions {

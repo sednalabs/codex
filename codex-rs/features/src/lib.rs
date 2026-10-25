@@ -234,6 +234,10 @@ pub enum Feature {
     Collab,
     /// Enable task-path-based multi-agent routing.
     MultiAgentV2,
+    /// Use durable, selection-aware mailboxes for same-tree V2 collaboration.
+    AgentMailbox,
+    /// Allow a recipient to opt in to idle activation from accepted mailbox messages.
+    AgentMailboxIdleActivation,
     /// Keep spawn model choices in append-only context instead of tool descriptions.
     ModelCatalogInContext,
     /// Inherit client-defined dynamic tools in fresh V2 subagents.
@@ -1532,6 +1536,18 @@ pub const FEATURES: &[FeatureSpec] = &[
         id: Feature::MultiAgentV2,
         key: "multi_agent_v2",
         stage: Stage::Stable,
+        default_enabled: false,
+    },
+    FeatureSpec {
+        id: Feature::AgentMailbox,
+        key: "agent_mailbox",
+        stage: Stage::UnderDevelopment,
+        default_enabled: false,
+    },
+    FeatureSpec {
+        id: Feature::AgentMailboxIdleActivation,
+        key: "agent_mailbox_idle_activation",
+        stage: Stage::UnderDevelopment,
         default_enabled: false,
     },
     FeatureSpec {

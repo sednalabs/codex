@@ -568,6 +568,23 @@ pub(crate) async fn run_turn(
             sess.record_reasoning_effort_override(step_context.as_ref())
                 .await;
 
+            // Reconcile durable recipient mail before taking the provider snapshot. The read
+            // is bounded and non-consuming; each item is acknowledged only after its stable
+            // response-item ID is appended and the rollout flush succeeds.
+            for communication in sess
+                .services
+                .agent_control
+                .mailbox_pending_inputs(sess.thread_id)
+                .await?
+            {
+                sess.record_inter_agent_communication_checked(
+                    turn_context.as_ref(),
+                    &step_context.settings.model_info,
+                    communication,
+                )
+                .await?;
+            }
+
             // Construct the input that we will send to the model.
             let sampling_request_input: Vec<ResponseItem> = async {
                 sess.clone_history()
@@ -967,6 +984,7 @@ pub(crate) async fn run_hooks_and_record_inputs(
     }
     let mut blocked_input = false;
     let mut accepted_user_input = false;
+    let mut durable_input_failed = false;
     for input_item in input {
         let hook_outcome = inspect_pending_input(sess, turn_context, input_item).await;
         if hook_outcome.should_stop {
@@ -988,7 +1006,7 @@ pub(crate) async fn run_hooks_and_record_inputs(
             } else {
                 persist_context
             };
-            record_pending_input(
+            durable_input_failed |= record_pending_input(
                 sess,
                 turn_context,
                 model_info,
@@ -999,7 +1017,7 @@ pub(crate) async fn run_hooks_and_record_inputs(
             .await;
         }
     }
-    blocked_input && !accepted_user_input
+    (blocked_input && !accepted_user_input) || durable_input_failed
 }
 
 fn turn_user_input(input: &[TurnInput]) -> Vec<UserInput> {
@@ -1784,6 +1802,13 @@ async fn run_sampling_request(
         sess.services
             .executed_tool_calls
             .attach_to_prompt(&mut prompt_input, &mut executed_tool_calls_by_output);
+        let mailbox_input_ids = prompt_input
+            .iter()
+            .filter_map(|item| match item {
+                ResponseItem::AgentMessage { id: Some(id), .. } => Some(id.to_string()),
+                _ => None,
+            })
+            .collect::<Vec<_>>();
         let mut prompt = build_prompt(
             prompt_input,
             step_context.as_ref(),
@@ -2904,6 +2929,20 @@ async fn try_run_sampling_request(
 
         match event {
             ResponseEvent::Created { response_id } => {
+                if let Err(error) = sess
+                    .services
+                    .agent_control
+                    .mailbox_record_admission(
+                        sess.thread_id,
+                        &turn_context.sub_id,
+                        mailbox_input_ids.clone(),
+                    )
+                    .await
+                {
+                    // The provider request has been created, but durable work must not be
+                    // reported as admitted without recording this exact accepted snapshot.
+                    break Err(error);
+                }
                 if let Some(response_id) = response_id {
                     turn_context
                         .extension_data

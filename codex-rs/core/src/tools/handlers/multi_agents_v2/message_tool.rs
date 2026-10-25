@@ -12,6 +12,7 @@ use crate::agent::api::SendRequest;
 use crate::agent::child_config::build_agent_resume_config;
 use crate::agent::types::MessageDeliveryMode;
 use crate::tools::context::FunctionToolOutput;
+use codex_features::Feature;
 
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -68,6 +69,11 @@ pub(super) async fn handle_message_string_tool(
             input: AgentInput::Message {
                 message: agent_message_from_tool(message, &source),
                 mode,
+                native_key: turn
+                    .config
+                    .features
+                    .enabled(Feature::AgentMailbox)
+                    .then(|| call_id.clone()),
             },
             start_options: TurnStartOptions {
                 parent_turn_id: (mode == MessageDeliveryMode::TriggerTurn)

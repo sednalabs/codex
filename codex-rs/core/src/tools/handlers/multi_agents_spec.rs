@@ -303,8 +303,14 @@ pub fn create_wait_agent_tool_v1(options: WaitAgentTimeoutOptions) -> ToolSpec {
 pub fn create_wait_agent_tool_v2(options: WaitAgentTimeoutOptions) -> ToolSpec {
     ToolSpec::Function(ResponsesApiTool {
         name: "wait_agent".to_string(),
-        description: "Wait for a mailbox update from any live agent, including queued messages and final-status notifications. The wait also ends early when new user input is steered into the active turn. Does not return the content; returns either a summary of which agents have updates (if any), an interruption summary for steered input, or a timeout summary if no activity arrives before the deadline."
-            .to_string(),
+        description: concat!(
+            "Wait on selected durable work references, replies, or all currently issued work. ",
+            "Quiet notifications remain pending without waking early; explicit requests, ",
+            "alerts, selected completion, steered user input, cancellation, or the deadline ",
+            "can end the wait. The result includes resolved completed and pending items, the ",
+            "wake cause, readable agent names, and the number of still-quiet notifications."
+        )
+        .to_string(),
         strict: false,
         defer_loading: None,
         parameters: wait_agent_tool_parameters_v2(options),
@@ -541,14 +547,60 @@ fn wait_output_schema_v2() -> Value {
         "properties": {
             "message": {
                 "type": "string",
-                "description": "Brief wait summary without the agent's final content, including any timeout adjustment."
+                "description": "Brief wait summary, including any timeout adjustment."
             },
             "timed_out": {
                 "type": "boolean",
-                "description": "Whether the wait call returned because no mailbox update arrived before the timeout."
+                "description": "Whether the wait call returned because its deadline elapsed."
+            },
+            "mailbox_wait_report": {
+                "type": "object",
+                "description": concat!(
+                    "Resolved exact mailbox selection and terminal wait cause. ",
+                    "Present for native durable-mailbox waits."
+                ),
+                "properties": {
+                    "requestedTargets": {"type": "array", "items": {"type": "string"}},
+                    "requestedRepliesTo": {"type": "array", "items": {"type": "string"}},
+                    "returnWhen": {"type": "string", "enum": ["any", "all"]},
+                    "completed": {"type": "array", "items": mailbox_wait_selection_item_output_schema()},
+                    "pending": {"type": "array", "items": mailbox_wait_selection_item_output_schema()},
+                    "completionReason": {
+                        "type": ["string", "null"],
+                        "enum": [
+                            "result", "reply", "request", "human", "tool", "deadline",
+                            "cancel", "interrupted", "subscription_loss", "runtime_fault",
+                            "no_matching_work", "already_satisfied", "cycle", "needs_attention", null
+                        ]
+                    },
+                    "conditionSatisfied": {"type": "boolean"},
+                    "quietCount": {"type": "integer", "minimum": 0},
+                    "wakeSender": {"type": ["string", "null"]},
+                    "wakeRef": {"type": ["string", "null"]}
+                },
+                "required": [
+                    "requestedTargets", "requestedRepliesTo", "returnWhen", "completed",
+                    "pending", "completionReason", "conditionSatisfied", "quietCount",
+                    "wakeSender", "wakeRef"
+                ],
+                "additionalProperties": false
             }
         },
         "required": ["message", "timed_out"],
+        "additionalProperties": false
+    })
+}
+
+fn mailbox_wait_selection_item_output_schema() -> Value {
+    json!({
+        "type": "object",
+        "properties": {
+            "workRef": {"type": ["string", "null"]},
+            "messageId": {"type": ["string", "null"]},
+            "agent": {"type": ["string", "null"]},
+            "status": {"type": "string"}
+        },
+        "required": ["workRef", "messageId", "agent", "status"],
         "additionalProperties": false
     })
 }
@@ -915,13 +967,39 @@ fn wait_agent_tool_parameters_v1(options: WaitAgentTimeoutOptions) -> JsonSchema
 }
 
 fn wait_agent_tool_parameters_v2(options: WaitAgentTimeoutOptions) -> JsonSchema {
-    let properties = BTreeMap::from([(
-        "timeout_ms".to_string(),
-        JsonSchema::number(Some(format!(
-            "Timeout in milliseconds. Defaults to {}, min {}, max {}.",
-            options.default_timeout_ms, options.min_timeout_ms, options.max_timeout_ms,
-        ))),
-    )]);
+    let properties = BTreeMap::from([
+        (
+            "targets".to_string(),
+            JsonSchema::array(
+                JsonSchema::string(None),
+                Some("Optional agent ids or exact work references to join.".to_string()),
+            ),
+        ),
+        (
+            "replies_to".to_string(),
+            JsonSchema::array(
+                JsonSchema::string(None),
+                Some("Optional exact request message ids whose replies to join.".to_string()),
+            ),
+        ),
+        (
+            "return_when".to_string(),
+            JsonSchema::string_enum(
+                vec![json!("any"), json!("all")],
+                Some(concat!(
+                    "Return when any selected item is ready, or wait until all selected items ",
+                    "are ready. Defaults to any."
+                ).to_string()),
+            ),
+        ),
+        (
+            "timeout_ms".to_string(),
+            JsonSchema::number(Some(format!(
+                "Timeout in milliseconds. Defaults to {}, min {}, max {}.",
+                options.default_timeout_ms, options.min_timeout_ms, options.max_timeout_ms,
+            ))),
+        ),
+    ]);
 
     JsonSchema::object(properties, /*required*/ None, Some(false.into()))
 }

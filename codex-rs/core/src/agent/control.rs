@@ -5,6 +5,7 @@ use crate::agent::AgentStatus;
 use crate::agent::role::DEFAULT_ROLE_NAME;
 use crate::agent::role::resolve_role_config;
 use crate::agent::status::is_final;
+use self::mailbox_v2::MailboxActivationPlan;
 use crate::agent::types::AgentMetadata;
 use crate::agent::types::LiveAgent;
 use crate::agent_communication::AgentCommunicationContext;
@@ -77,6 +78,7 @@ mod inspection;
 mod interrupt;
 mod legacy;
 mod mailbox;
+mod mailbox_v2;
 mod residency;
 pub use residency::ThreadEvictionOutcome;
 mod resume;
@@ -264,15 +266,75 @@ impl LocalAgentControl {
         context: AgentCommunicationContext,
         start_options: TurnStartOptions,
     ) -> CodexResult<String> {
+        // Persist native accepted work before extension publication or recipient
+        // submission. A retry with the same native key resolves the original receipt.
+        let mut durable_submission_id = Uuid::now_v7().to_string();
+        let durable_work = self
+            .mailbox_v2_accept_native_submission(
+                agent_id,
+                &context,
+                &mut communication,
+                &mut durable_submission_id,
+            )
+            .await?;
+        let durable_work = match durable_work {
+            Some((work, codex_agent_mailbox::DispatchDecision::Dispatch)) => Some(work),
+            Some((work, codex_agent_mailbox::DispatchDecision::AlreadyDispatched)) => {
+                return Ok(work.submission_id);
+            }
+            Some((work, codex_agent_mailbox::DispatchDecision::RecoveryNeeded)) => {
+                return Err(CodexErr::UnsupportedOperation(format!(
+                    "accepted work {} requires native delivery reconciliation; its original input was retained",
+                    work.id
+                )));
+            }
+            None => None,
+        };
+
+        let durable_message = self
+            .mailbox_v2_accept_native_message(
+                agent_id,
+                &context,
+                &communication,
+            )
+            .await?;
+        let activation_plan = match durable_message.as_ref() {
+            Some(envelope) => self
+                .mailbox_v2_activation_plan(agent_id, envelope)
+                .await?,
+            None => MailboxActivationPlan::QueueOnly,
+        };
+        if activation_plan == MailboxActivationPlan::AlreadyActivated {
+            return Ok(durable_submission_id);
+        }
+        if let Some(envelope) = durable_message.as_ref() {
+            communication = envelope.communication.clone();
+            durable_submission_id = envelope.id.clone();
+        }
+        if activation_plan == MailboxActivationPlan::StartIdleRecipient {
+            communication.trigger_turn = true;
+        }
+        let durable_input_id = durable_work
+            .as_ref()
+            .and_then(|_| communication.id.as_ref().map(ToString::to_string))
+            .or_else(|| durable_message.as_ref().map(|envelope| envelope.id.clone()));
+        let durable_message_id = durable_message.as_ref().map(|envelope| envelope.id.clone());
+
         let observers = state.extensions.message_lifecycle_contributors();
-        let delivery = (!observers.is_empty()).then(|| {
+        let delivery = (!observers.is_empty() || durable_input_id.is_some()).then(|| {
             let message_id = communication
                 .id
                 .take()
                 .filter(|id| !id.is_empty())
                 .unwrap_or_else(|| ResponseItemId::new("amsg"));
             communication.id = Some(message_id.clone());
-            MessageDelivery::publish(context.sender_thread_id, message_id, observers)
+            MessageDelivery::publish(
+                context.sender_thread_id,
+                message_id,
+                observers,
+                durable_input_id.clone(),
+                durable_message_id.clone(),
+            )
         });
         let communication_for_log =
             crate::agent_communication::logging_enabled().then(|| communication.clone());
@@ -282,6 +344,17 @@ impl LocalAgentControl {
             if !communication.trigger_turn && !threads.contains_key(&agent_id) {
                 let _membership = self.runtime.admit_start()?;
                 self.runtime.ensure_agent_known(agent_id)?;
+                if let Some(message_id) = durable_message_id.as_ref() {
+                    if let Some(communication) = communication_for_log.as_ref() {
+                        crate::agent_communication::emit_agent_communication_send(
+                            message_id,
+                            &context,
+                            communication,
+                            agent_id,
+                        );
+                    }
+                    return Ok(durable_submission_id);
+                }
                 let submission_id = uuid::Uuid::now_v7().to_string();
                 self.runtime.mailboxes.enqueue(
                     agent_id,
@@ -326,6 +399,19 @@ impl LocalAgentControl {
                     .await,
             )
             .await;
+        if activation_plan == MailboxActivationPlan::StartIdleRecipient
+            && let Some(envelope) = durable_message.as_ref()
+        {
+            self.mailbox_v2_finish_activation(
+                envelope,
+                if result.is_ok() {
+                    codex_agent_mailbox::ActivationDisposition::Activated
+                } else {
+                    codex_agent_mailbox::ActivationDisposition::Unknown
+                },
+            )
+            .await?;
+        }
         if let (Some(communication), Ok(communication_id)) =
             (communication_for_log, result.as_ref())
         {
@@ -336,7 +422,18 @@ impl LocalAgentControl {
                 agent_id,
             );
         }
-        result
+        match (result, durable_work) {
+            (Ok(_), Some(work)) => {
+                self.mailbox_v2_mark_dispatched(&work).await?;
+                Ok(work.submission_id)
+            }
+            (Ok(_), None) if durable_message.is_some() => Ok(durable_submission_id),
+            (result, None) => result,
+            (Err(err), Some(work)) => Err(CodexErr::Fatal(format!(
+                "native work {} was durably accepted but recipient submission could not be confirmed; the original input is retained for reconciliation: {err}",
+                work.id
+            ))),
+        }
     }
 
     /// Interrupt the current task for an existing agent thread.

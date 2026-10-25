@@ -43,6 +43,7 @@ impl AgentCommunicationKind {
 pub(crate) struct AgentCommunicationContext {
     kind: AgentCommunicationKind,
     pub(crate) sender_thread_id: ThreadId,
+    pub(crate) native_key: Option<String>,
 }
 
 impl AgentCommunicationContext {
@@ -50,7 +51,30 @@ impl AgentCommunicationContext {
         Self {
             kind,
             sender_thread_id,
+            native_key: None,
         }
+    }
+
+    pub(crate) fn with_native_key(mut self, native_key: Option<String>) -> Self {
+        self.native_key = native_key.filter(|key| !key.trim().is_empty());
+        self
+    }
+
+    pub(crate) fn is_native_work(&self) -> bool {
+        self.native_key.is_some()
+            && matches!(
+                self.kind,
+                AgentCommunicationKind::Spawn | AgentCommunicationKind::Followup
+            )
+    }
+
+    pub(crate) fn is_native_message(&self) -> bool {
+        self.native_key.is_some()
+            && matches!(self.kind, AgentCommunicationKind::Message | AgentCommunicationKind::Result)
+    }
+
+    pub(crate) fn is_completion_result(&self) -> bool {
+        self.kind == AgentCommunicationKind::Result
     }
 }
 
@@ -133,6 +157,12 @@ impl PendingAgentMessage {
             delivery,
         }
     }
+
+    pub(crate) fn durable_input_id(&self) -> Option<&str> {
+        self.delivery
+            .as_ref()
+            .and_then(MessageDelivery::durable_input_id)
+    }
 }
 
 /// The publication state retained until this delivery is consumed or abandoned.
@@ -143,13 +173,19 @@ struct MessagePublication {
 
 /// Clones follow one logical delivery through queues and share its consumption state.
 #[derive(Clone)]
-pub(crate) struct MessageDelivery(Arc<Mutex<Option<MessagePublication>>>);
+pub(crate) struct MessageDelivery {
+    publication: Arc<Mutex<Option<MessagePublication>>>,
+    durable_input_id: Option<String>,
+    durable_message_id: Option<String>,
+}
 
 impl MessageDelivery {
     pub(crate) fn publish(
         sender: ThreadId,
         message_id: ResponseItemId,
         observers: &[Arc<dyn MessageLifecycleContributor>],
+        durable_input_id: Option<String>,
+        durable_message_id: Option<String>,
     ) -> Self {
         let input = MessageLifecycleInput {
             sender,
@@ -163,12 +199,41 @@ impl MessageDelivery {
             input,
             observers: observers.into(),
         };
-        Self(Arc::new(Mutex::new(Some(publication))))
+        Self {
+            publication: Arc::new(Mutex::new(Some(publication))),
+            durable_input_id,
+            durable_message_id,
+        }
+    }
+
+    /// Restored durable mail is not republished to lifecycle contributors, but still
+    /// carries its stable input identity through canonical history settlement.
+    pub(crate) fn restored_mailbox_input(
+        durable_input_id: String,
+        durable_message_id: Option<String>,
+    ) -> Self {
+        Self {
+            publication: Arc::new(Mutex::new(None)),
+            durable_input_id: Some(durable_input_id),
+            durable_message_id,
+        }
+    }
+
+    pub(crate) fn durable_input_id(&self) -> Option<&str> {
+        self.durable_input_id.as_deref()
+    }
+
+    pub(crate) fn durable_message_id(&self) -> Option<&str> {
+        self.durable_message_id.as_deref()
     }
 
     /// Commit this delivery and release its publication state, even if clones remain.
     pub(crate) fn consumed(&self, recipient: ThreadId) {
-        let publication = self.0.lock().unwrap_or_else(PoisonError::into_inner).take();
+        let publication = self
+            .publication
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .take();
         if let Some(publication) = publication {
             for observer in &publication.observers {
                 observer.on_consumed(&publication.input, recipient);

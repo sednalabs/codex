@@ -73,6 +73,9 @@ impl ThreadManagerState {
                 .drain_mailbox()
                 .await
                 .into_iter()
+                // SQLite remains authoritative for durable V2 mail. Eviction must never
+                // transfer its only remaining copy into the destructive V1 runtime queue.
+                .filter(|mail| mail.communication.durable_input_id().is_none())
                 .map(|mail| mail.communication)
                 .collect();
             let runtime = &thread.session.services.local_agent_runtime;

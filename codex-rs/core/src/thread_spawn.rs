@@ -15,6 +15,7 @@ use crate::agent::types::LiveAgent;
 use crate::agent::types::MessageDeliveryMode;
 use crate::agent::types::SpawnAgentForkMode;
 use crate::agent::types::SpawnAgentOptions;
+use codex_features::Feature;
 use crate::codex_thread::ThreadConfigSnapshot;
 use crate::session::multi_agents::resolve_usage_hints;
 use crate::session::session::Session;
@@ -143,6 +144,11 @@ pub(crate) async fn spawn(
             input: AgentInput::Message {
                 message,
                 mode: MessageDeliveryMode::TriggerTurn,
+                native_key: turn
+                    .config
+                    .features
+                    .enabled(Feature::AgentMailbox)
+                    .then(|| call_id.to_string()),
             },
             source: spawn_source,
             options: SpawnAgentOptions {

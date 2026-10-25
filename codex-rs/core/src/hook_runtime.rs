@@ -736,7 +736,7 @@ pub(crate) async fn record_pending_input(
     pending_input: TurnInput,
     additional_contexts: Vec<codex_hooks::HookContext>,
     persist_context: PersistContext,
-) {
+) -> bool {
     match pending_input {
         TurnInput::UserInput {
             content,
@@ -780,12 +780,25 @@ pub(crate) async fn record_pending_input(
             sess.ensure_rollout_materialized(persist_context).await;
         }
         TurnInput::InterAgentCommunication(communication) => {
-            sess.record_inter_agent_communication(turn_context, model_info, communication)
+            if let Err(error) = sess
+                .record_inter_agent_communication_checked(turn_context, model_info, communication)
+                .await
+            {
+                tracing::error!(%error, "failed to durably record accepted agent mailbox input");
+                sess.send_event(
+                    turn_context,
+                    EventMsg::Warning(WarningEvent {
+                        message: "An accepted agent message could not be safely recorded; this request was not sent to the model.".to_string(),
+                    }),
+                )
                 .await;
+                return true;
+            }
             sess.ensure_rollout_materialized(persist_context).await;
         }
     }
     record_additional_contexts(sess, turn_context, additional_contexts).await;
+    false
 }
 
 /// Processes finished async hook results at a safe turn boundary.

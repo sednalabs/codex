@@ -6,6 +6,7 @@ members = [
     "agent-message-board-client",
     "agent-identity",
     "agent-roles",
+    "agent-mailbox",
     "backend-client",
     "cloud-client",
     "bwrap",
@@ -183,6 +184,7 @@ codex-analytics = { path = "analytics" }
 codex-agent-graph-store = { path = "agent-graph-store" }
 codex-agent-identity = { path = "agent-identity" }
 codex-agent-roles = { path = "agent-roles" }
+codex-agent-mailbox = { path = "agent-mailbox" }
 codex-ansi-escape = { path = "ansi-escape" }
 codex-api = { path = "codex-api" }
 codex-attachment-store = { path = "attachment-store" }

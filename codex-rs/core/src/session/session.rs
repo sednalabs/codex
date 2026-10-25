@@ -93,6 +93,9 @@ pub(crate) struct Session {
     pub(crate) conversation: Arc<RealtimeConversationManager>,
     pub(crate) realtime_history: Option<Mutex<crate::realtime_history::RealtimeHistoryState>>,
     pub(crate) active_turn: Mutex<Option<ActiveTurn>>,
+    /// Stable durable mail IDs whose rollout append has not yet been confirmed by the writer.
+    /// This only reconciles same-session retry after a failed append; SQLite remains authoritative.
+    pub(super) mailbox_rollout_appends: std::sync::Mutex<std::collections::HashSet<String>>,
     pub(crate) async_hook_results: async_channel::Receiver<HookCompletedEvent>,
     pub(crate) input_queue: InputQueue,
     pub(crate) services: SessionServices,
@@ -1913,6 +1916,7 @@ impl Session {
                     && services.live_thread.is_some())
                 .then(|| Mutex::new(Default::default())),
                 active_turn: Mutex::new(None),
+                mailbox_rollout_appends: Default::default(),
                 async_hook_results,
                 input_queue: InputQueue::with_controller(
                     thread_id,
