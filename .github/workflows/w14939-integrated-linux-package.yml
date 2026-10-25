@@ -39,8 +39,8 @@ jobs:
         id: identity
         shell: bash
         env:
-          PRODUCT_SHA: a643a7ea09a0615b040a436dd630bb3ea7961842
-          PRODUCT_TREE: 71cb6d62c5d95ac8d671bbb61b7914220340c8d9
+          PRODUCT_SHA: c9418355c7bbfb43730309063fafa20c3c5d510d
+          PRODUCT_TREE: baa5ac2c550d229445582480391af74e4ed5ace1
           UPSTREAM_SHA: 970111f6cb62cc02fe36a82ea7d71b37a2889c97
           EXPECTED_REF: refs/heads/codex/w14939-integrated-linux-package-20261025
         run: |
@@ -121,6 +121,17 @@ jobs:
           digest="$(sha256sum "${bwrap_path}" | awk '{print $1}')"
           echo "CODEX_BWRAP_SHA256=${digest}" >> "${GITHUB_ENV}"
 
+      - name: Compile packaged CLI consumers before assembly
+        shell: bash
+        working-directory: product-source
+        env:
+          TARGET: ${{ matrix.target }}
+          STABLE_GIT_COMMIT: ${{ steps.identity.outputs.product_sha }}
+        run: |
+          set -euo pipefail
+          cargo build --locked --manifest-path codex-rs/Cargo.toml --target "${TARGET}" \
+            --profile release --bin codex --bin codex-code-mode-host
+
       - name: Assemble and verify the integrated CLI package
         shell: bash
         working-directory: product-source
@@ -188,6 +199,7 @@ jobs:
             "Included: device authentication, V2 mailbox opt-in, weekly pacing, same-model capacity retry, targeted client instruction overlays, and read-only usage-tree adapter." \
             "Not established: protected-main landing, live account usage availability, or consumer/session acceptance." \
             "Excluded: Browser and Android MCP consumer adoption." \
+            "Not included: retired-MCP connection cleanup/in-flight completion carry from current main." \
             > "${GITHUB_WORKSPACE}/dist/PROVENANCE-${TARGET}.txt"
 
       - name: Run focused device-auth package tests
