@@ -24,7 +24,6 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          cargo update --manifest-path codex-rs/Cargo.toml -p p256@0.13.2 --precise 0.14.0
           cargo update --manifest-path codex-rs/Cargo.toml -p rtc@0.20.3 --precise 0.21.1
           cargo update --manifest-path codex-rs/Cargo.toml -p webrtc@0.20.3 --precise 0.21.1
           cargo metadata --manifest-path codex-rs/Cargo.toml --format-version 1 --locked >/dev/null
