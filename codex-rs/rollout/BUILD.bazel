@@ -1,6 +1,22 @@
-load("//:defs.bzl", "codex_rust_crate")
+load("//:defs.bzl", "codex_rust_crate", "workspace_root_test")
 
 codex_rust_crate(
     name = "rollout",
     crate_name = "codex_rollout",
+)
+
+# This single regression must chown a file to a host supplementary group. Run
+# only this ignored libtest case without linux-sandbox so Bazel's user namespace
+# cannot replace an unmapped host GID with the overflow GID.
+workspace_root_test(
+    name = "rollout-alternate-group-materialization-test",
+    test_bin = ":rollout-unit-tests-bin",
+    workspace_root_marker = "//codex-rs/utils/cargo-bin:repo_root.marker",
+    args = [
+        "--ignored",
+        "--exact",
+        "compression::tests::worker_preserves_alternate_group_through_materialization",
+    ],
+    target_compatible_with = ["@platforms//os:linux"],
+    tags = ["no-sandbox"],
 )

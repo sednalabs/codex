@@ -28,6 +28,7 @@ use std::net::TcpListener;
 use std::net::TcpStream;
 use std::os::unix::fs::MetadataExt;
 use std::path::Path;
+use std::path::PathBuf;
 use std::process::Output;
 use std::process::Stdio;
 use std::time::Duration;
@@ -50,6 +51,11 @@ const MANAGED_PROXY_PERMISSION_ERR_SNIPPETS: &[&str] = &[
     "No permissions to create a new namespace",
     "error isolating Linux network namespace for proxy mode",
 ];
+
+fn linux_sandbox_binary() -> PathBuf {
+    codex_utils_cargo_bin::cargo_bin("codex-linux-sandbox")
+        .expect("resolve codex-linux-sandbox runfile")
+}
 
 const PROXY_ENV_KEYS: &[&str] = &[
     "HTTP_PROXY",
@@ -180,7 +186,7 @@ fn linux_sandbox_command(
     args.push("--".to_string());
     args.extend(command.iter().map(|entry| (*entry).to_string()));
 
-    let mut cmd = Command::new(env!("CARGO_BIN_EXE_codex-linux-sandbox"));
+    let mut cmd = Command::new(linux_sandbox_binary());
     cmd.args(args)
         .current_dir(cwd)
         .env_clear()
@@ -396,7 +402,7 @@ printf 'legacy proc fallback\n'
             "CODEX_TEST_PROTECTED_FILE".to_string(),
             protected_file.display().to_string(),
         );
-        let mut command = Command::new(env!("CARGO_BIN_EXE_codex-linux-sandbox"));
+        let mut command = Command::new(linux_sandbox_binary());
         command
             .arg("--sandbox-policy-cwd")
             .arg(std::env::current_dir().expect("current directory should exist"))
@@ -474,9 +480,9 @@ async fn unsupported_system_bwrap_falls_back_to_bundled_bwrap() {
 
     let tempdir = tempfile::tempdir().expect("create isolated sandbox installation");
     let sandbox_executable = tempdir.path().join("codex-linux-sandbox");
-    let original_executable = env!("CARGO_BIN_EXE_codex-linux-sandbox");
-    if std::fs::hard_link(original_executable, &sandbox_executable).is_err() {
-        codex_utils_cargo_bin::copy_executable(Path::new(original_executable), &sandbox_executable)
+    let original_executable = linux_sandbox_binary();
+    if std::fs::hard_link(&original_executable, &sandbox_executable).is_err() {
+        codex_utils_cargo_bin::copy_executable(&original_executable, &sandbox_executable)
             .expect("copy sandbox executable");
     }
 
@@ -795,7 +801,8 @@ async fn managed_proxy_mode_routes_through_bridge_and_blocks_direct_egress() {
         format!("http://127.0.0.1:{proxy_port}"),
     );
 
-    let sandbox_helper_dir = std::path::Path::new(env!("CARGO_BIN_EXE_codex-linux-sandbox"))
+    let sandbox_executable = linux_sandbox_binary();
+    let sandbox_helper_dir = sandbox_executable
         .parent()
         .expect("sandbox helper should have a parent");
     let file_system_sandbox_policy =

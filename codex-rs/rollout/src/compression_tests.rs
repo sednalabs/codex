@@ -741,6 +741,7 @@ async fn worker_preserves_inherited_acl_through_append() -> anyhow::Result<()> {
 
 #[cfg(unix)]
 #[tokio::test]
+#[ignore = "must run outside Bazel's user-namespace sandbox to access a mapped alternate GID"]
 async fn worker_preserves_alternate_group_through_materialization() -> anyhow::Result<()> {
     use anyhow::Context;
     use std::os::unix::fs::MetadataExt;
@@ -755,16 +756,17 @@ async fn worker_preserves_alternate_group_through_materialization() -> anyhow::R
     let original_group = fs::metadata(&path)?.gid();
     let groups = Command::new("id").arg("-G").output()?;
     assert!(groups.status.success());
-    let Some(group) = std::str::from_utf8(&groups.stdout)?
+    let group = std::str::from_utf8(&groups.stdout)?
         .split_whitespace()
         .map(str::parse::<u32>)
         .collect::<Result<Vec<_>, _>>()?
         .into_iter()
         .find(|group| *group != original_group)
-    else {
-        eprintln!("skipping ownership regression: no alternate supplementary group");
-        return Ok(());
-    };
+        .ok_or_else(|| {
+            anyhow::anyhow!(
+                "no alternate supplementary group is available for this ownership regression"
+            )
+        })?;
     std::os::unix::fs::chown(&path, /*uid*/ None, Some(group))
         .with_context(|| format!("setting test rollout to alternate group {group}"))?;
     assert_eq!(fs::metadata(&path)?.gid(), group);
