@@ -26,8 +26,8 @@ jobs:
       CARGO_INCREMENTAL: "0"
       RUST_MIN_STACK: "8388608"
       CODEX_REPO_ROOT: ${{ github.workspace }}
-      PRODUCT_SOURCE_SHA: b5c15144c93fc017e31cb63e8ca9bae960132dce
-      STABLE_GIT_COMMIT: b5c15144c93fc017e31cb63e8ca9bae960132dce
+      PRODUCT_SOURCE_SHA: ab81a4c0c4b6fe61653332bd709d4bf2b61befa9
+      STABLE_GIT_COMMIT: ab81a4c0c4b6fe61653332bd709d4bf2b61befa9
       VALIDATION_HARNESS_SHA: 97a955ba03218ee9afe43dd0a03834dad1b2c0e5
       VALIDATION_PROFILE: rust_integration
       TARGET: ${{ matrix.target }}
