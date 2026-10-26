@@ -1,4 +1,4 @@
-name: w14939 x86_64 focused proof and package
+name: w14939 AArch64 package
 
 on:
   push:
@@ -25,18 +25,18 @@ permissions:
 
 jobs:
   package:
-    name: ${{ matrix.arch }} focused proof and package
+    name: ${{ matrix.arch }} package
     runs-on: ${{ matrix.runner }}
     timeout-minutes: 210
     strategy:
       fail-fast: false
       matrix:
         include:
-          - target: x86_64-unknown-linux-gnu
-            runner: ubuntu-24.04
-            arch: x86_64
-            binary_kind: x86-64
-            loader: /lib64/ld-linux-x86-64.so.2
+          - target: aarch64-unknown-linux-gnu
+            runner: ubuntu-24.04-arm
+            arch: aarch64
+            binary_kind: aarch64
+            loader: /lib/ld-linux-aarch64.so.1
     env:
       CARGO_INCREMENTAL: "0"
       RUST_MIN_STACK: "8388608"
