@@ -316,6 +316,7 @@ required-git-spec = "rev"
 allow-registry = ["https://github.com/rust-lang/crates.io-index"]
 # List of URLs for allowed Git repositories
 allow-git = [
+    "https://github.com/str4d/rage",
     "https://github.com/dzbarsky/rules_rust",
     "https://github.com/helix-editor/nucleo.git",
     # CONNECT request handling needs this pinned H3 revision until released.

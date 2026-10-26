@@ -158,7 +158,7 @@ jobs:
     # Split the Windows Bazel test leg across separate Windows hosts. Jobs with
     # trusted BuildBuddy credentials use Linux RBE for build actions; test
     # execution remains on a Windows runner.
-    if: ${{ github.event_name != 'workflow_dispatch' || !inputs.w14939_focused_tests }}
+    if: ${{ github.repository != 'sednalabs/codex' && (github.event_name != 'workflow_dispatch' || !inputs.w14939_focused_tests) }}
     timeout-minutes: 30
     strategy:
       fail-fast: false
@@ -263,10 +263,16 @@ jobs:
     if: always() && (github.event_name != 'workflow_dispatch' || !inputs.w14939_focused_tests)
     needs: test-windows-shard
     runs-on: ubuntu-24.04
-    name: Bazel test on windows-latest for x86_64-pc-windows-gnullvm
+    name: ${{ github.repository == 'sednalabs/codex' && 'Windows Bazel CI deferred (unqualified)' || 'Bazel test on windows-latest for x86_64-pc-windows-gnullvm' }}
 
     steps:
+      - name: Report Windows CI deferral for this fork
+        if: github.repository == 'sednalabs/codex'
+        shell: bash
+        run: echo 'Windows Bazel tests are deferred and unqualified for sednalabs/codex.' >> "$GITHUB_STEP_SUMMARY"
+
       - name: Confirm Windows Bazel test shards passed
+        if: github.repository != 'sednalabs/codex'
         shell: bash
         run: |
           if [[ "${{ needs.test-windows-shard.result }}" != "success" ]]; then
@@ -279,8 +285,10 @@ jobs:
     # 30-minute PR budget. Run this only for post-merge commits to main and give
     # it a larger timeout. Also allow manual runs for native toolchain changes.
     if: >-
-      (github.event_name == 'push' && github.ref == 'refs/heads/main') ||
-      (github.event_name == 'workflow_dispatch' && !inputs.w14939_focused_tests)
+      github.repository != 'sednalabs/codex' && (
+        (github.event_name == 'push' && github.ref == 'refs/heads/main') ||
+        (github.event_name == 'workflow_dispatch' && !inputs.w14939_focused_tests)
+      )
     timeout-minutes: 40
     runs-on: windows-2022
     name: Bazel test on windows-latest for x86_64-pc-windows-msvc (native main)
@@ -362,17 +370,12 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        include:
-          # Keep Linux lint coverage on x64 and add the arm64 macOS path that
-          # the Bazel test job already exercises. Add Windows gnullvm as well
-          # so PRs get Bazel-native lint signal on the same Windows toolchain
-          # that the Bazel test job uses.
-          - os: ubuntu-24.04
-            target: x86_64-unknown-linux-gnu
-          - os: macos-15
-            target: aarch64-apple-darwin
-          - os: windows-2022
-            target: x86_64-pc-windows-gnullvm
+        # Windows gnullvm remains enabled elsewhere; this fork omits it while
+        # Windows qualification is explicitly deferred.
+        include: >-
+          ${{ fromJSON(github.repository == 'sednalabs/codex' &&
+            '[{"os":"ubuntu-24.04","target":"x86_64-unknown-linux-gnu"},{"os":"macos-15","target":"aarch64-apple-darwin"}]' ||
+            '[{"os":"ubuntu-24.04","target":"x86_64-unknown-linux-gnu"},{"os":"macos-15","target":"aarch64-apple-darwin"},{"os":"windows-2022","target":"x86_64-pc-windows-gnullvm"}]') }}
     runs-on: ${{ matrix.os }}
     name: Bazel clippy on ${{ matrix.os }} for ${{ matrix.target }}
     env:
@@ -472,13 +475,10 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        include:
-          - os: ubuntu-24.04
-            target: x86_64-unknown-linux-gnu
-          - os: macos-15
-            target: aarch64-apple-darwin
-          - os: windows-2022
-            target: x86_64-pc-windows-gnullvm
+        include: >-
+          ${{ fromJSON(github.repository == 'sednalabs/codex' &&
+            '[{"os":"ubuntu-24.04","target":"x86_64-unknown-linux-gnu"},{"os":"macos-15","target":"aarch64-apple-darwin"}]' ||
+            '[{"os":"ubuntu-24.04","target":"x86_64-unknown-linux-gnu"},{"os":"macos-15","target":"aarch64-apple-darwin"},{"os":"windows-2022","target":"x86_64-pc-windows-gnullvm"}]') }}
     runs-on: ${{ matrix.os }}
     name: Verify release build on ${{ matrix.os }} for ${{ matrix.target }}
     env:

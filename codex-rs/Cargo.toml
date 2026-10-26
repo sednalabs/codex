@@ -335,7 +335,7 @@ codex-windows-sandbox-test-support = { path = "windows-sandbox-rs/tests/support"
 core_test_support = { path = "core/tests/common" }
 
 # External
-age = "0.12.1"
+age = { git = "https://github.com/str4d/rage", rev = "f7c95f4c067049085944e914ef4e7321fe03e7b9" }
 ansi-to-tui = "8.0.1"
 anyhow = "1"
 arboard = { version = "3", features = ["wayland-data-control"] }
