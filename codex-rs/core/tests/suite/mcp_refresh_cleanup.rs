@@ -124,7 +124,7 @@ impl McpServerProcess {
 }
 
 fn stdio_server_config(
-    command: std::path::PathBuf,
+    command: String,
     env: HashMap<String, String>,
 ) -> McpServerConfig {
     McpServerConfig {
@@ -518,7 +518,7 @@ async fn shutdown_cancels_pending_mcp_startup_while_in_flight_call_finishes() ->
         async move { codex.shutdown_and_wait().await }
     });
     tokio::time::timeout(Duration::from_secs(2), shutdown).await???;
-    tokio::time::timeout(Duration::from_secs(5), pending.wait_for_exit()).await???;
+    tokio::time::timeout(Duration::from_secs(5), pending.wait_for_exit()).await?;
     anyhow::ensure!(
         ready.is_alive()?,
         "shutdown cancelled a ready in-flight MCP call"
