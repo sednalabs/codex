@@ -2358,6 +2358,38 @@ class LogoutAccountResponse(BaseModel):
     )
 
 
+class MailboxWaitReturnWhen(Enum):
+    any = "any"
+    all = "all"
+
+
+class MailboxWaitSelectionItem(BaseModel):
+    model_config = ConfigDict(
+        populate_by_name=True,
+    )
+    agent: str | None = None
+    message_id: Annotated[str | None, Field(alias="messageId")] = None
+    status: str
+    work_ref: Annotated[str | None, Field(alias="workRef")] = None
+
+
+class MailboxWakeCause(Enum):
+    result = "result"
+    reply = "reply"
+    request = "request"
+    human = "human"
+    tool = "tool"
+    deadline = "deadline"
+    cancel = "cancel"
+    interrupted = "interrupted"
+    subscription_loss = "subscription_loss"
+    runtime_fault = "runtime_fault"
+    no_matching_work = "no_matching_work"
+    already_satisfied = "already_satisfied"
+    cycle = "cycle"
+    needs_attention = "needs_attention"
+
+
 class ManagedHooksRequirements(BaseModel):
     model_config = ConfigDict(
         populate_by_name=True,
@@ -8676,6 +8708,22 @@ class LoginAccountParams(
     ]
 
 
+class MailboxWaitReport(BaseModel):
+    model_config = ConfigDict(
+        populate_by_name=True,
+    )
+    completed: list[MailboxWaitSelectionItem]
+    completion_reason: Annotated[MailboxWakeCause | None, Field(alias="completionReason")] = None
+    condition_satisfied: Annotated[bool, Field(alias="conditionSatisfied")]
+    pending: list[MailboxWaitSelectionItem]
+    quiet_count: Annotated[int, Field(alias="quietCount", ge=0)]
+    requested_replies_to: Annotated[list[str], Field(alias="requestedRepliesTo")]
+    requested_targets: Annotated[list[str], Field(alias="requestedTargets")]
+    return_when: Annotated[MailboxWaitReturnWhen, Field(alias="returnWhen")]
+    wake_ref: Annotated[str | None, Field(alias="wakeRef")] = None
+    wake_sender: Annotated[str | None, Field(alias="wakeSender")] = None
+
+
 class McpResourceReadParams(BaseModel):
     model_config = ConfigDict(
         populate_by_name=True,
@@ -10089,6 +10137,13 @@ class CollabAgentToolCallThreadItem(BaseModel):
         ),
     ]
     id: Annotated[str, Field(description="Unique identifier for this collab tool call.")]
+    mailbox_wait_report: Annotated[
+        MailboxWaitReport | None,
+        Field(
+            alias="mailboxWaitReport",
+            description="Structured state of a selection-aware native mailbox wait, when available.",
+        ),
+    ] = None
     model: Annotated[
         str | None, Field(description="Model requested for the spawned agent, when applicable.")
     ] = None

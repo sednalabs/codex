@@ -4,6 +4,7 @@
 import type { FunctionCallOutputBody } from "../FunctionCallOutputBody";
 import type { ImageGenerationItem } from "../ImageGenerationItem";
 import type { LegacyAppPathString } from "../LegacyAppPathString";
+import type { MailboxWaitReport } from "../MailboxWaitReport";
 import type { MessagePhase } from "../MessagePhase";
 import type { ReasoningEffort } from "../ReasoningEffort";
 import type { SleepItem } from "../SleepItem";
@@ -122,7 +123,11 @@ reasoningEffort: ReasoningEffort | null,
 /**
  * Last known status of the target agents, when available.
  */
-agentsStates: { [key in string]?: CollabAgentState }, } | { "type": "subAgentActivity",
+agentsStates: { [key in string]?: CollabAgentState },
+/**
+ * Structured state of a selection-aware native mailbox wait, when available.
+ */
+mailboxWaitReport?: MailboxWaitReport, } | { "type": "subAgentActivity",
 /**
  * Resolved model at sub-agent creation; absent from older records and other activities.
  */

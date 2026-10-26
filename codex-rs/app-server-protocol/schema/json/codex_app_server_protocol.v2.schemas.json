@@ -10646,6 +10646,138 @@
       "title": "LogoutAccountResponse",
       "type": "object"
     },
+    "MailboxWaitReport": {
+      "properties": {
+        "completed": {
+          "items": {
+            "$ref": "#/definitions/MailboxWaitSelectionItem"
+          },
+          "type": "array"
+        },
+        "completionReason": {
+          "anyOf": [
+            {
+              "$ref": "#/definitions/MailboxWakeCause"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "conditionSatisfied": {
+          "type": "boolean"
+        },
+        "pending": {
+          "items": {
+            "$ref": "#/definitions/MailboxWaitSelectionItem"
+          },
+          "type": "array"
+        },
+        "quietCount": {
+          "format": "uint",
+          "minimum": 0.0,
+          "type": "integer"
+        },
+        "requestedRepliesTo": {
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "requestedTargets": {
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "returnWhen": {
+          "$ref": "#/definitions/MailboxWaitReturnWhen"
+        },
+        "wakeRef": {
+          "default": null,
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "wakeSender": {
+          "default": null,
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "completed",
+        "conditionSatisfied",
+        "pending",
+        "quietCount",
+        "requestedRepliesTo",
+        "requestedTargets",
+        "returnWhen"
+      ],
+      "type": "object"
+    },
+    "MailboxWaitReturnWhen": {
+      "enum": [
+        "any",
+        "all"
+      ],
+      "type": "string"
+    },
+    "MailboxWaitSelectionItem": {
+      "properties": {
+        "agent": {
+          "default": null,
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "messageId": {
+          "default": null,
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "status": {
+          "type": "string"
+        },
+        "workRef": {
+          "default": null,
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "status"
+      ],
+      "type": "object"
+    },
+    "MailboxWakeCause": {
+      "enum": [
+        "result",
+        "reply",
+        "request",
+        "human",
+        "tool",
+        "deadline",
+        "cancel",
+        "interrupted",
+        "subscription_loss",
+        "runtime_fault",
+        "no_matching_work",
+        "already_satisfied",
+        "cycle",
+        "needs_attention"
+      ],
+      "type": "string"
+    },
     "ManagedHooksRequirements": {
       "properties": {
         "Interrupt": {
@@ -20555,6 +20687,17 @@
             "id": {
               "description": "Unique identifier for this collab tool call.",
               "type": "string"
+            },
+            "mailboxWaitReport": {
+              "anyOf": [
+                {
+                  "$ref": "#/definitions/MailboxWaitReport"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Structured state of a selection-aware native mailbox wait, when available."
             },
             "model": {
               "description": "Model requested for the spawned agent, when applicable.",
