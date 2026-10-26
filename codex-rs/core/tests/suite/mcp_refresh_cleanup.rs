@@ -435,34 +435,6 @@ async fn shutdown_cancels_pending_mcp_startup_while_in_flight_call_finishes() ->
         .await?;
 
     wait_for_mcp_server(&fixture.codex, "ready_mcp").await?;
-    let ready_pid = wait_for_pid_file(&ready_pid_file).await?;
-    let ready = McpServerProcess::observe_running(ready_pid)?;
-    let pending_pid = wait_for_pid_file(&pending_pid_file).await?;
-    let pending = McpServerProcess::observe_running(pending_pid)?;
-    anyhow::ensure!(
-        !pending_initialize_barrier.exists(),
-        "pending MCP initialize barrier must remain closed before shutdown"
-    );
-
-    #[cfg(target_os = "linux")]
-    let ready_pipe_ids = {
-        let child_pipe_ids = fixture
-            .codex
-            .call_mcp_tool(
-                "ready_mcp",
-                "sync",
-                Some(serde_json::json!({ "report_pipe_ids": true })),
-                /*meta*/ None,
-            )
-            .await?
-            .structured_content
-            .and_then(|content| content.get("pipe_ids").cloned())
-            .ok_or_else(|| anyhow::anyhow!("expected stdio pipe ids from the ready MCP server"))?;
-        let child_pipe_ids: HashSet<String> = serde_json::from_value(child_pipe_ids)?;
-        let pipe_ids = shared_stdio_pipe_ids(&child_pipe_ids)?;
-        anyhow::ensure!(!pipe_ids.is_empty(), "expected ready MCP stdio pipes");
-        pipe_ids
-    };
 
     // Add the blocked server only after the thread has initialized. Keeping it in the initial
     // fixture config makes `build()` wait for the deliberately blocked initialize request until
@@ -498,12 +470,34 @@ async fn shutdown_cancels_pending_mcp_startup_while_in_flight_call_finishes() ->
         refresh_outcome == codex_core::ConfigRefreshOutcome::Published,
         "pending MCP config should publish before startup cancellation"
     );
+    wait_for_mcp_server(&fixture.codex, "ready_mcp").await?;
+    let ready_pid = wait_for_pid_file(&ready_pid_file).await?;
+    let ready = McpServerProcess::observe_running(ready_pid)?;
     let pending_pid = wait_for_pid_file(&pending_pid_file).await?;
     let pending = McpServerProcess::observe_running(pending_pid)?;
     anyhow::ensure!(
         !pending_initialize_barrier.exists(),
         "pending MCP initialize barrier must remain closed before shutdown"
     );
+    #[cfg(target_os = "linux")]
+    let ready_pipe_ids = {
+        let child_pipe_ids = fixture
+            .codex
+            .call_mcp_tool(
+                "ready_mcp",
+                "sync",
+                Some(serde_json::json!({ "report_pipe_ids": true })),
+                /*meta*/ None,
+            )
+            .await?
+            .structured_content
+            .and_then(|content| content.get("pipe_ids").cloned())
+            .ok_or_else(|| anyhow::anyhow!("expected stdio pipe ids from the ready MCP server"))?;
+        let child_pipe_ids: HashSet<String> = serde_json::from_value(child_pipe_ids)?;
+        let pipe_ids = shared_stdio_pipe_ids(&child_pipe_ids)?;
+        anyhow::ensure!(!pipe_ids.is_empty(), "expected ready MCP stdio pipes");
+        pipe_ids
+    };
 
     let barrier = serde_json::json!({
         "id": "mcp-shutdown-ready-call",
