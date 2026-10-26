@@ -65,6 +65,11 @@ jobs:
           echo "${output}"
           echo "${output}" >> "${GITHUB_OUTPUT}"
 
+      - name: Report Windows CI deferral for this fork
+        if: github.repository == 'sednalabs/codex'
+        shell: bash
+        run: echo 'Windows CI and release artifacts are deferred and unqualified for sednalabs/codex.' >> "$GITHUB_STEP_SUMMARY"
+
       - name: Check for a clean worktree
         if: always() && !cancelled()
         uses: ./.github/actions/check-clean-worktree
@@ -303,7 +308,7 @@ jobs:
   build-windows-source:
     name: Build ptrcomp-sandbox ${{ matrix.target }} from source
     needs: metadata
-    if: ${{ needs.metadata.outputs.windows_source_required == 'true' }}
+    if: ${{ github.repository != 'sednalabs/codex' && needs.metadata.outputs.windows_source_required == 'true' }}
     runs-on: ${{ matrix.runner }}
     permissions:
       contents: read

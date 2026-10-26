@@ -57,6 +57,11 @@ jobs:
 
           echo "release_tag=${release_tag}" >> "$GITHUB_OUTPUT"
 
+      - name: Report Windows release deferral for this fork
+        if: github.repository == 'sednalabs/codex'
+        shell: bash
+        run: echo 'Windows CI and rusty_v8 release artifacts are deferred and unqualified for sednalabs/codex.' >> "$GITHUB_STEP_SUMMARY"
+
   build:
     name: Build ${{ matrix.variant }} ${{ matrix.target }}
     needs: metadata
@@ -289,6 +294,7 @@ jobs:
   build-windows-source:
     name: Build ptrcomp-sandbox ${{ matrix.target }} from source
     needs: metadata
+    if: ${{ github.repository != 'sednalabs/codex' }}
     runs-on: ${{ matrix.runner }}
     permissions:
       contents: read
@@ -442,12 +448,25 @@ jobs:
       - metadata
       - build
       - build-windows-source
+    if: >-
+      ${{
+        always() &&
+        needs.metadata.result == 'success' &&
+        needs.build.result == 'success' &&
+        (needs.build-windows-source.result == 'success' ||
+          (github.repository == 'sednalabs/codex' && needs.build-windows-source.result == 'skipped'))
+      }}
     runs-on: ubuntu-latest
     permissions:
       contents: write
       actions: read
 
     steps:
+      - name: Report Windows release deferral
+        if: github.repository == 'sednalabs/codex'
+        shell: bash
+        run: echo 'This release contains no Windows-qualified artifacts for sednalabs/codex.' >> "$GITHUB_STEP_SUMMARY"
+
       - name: Check whether release already exists
         env:
           GH_TOKEN: ${{ github.token }}

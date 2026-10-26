@@ -172,16 +172,10 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        include:
-          - name: Linux
-            runner: ubuntu-24.04
-            timeout_minutes: 30
-          - name: macOS
-            runner: macos-15
-            timeout_minutes: 30
-          - name: Windows
-            runner: windows-2022
-            timeout_minutes: 30
+        include: >-
+          ${{ fromJSON(github.repository == 'sednalabs/codex' &&
+            '[{"name":"Linux","runner":"ubuntu-24.04","timeout_minutes":30},{"name":"macOS","runner":"macos-15","timeout_minutes":30}]' ||
+            '[{"name":"Linux","runner":"ubuntu-24.04","timeout_minutes":30},{"name":"macOS","runner":"macos-15","timeout_minutes":30},{"name":"Windows","runner":"windows-2022","timeout_minutes":30}]') }}
     steps:
       - name: Check whether argument comment lint should run
         id: argument_comment_lint_gate
@@ -258,3 +252,8 @@ jobs:
           NEEDS_CHANGED_OUTPUTS_CODEX: ${{ needs.changed.outputs.codex }}
           NEEDS_CHANGED_OUTPUTS_WORKFLOWS: ${{ needs.changed.outputs.workflows }}
           NEEDS_CHANGED_OUTPUTS_ARGUMENT_COMMENT_LINT_PACKAGE: ${{ needs.changed.outputs.argument_comment_lint_package }}
+
+      - name: Report Windows CI deferral for this fork
+        if: github.repository == 'sednalabs/codex'
+        shell: bash
+        run: echo 'Windows CI is deferred and unqualified for sednalabs/codex.' >> "$GITHUB_STEP_SUMMARY"

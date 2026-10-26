@@ -1538,6 +1538,7 @@ jobs:
     secrets: inherit
 
   build-windows:
+    if: github.repository != 'sednalabs/codex'
     needs: tag-check
     uses: ./.github/workflows/rust-release-windows.yml
     secrets: inherit
@@ -1550,6 +1551,7 @@ jobs:
       publish: true
 
   stage-npm-packages:
+    if: github.repository != 'sednalabs/codex'
     name: stage npm packages
     needs:
       - build
@@ -1622,9 +1624,11 @@ jobs:
         needs.tag-check.result == 'success' &&
         needs.build.result == 'success' &&
         needs.finalize-macos.result == 'success' &&
-        needs.build-windows.result == 'success' &&
+        (needs.build-windows.result == 'success' ||
+          (github.repository == 'sednalabs/codex' && needs.build-windows.result == 'skipped')) &&
         needs.argument-comment-lint-release-assets.result == 'success' &&
-        needs.stage-npm-packages.result == 'success' &&
+        (needs.stage-npm-packages.result == 'success' ||
+          (github.repository == 'sednalabs/codex' && needs.stage-npm-packages.result == 'skipped')) &&
         (needs.provisioned-macos-candidate.result == 'success' ||
           (vars.CODEX_PROVISIONED_MACOS_CANDIDATE != 'true' &&
             needs.provisioned-macos-candidate.result == 'skipped'))
@@ -1647,6 +1651,11 @@ jobs:
         with:
           persist-credentials: false
 
+      - name: Report Windows release deferral for this fork
+        if: github.repository == 'sednalabs/codex'
+        shell: bash
+        run: echo 'Windows builds, release artifacts, installers, npm platform packages, and WinGet publication are deferred and unqualified for sednalabs/codex.' >> "$GITHUB_STEP_SUMMARY"
+
       - name: Generate release notes from tag commit message
         id: release_notes
         shell: bash
@@ -1667,7 +1676,15 @@ jobs:
 
           echo "path=${notes_path}" >> "${GITHUB_OUTPUT}"
 
-      - name: Download release artifacts
+      - name: Download release artifacts without Windows or npm packages
+        if: github.repository == 'sednalabs/codex'
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          path: dist
+          pattern: "{{aarch64,x86_64}-{apple-darwin{,-app-server},unknown-linux-musl{,-app-server}}{,-bazel},{aarch64,x86_64}-{apple-darwin,unknown-linux-musl}-symbols{,-bazel},argument-comment-lint-*,python-runtime-wheel-{aarch64,x86_64}-apple-darwin}"
+
+      - name: Download all release artifacts
+        if: github.repository != 'sednalabs/codex'
         uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with:
           path: dist
@@ -1753,9 +1770,13 @@ jobs:
             echo "npm_tag=" >> "$GITHUB_OUTPUT"
           fi
 
-      - name: Stage installer scripts
+      - name: Stage Unix installer script
         run: |
           cp scripts/install/install.sh dist/install.sh
+
+      - name: Stage Windows installer script
+        if: github.repository != 'sednalabs/codex'
+        run: |
           mv dist/x86_64-pc-windows-msvc/install.ps1 dist/install.ps1
 
       - name: Create GitHub Release
@@ -1847,14 +1868,25 @@ jobs:
         with:
           persist-credentials: false
 
+      - name: Prepare fork DotSlash configs without Windows platforms
+        if: github.repository == 'sednalabs/codex'
+        shell: bash
+        run: |
+          set -euo pipefail
+          for config in .github/dotslash-config.json .github/dotslash-argument-comment-lint-config.json; do
+            output="${RUNNER_TEMP}/$(basename "${config}")"
+            jq '.outputs |= with_entries(.value.platforms |= with_entries(select(.key | startswith("windows-") | not)) | select(.value.platforms | length > 0))' \
+              "${config}" > "${output}"
+          done
+
       - uses: ./.github/actions/publish-dotslash
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         with:
           tag: ${{ github.ref_name }}
           configs: |
-            .github/dotslash-config.json
-            .github/dotslash-argument-comment-lint-config.json
+            ${{ github.repository == 'sednalabs/codex' && format('{0}/dotslash-config.json', runner.temp) || '.github/dotslash-config.json' }}
+            ${{ github.repository == 'sednalabs/codex' && format('{0}/dotslash-argument-comment-lint-config.json', runner.temp) || '.github/dotslash-argument-comment-lint-config.json' }}
 
       - name: Publish the provisioned macOS package manifest
         if: vars.CODEX_PROVISIONED_MACOS_CANDIDATE == 'true'
@@ -1874,6 +1906,7 @@ jobs:
     if: >-
       ${{
         !cancelled() &&
+        github.repository != 'sednalabs/codex' &&
         needs.release.result == 'success' &&
         needs.release.outputs.should_publish_npm == 'true'
       }}
@@ -2096,6 +2129,7 @@ jobs:
     if: >-
       ${{
         !cancelled() &&
+        github.repository != 'sednalabs/codex' &&
         needs.release.result == 'success' &&
         !contains(needs.release.outputs.version, '-')
       }}
