@@ -158,6 +158,7 @@ jobs:
     # Split the Windows Bazel test leg across separate Windows hosts. Jobs with
     # trusted BuildBuddy credentials use Linux RBE for build actions; test
     # execution remains on a Windows runner.
+    if: ${{ github.event_name != 'workflow_dispatch' || !inputs.w14939_focused_tests }}
     timeout-minutes: 30
     strategy:
       fail-fast: false
@@ -259,7 +260,7 @@ jobs:
   test-windows:
     # Preserve the existing required-check surface while the real work happens
     # in the sharded Windows jobs above.
-    if: always()
+    if: always() && (github.event_name != 'workflow_dispatch' || !inputs.w14939_focused_tests)
     needs: test-windows-shard
     runs-on: ubuntu-24.04
     name: Bazel test on windows-latest for x86_64-pc-windows-gnullvm
@@ -277,7 +278,9 @@ jobs:
     # Native Windows Bazel tests are slower and frequently approach the
     # 30-minute PR budget. Run this only for post-merge commits to main and give
     # it a larger timeout. Also allow manual runs for native toolchain changes.
-    if: (github.event_name == 'push' && github.ref == 'refs/heads/main') || github.event_name == 'workflow_dispatch'
+    if: >-
+      (github.event_name == 'push' && github.ref == 'refs/heads/main') ||
+      (github.event_name == 'workflow_dispatch' && !inputs.w14939_focused_tests)
     timeout-minutes: 40
     runs-on: windows-2022
     name: Bazel test on windows-latest for x86_64-pc-windows-msvc (native main)
@@ -354,6 +357,7 @@ jobs:
         uses: ./.github/actions/check-clean-worktree
 
   clippy:
+    if: ${{ github.event_name != 'workflow_dispatch' || !inputs.w14939_focused_tests }}
     timeout-minutes: 30
     strategy:
       fail-fast: false
@@ -463,6 +467,7 @@ jobs:
         uses: ./.github/actions/check-clean-worktree
 
   verify-release-build:
+    if: ${{ github.event_name != 'workflow_dispatch' || !inputs.w14939_focused_tests }}
     timeout-minutes: 30
     strategy:
       fail-fast: false
