@@ -1,4 +1,4 @@
-name: Temporary RustSec 2026-0387 lock export
+name: Temporary RustSec 2026-0387 lock and consumer proof
 
 on:
   push:
@@ -9,53 +9,144 @@ permissions:
   contents: read
 
 jobs:
-  export:
-    name: Export Cargo and Bazel locks on hosted Ubuntu
+  prove:
+    name: Export locks and test exact candidate on hosted Ubuntu
     runs-on: ubuntu-24.04
-    timeout-minutes: 45
+    timeout-minutes: 150
+    env:
+      # A blank key keeps run-bazel-ci on the runner's local Linux executor.
+      BUILDBUDDY_API_KEY: ""
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
         with:
+          ref: c33108febc70b20947cf57653a3b0ab15a837806
           persist-credentials: false
 
-      - uses: dtolnay/rust-toolchain@d124f86f28ff42855784ff3319f48ac182c248f8 # 1.99.1
-
-      - name: Resolve the approved consumer versions
+      - name: Assert exact source candidate and initialize proof artifacts
         shell: bash
         run: |
           set -euo pipefail
-          cargo update --manifest-path codex-rs/Cargo.toml -p rtc@0.20.3 --precise 0.21.1
+          actual="$(git rev-parse HEAD)"
+          test "$actual" = "c33108febc70b20947cf57653a3b0ab15a837806"
+          echo "Validated source candidate: $actual"
+          : > "$RUNNER_TEMP/crypto-lock-delta.patch"
+          printf 'Candidate: %s\nFocused hosted consumer tests:\n' "$actual" \
+            > "$RUNNER_TEMP/crypto-focused-tests.log"
+
+      - uses: dtolnay/rust-toolchain@d124f86f28ff42855784ff3319f48ac182c248f8 # 1.99.1
+
+      - uses: ./.github/actions/prepare-bazel-ci
+        with:
+          target: x86_64-unknown-linux-gnu
+          cache-scope: w14939-crypto-migration
+
+      - name: Resolve Cargo lock from the complete candidate manifests
+        id: cargo_lock
+        continue-on-error: true
+        shell: bash
+        run: |
+          set -euo pipefail
+          cargo metadata --manifest-path codex-rs/Cargo.toml --format-version 1 >/dev/null
           cargo metadata --manifest-path codex-rs/Cargo.toml --format-version 1 --locked >/dev/null
 
-      - name: Set up Bazelisk
-        uses: bazel-contrib/setup-bazel@c5acdfb288317d0b5c0bbd7a396a3dc868bb0f86 # 0.19.0
+      - name: Run cargo-deny on the resolved candidate graph
+        id: cargo_deny
+        continue-on-error: true
+        uses: EmbarkStudios/cargo-deny-action@82eb9f621fbc699dd0918f3ea06864c14cc84246 # v2
         with:
-          bazelisk-version: 1.30.0
+          rust-version: 1.99.1
+          manifest-path: ./codex-rs/Cargo.toml
 
-      - name: Resolve Bazel module lock
+      - name: Resolve and verify the Bazel module lock
+        id: bazel_lock
+        continue-on-error: true
         shell: bash
-        run: bazel mod deps --lockfile_mode=update
+        run: |
+          set -euo pipefail
+          bazel mod deps --lockfile_mode=update
+          bazel mod deps --lockfile_mode=error
 
-      - name: Validate and package the lock delta
+      - name: Run focused crypto, verification, RTC, and retained auth consumer tests
+        id: focused_tests
+        continue-on-error: true
+        shell: bash
+        run: |
+          set -o pipefail
+          ./.github/scripts/run-bazel-ci.sh --print-failed-test-logs -- test \
+            --lockfile_mode=error \
+            --test_tag_filters=-argument-comment-lint \
+            --test_verbose_timeout_warnings -- \
+            //codex-rs/user-verification:user-verification-unit-tests \
+            //codex-rs/voice-host:codex-voice-host-bin-unit-tests \
+            //codex-rs/secrets:secrets-unit-tests \
+            //codex-rs/login:login-unit-tests \
+            //codex-rs/rmcp-client:rmcp-client-unit-tests \
+            //codex-rs/cli:cli-mcp_device_login-test \
+            //codex-rs/cli:cli-exec_server_websocket_auth-test \
+            2>&1 | tee -a "$RUNNER_TEMP/crypto-focused-tests.log"
+
+      - name: Validate and package only the generated lock delta
+        id: lock_delta
+        if: always()
+        continue-on-error: true
         shell: bash
         run: |
           set -euo pipefail
           actual="$(git status --short --untracked-files=all)"
-          expected=$' M MODULE.bazel.lock\n M codex-rs/Cargo.lock'
-          if [[ "$actual" != "$expected" ]]; then
-            echo "Unexpected generated paths or missing lock updates:" >&2
+          changed=0
+          unexpected=0
+          if [[ -z "$actual" ]]; then
+            echo "No generated lock updates found" >&2
+            unexpected=1
+          else
+            while IFS= read -r entry; do
+              case "$entry" in
+                " M MODULE.bazel.lock"|" M codex-rs/Cargo.lock") changed=1 ;;
+                *)
+                  echo "Unexpected generated path: $entry" >&2
+                  unexpected=1
+                  ;;
+              esac
+            done <<< "$actual"
+          fi
+          git diff --check
+          git diff --binary -- MODULE.bazel.lock codex-rs/Cargo.lock \
+            > "$RUNNER_TEMP/crypto-lock-delta.patch"
+          if [[ "$unexpected" -ne 0 || "$changed" -ne 1 ]]; then
             printf '%s\n' "$actual" >&2
             exit 1
           fi
-          git diff --check
-          git diff --binary -- MODULE.bazel.lock codex-rs/Cargo.lock > "$RUNNER_TEMP/crypto-lock-delta.patch"
 
-      - name: Upload generated lock files and dependency diff
+      - name: Upload generated locks, exact dependency diff, and test log
+        if: always()
         uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f # v7.0.0
         with:
-          name: rustsec-2026-0387-lock-export
+          name: rustsec-2026-0387-lock-and-consumer-proof-c33108f
           if-no-files-found: error
           path: |
             MODULE.bazel.lock
             codex-rs/Cargo.lock
             ${{ runner.temp }}/crypto-lock-delta.patch
+            ${{ runner.temp }}/crypto-focused-tests.log
+
+      - name: Require every lock and consumer proof gate
+        if: always()
+        shell: bash
+        env:
+          CARGO_LOCK_OUTCOME: ${{ steps.cargo_lock.outcome }}
+          CARGO_DENY_OUTCOME: ${{ steps.cargo_deny.outcome }}
+          BAZEL_LOCK_OUTCOME: ${{ steps.bazel_lock.outcome }}
+          FOCUSED_TESTS_OUTCOME: ${{ steps.focused_tests.outcome }}
+          LOCK_DELTA_OUTCOME: ${{ steps.lock_delta.outcome }}
+        run: |
+          set -euo pipefail
+          printf 'Cargo lock resolution: %s\n' "$CARGO_LOCK_OUTCOME"
+          printf 'cargo-deny: %s\n' "$CARGO_DENY_OUTCOME"
+          printf 'Bazel lock resolution: %s\n' "$BAZEL_LOCK_OUTCOME"
+          printf 'Focused consumer tests: %s\n' "$FOCUSED_TESTS_OUTCOME"
+          printf 'Lock delta validation: %s\n' "$LOCK_DELTA_OUTCOME"
+          test "$CARGO_LOCK_OUTCOME" = success
+          test "$CARGO_DENY_OUTCOME" = success
+          test "$BAZEL_LOCK_OUTCOME" = success
+          test "$FOCUSED_TESTS_OUTCOME" = success
+          test "$LOCK_DELTA_OUTCOME" = success
