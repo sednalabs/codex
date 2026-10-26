@@ -29,6 +29,7 @@ use std::net::TcpStream;
 use std::os::unix::fs::MetadataExt;
 use std::path::Path;
 use std::path::PathBuf;
+use std::process::Command;
 use std::process::Output;
 use std::process::Stdio;
 use std::time::Duration;
@@ -53,8 +54,52 @@ const MANAGED_PROXY_PERMISSION_ERR_SNIPPETS: &[&str] = &[
 ];
 
 pub(super) fn linux_sandbox_binary() -> PathBuf {
-    codex_utils_cargo_bin::cargo_bin("codex-linux-sandbox")
-        .expect("resolve codex-linux-sandbox runfile")
+    let runfile = codex_utils_cargo_bin::cargo_bin("codex-linux-sandbox")
+        .expect("resolve codex-linux-sandbox runfile");
+    runfile.canonicalize().unwrap_or_else(|error| {
+        panic!(
+            "canonicalize codex-linux-sandbox runfile {}: {error}",
+            runfile.display()
+        )
+    })
+}
+
+fn linux_sandbox_binary_diagnostics() -> String {
+    let runfile = match codex_utils_cargo_bin::cargo_bin("codex-linux-sandbox") {
+        Ok(path) => path,
+        Err(error) => return format!("runfile resolution failed: {error}"),
+    };
+    let canonical = runfile.canonicalize();
+    let path = canonical.as_deref().unwrap_or(&runfile);
+    let metadata = std::fs::metadata(path)
+        .map(|metadata| {
+            format!(
+                "len={}, mode={:o}",
+                metadata.len(),
+                metadata.mode() & 0o7777
+            )
+        })
+        .unwrap_or_else(|error| format!("unavailable: {error}"));
+    let interpreter = match Command::new("readelf").arg("-l").arg(path).output() {
+        Ok(output) if output.status.success() => String::from_utf8_lossy(&output.stdout)
+            .lines()
+            .find(|line| line.contains("Requesting program interpreter"))
+            .map(str::trim)
+            .unwrap_or("PT_INTERP not reported")
+            .to_owned(),
+        Ok(output) => format!("readelf exited with {}", output.status),
+        Err(error) => format!("readelf unavailable: {error}"),
+    };
+    format!(
+        "runfile={} canonical={} metadata={} PT_INTERP={}",
+        runfile.display(),
+        canonical
+            .as_ref()
+            .map(|path| path.display().to_string())
+            .unwrap_or_else(|error| format!("unavailable: {error}")),
+        metadata,
+        interpreter
+    )
 }
 
 const PROXY_ENV_KEYS: &[&str] = &[
@@ -840,10 +885,11 @@ async fn managed_proxy_mode_routes_through_bridge_and_blocks_direct_egress() {
     assert_eq!(
         routed_output.status.success(),
         true,
-        "expected routed command to execute successfully; status={:?}; stdout={}; stderr={}",
+        "expected routed command to execute successfully; status={:?}; stdout={}; stderr={}; {}",
         routed_output.status.code(),
         String::from_utf8_lossy(&routed_output.stdout),
-        String::from_utf8_lossy(&routed_output.stderr)
+        String::from_utf8_lossy(&routed_output.stderr),
+        linux_sandbox_binary_diagnostics()
     );
     let stdout = String::from_utf8_lossy(&routed_output.stdout);
     assert!(
