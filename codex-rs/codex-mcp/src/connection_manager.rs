@@ -1125,7 +1125,14 @@ impl McpConnectionSet {
         let connections = self
             .servers
             .values()
-            .map(|view| Arc::clone(&view.connection))
+            .filter_map(|view| {
+                // A refreshed set may reuse a ready connection that is still
+                // serving a request through an older set. Leave shared
+                // connections alive; their final Arc drop performs shutdown
+                // after the captured request releases them.
+                (Arc::strong_count(&view.connection) == 1)
+                    .then(|| Arc::clone(&view.connection))
+            })
             .collect::<Vec<_>>();
         // Keep cleanup alive if an interrupt cancels the refresh that requested it.
         let shutdown_task = tokio::spawn(async move {
@@ -1206,14 +1213,16 @@ impl McpConnectionSet {
     ) -> Result<CallToolResult> {
         self.validate_tool_call(server, tool, environment_id)?;
         let view = &self.servers[server];
+        // Keep this exact connection alive through the request. Runtime shutdown
+        // can retire the containing set while a host call is in flight.
+        let connection = Arc::clone(&view.connection);
         let client = if wait_for_server {
-            view.connection
+            connection
                 .client()
                 .await
                 .context("failed to get client")?
         } else {
-            let client = view
-                .connection
+            let client = connection
                 .client
                 .ready_client()
                 .ok_or_else(|| anyhow!("MCP server '{server}' is not connected"))?;
