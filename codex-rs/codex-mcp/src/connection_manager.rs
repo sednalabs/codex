@@ -1217,10 +1217,7 @@ impl McpConnectionSet {
         // can retire the containing set while a host call is in flight.
         let connection = Arc::clone(&view.connection);
         let client = if wait_for_server {
-            connection
-                .client()
-                .await
-                .context("failed to get client")?
+            connection.client().await.context("failed to get client")?
         } else {
             let client = connection
                 .client
