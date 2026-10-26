@@ -188,8 +188,9 @@ async fn capture_reaches_remote_rtp_and_mute_discards_queued_and_partial_audio()
         let (sender, mut received) = mpsc::channel(/*buffer*/ 32);
         let gathered = Arc::new(Notify::new());
         let (media, _) = AudioTrack::new().unwrap();
-        let mut settings = webrtc::peer_connection::SettingEngine::default();
-        settings.set_lite(/*lite*/ true);
+        let settings = webrtc::peer_connection::SettingEngineBuilder::new()
+            .with_lite(/*lite*/ true)
+            .build();
         let remote = PeerConnectionBuilder::new()
             .with_media_engine(media)
             .with_setting_engine(settings)

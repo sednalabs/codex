@@ -24,9 +24,9 @@ codex-realtime-webrtc = { workspace = true }
 futures = { workspace = true }
 libloading = "=0.8.9"
 rand = { workspace = true }
-rtc = "=0.20.3"
+rtc = "=0.21.1"
 tokio = { workspace = true, features = ["rt-multi-thread", "sync", "time"] }
-webrtc = "=0.20.3"
+webrtc = "=0.21.1"
 
 [target.'cfg(any(target_os = "macos", all(target_os = "linux", target_env = "gnu"), all(windows, target_env = "msvc")))'.dependencies]
 cpal = "=0.18.2"
