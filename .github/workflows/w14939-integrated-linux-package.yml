@@ -14,7 +14,7 @@ on:
       mode:
         description: Run the lifecycle regression only, or full proof and package
         required: false
-        default: lifecycle
+        default: package
         type: choice
         options:
           - lifecycle
@@ -45,7 +45,7 @@ jobs:
       STABLE_GIT_COMMIT: ${{ inputs.product_source_sha || '28a2211ef024be3c453702b1980b2be3d4ab02fe' }}
       VALIDATION_HARNESS_SHA: 97a955ba03218ee9afe43dd0a03834dad1b2c0e5
       VALIDATION_PROFILE: rust_integration
-      VALIDATION_MODE: ${{ inputs.mode || 'lifecycle' }}
+      VALIDATION_MODE: ${{ inputs.mode || 'package' }}
       TARGET: ${{ matrix.target }}
       BINARY_KIND: ${{ matrix.binary_kind }}
       LOADER: ${{ matrix.loader }}
@@ -419,6 +419,7 @@ jobs:
           PY
 
       - uses: actions/upload-artifact@v7
+        if: ${{ env.VALIDATION_MODE == 'package' }}
         with:
           name: codex-w14939-integrated-${{ matrix.arch }}-${{ steps.identity.outputs.source_short }}-${{ github.run_id }}
           path: |
