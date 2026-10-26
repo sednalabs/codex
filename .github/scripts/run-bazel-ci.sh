@@ -269,6 +269,12 @@ if [[ "${RUNNER_OS:-}" == "Windows" && $windows_cross_compile -eq 1 && $remote_e
 fi
 
 post_config_bazel_args=()
+if [[ "${RUNNER_OS:-}" == "Windows" && $windows_cross_compile -eq 1 && $remote_execution_allowed -eq 0 && -n "${BAZEL_MSVC_RUNTIME_VISUAL_STUDIO_EULA:-}" ]]; then
+  # The local MSVC host toolchain checks this accepted runner license through
+  # Bazel's external-repository environment.
+  post_config_bazel_args+=("--repo_env=BAZEL_MSVC_RUNTIME_VISUAL_STUDIO_EULA")
+fi
+
 if [[ "${RUNNER_OS:-}" == "Windows" && $windows_msvc_host_platform -eq 1 ]]; then
   has_host_platform_override=0
   for arg in "${bazel_args[@]}"; do
@@ -354,7 +360,14 @@ if [[ "${RUNNER_OS:-}" == "Windows" ]]; then
 
     for env_var in "${windows_action_env_vars[@]}"; do
       if [[ -n "${!env_var:-}" ]]; then
-        post_config_bazel_args+=("--action_env=${env_var}" "--host_action_env=${env_var}")
+        if [[ $windows_cross_compile -eq 1 && $remote_execution_allowed -eq 0 ]]; then
+          # Keep the Windows SDK/MSVC environment on host actions only. The
+          # target remains GNU-ABI and must use the Bazel-provided MinGW/LLVM
+          # linker and CRT rather than import libraries from the MSVC SDK.
+          post_config_bazel_args+=("--host_action_env=${env_var}")
+        else
+          post_config_bazel_args+=("--action_env=${env_var}" "--host_action_env=${env_var}")
+        fi
       fi
     done
   fi

@@ -503,7 +503,7 @@ fn developer_overlay_reaches_fresh_root_and_child_request_payloads() -> anyhow::
         (SessionSource::Cli, None),
         (
             SessionSource::SubAgent(SubAgentSource::ThreadSpawn {
-                parent_thread_id: parent_thread_id.clone(),
+                parent_thread_id,
                 depth: 1,
                 agent_path: None,
                 agent_nickname: None,

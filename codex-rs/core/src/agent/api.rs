@@ -85,7 +85,7 @@ pub trait AgentControl: Send + Sync {
     /// recipient-owned and must be explicitly acknowledged after flush.
     fn mailbox_pending_inputs(
         &self,
-        agent: ThreadId,
+        _agent: ThreadId,
     ) -> BoxFuture<'_, Result<Vec<crate::PendingAgentMessage>>> {
         Box::pin(async { Ok(Vec::new()) })
     }
@@ -105,7 +105,7 @@ pub trait AgentControl: Send + Sync {
     /// can preserve their exact bodies in the replacement history.
     fn mailbox_unadmitted_inputs(
         &self,
-        agent: ThreadId,
+        _agent: ThreadId,
     ) -> BoxFuture<'_, Result<Vec<crate::PendingAgentMessage>>> {
         Box::pin(async { Ok(Vec::new()) })
     }

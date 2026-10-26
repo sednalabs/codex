@@ -4213,6 +4213,7 @@ impl Session {
         }))
     }
 
+    #[cfg(test)]
     pub(crate) async fn record_inter_agent_communication(
         &self,
         turn_context: &TurnContext,

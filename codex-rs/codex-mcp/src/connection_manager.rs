@@ -1130,7 +1130,11 @@ impl McpConnectionSet {
                 // serving a request through an older set. Leave shared
                 // connections alive; their final Arc drop performs shutdown
                 // after the captured request releases them.
-                (Arc::strong_count(&view.connection) == 1).then(|| Arc::clone(&view.connection))
+                if Arc::strong_count(&view.connection) == 1 {
+                    Some(Arc::clone(&view.connection))
+                } else {
+                    None
+                }
             })
             .collect::<Vec<_>>();
         // Keep cleanup alive if an interrupt cancels the refresh that requested it.

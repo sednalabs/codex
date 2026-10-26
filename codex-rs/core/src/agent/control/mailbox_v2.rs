@@ -655,21 +655,4 @@ impl LocalAgentControl {
         };
         mailbox.mark_dispatched(work).await.map_err(storage_error)
     }
-
-    pub(crate) async fn mailbox_v2_mark_delivery_unavailable(
-        &self,
-        work: &WorkRef,
-    ) -> CodexResult<()> {
-        let Some(mailbox) = self.mailbox_v2() else {
-            return Err(CodexErr::Fatal(format!(
-                "accepted work {} lost its durable mailbox handle",
-                work.id
-            )));
-        };
-        mailbox
-            .mark_recovery_needed(work, RecoveryEvidence::DeliveryUnavailable)
-            .await
-            .map(|_| ())
-            .map_err(storage_error)
-    }
 }

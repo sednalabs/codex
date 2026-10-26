@@ -154,6 +154,8 @@ jobs:
           - 4
     runs-on: windows-2022
     name: Bazel test on windows-latest for x86_64-pc-windows-gnullvm shard ${{ matrix.shard }}/4
+    env:
+      BAZEL_MSVC_RUNTIME_VISUAL_STUDIO_EULA: "1"
     environment:
       name: bazel
       deployment: false
@@ -354,6 +356,8 @@ jobs:
             target: x86_64-pc-windows-gnullvm
     runs-on: ${{ matrix.os }}
     name: Bazel clippy on ${{ matrix.os }} for ${{ matrix.target }}
+    env:
+      BAZEL_MSVC_RUNTIME_VISUAL_STUDIO_EULA: ${{ matrix.os == 'windows-2022' && '1' || '' }}
     environment:
       name: bazel
       deployment: false
@@ -457,6 +461,8 @@ jobs:
             target: x86_64-pc-windows-gnullvm
     runs-on: ${{ matrix.os }}
     name: Verify release build on ${{ matrix.os }} for ${{ matrix.target }}
+    env:
+      BAZEL_MSVC_RUNTIME_VISUAL_STUDIO_EULA: ${{ matrix.os == 'windows-2022' && '1' || '' }}
     environment:
       name: bazel
       deployment: false

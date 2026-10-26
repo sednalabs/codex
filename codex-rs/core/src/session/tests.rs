@@ -10968,7 +10968,7 @@ async fn model_baseline_overlay_reaches_fresh_root_and_child_request_payloads() 
             (
                 "ThreadSpawn child",
                 SessionSource::SubAgent(SubAgentSource::ThreadSpawn {
-                    parent_thread_id: parent_thread_id.clone(),
+                    parent_thread_id,
                     depth: 1,
                     agent_path: Some(
                         AgentPath::try_from("/root/worker").expect("agent path should parse"),

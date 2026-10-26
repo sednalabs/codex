@@ -4,7 +4,6 @@ use crate::MultitoolCli;
 use clap::Command;
 use clap::CommandFactory;
 use clap::FromArgMatches;
-use clap::Parser;
 use codex_utils_cli::CliConfigOverrides;
 use std::ffi::OsString;
 use std::sync::OnceLock;

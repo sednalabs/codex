@@ -742,6 +742,7 @@ async fn worker_preserves_inherited_acl_through_append() -> anyhow::Result<()> {
 #[cfg(unix)]
 #[tokio::test]
 async fn worker_preserves_alternate_group_through_materialization() -> anyhow::Result<()> {
+    use anyhow::Context;
     use std::os::unix::fs::MetadataExt;
     use std::process::Command;
 
@@ -764,14 +765,29 @@ async fn worker_preserves_alternate_group_through_materialization() -> anyhow::R
         eprintln!("skipping ownership regression: no alternate supplementary group");
         return Ok(());
     };
-    std::os::unix::fs::chown(&path, /*uid*/ None, Some(group))?;
+    std::os::unix::fs::chown(&path, /*uid*/ None, Some(group))
+        .with_context(|| format!("setting test rollout to alternate group {group}"))?;
     assert_eq!(fs::metadata(&path)?.gid(), group);
 
-    worker::run(home.path().to_path_buf(), Startup).await?;
+    worker::run(home.path().to_path_buf(), Startup)
+        .await
+        .context("compressing rollout while preserving its alternate group")?;
     assert!(!path.exists());
-    assert_eq!(fs::metadata(compressed_rollout_path(&path))?.gid(), group);
-    materialize_rollout_for_append(&path, /*writer_lock*/ None).await?;
-    assert_eq!(fs::metadata(&path)?.gid(), group);
+    assert_eq!(
+        fs::metadata(compressed_rollout_path(&path))
+            .context("reading compressed rollout group")?
+            .gid(),
+        group
+    );
+    materialize_rollout_for_append(&path, /*writer_lock*/ None)
+        .await
+        .context("materializing compressed rollout while preserving its alternate group")?;
+    assert_eq!(
+        fs::metadata(&path)
+            .context("reading materialized rollout group")?
+            .gid(),
+        group
+    );
     Ok(())
 }
 

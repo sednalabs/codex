@@ -159,9 +159,9 @@ async fn a_slow_token_endpoint_is_bounded_by_the_device_expiry() {
         &HeaderMap::new(),
         "https://issuer.test/token",
         "synthetic-client",
-        None,
-        &details(1, 1),
-        None,
+        /*oauth_resource*/ None,
+        &details(/*expires_in*/ 1, /*interval*/ 1),
+        /*pkce*/ None,
     )
     .await
     .expect_err("the device expiry must bound an in-flight poll");
@@ -183,7 +183,7 @@ async fn denial_and_expiration_stop_polling() {
         ),
     ] {
         let client = Arc::new(TestHttpClient::with_replies([reply(
-            400,
+            /*status*/ 400,
             json!({"error": error}),
         )]));
         let actual = poll_device_token(
@@ -191,9 +191,9 @@ async fn denial_and_expiration_stop_polling() {
             &HeaderMap::new(),
             "https://issuer.test/token",
             "synthetic-client",
-            None,
-            &details(60, 1),
-            None,
+            /*oauth_resource*/ None,
+            &details(/*expires_in*/ 60, /*interval*/ 1),
+            /*pkce*/ None,
         )
         .await
         .expect_err("terminal provider errors must stop device login");
@@ -206,7 +206,7 @@ async fn denial_and_expiration_stop_polling() {
 #[tokio::test]
 async fn slow_down_does_not_extend_the_original_device_deadline() {
     let client = Arc::new(TestHttpClient::with_replies([reply(
-        400,
+        /*status*/ 400,
         json!({"error": "slow_down"}),
     )]));
     let error = poll_device_token(
@@ -214,9 +214,9 @@ async fn slow_down_does_not_extend_the_original_device_deadline() {
         &HeaderMap::new(),
         "https://issuer.test/token",
         "synthetic-client",
-        None,
-        &details(1, 1),
-        None,
+        /*oauth_resource*/ None,
+        &details(/*expires_in*/ 1, /*interval*/ 1),
+        /*pkce*/ None,
     )
     .await
     .expect_err("slow_down must preserve the original deadline");
@@ -232,11 +232,11 @@ async fn slow_down_does_not_extend_the_original_device_deadline() {
 async fn a_provider_invalid_request_retries_device_authorization_without_pkce() {
     let client = TestHttpClient::with_replies([
         reply(
-            400,
+            /*status*/ 400,
             json!({"error": "invalid_request", "error_description": "PKCE not supported"}),
         ),
         reply(
-            200,
+            /*status*/ 200,
             json!({
                 "device_code": "synthetic-device-code",
                 "user_code": "SYNTHETIC-CODE",
@@ -250,7 +250,7 @@ async fn a_provider_invalid_request_retries_device_authorization_without_pkce() 
         "https://issuer.test/device",
         "synthetic-client",
         &["read".to_string()],
-        None,
+        /*oauth_resource*/ None,
     )
     .await
     .expect("provider PKCE rejection should have one public-client fallback");

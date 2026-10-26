@@ -1,5 +1,4 @@
 use crate::agent::api::AgentControl;
-use crate::agent_communication::MessageDelivery;
 use crate::agent_communication::PENDING_MAILBOX_MESSAGES;
 use crate::state::ActiveTurn;
 use crate::state::MailboxDeliveryPhase;

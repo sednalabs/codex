@@ -231,9 +231,7 @@ def test_root_format_driver_covers_all_formatter_groups(
     assert formatters[0].commands[-1].args == ("just", "--unstable", "--fmt")
     assert checks[0].commands[-1].args == ("just", "--unstable", "--fmt", "--check")
     cargo_fmt_args = ("cargo", "fmt", "--", "--config", "imports_granularity=Item")
-    assert formatters[1].commands == (
-        script.Command(cargo_fmt_args, tmp_path / "codex-rs"),
-    )
+    assert formatters[1].commands == (script.Command(cargo_fmt_args, tmp_path / "codex-rs"),)
     assert checks[1].commands == (
         script.Command(cargo_fmt_args + ("--check",), tmp_path / "codex-rs"),
     )
@@ -515,7 +513,9 @@ def test_generated_chatgpt_account_email_is_required_nullable() -> None:
 
 
 @pytest.mark.parametrize("link_id", ["link_calendar", None])
-def test_generated_resource_read_target_requires_explicit_account(link_id: str | None) -> None:
+def test_generated_resource_read_target_requires_explicit_account(
+    link_id: str | None,
+) -> None:
     from openai_codex.generated.v2_all import McpResourceReadTarget
 
     payload = {"connectorId": "calendar", "linkId": link_id}
@@ -924,7 +924,10 @@ def test_stage_runtime_directory_matches_archive(tmp_path: Path) -> None:
         )
         staged_trees.append(
             {
-                path.relative_to(staged): (path.read_bytes(), path.stat().st_mode & 0o777)
+                path.relative_to(staged): (
+                    path.read_bytes(),
+                    path.stat().st_mode & 0o777,
+                )
                 for path in staged.rglob("*")
                 if path.is_file()
             }
@@ -999,7 +1002,9 @@ def sdk_release_source(tmp_path: Path) -> Path:
     project = source / "pyproject.toml"
     project.write_text(
         re.sub(
-            r"openai-codex-cli-bin==[^\"\s]+", "openai-codex-cli-bin==0.153.0", project.read_text()
+            r"openai-codex-cli-bin==[^\"\s]+",
+            "openai-codex-cli-bin==0.153.0",
+            project.read_text(),
         )
     )
     return source
@@ -1389,7 +1394,14 @@ def test_stage_sdk_release_rejects_missing_or_duplicate_runtime_pin(
 def test_stage_sdk_rejects_empty_runtime_version(tmp_path: Path) -> None:
     script = _load_update_script_module()
     args = script.parse_args(
-        ["stage-sdk", str(tmp_path / "sdk-stage"), "--sdk-version", "1.2.3", "--codex-version", ""]
+        [
+            "stage-sdk",
+            str(tmp_path / "sdk-stage"),
+            "--sdk-version",
+            "1.2.3",
+            "--codex-version",
+            "",
+        ]
     )
     with pytest.raises(RuntimeError, match="Could not normalize Codex version"):
         script.run_command(args, script.default_cli_ops())

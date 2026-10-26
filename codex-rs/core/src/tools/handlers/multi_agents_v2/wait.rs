@@ -28,6 +28,13 @@ use std::time::Duration;
 use tokio::time::Instant;
 use tokio::time::timeout_at;
 
+struct MailboxWaitOptions {
+    requested_timeout_ms: Option<i64>,
+    timeout_ms: i64,
+    mailbox: Arc<Mailbox>,
+    cancellation_token: tokio_util::sync::CancellationToken,
+}
+
 #[derive(Default)]
 pub(crate) struct Handler {
     options: WaitAgentTimeoutOptions,
@@ -103,10 +110,12 @@ impl Handler {
                 turn,
                 call_id,
                 args,
-                requested_timeout_ms,
-                timeout_ms,
-                mailbox,
-                cancellation_token,
+                MailboxWaitOptions {
+                    requested_timeout_ms,
+                    timeout_ms,
+                    mailbox,
+                    cancellation_token,
+                },
             )
             .await;
         }
@@ -494,11 +503,14 @@ async fn handle_mailbox_wait(
     turn: Arc<TurnContext>,
     call_id: String,
     args: WaitArgs,
-    requested_timeout_ms: Option<i64>,
-    timeout_ms: i64,
-    mailbox: Arc<Mailbox>,
-    cancellation_token: tokio_util::sync::CancellationToken,
+    options: MailboxWaitOptions,
 ) -> Result<Box<dyn crate::tools::context::ToolOutput>, FunctionCallError> {
+    let MailboxWaitOptions {
+        requested_timeout_ms,
+        timeout_ms,
+        mailbox,
+        cancellation_token,
+    } = options;
     let targetless = args.targets.is_none() && args.replies_to.is_none();
     let targets = args.targets.unwrap_or_default();
     let replies_to = args.replies_to.unwrap_or_default();
@@ -569,11 +581,7 @@ async fn handle_mailbox_wait(
         let input_generation = mailbox.wait_input_generation();
         if targetless {
             match mailbox
-                .issued_work_refs(
-                    session.thread_id,
-                    /*agent*/ None,
-                    /*limit*/ 100,
-                )
+                .issued_work_refs(session.thread_id, /*agent*/ None, /*limit*/ 100)
                 .await
             {
                 Ok(work) => {
@@ -749,13 +757,13 @@ async fn handle_mailbox_wait(
                             .await
                         {
                             Ok(snapshot) => {
-                                if let Some(item) = snapshot.items.into_iter().next() {
-                                    if !selected.iter().any(|existing| {
+                                if let Some(item) = snapshot.items.into_iter().next()
+                                    && !selected.iter().any(|existing| {
                                         selector_key_for_snapshot(existing)
                                             == selector_key_for_snapshot(&item)
-                                    }) {
-                                        selected.push(item);
-                                    }
+                                    })
+                                {
+                                    selected.push(item);
                                 }
                             }
                             Err(_) => {
