@@ -1,3 +1,4 @@
+use base64::Engine;
 use pretty_assertions::assert_eq;
 
 use super::InitiatorHandshake;
@@ -7,6 +8,7 @@ use super::NoiseChannelError;
 use super::NoiseChannelIdentity;
 use super::NoiseChannelPublicKey;
 use super::PendingResponderHandshake;
+use super::STANDARD;
 use super::noise_channel_prologue;
 
 #[test]
@@ -206,6 +208,14 @@ fn public_key_serializes_with_expected_suite() {
     let json = serde_json::to_value(key).expect("serialize key");
 
     assert_eq!(json["suite"], NOISE_CHANNEL_SUITE);
+    let encoded_mlkem_key = STANDARD
+        .decode(
+            json["mlkem768_public_key"]
+                .as_str()
+                .expect("ML-KEM-768 key string"),
+        )
+        .expect("base64 ML-KEM-768 key");
+    assert_eq!(encoded_mlkem_key.len(), 1184);
 }
 
 #[test]

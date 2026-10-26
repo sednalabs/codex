@@ -15,24 +15,120 @@ use clatter::HybridHandshake;
 use clatter::HybridHandshakeParams;
 use clatter::KeyPair;
 use clatter::bytearray::ByteArray;
+use clatter::bytearray::SensitiveByteArray;
 use clatter::constants::MAX_MESSAGE_LEN;
 use clatter::crypto::cipher::AesGcm;
 use clatter::crypto::dh::X25519;
 use clatter::crypto::hash::Sha256;
-use clatter::crypto::kem::rust_crypto_ml_kem::MlKem768;
+use clatter::error::KemError;
 use clatter::handshakepattern::noise_hybrid_ik;
 use clatter::traits::Cipher;
+use clatter::traits::CryptoComponent;
 use clatter::traits::Dh;
 use clatter::traits::Handshaker;
 use clatter::traits::Kem;
+use clatter::traits::Rng;
+use clatter::traits::RngCore;
 use clatter::transportstate::TransportState;
+use ml_kem::Key;
+use ml_kem::Seed;
+use ml_kem::kem::Decapsulate;
+use ml_kem::kem::Encapsulate;
+use ml_kem::kem::KeyExport;
 use serde::Deserialize;
 use serde::Serialize;
+use zeroize::Zeroize;
 
 /// Identifies the handshake pattern and algorithms used by this channel.
 pub(crate) const NOISE_CHANNEL_SUITE: &str = "Noise_hybridIK_X25519+MLKEM768_AESGCM_SHA256";
 
 const PROLOGUE_DOMAIN: &[u8] = b"codex-exec-server-relay-noise/v1";
+
+// Keep the Noise suite on Clatter's KEM interface while using RustCrypto's stable ML-KEM.
+#[derive(Clone)]
+struct MlKem768;
+
+impl CryptoComponent for MlKem768 {
+    fn name() -> &'static str {
+        "MLKEM768"
+    }
+}
+
+impl Kem for MlKem768 {
+    type SecretKey = SensitiveByteArray<[u8; 64]>;
+    type PubKey = [u8; 1184];
+    type Ct = [u8; 1088];
+    type Ss = SensitiveByteArray<[u8; 32]>;
+
+    fn genkey_rng<R: Rng>(
+        rng: &mut R,
+    ) -> clatter::error::KemResult<KeyPair<Self::PubKey, Self::SecretKey>> {
+        let mut seed_bytes = [0u8; 64];
+        rng.fill_bytes(&mut seed_bytes);
+        let mut seed = Seed::from(seed_bytes);
+        let decapsulation_key = ml_kem::ml_kem_768::DecapsulationKey::from_seed(seed.clone());
+        seed.zeroize();
+        let public_key = decapsulation_key.encapsulation_key().to_bytes();
+        let key_pair = KeyPair {
+            public: Self::PubKey::from_slice(public_key.as_slice()),
+            secret: Self::SecretKey::from_slice(&seed_bytes),
+        };
+        seed_bytes.zeroize();
+        Ok(key_pair)
+    }
+
+    fn encapsulate<R: Rng>(
+        public_key: &[u8],
+        rng: &mut R,
+    ) -> clatter::error::KemResult<(Self::Ct, Self::Ss)> {
+        let encoded_public_key: Key<ml_kem::ml_kem_768::EncapsulationKey> =
+            public_key.try_into().map_err(|_| KemError::Input)?;
+        let encapsulation_key = ml_kem::ml_kem_768::EncapsulationKey::new(&encoded_public_key)
+            .map_err(|_| KemError::Input)?;
+        let (ciphertext, mut shared_secret) =
+            encapsulation_key.encapsulate_with_rng(&mut MlKemRngAdapter(rng));
+        let result = (
+            Self::Ct::from_slice(ciphertext.as_slice()),
+            Self::Ss::from_slice(shared_secret.as_slice()),
+        );
+        shared_secret.zeroize();
+        Ok(result)
+    }
+
+    fn decapsulate(ciphertext: &[u8], secret_key: &[u8]) -> clatter::error::KemResult<Self::Ss> {
+        let mut seed: Seed = secret_key.try_into().map_err(|_| KemError::Input)?;
+        let ciphertext: ml_kem::ml_kem_768::Ciphertext =
+            ciphertext.try_into().map_err(|_| KemError::Input)?;
+        let decapsulation_key = ml_kem::ml_kem_768::DecapsulationKey::from_seed(seed.clone());
+        seed.zeroize();
+        let mut shared_secret = decapsulation_key.decapsulate(&ciphertext);
+        let result = Self::Ss::from_slice(shared_secret.as_slice());
+        shared_secret.zeroize();
+        Ok(result)
+    }
+}
+
+struct MlKemRngAdapter<'a, R>(&'a mut R);
+
+// Clatter's RNG trait uses rand_core 0.6; stable RustCrypto ML-KEM uses rand_core 0.10.
+impl<R: Rng> rand_core_10::TryRng for MlKemRngAdapter<'_, R> {
+    type Error = std::convert::Infallible;
+
+    fn try_next_u32(&mut self) -> Result<u32, Self::Error> {
+        Ok(RngCore::next_u32(self.0))
+    }
+
+    fn try_next_u64(&mut self) -> Result<u64, Self::Error> {
+        Ok(RngCore::next_u64(self.0))
+    }
+
+    fn try_fill_bytes(&mut self, dest: &mut [u8]) -> Result<(), Self::Error> {
+        RngCore::fill_bytes(self.0, dest);
+        Ok(())
+    }
+}
+
+impl<R: Rng> rand_core_10::TryCryptoRng for MlKemRngAdapter<'_, R> {}
 
 type Handshake = HybridHandshake<X25519, MlKem768, MlKem768, AesGcm, Sha256>;
 type Transport = TransportState<AesGcm, Sha256>;
