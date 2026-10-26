@@ -18,7 +18,10 @@ workspace_root_test(
     # Keep this ownership regression on the host: a sandbox user namespace
     # can expose the unmapped overflow GID (65534) instead of the runner's
     # actual supplementary groups. `local` also prevents remote execution.
-    tags = ["local", "no-sandbox"],
+    tags = [
+        "local",
+        "no-sandbox",
+    ],
     target_compatible_with = ["@platforms//os:linux"],
     test_bin = ":rollout-unit-tests-bin",
     workspace_root_marker = "//codex-rs/utils/cargo-bin:repo_root.marker",
