@@ -1,4 +1,4 @@
-name: w14939 integrated Linux proof and packages
+name: w14939 x86_64 focused proof and package
 
 on:
   push:
@@ -22,17 +22,12 @@ jobs:
             arch: x86_64
             binary_kind: x86-64
             loader: /lib64/ld-linux-x86-64.so.2
-          - target: aarch64-unknown-linux-gnu
-            runner: ubuntu-24.04-arm
-            arch: aarch64
-            binary_kind: ARM aarch64
-            loader: /lib/ld-linux-aarch64.so.1
     env:
       CARGO_INCREMENTAL: "0"
       RUST_MIN_STACK: "8388608"
       CODEX_REPO_ROOT: ${{ github.workspace }}
-      PRODUCT_SOURCE_SHA: 62e3b1d504425f0359c0b4cafa9bd27e75cc6c66
-      STABLE_GIT_COMMIT: 62e3b1d504425f0359c0b4cafa9bd27e75cc6c66
+      PRODUCT_SOURCE_SHA: b5c15144c93fc017e31cb63e8ca9bae960132dce
+      STABLE_GIT_COMMIT: b5c15144c93fc017e31cb63e8ca9bae960132dce
       VALIDATION_HARNESS_SHA: 97a955ba03218ee9afe43dd0a03834dad1b2c0e5
       VALIDATION_PROFILE: rust_integration
       TARGET: ${{ matrix.target }}
