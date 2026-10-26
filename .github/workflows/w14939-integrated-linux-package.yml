@@ -31,8 +31,8 @@ jobs:
       CARGO_INCREMENTAL: "0"
       RUST_MIN_STACK: "8388608"
       CODEX_REPO_ROOT: ${{ github.workspace }}
-      PRODUCT_SOURCE_SHA: dcfbcb7e211262b24c2b8989a35bb7d80afb22ee
-      STABLE_GIT_COMMIT: dcfbcb7e211262b24c2b8989a35bb7d80afb22ee
+      PRODUCT_SOURCE_SHA: 67042e2c4dc2bf725a4914e0bedb0af85b27f0ee
+      STABLE_GIT_COMMIT: 67042e2c4dc2bf725a4914e0bedb0af85b27f0ee
       TARGET: ${{ matrix.target }}
       BINARY_KIND: ${{ matrix.binary_kind }}
       LOADER: ${{ matrix.loader }}
