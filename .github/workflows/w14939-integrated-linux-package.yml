@@ -4,6 +4,21 @@ on:
   push:
     branches:
       - codex/w14939-package-validation-970111-20261026
+  workflow_dispatch:
+    inputs:
+      product_source_sha:
+        description: Exact 40-character product source commit to validate
+        required: false
+        default: 28a2211ef024be3c453702b1980b2be3d4ab02fe
+        type: string
+      mode:
+        description: Run the lifecycle regression only, or full proof and package
+        required: false
+        default: lifecycle
+        type: choice
+        options:
+          - lifecycle
+          - package
 
 permissions:
   contents: read
@@ -26,10 +41,11 @@ jobs:
       CARGO_INCREMENTAL: "0"
       RUST_MIN_STACK: "8388608"
       CODEX_REPO_ROOT: ${{ github.workspace }}
-      PRODUCT_SOURCE_SHA: ab81a4c0c4b6fe61653332bd709d4bf2b61befa9
-      STABLE_GIT_COMMIT: ab81a4c0c4b6fe61653332bd709d4bf2b61befa9
+      PRODUCT_SOURCE_SHA: ${{ inputs.product_source_sha || '28a2211ef024be3c453702b1980b2be3d4ab02fe' }}
+      STABLE_GIT_COMMIT: ${{ inputs.product_source_sha || '28a2211ef024be3c453702b1980b2be3d4ab02fe' }}
       VALIDATION_HARNESS_SHA: 97a955ba03218ee9afe43dd0a03834dad1b2c0e5
       VALIDATION_PROFILE: rust_integration
+      VALIDATION_MODE: ${{ inputs.mode || 'lifecycle' }}
       TARGET: ${{ matrix.target }}
       BINARY_KIND: ${{ matrix.binary_kind }}
       LOADER: ${{ matrix.loader }}
@@ -66,6 +82,10 @@ jobs:
           source_tree="$(git rev-parse 'HEAD^{tree}')"
           workflow_host_sha="${GITHUB_SHA}"
           harness_sha="$(git -C .workflow-src rev-parse HEAD)"
+          [[ "${PRODUCT_SOURCE_SHA}" =~ ^[0-9a-f]{40}$ ]] || {
+            echo "The requested product source must be an exact commit SHA." >&2
+            exit 1
+          }
           [[ "${source_sha}" == "${PRODUCT_SOURCE_SHA}" ]] || {
             echo "The product checkout does not match the exact requested source SHA." >&2
             exit 1
@@ -138,6 +158,7 @@ jobs:
           target: ${{ matrix.target }}
 
       - name: Compile changed Rust consumers and all targets
+        if: ${{ env.VALIDATION_MODE == 'package' }}
         working-directory: codex-rs
         shell: bash
         run: |
@@ -171,7 +192,7 @@ jobs:
 
       - name: Run exact codex-core library tests
         id: core_lib_tests
-        if: ${{ matrix.target == 'x86_64-unknown-linux-gnu' }}
+        if: ${{ matrix.target == 'x86_64-unknown-linux-gnu' && env.VALIDATION_MODE == 'package' }}
         continue-on-error: true
         env:
           RUST_TEST_REQUEST_JSON: >-
@@ -201,12 +222,15 @@ jobs:
         id: core_integration_tests
         if: ${{ matrix.target == 'x86_64-unknown-linux-gnu' }}
         continue-on-error: true
-        env:
-          RUST_TEST_REQUEST_JSON: >-
-            {"schema_version":"rust-tests-v1","profile":"rust_integration","package":"codex-core","target_kind":"integration","target":"all","tests":["suite::mcp_refresh_cleanup::refresh_reaps_superseded_mcp_server_after_in_flight_call_finishes","suite::mcp_refresh_cleanup::shutdown_cancels_pending_mcp_startup_while_in_flight_call_finishes"]}
         shell: bash
         run: |
           set -euo pipefail
+          if [[ "${VALIDATION_MODE}" == "lifecycle" ]]; then
+            rm -f "${RUNNER_TEMP}/codex-core-lib-results.json"
+            export RUST_TEST_REQUEST_JSON='{"schema_version":"rust-tests-v1","profile":"rust_integration","package":"codex-core","target_kind":"integration","target":"all","tests":["suite::mcp_refresh_cleanup::shutdown_cancels_pending_mcp_startup_while_in_flight_call_finishes"]}'
+          else
+            export RUST_TEST_REQUEST_JSON='{"schema_version":"rust-tests-v1","profile":"rust_integration","package":"codex-core","target_kind":"integration","target":"all","tests":["suite::mcp_refresh_cleanup::refresh_reaps_superseded_mcp_server_after_in_flight_call_finishes","suite::mcp_refresh_cleanup::shutdown_cancels_pending_mcp_startup_while_in_flight_call_finishes"]}'
+          fi
           rm -f rust-tests-v1-results.json
           export VALIDATION_TARGET_SHA="${PRODUCT_SOURCE_SHA}"
           export VALIDATION_PROFILE
@@ -230,6 +254,7 @@ jobs:
         shell: bash
         env:
           EXPECTED_SOURCE_SHA: ${{ env.PRODUCT_SOURCE_SHA }}
+          VALIDATION_MODE: ${{ env.VALIDATION_MODE }}
           STDIO_FIXTURE_OUTCOME: ${{ steps.stdio_fixture.outcome }}
           CORE_LIB_RESULTS: ${{ runner.temp }}/codex-core-lib-results.json
           CORE_INTEGRATION_RESULTS: ${{ runner.temp }}/codex-core-integration-results.json
@@ -241,13 +266,36 @@ jobs:
           from pathlib import Path
 
           expected_source = os.environ["EXPECTED_SOURCE_SHA"]
+          mode = os.environ["VALIDATION_MODE"]
           if os.environ["STDIO_FIXTURE_OUTCOME"] != "success":
               print("::error::MCP stdio fixture build did not succeed")
               raise SystemExit(1)
-          required = (
-              ("codex-core library", Path(os.environ["CORE_LIB_RESULTS"])),
-              ("codex-core integration", Path(os.environ["CORE_INTEGRATION_RESULTS"])),
-          )
+          if mode == "lifecycle":
+              required = (("codex-core integration", Path(os.environ["CORE_INTEGRATION_RESULTS"])),)
+              expected_tests = {
+                  "codex-core integration": [
+                      "suite::mcp_refresh_cleanup::shutdown_cancels_pending_mcp_startup_while_in_flight_call_finishes"
+                  ]
+              }
+          elif mode == "package":
+              required = (
+                  ("codex-core library", Path(os.environ["CORE_LIB_RESULTS"])),
+                  ("codex-core integration", Path(os.environ["CORE_INTEGRATION_RESULTS"])),
+              )
+              expected_tests = {
+                  "codex-core library": [
+                      "session::tests::model_baseline_overlay_reaches_fresh_root_and_child_request_payloads",
+                      "client::tests::incremental_model_baseline_overlay_preserves_notice_and_history",
+                      "agent::control::tests::native_send_message_returns_stable_request_id_and_accepts_exact_reply",
+                      "session::input_queue::tests::quiet_durable_mail_does_not_preempt_but_legacy_and_actionable_mail_do",
+                  ],
+                  "codex-core integration": [
+                      "suite::mcp_refresh_cleanup::refresh_reaps_superseded_mcp_server_after_in_flight_call_finishes",
+                      "suite::mcp_refresh_cleanup::shutdown_cancels_pending_mcp_startup_while_in_flight_call_finishes",
+                  ],
+              }
+          else:
+              raise SystemExit(f"unsupported validation mode: {mode!r}")
           failures = []
           for label, path in required:
               if not path.is_file():
@@ -256,6 +304,8 @@ jobs:
               payload = json.loads(path.read_text(encoding="utf-8"))
               requested = (payload.get("request") or {}).get("tests") or []
               outcomes = payload.get("tests") or []
+              if requested != expected_tests[label]:
+                  failures.append(f"{label}: requested test list did not match the selected mode")
               if payload.get("candidate_sha") != expected_source:
                   failures.append(f"{label}: candidate SHA did not match the requested source")
               if payload.get("status") != "success":
@@ -295,6 +345,7 @@ jobs:
           retention-days: 3
 
       - name: Build and assemble exact CLI package
+        if: ${{ env.VALIDATION_MODE == 'package' }}
         working-directory: codex-rs
         shell: bash
         env:
