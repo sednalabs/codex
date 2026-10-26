@@ -19,7 +19,7 @@ jobs:
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
         with:
-          ref: c33108febc70b20947cf57653a3b0ab15a837806
+          ref: 0503d18bb66c238941efdb03a689fbef95004f0e
           persist-credentials: false
 
       - name: Assert exact source candidate and initialize proof artifacts
@@ -27,7 +27,7 @@ jobs:
         run: |
           set -euo pipefail
           actual="$(git rev-parse HEAD)"
-          test "$actual" = "c33108febc70b20947cf57653a3b0ab15a837806"
+          test "$actual" = "0503d18bb66c238941efdb03a689fbef95004f0e"
           echo "Validated source candidate: $actual"
           : > "$RUNNER_TEMP/crypto-lock-delta.patch"
           printf 'Candidate: %s\nFocused hosted consumer tests:\n' "$actual" \
@@ -38,11 +38,10 @@ jobs:
       - uses: ./.github/actions/prepare-bazel-ci
         with:
           target: x86_64-unknown-linux-gnu
-          cache-scope: w14939-crypto-migration
+          cache-scope: rustsec-2026-0387
 
       - name: Resolve Cargo lock from the complete candidate manifests
         id: cargo_lock
-        continue-on-error: true
         shell: bash
         run: |
           set -euo pipefail
@@ -51,7 +50,6 @@ jobs:
 
       - name: Run cargo-deny on the resolved candidate graph
         id: cargo_deny
-        continue-on-error: true
         uses: EmbarkStudios/cargo-deny-action@82eb9f621fbc699dd0918f3ea06864c14cc84246 # v2
         with:
           rust-version: 1.99.1
@@ -59,7 +57,6 @@ jobs:
 
       - name: Resolve and verify the Bazel module lock
         id: bazel_lock
-        continue-on-error: true
         shell: bash
         run: |
           set -euo pipefail
@@ -77,6 +74,7 @@ jobs:
             --test_tag_filters=-argument-comment-lint \
             --test_verbose_timeout_warnings -- \
             //codex-rs/user-verification:user-verification-unit-tests \
+            //codex-rs/exec-server:exec-server-unit-tests \
             //codex-rs/voice-host:codex-voice-host-bin-unit-tests \
             //codex-rs/secrets:secrets-unit-tests \
             //codex-rs/login:login-unit-tests \
@@ -121,7 +119,7 @@ jobs:
         if: always()
         uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f # v7.0.0
         with:
-          name: rustsec-2026-0387-lock-and-consumer-proof-c33108f
+          name: rustsec-2026-0387-lock-and-consumer-proof-0503d18
           if-no-files-found: error
           path: |
             MODULE.bazel.lock
