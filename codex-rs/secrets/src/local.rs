@@ -477,6 +477,24 @@ mod tests {
     }
 
     #[test]
+    fn legacy_age_scrypt_ciphertext_decrypts_and_round_trips() -> Result<()> {
+        // C2SP CCTV's age/testdata/scrypt vector (work factor 10), retained as
+        // an independent pre-migration age-v1 ciphertext compatibility check.
+        let legacy_ciphertext = BASE64_STANDARD
+            .decode(include_str!("legacy_age_scrypt_v1.age.b64").trim())?;
+        let passphrase = SecretString::from("password".to_owned());
+        let plaintext = decrypt_with_passphrase(&legacy_ciphertext, &passphrase)?;
+        assert_eq!(plaintext, b"age");
+
+        let round_trip_ciphertext = encrypt_with_passphrase(&plaintext, &passphrase)?;
+        assert_eq!(
+            decrypt_with_passphrase(&round_trip_ciphertext, &passphrase)?,
+            plaintext
+        );
+        Ok(())
+    }
+
+    #[test]
     fn set_fails_when_keyring_is_unavailable() -> Result<()> {
         let _cache_lock = SECRETS_CACHE_TEST_LOCK
             .lock()
