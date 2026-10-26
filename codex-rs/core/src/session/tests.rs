@@ -11084,13 +11084,18 @@ async fn model_baseline_overlay_reaches_fresh_root_and_child_request_payloads() 
                     .any(|message| message.join("") == expected_baseline),
                 "the final {model_slug} {thread_kind} payload must preserve the rest of the production model baseline"
             );
-            assert!(
-                prompt.base_instructions.text.contains(BLOCKING_WAIT_TARGET)
-                    && prompt
-                        .base_instructions
-                        .text
-                        .contains(COMMENTARY_CADENCE_TARGET),
-                "request transformation must not mutate the production prompt history"
+            assert_eq!(
+                prompt.base_instructions.text.contains(BLOCKING_WAIT_TARGET),
+                targets_present,
+                "request transformation must preserve the original blocking-wait baseline for {model_slug} / {thread_kind}"
+            );
+            assert_eq!(
+                prompt
+                    .base_instructions
+                    .text
+                    .contains(COMMENTARY_CADENCE_TARGET),
+                targets_present,
+                "request transformation must preserve the original commentary-cadence baseline for {model_slug} / {thread_kind}"
             );
         }
     }
