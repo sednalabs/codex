@@ -122,11 +122,18 @@ describe("Codex", () => {
       expect(secondRequest).toBeDefined();
       const payload = secondRequest!.json;
 
-      expect(payload.input.at(-1)!.content![0]!.text).toBe("second input");
+      const lastUserInput = payload.input
+        .filter((entry: { role: string }) => entry.role === "user")
+        .at(-1);
+      expect(lastUserInput).toBeDefined();
+      expect(lastUserInput?.content?.[0]?.text).toBe("second input");
       const assistantEntry = payload.input.find(
         (entry: { role: string }) => entry.role === "assistant",
-      );
+      )!;
       expect(assistantEntry).toBeDefined();
+      expect(payload.input.indexOf(assistantEntry)).toBeLessThan(
+        payload.input.indexOf(lastUserInput!),
+      );
       const assistantText = assistantEntry?.content?.find(
         (item: { type: string; text: string }) => item.type === "output_text",
       )?.text;
@@ -701,7 +708,11 @@ describe("Codex", () => {
 
       const payload = requests[0];
       expect(payload).toBeDefined();
-      const lastUser = payload!.json.input.at(-1);
+      const userInputs = payload!.json.input.filter(
+        (entry: { role: string }) => entry.role === "user",
+      );
+      const lastUser = userInputs.at(-1);
+      expect(userInputs).toHaveLength(1);
       expect(lastUser?.content?.[0]?.text).toBe("Describe file changes\n\nFocus on impacted tests");
     } finally {
       cleanup();

@@ -123,10 +123,7 @@ impl McpServerProcess {
     }
 }
 
-fn stdio_server_config(
-    command: String,
-    env: HashMap<String, String>,
-) -> McpServerConfig {
+fn stdio_server_config(command: String, env: HashMap<String, String>) -> McpServerConfig {
     McpServerConfig {
         auth: Default::default(),
         transport: McpServerTransportConfig::Stdio {

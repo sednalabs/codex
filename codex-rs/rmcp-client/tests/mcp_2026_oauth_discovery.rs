@@ -230,6 +230,10 @@ async fn assert_legacy_oauth_without_starting_an_mcp_session(
                 assert_eq!(
                     discovery?,
                     Some(StreamableHttpOAuthDiscovery {
+                        token_endpoint: None,
+                        issuer: None,
+                        device_authorization_endpoint: None,
+                        grant_types_supported: None,
                         scopes_supported: Some(vec!["mcp:read".to_string()]),
                         callback_mode: McpOAuthCallbackMode::CallbackSpecific,
                     }),
