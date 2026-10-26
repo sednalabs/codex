@@ -88,8 +88,9 @@ impl Transport {
         let check_interval = Duration::from_millis(/*millis*/ 200);
         let attempts = u16::try_from(WAIT.as_millis() / check_interval.as_millis())
             .map_err(|_| "invalid voice ICE attempt budget")?;
-        let mut settings = webrtc::peer_connection::SettingEngine::default();
-        settings.set_ice_connection_attempts(Some(check_interval), Some(attempts));
+        let settings = webrtc::peer_connection::SettingEngineBuilder::new()
+            .with_ice_connection_attempts(Some(check_interval), Some(attempts))
+            .build();
         let connection: Arc<dyn PeerConnection> = Arc::new(
             PeerConnectionBuilder::new()
                 .with_interceptor_registry(rtc::interceptor::Registry::from(ingress))

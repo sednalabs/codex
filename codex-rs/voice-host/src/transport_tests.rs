@@ -53,8 +53,9 @@ async fn check_negotiation(runtime: Arc<dyn webrtc::runtime::Runtime>) {
         timeout(Duration::from_secs(/*secs*/ 30), async {
             let (sender, mut channels) = mpsc::channel(/*buffer*/ 1);
             let gathered = Arc::new(Notify::new());
-            let mut settings = webrtc::peer_connection::SettingEngine::default();
-            settings.set_lite(/*lite*/ true);
+            let settings = webrtc::peer_connection::SettingEngineBuilder::new()
+                .with_lite(/*lite*/ true)
+                .build();
             let (media, mut remote_audio) = crate::audio_track::AudioTrack::new().unwrap();
             let builder = PeerConnectionBuilder::new()
                 .with_media_engine(media)
