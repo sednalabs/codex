@@ -52,7 +52,7 @@ const MANAGED_PROXY_PERMISSION_ERR_SNIPPETS: &[&str] = &[
     "error isolating Linux network namespace for proxy mode",
 ];
 
-fn linux_sandbox_binary() -> PathBuf {
+pub(super) fn linux_sandbox_binary() -> PathBuf {
     codex_utils_cargo_bin::cargo_bin("codex-linux-sandbox")
         .expect("resolve codex-linux-sandbox runfile")
 }

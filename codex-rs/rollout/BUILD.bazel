@@ -10,13 +10,13 @@ codex_rust_crate(
 # cannot replace an unmapped host GID with the overflow GID.
 workspace_root_test(
     name = "rollout-alternate-group-materialization-test",
-    test_bin = ":rollout-unit-tests-bin",
-    workspace_root_marker = "//codex-rs/utils/cargo-bin:repo_root.marker",
     args = [
         "--ignored",
         "--exact",
         "compression::tests::worker_preserves_alternate_group_through_materialization",
     ],
-    target_compatible_with = ["@platforms//os:linux"],
     tags = ["no-sandbox"],
+    target_compatible_with = ["@platforms//os:linux"],
+    test_bin = ":rollout-unit-tests-bin",
+    workspace_root_marker = "//codex-rs/utils/cargo-bin:repo_root.marker",
 )
