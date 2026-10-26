@@ -30,36 +30,9 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        include:
-          # macOS
-          - os: macos-15
-            target: aarch64-apple-darwin
-            timeout_minutes: 30
-          - os: macos-15
-            target: x86_64-apple-darwin
-            timeout_minutes: 30
-
-          # Linux
-          - os: ubuntu-24.04
-            target: x86_64-unknown-linux-gnu
-            timeout_minutes: 90
-          - os: ubuntu-24.04
-            target: x86_64-unknown-linux-musl
-            timeout_minutes: 90
-          # 2026-02-27 Bazel tests have been flaky on arm in CI.
-          # Disable until we can investigate and stabilize them.
-          # - os: ubuntu-24.04-arm
-          #   target: aarch64-unknown-linux-musl
-          # - os: ubuntu-24.04-arm
-          #   target: aarch64-unknown-linux-gnu
+        include: ${{ fromJSON((github.event_name == 'workflow_dispatch' && inputs.w14939_focused_tests) && '[{"os":"ubuntu-24.04","target":"x86_64-unknown-linux-gnu","timeout_minutes":30}]' || '[{"os":"macos-15","target":"aarch64-apple-darwin","timeout_minutes":30},{"os":"macos-15","target":"x86_64-apple-darwin","timeout_minutes":30},{"os":"ubuntu-24.04","target":"x86_64-unknown-linux-gnu","timeout_minutes":90},{"os":"ubuntu-24.04","target":"x86_64-unknown-linux-musl","timeout_minutes":90}]') }}
 
     runs-on: ${{ matrix.os }}
-    if: >-
-      ${{
-        github.event_name != 'workflow_dispatch' ||
-        !inputs.w14939_focused_tests ||
-        (matrix.os == 'ubuntu-24.04' && matrix.target == 'x86_64-unknown-linux-gnu')
-      }}
 
     # Configure a human readable name for each job
     name: Bazel test on ${{ matrix.os }} for ${{ matrix.target }}
