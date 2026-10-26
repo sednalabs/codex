@@ -411,36 +411,19 @@ async fn shutdown_cancels_pending_mcp_startup_while_in_flight_call_finishes() ->
     let pending_pid_file = temp_dir.path().join("pending-mcp.pid");
     let pending_initialize_barrier = temp_dir.path().join("allow-pending-initialize");
     let ready_pid_for_config = ready_pid_file.clone();
-    let pending_pid_for_config = pending_pid_file.clone();
-    let pending_barrier_for_config = pending_initialize_barrier.clone();
     let command = stdio_server_bin()?;
+    let ready_command = command.clone();
     let fixture = test_codex()
         .with_config(move |config| {
             let mut servers = config.mcp_servers.get().clone();
             servers.insert(
                 "ready_mcp".to_string(),
                 stdio_server_config(
-                    command.clone(),
+                    ready_command,
                     HashMap::from([(
                         "MCP_TEST_PID_FILE".to_string(),
                         ready_pid_for_config.to_string_lossy().into_owned(),
                     )]),
-                ),
-            );
-            servers.insert(
-                "pending_mcp".to_string(),
-                stdio_server_config(
-                    command,
-                    HashMap::from([
-                        (
-                            "MCP_TEST_INITIALIZE_BARRIER_FILE".to_string(),
-                            pending_barrier_for_config.to_string_lossy().into_owned(),
-                        ),
-                        (
-                            "MCP_TEST_PID_FILE".to_string(),
-                            pending_pid_for_config.to_string_lossy().into_owned(),
-                        ),
-                    ]),
                 ),
             );
             config
@@ -480,6 +463,47 @@ async fn shutdown_cancels_pending_mcp_startup_while_in_flight_call_finishes() ->
         anyhow::ensure!(!pipe_ids.is_empty(), "expected ready MCP stdio pipes");
         pipe_ids
     };
+
+    // Add the blocked server only after the thread has initialized. Keeping it in the initial
+    // fixture config makes `build()` wait for the deliberately blocked initialize request until
+    // its startup timeout expires, before the test can exercise shutdown.
+    let current_config = fixture.codex.config().await;
+    let mut refreshed_config = current_config.as_ref().clone();
+    let mut refreshed_servers = refreshed_config.mcp_servers.get().clone();
+    refreshed_servers.insert(
+        "pending_mcp".to_string(),
+        stdio_server_config(
+            command,
+            HashMap::from([
+                (
+                    "MCP_TEST_INITIALIZE_BARRIER_FILE".to_string(),
+                    pending_initialize_barrier.to_string_lossy().into_owned(),
+                ),
+                (
+                    "MCP_TEST_PID_FILE".to_string(),
+                    pending_pid_file.to_string_lossy().into_owned(),
+                ),
+            ]),
+        ),
+    );
+    refreshed_config
+        .mcp_servers
+        .set(refreshed_servers)
+        .expect("test MCP servers should accept any configuration");
+    let refresh_outcome = fixture
+        .codex
+        .refresh_mcp_config(current_config, refreshed_config)
+        .await;
+    anyhow::ensure!(
+        refresh_outcome == codex_core::ConfigRefreshOutcome::Published,
+        "pending MCP config should publish before startup cancellation"
+    );
+    let pending_pid = wait_for_pid_file(&pending_pid_file).await?;
+    let pending = McpServerProcess::observe_running(pending_pid)?;
+    anyhow::ensure!(
+        !pending_initialize_barrier.exists(),
+        "pending MCP initialize barrier must remain closed before shutdown"
+    );
 
     let barrier = serde_json::json!({
         "id": "mcp-shutdown-ready-call",
