@@ -29,7 +29,6 @@ use std::net::TcpStream;
 use std::os::unix::fs::MetadataExt;
 use std::path::Path;
 use std::path::PathBuf;
-use std::process::Command;
 use std::process::Output;
 use std::process::Stdio;
 use std::time::Duration;
@@ -80,7 +79,11 @@ fn linux_sandbox_binary_diagnostics() -> String {
             )
         })
         .unwrap_or_else(|error| format!("unavailable: {error}"));
-    let interpreter = match Command::new("readelf").arg("-l").arg(path).output() {
+    let interpreter = match std::process::Command::new("readelf")
+        .arg("-l")
+        .arg(path)
+        .output()
+    {
         Ok(output) if output.status.success() => String::from_utf8_lossy(&output.stdout)
             .lines()
             .find(|line| line.contains("Requesting program interpreter"))
