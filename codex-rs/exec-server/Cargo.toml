@@ -50,8 +50,10 @@ codex-websocket-client = { workspace = true }
 dirs = { workspace = true }
 futures = { workspace = true }
 http = { workspace = true }
+ml-kem = { workspace = true }
 opentelemetry = { workspace = true }
 prost = "0.14.3"
+rand_core_10 = { workspace = true }
 serde = { workspace = true, features = ["derive"] }
 serde_json = { workspace = true }
 thiserror = { workspace = true }
@@ -72,6 +74,7 @@ tokio-tungstenite = { workspace = true }
 tracing = { workspace = true }
 url = { workspace = true }
 uuid = { workspace = true, features = ["v4"] }
+zeroize = { workspace = true }
 
 [target.'cfg(target_os = "linux")'.dependencies]
 codex-linux-sandbox = { workspace = true }
