@@ -262,9 +262,10 @@ if [[ ${#bazel_args[@]} -eq 0 || ${#bazel_targets[@]} -eq 0 ]]; then
 fi
 
 if [[ "${RUNNER_OS:-}" == "Windows" && $windows_cross_compile -eq 1 && $remote_execution_allowed -eq 0 ]]; then
-  # Windows cross-compilation depends on authenticated RBE. Preserve the local
-  # Windows build shape whenever remote execution is not trusted and enabled.
-  ci_config=ci-windows
+  # Keep the requested GNU-ABI target config when RBE is disabled. The generic
+  # cache is not an executor; the cross config selects the correct target
+  # toolchain while this override keeps build-time helpers on the local MSVC
+  # host platform.
   windows_msvc_host_platform=1
 fi
 

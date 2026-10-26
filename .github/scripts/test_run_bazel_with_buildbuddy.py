@@ -123,6 +123,27 @@ class RunBazelWithBuildBuddyTest(unittest.TestCase):
                     "//codex-rs/cli:codex",
                 ],
             )
+            windows_cross_args = [
+                "build",
+                "--config=ci-windows-cross",
+                "//codex-rs/cli:codex",
+            ]
+            self.assertEqual(
+                run_bazel_with_buildbuddy.remote_config(windows_cross_args, env),
+                "buildbuddy-generic",
+            )
+            self.assertEqual(
+                run_bazel_with_buildbuddy.bazel_args_with_remote_config(
+                    windows_cross_args, env
+                ),
+                [
+                    "build",
+                    "--config=buildbuddy-generic",
+                    "--remote_header=x-buildbuddy-api-key=token",
+                    "--config=ci-windows-cross",
+                    "//codex-rs/cli:codex",
+                ],
+            )
 
     def test_query_remote_configuration_is_inserted_before_expression(self) -> None:
         expression = 'kind("rust_library rule", //codex-rs/...)'

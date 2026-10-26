@@ -46,6 +46,15 @@ impl ModelInstructionsState {
         }
     }
 
+    #[cfg(test)]
+    pub(crate) fn for_incremental_tools(model: &str, instructions: String) -> Self {
+        Self::for_incremental_tools_with_ownership(
+            model,
+            instructions,
+            /*client_owned_base_instructions*/ false,
+        )
+    }
+
     pub(crate) fn for_incremental_tools_with_ownership(
         model: &str,
         instructions: String,
