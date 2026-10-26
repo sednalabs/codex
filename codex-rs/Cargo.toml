@@ -362,12 +362,11 @@ chardetng = "0.1.17"
 chrono = "0.4.43"
 clap = "4"
 clap_complete = "4"
-clatter = { version = "2.2.0", default-features = false, features = [
+clatter = { version = "2.3.0", default-features = false, features = [
     "alloc",
     "getrandom",
     "use-25519",
     "use-aes-gcm",
-    "use-rust-crypto-ml-kem",
     "use-sha",
 ] }
 color-eyre = "0.6.3"
@@ -426,6 +425,7 @@ lru = "0.18.2"
 maplit = "1.0.2"
 memchr = "2.7.6"
 mime_guess = "2.0.5"
+ml-kem = { version = "0.3", default-features = false, features = ["zeroize"] }
 multimap = "0.10.0"
 mxc-sdk = { git = "https://github.com/microsoft/mxc", rev = "b21120168d70befe12356411423266bfef168446" }
 notify = "8.2.0"
@@ -447,6 +447,7 @@ pulldown-cmark = { version = "0.10", default-features = false }
 quick-xml = "0.41.0"
 rand = "0.9"
 rand_regex = "0.18.1"
+rand_core_10 = { package = "rand_core", version = "0.10" }
 ratatui = { version = "0.30.2", default-features = false, features = [
     "crossterm",
     "layout-cache",
