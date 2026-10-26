@@ -31,8 +31,10 @@ jobs:
       CARGO_INCREMENTAL: "0"
       RUST_MIN_STACK: "8388608"
       CODEX_REPO_ROOT: ${{ github.workspace }}
-      PRODUCT_SOURCE_SHA: 67042e2c4dc2bf725a4914e0bedb0af85b27f0ee
-      STABLE_GIT_COMMIT: 67042e2c4dc2bf725a4914e0bedb0af85b27f0ee
+      PRODUCT_SOURCE_SHA: 62e3b1d504425f0359c0b4cafa9bd27e75cc6c66
+      STABLE_GIT_COMMIT: 62e3b1d504425f0359c0b4cafa9bd27e75cc6c66
+      VALIDATION_HARNESS_SHA: 97a955ba03218ee9afe43dd0a03834dad1b2c0e5
+      VALIDATION_PROFILE: rust_integration
       TARGET: ${{ matrix.target }}
       BINARY_KIND: ${{ matrix.binary_kind }}
       LOADER: ${{ matrix.loader }}
@@ -44,6 +46,22 @@ jobs:
           fetch-depth: 1
           persist-credentials: false
 
+      - name: Check out the exact named-test harness
+        uses: actions/checkout@v7
+        with:
+          repository: sednalabs/codex
+          ref: 97a955ba03218ee9afe43dd0a03834dad1b2c0e5
+          path: .workflow-src
+          fetch-depth: 1
+          persist-credentials: false
+
+      - name: Test named-test harness
+        working-directory: .workflow-src
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 -m unittest discover -s .github/scripts -p 'test_run_named_rust_tests.py'
+
       - name: Bind exact source, tree, version, and workflow host
         id: identity
         shell: bash
@@ -52,11 +70,16 @@ jobs:
           source_sha="$(git rev-parse HEAD)"
           source_tree="$(git rev-parse 'HEAD^{tree}')"
           workflow_host_sha="${GITHUB_SHA}"
+          harness_sha="$(git -C .workflow-src rev-parse HEAD)"
           [[ "${source_sha}" == "${PRODUCT_SOURCE_SHA}" ]] || {
             echo "The product checkout does not match the exact requested source SHA." >&2
             exit 1
           }
-          [[ -z "$(git status --porcelain --untracked-files=normal)" ]] || {
+          [[ "${harness_sha}" == "${VALIDATION_HARNESS_SHA}" ]] || {
+            echo "The named-test harness checkout does not match its exact requested SHA." >&2
+            exit 1
+          }
+          [[ -z "$(git status --porcelain --untracked-files=normal -- . ':(exclude).workflow-src')" ]] || {
             echo "Refusing to validate a dirty source checkout." >&2
             git status --short >&2
             exit 1
@@ -89,6 +112,7 @@ jobs:
             echo "- Product source: ${source_sha}"
             echo "- Source tree: ${source_tree}"
             echo "- Workflow host: ${workflow_host_sha}"
+            echo "- Named-test harness: ${harness_sha}"
             echo "- Target: ${TARGET}"
             echo "- Workspace version: ${workspace_version}"
             echo "- Package version: ${package_version}"
@@ -132,65 +156,148 @@ jobs:
             -p codex-tui \
             -p codex-cli
 
-      - name: Run focused mailbox, MCP lifecycle, and overlay tests
+      - name: Build stdio fixture for MCP lifecycle tests
+        id: stdio_fixture
         if: ${{ matrix.target == 'x86_64-unknown-linux-gnu' }}
+        continue-on-error: true
         working-directory: codex-rs
         shell: bash
         run: |
           set -euo pipefail
-          failure_count=0
-          test_index=0
-
-          run_filtered_test() {
-            local package="$1"
-            local target_kind="$2"
-            local filter="$3"
-            local log_file="${RUNNER_TEMP}/focused-test-${test_index}-${filter//[^A-Za-z0-9_-]/_}.log"
-            local -a cmd=(cargo test --locked --target "${TARGET}" -p "${package}")
-            local status
-            local count
-            test_index=$((test_index + 1))
-            if [[ "${target_kind}" == "lib" ]]; then
-              cmd+=(--lib)
-            else
-              cmd+=(--test all)
-            fi
-            cmd+=("${filter}" -- --format=terse)
-
-            set +e
-            "${cmd[@]}" 2>&1 | tee "${log_file}"
-            status="${PIPESTATUS[0]}"
-            set -e
-
-            count="$(grep -Ec '^test .* \.\.\. (ok|FAILED)$' "${log_file}" || true)"
-            if [[ "${status}" != "0" || "${count}" != "1" ]] || ! grep -Fq "${filter} ... ok" "${log_file}"; then
-              echo "Focused test did not pass exactly once: package=${package} target=${target_kind} filter=${filter} exit=${status} matches=${count}" >&2
-              failure_count=$((failure_count + 1))
-            else
-              echo "Focused test passed: ${filter}"
-            fi
-          }
-
-          set +e
-          cargo test --locked --target "${TARGET}" -p codex-agent-mailbox --lib -- --format=terse 2>&1 | tee "${RUNNER_TEMP}/agent-mailbox-tests.log"
-          mailbox_status="${PIPESTATUS[0]}"
-          set -e
-          if [[ "${mailbox_status}" != "0" ]] || ! grep -Eq 'test result: ok\. [1-9][0-9]* passed' "${RUNNER_TEMP}/agent-mailbox-tests.log"; then
-            echo "The durable mailbox library test suite failed or ran no tests." >&2
-            failure_count=$((failure_count + 1))
-          fi
-
-          run_filtered_test codex-core lib model_baseline_overlay_reaches_fresh_root_and_child_request_payloads
-          run_filtered_test codex-core lib incremental_model_baseline_overlay_preserves_notice_and_history
-          run_filtered_test codex-core lib native_send_message_returns_stable_request_id_and_accepts_exact_reply
-          run_filtered_test codex-core lib quiet_durable_mail_does_not_preempt_but_legacy_and_actionable_mail_do
-          run_filtered_test codex-core all refresh_reaps_superseded_mcp_server_after_in_flight_call_finishes
-          run_filtered_test codex-core all shutdown_cancels_pending_mcp_startup_while_in_flight_call_finishes
-
-          if [[ "${failure_count}" != "0" ]]; then
-            echo "${failure_count} focused test group(s) failed; all selected cases were attempted." >&2
+          host_target_dir="$(realpath "${CARGO_TARGET_DIR}/${TARGET}")"
+          CARGO_TARGET_DIR="${host_target_dir}" cargo build --locked -p codex-rmcp-client --bin test_stdio_server
+          fixture="${host_target_dir}/debug/test_stdio_server"
+          [[ -x "${fixture}" ]] || {
+            echo "The MCP lifecycle fixture was not produced at the expected host path." >&2
             exit 1
+          }
+          echo "W14939_TEST_CARGO_TARGET_DIR=${host_target_dir}" >> "${GITHUB_ENV}"
+          echo "CARGO_BIN_EXE_test_stdio_server=${fixture}" >> "${GITHUB_ENV}"
+
+      - name: Run exact codex-core library tests
+        id: core_lib_tests
+        if: ${{ matrix.target == 'x86_64-unknown-linux-gnu' }}
+        continue-on-error: true
+        env:
+          RUST_TEST_REQUEST_JSON: >-
+            {"schema_version":"rust-tests-v1","profile":"rust_integration","package":"codex-core","target_kind":"lib","target":"","tests":["session::tests::model_baseline_overlay_reaches_fresh_root_and_child_request_payloads","client::tests::incremental_model_baseline_overlay_preserves_notice_and_history","agent::control::tests::native_send_message_returns_stable_request_id_and_accepts_exact_reply","session::input_queue::tests::quiet_durable_mail_does_not_preempt_but_legacy_and_actionable_mail_do"]}
+        shell: bash
+        run: |
+          set -euo pipefail
+          rm -f rust-tests-v1-results.json
+          export VALIDATION_TARGET_SHA="${PRODUCT_SOURCE_SHA}"
+          export VALIDATION_PROFILE
+          export CARGO_TARGET_DIR="${W14939_TEST_CARGO_TARGET_DIR}"
+          set +e
+          python3 .workflow-src/.github/scripts/run_named_rust_tests.py
+          test_status="$?"
+          set -e
+          result_file="${RUNNER_TEMP}/codex-core-lib-results.json"
+          if [[ -f rust-tests-v1-results.json ]]; then
+            cp rust-tests-v1-results.json "${result_file}"
+          else
+            echo "The named-test harness did not produce its result file." >&2
+            exit 2
           fi
+          printf 'exit_code=%s\n' "${test_status}" >> "${GITHUB_OUTPUT}"
+          exit "${test_status}"
+
+      - name: Run exact codex-core MCP integration tests
+        id: core_integration_tests
+        if: ${{ matrix.target == 'x86_64-unknown-linux-gnu' }}
+        continue-on-error: true
+        env:
+          RUST_TEST_REQUEST_JSON: >-
+            {"schema_version":"rust-tests-v1","profile":"rust_integration","package":"codex-core","target_kind":"integration","target":"all","tests":["suite::mcp_refresh_cleanup::refresh_reaps_superseded_mcp_server_after_in_flight_call_finishes","suite::mcp_refresh_cleanup::shutdown_cancels_pending_mcp_startup_while_in_flight_call_finishes"]}
+        shell: bash
+        run: |
+          set -euo pipefail
+          rm -f rust-tests-v1-results.json
+          export VALIDATION_TARGET_SHA="${PRODUCT_SOURCE_SHA}"
+          export VALIDATION_PROFILE
+          export CARGO_TARGET_DIR="${W14939_TEST_CARGO_TARGET_DIR}"
+          set +e
+          python3 .workflow-src/.github/scripts/run_named_rust_tests.py
+          test_status="$?"
+          set -e
+          result_file="${RUNNER_TEMP}/codex-core-integration-results.json"
+          if [[ -f rust-tests-v1-results.json ]]; then
+            cp rust-tests-v1-results.json "${result_file}"
+          else
+            echo "The named-test harness did not produce its result file." >&2
+            exit 2
+          fi
+          printf 'exit_code=%s\n' "${test_status}" >> "${GITHUB_OUTPUT}"
+          exit "${test_status}"
+
+      - name: Require exact focused test outcomes
+        if: ${{ always() && matrix.target == 'x86_64-unknown-linux-gnu' }}
+        shell: bash
+        env:
+          EXPECTED_SOURCE_SHA: ${{ env.PRODUCT_SOURCE_SHA }}
+          STDIO_FIXTURE_OUTCOME: ${{ steps.stdio_fixture.outcome }}
+          CORE_LIB_RESULTS: ${{ runner.temp }}/codex-core-lib-results.json
+          CORE_INTEGRATION_RESULTS: ${{ runner.temp }}/codex-core-integration-results.json
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import json
+          import os
+          from pathlib import Path
+
+          expected_source = os.environ["EXPECTED_SOURCE_SHA"]
+          if os.environ["STDIO_FIXTURE_OUTCOME"] != "success":
+              print("::error::MCP stdio fixture build did not succeed")
+              raise SystemExit(1)
+          required = (
+              ("codex-core library", Path(os.environ["CORE_LIB_RESULTS"])),
+              ("codex-core integration", Path(os.environ["CORE_INTEGRATION_RESULTS"])),
+          )
+          failures = []
+          for label, path in required:
+              if not path.is_file():
+                  failures.append(f"{label}: result file missing")
+                  continue
+              payload = json.loads(path.read_text(encoding="utf-8"))
+              requested = (payload.get("request") or {}).get("tests") or []
+              outcomes = payload.get("tests") or []
+              if payload.get("candidate_sha") != expected_source:
+                  failures.append(f"{label}: candidate SHA did not match the requested source")
+              if payload.get("status") != "success":
+                  failures.append(f"{label}: harness status was {payload.get('status')!r}")
+              if len(outcomes) != len(requested) or not requested:
+                  failures.append(f"{label}: selected test count did not reconcile")
+              if [item.get("name") for item in outcomes] != requested:
+                  failures.append(f"{label}: outcome names did not match the selected names")
+              for item in outcomes:
+                  counts = item.get("result_counts") or {}
+                  selected = sum(counts.get(key, 0) for key in ("passed", "failed", "ignored", "measured"))
+                  if (
+                      item.get("status") != "success"
+                      or item.get("exit_code") != 0
+                      or item.get("execution_reconciled") is not True
+                      or item.get("exact_filter") is not True
+                      or selected != 1
+                      or counts.get("filtered") != item.get("expected_filtered_count")
+                  ):
+                      failures.append(f"{label}: selected test did not have one exact successful outcome: {item.get('name')}")
+              print(f"{label}: {len(outcomes)}/{len(requested)} exact selected outcomes; status={payload.get('status')}")
+          if failures:
+              for failure in failures:
+                  print(f"::error::{failure}")
+              raise SystemExit(1)
+          PY
+
+      - name: Upload exact focused-test results
+        if: ${{ always() && matrix.target == 'x86_64-unknown-linux-gnu' }}
+        uses: actions/upload-artifact@v7
+        with:
+          name: codex-w14939-focused-tests-${{ steps.identity.outputs.source_short }}-${{ github.run_id }}
+          path: |
+            ${{ runner.temp }}/codex-core-lib-results.json
+            ${{ runner.temp }}/codex-core-integration-results.json
+          if-no-files-found: ignore
+          retention-days: 3
 
       - name: Build and assemble exact CLI package
         working-directory: codex-rs
