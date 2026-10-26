@@ -635,7 +635,10 @@ fn incremental_model_baseline_overlay_preserves_notice_and_history() -> anyhow::
     };
     let client = test_model_client(SessionSource::Cli)
         .with_instruction_overlays(overlays)
-        .with_client_owned_base_instructions(None, /*model_baseline_origin_known*/ true);
+        .with_client_owned_base_instructions(
+            /*instructions*/ None,
+            /*model_baseline_origin_known*/ true,
+        );
     let mut model_info = test_model_info();
     model_info.use_responses_lite = true;
     let prompt = Prompt {
@@ -723,7 +726,10 @@ fn model_baseline_selector_is_scoped_to_exact_model_slugs() -> anyhow::Result<()
     let build_request = |model_slug: &str, baseline: &str| {
         let client = test_model_client(SessionSource::Cli)
             .with_instruction_overlays(overlays.clone())
-            .with_client_owned_base_instructions(None, /*model_baseline_origin_known*/ true);
+            .with_client_owned_base_instructions(
+                /*instructions*/ None,
+                /*model_baseline_origin_known*/ true,
+            );
         let mut model_info = test_model_info();
         model_info.slug = model_slug.to_string();
         model_info.use_responses_lite = true;
@@ -837,7 +843,8 @@ fn optional_model_baseline_removals_apply_to_root_and_child_for_any_model() -> a
             let client = test_model_client(source.clone())
                 .with_instruction_overlays(overlays.clone())
                 .with_client_owned_base_instructions(
-                    None, /*model_baseline_origin_known*/ true,
+                    /*instructions*/ None,
+                    /*model_baseline_origin_known*/ true,
                 );
             let mut model_info = test_model_info();
             model_info.slug = model_slug.to_string();

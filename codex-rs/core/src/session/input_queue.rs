@@ -780,7 +780,7 @@ mod tests {
             ),
             Some(MessageDelivery::restored_mailbox_message_input(
                 "quiet-note".to_string(),
-                None,
+                /*durable_message_id*/ None,
                 /*preempts_active_turn*/ false,
             )),
         );
@@ -799,7 +799,7 @@ mod tests {
             ),
             Some(MessageDelivery::restored_mailbox_message_input(
                 "actionable-message".to_string(),
-                None,
+                /*durable_message_id*/ None,
                 /*preempts_active_turn*/ true,
             )),
         );

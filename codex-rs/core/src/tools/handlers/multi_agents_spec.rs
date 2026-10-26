@@ -1019,14 +1019,14 @@ fn wait_agent_tool_parameters_v2(
             (
                 "targets".to_string(),
                 JsonSchema::array(
-                    JsonSchema::string(None),
+                    JsonSchema::string(/*description*/ None),
                     Some("Optional agent ids or exact work references to join.".to_string()),
                 ),
             ),
             (
                 "replies_to".to_string(),
                 JsonSchema::array(
-                    JsonSchema::string(None),
+                    JsonSchema::string(/*description*/ None),
                     Some("Optional exact request message ids whose replies to join.".to_string()),
                 ),
             ),

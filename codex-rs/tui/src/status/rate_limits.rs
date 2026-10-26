@@ -167,7 +167,7 @@ pub(crate) fn rate_limit_snapshot_display(
         "codex".to_string(),
         captured_at,
         ClockFormat::TwentyFourHour,
-        None,
+        /*previous*/ None,
     )
 }
 
@@ -647,7 +647,7 @@ mod tests {
 
         let carried = merge_window_display(
             Some(&previous),
-            None,
+            /*incoming*/ None,
             now + ChronoDuration::minutes(1),
             ClockFormat::TwentyFourHour,
         )
@@ -658,7 +658,7 @@ mod tests {
         assert!(
             merge_window_display(
                 Some(&previous),
-                None,
+                /*incoming*/ None,
                 now + ChronoDuration::hours(2),
                 ClockFormat::TwentyFourHour,
             )

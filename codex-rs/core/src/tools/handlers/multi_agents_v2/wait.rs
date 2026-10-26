@@ -569,7 +569,11 @@ async fn handle_mailbox_wait(
         let input_generation = mailbox.wait_input_generation();
         if targetless {
             match mailbox
-                .issued_work_refs(session.thread_id, None, /*limit*/ 100)
+                .issued_work_refs(
+                    session.thread_id,
+                    /*current_parent_thread_id*/ None,
+                    /*limit*/ 100,
+                )
                 .await
             {
                 Ok(work) => {

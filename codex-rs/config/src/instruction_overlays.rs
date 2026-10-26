@@ -461,7 +461,7 @@ fn remove_exact_if_present(
 ) -> Result<String, InstructionOverlayError> {
     let actual = body.match_indices(text).count();
     if actual == 0 {
-        check_output_length(body.len(), 0)?;
+        check_output_length(body.len(), /*added*/ 0)?;
         return Ok(body.to_owned());
     }
     if actual != expected_matches {

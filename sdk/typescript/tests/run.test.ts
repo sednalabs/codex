@@ -711,9 +711,11 @@ describe("Codex", () => {
       const userInputs = payload!.json.input.filter(
         (entry: { role: string }) => entry.role === "user",
       );
-      const lastUser = userInputs.at(-1);
-      expect(userInputs).toHaveLength(1);
-      expect(lastUser?.content?.[0]?.text).toBe("Describe file changes\n\nFocus on impacted tests");
+      expect(userInputs).toHaveLength(2);
+      expect(userInputs[0]?.content?.[0]?.text).toContain("<environment_context>");
+      expect(userInputs[1]?.content?.[0]?.text).toBe(
+        "Describe file changes\n\nFocus on impacted tests",
+      );
     } finally {
       cleanup();
       await close();

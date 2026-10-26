@@ -228,6 +228,7 @@ mod tests {
     use super::dev_build_suffix;
     use super::helper_bin_dir;
     use super::helper_version_suffix;
+    use super::is_dev_build_version;
     use super::materialized_file_name;
     use super::resolve_exe_for_runtime;
     use crate::setup::SetupRuntime;

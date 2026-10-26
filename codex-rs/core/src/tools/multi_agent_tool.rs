@@ -536,6 +536,9 @@ mod tests {
     }
 
     fn canonical_array_schema() -> JsonSchema {
-        JsonSchema::array(JsonSchema::string(None), None)
+        JsonSchema::array(
+            JsonSchema::string(/*description*/ None),
+            /*description*/ None,
+        )
     }
 }

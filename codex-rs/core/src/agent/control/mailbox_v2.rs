@@ -409,7 +409,10 @@ impl LocalAgentControl {
             let communication = mailbox.accepted_input(&work).await.map_err(storage_error)?;
             inputs.push(PendingAgentMessage::new(
                 communication,
-                Some(MessageDelivery::restored_mailbox_input(id, None)),
+                Some(MessageDelivery::restored_mailbox_input(
+                    id,
+                    /*durable_message_id*/ None,
+                )),
             ));
         }
         inputs = dedupe_pending_inputs(inputs);
@@ -459,7 +462,10 @@ impl LocalAgentControl {
                 let communication = mailbox.accepted_input(&work).await.map_err(storage_error)?;
                 messages.push(PendingAgentMessage::new(
                     communication,
-                    Some(MessageDelivery::restored_mailbox_input(id, None)),
+                    Some(MessageDelivery::restored_mailbox_input(
+                        id,
+                        /*durable_message_id*/ None,
+                    )),
                 ));
             }
         }
@@ -513,7 +519,10 @@ impl LocalAgentControl {
             let communication = mailbox.accepted_input(&work).await.map_err(storage_error)?;
             inputs.push(PendingAgentMessage::new(
                 communication,
-                Some(MessageDelivery::restored_mailbox_input(id, None)),
+                Some(MessageDelivery::restored_mailbox_input(
+                    id,
+                    /*durable_message_id*/ None,
+                )),
             ));
         }
         inputs = dedupe_pending_inputs(inputs);

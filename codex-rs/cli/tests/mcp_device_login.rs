@@ -225,7 +225,7 @@ async fn device_login_registers_a_public_client_from_same_issuer_metadata() -> R
         .await;
 
     let home = TempDir::new()?;
-    fixture_config(&home, &server, None)?;
+    fixture_config(&home, &server, /*client_id*/ None)?;
     let output = codex_cli()?
         .env("CODEX_HOME", home.path())
         .args(["mcp", "login", "--device-auth", "fixture"])
