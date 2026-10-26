@@ -1104,10 +1104,9 @@ async fn resumed_recipient_lazily_reopens_durable_mailbox_before_first_turn_read
         .services
         .local_agent_runtime
         .control(thread.session.session_id());
-    control.runtime.register_session_root(
-        recipient,
-        /*current_parent_thread_id*/ None,
-    );
+    control
+        .runtime
+        .register_session_root(recipient, /*current_parent_thread_id*/ None);
     control.mailbox_v2_initialize(&config).await.unwrap();
 
     let mut communication = InterAgentCommunication::new(

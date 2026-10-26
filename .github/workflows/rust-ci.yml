@@ -2,6 +2,12 @@ name: rust-ci
 on:
   workflow_call:
   workflow_dispatch:
+    inputs:
+      export_app_server_schema:
+        description: "Generate and upload the app-server schema fixture diff for this ref"
+        required: false
+        type: boolean
+        default: false
 
 jobs:
   # --- Detect changed paths so the fast PR workflow only runs relevant jobs ---
@@ -21,15 +27,20 @@ jobs:
       - name: Detect changed paths (no external action)
         id: detect
         shell: bash
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          EXPORT_APP_SERVER_SCHEMA: ${{ github.event.inputs.export_app_server_schema }}
         run: |
           set -euo pipefail
 
-          if [[ "${{ github.event_name }}" == "pull_request" ]]; then
+          if [[ "$EVENT_NAME" == "pull_request" ]]; then
             BASE_SHA='${{ github.event.pull_request.base.sha }}'
             HEAD_SHA='${{ github.event.pull_request.head.sha }}'
             echo "Base SHA: $BASE_SHA"
             echo "Head SHA: $HEAD_SHA"
             mapfile -t files < <(git diff --name-only --no-renames "$BASE_SHA" "$HEAD_SHA")
+          elif [[ "$EVENT_NAME" == "workflow_dispatch" && "$EXPORT_APP_SERVER_SCHEMA" == "true" ]]; then
+            files=()
           else
             # On manual runs, default to the full fast-PR bundle.
             files=("codex-rs/force" "tools/argument-comment-lint/force" ".github/force")
@@ -55,6 +66,42 @@ jobs:
       - name: Check for a clean worktree
         if: always() && !cancelled()
         uses: ./.github/actions/check-clean-worktree
+
+  schema_fixture_export:
+    name: Export generated app-server schema fixtures
+    runs-on: ubuntu-24.04
+    if: ${{ github.event_name == 'workflow_dispatch' && github.event.inputs.export_app_server_schema == 'true' }}
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          persist-credentials: false
+      - uses: ./.github/actions/setup-ci
+      - uses: dtolnay/rust-toolchain@d124f86f28ff42855784ff3319f48ac182c248f8 # 1.99.1
+      - uses: astral-sh/setup-uv@07a047e608db84b3d8c06cd9a7c7dcc9c355c18e # v10.3.2
+        with:
+          version: "0.13.5"
+      - name: Generate app-server schema fixtures
+        run: just write-app-server-schema
+      - name: Capture generated fixture diff
+        shell: bash
+        run: |
+          set -euo pipefail
+          mapfile -d '' untracked < <(git ls-files -z --others --exclude-standard)
+          if ((${#untracked[@]})); then
+            git add --intent-to-add -- "${untracked[@]}"
+          fi
+          git diff --binary --output="$RUNNER_TEMP/app-server-schema-fixtures.patch"
+          test -s "$RUNNER_TEMP/app-server-schema-fixtures.patch"
+          git rev-parse HEAD > "$RUNNER_TEMP/source-sha.txt"
+          git diff --stat
+      - uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f # v7.0.0
+        with:
+          name: app-server-schema-fixtures
+          path: |
+            ${{ runner.temp }}/app-server-schema-fixtures.patch
+            ${{ runner.temp }}/source-sha.txt
+          if-no-files-found: error
+          retention-days: 1
 
   # --- Fast Cargo-native PR checks -------------------------------------------
   general:

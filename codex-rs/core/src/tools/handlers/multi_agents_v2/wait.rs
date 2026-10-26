@@ -571,7 +571,7 @@ async fn handle_mailbox_wait(
             match mailbox
                 .issued_work_refs(
                     session.thread_id,
-                    /*current_parent_thread_id*/ None,
+                    /*agent*/ None,
                     /*limit*/ 100,
                 )
                 .await

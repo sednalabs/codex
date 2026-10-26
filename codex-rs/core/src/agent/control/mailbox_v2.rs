@@ -410,8 +410,7 @@ impl LocalAgentControl {
             inputs.push(PendingAgentMessage::new(
                 communication,
                 Some(MessageDelivery::restored_mailbox_input(
-                    id,
-                    /*durable_message_id*/ None,
+                    id, /*durable_message_id*/ None,
                 )),
             ));
         }
@@ -463,8 +462,7 @@ impl LocalAgentControl {
                 messages.push(PendingAgentMessage::new(
                     communication,
                     Some(MessageDelivery::restored_mailbox_input(
-                        id,
-                        /*durable_message_id*/ None,
+                        id, /*durable_message_id*/ None,
                     )),
                 ));
             }
@@ -520,8 +518,7 @@ impl LocalAgentControl {
             inputs.push(PendingAgentMessage::new(
                 communication,
                 Some(MessageDelivery::restored_mailbox_input(
-                    id,
-                    /*durable_message_id*/ None,
+                    id, /*durable_message_id*/ None,
                 )),
             ));
         }
