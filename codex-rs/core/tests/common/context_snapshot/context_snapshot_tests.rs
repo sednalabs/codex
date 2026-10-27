@@ -444,28 +444,30 @@ fn base_instructions_use_the_same_mode_in_settings_and_annotated_developer_conte
             "internal_chat_message_metadata_passthrough": metadata
         })
     };
-    let annotated = developer(json!({"content_item_kinds": [null, "model.base_instructions"]}));
     let plain = developer(Value::Null);
-    let first = json!({"instructions": prompt, "input": [annotated]});
     let second = json!({"instructions": prompt, "input": [plain,
         {"type": "message", "role": "user", "content": [{"type": "input_text", "text": "Next turn"}]}]});
-    let render = |options: ContextSnapshotOptions| {
-        format_context_snapshot(
-            "transport",
-            &[SnapshotEntry::body(&first), SnapshotEntry::body(&second)],
-            &options.include_request_settings(),
-        )
-    };
-    let detailed = render(ContextSnapshotOptions::default());
-    let shape = render(ContextSnapshotOptions::default().rewrite_known_segments());
-    for rendered in [&detailed, &shape] {
-        assert!(rendered.contains("Neighbor stays literal"));
-        assert_eq!(rendered.matches("## Window").count(), 1);
+    for kind in ["model.base_instructions", "client.base_instructions"] {
+        let annotated = developer(json!({"content_item_kinds": [null, kind]}));
+        let first = json!({"instructions": prompt, "input": [annotated]});
+        let render = |options: ContextSnapshotOptions| {
+            format_context_snapshot(
+                "transport",
+                &[SnapshotEntry::body(&first), SnapshotEntry::body(&second)],
+                &options.include_request_settings(),
+            )
+        };
+        let detailed = render(ContextSnapshotOptions::default());
+        let shape = render(ContextSnapshotOptions::default().rewrite_known_segments());
+        for rendered in [&detailed, &shape] {
+            assert!(rendered.contains("Neighbor stays literal"));
+            assert_eq!(rendered.matches("## Window").count(), 1);
+        }
+        assert_eq!(detailed.matches("My model instructions").count(), 2);
+        assert_eq!(detailed.matches("A rule below the prefix").count(), 2);
+        assert_eq!(shape.matches("<MODEL_INSTRUCTIONS>").count(), 2);
+        assert!(!shape.contains("A rule below the prefix"));
     }
-    assert_eq!(detailed.matches("My model instructions").count(), 2);
-    assert_eq!(detailed.matches("A rule below the prefix").count(), 2);
-    assert_eq!(shape.matches("<MODEL_INSTRUCTIONS>").count(), 2);
-    assert!(!shape.contains("A rule below the prefix"));
     let unmarked = captured(&json!({"input": [plain]}));
     assert!(unmarked.contains("A rule below the prefix"));
 

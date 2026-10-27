@@ -146,7 +146,9 @@ fn capture_request(number: usize, entry: &SnapshotEntry<'_>) -> CapturedRequest 
                 .into_iter()
                 .flatten()
                 .enumerate()
-                .filter(|(_, kind)| **kind == "model.base_instructions")
+                .filter(|(_, kind)| {
+                    **kind == "model.base_instructions" || **kind == "client.base_instructions"
+                })
                 .map(move |(part_index, _)| (item_index, part_index))
         })
         .collect();
