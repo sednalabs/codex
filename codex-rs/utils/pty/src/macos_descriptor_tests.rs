@@ -133,12 +133,12 @@ async fn inherited_descriptors_survive_native_and_executable_text_spawns() -> an
 }
 
 #[tokio::test]
-async fn high_stdio_descriptors_use_compatible_fallback() -> anyhow::Result<()> {
+async fn high_inherited_descriptor_action_uses_compatible_fallback() -> anyhow::Result<()> {
     if std::env::var_os("CODEX_TEST_HIGH_STDIO_FDS").is_none() {
         let output = std::process::Command::new(std::env::current_exe()?)
             .args([
                 "--exact",
-                "child_command::descriptor_tests::high_stdio_descriptors_use_compatible_fallback",
+                "child_command::descriptor_tests::high_inherited_descriptor_action_uses_compatible_fallback",
                 "--nocapture",
             ])
             .env("CODEX_TEST_HIGH_STDIO_FDS", "1")
@@ -163,16 +163,19 @@ async fn high_stdio_descriptors_use_compatible_fallback() -> anyhow::Result<()> 
     let raw = unsafe { libc::fcntl(file.as_raw_fd(), libc::F_DUPFD, 3) };
     anyhow::ensure!(raw >= 3, "{}", io::Error::last_os_error());
     let sentinel = unsafe { OwnedFd::from_raw_fd(raw) };
-    // Darwin's spawn file actions reject valid descriptors >= OPEN_MAX
-    // (10240), even when RLIMIT_NOFILE allows the descriptor to be opened.
-    // Allocate one directly instead of opening every descriptor below it,
-    // which can exhaust the test process's shared descriptor budget.
+    // Darwin's spawn file actions reject valid inherited descriptors >=
+    // OPEN_MAX (10240), even when RLIMIT_NOFILE allows the descriptor to be
+    // opened. Allocate one directly instead of opening every descriptor below
+    // it, which can exhaust the test process's shared descriptor budget.
     let high_raw = unsafe { libc::fcntl(file.as_raw_fd(), libc::F_DUPFD, 10_240) };
     anyhow::ensure!(high_raw >= 10_240, "{}", io::Error::last_os_error());
     let high = unsafe { OwnedFd::from_raw_fd(high_raw) };
 
     let mut strict = Command::new("/usr/bin/true");
-    strict.fallback(SpawnFallback::ReturnError);
+    strict
+        .descriptor_policy(DescriptorPolicy::Explicit)
+        .preserve_fds(&[high.as_raw_fd()])
+        .fallback(SpawnFallback::ReturnError);
     let error = strict
         .spawn()
         .err()
@@ -183,11 +186,12 @@ async fn high_stdio_descriptors_use_compatible_fallback() -> anyhow::Result<()> 
         let mut command = Command::new("/bin/sh");
         command
             .args(["-c", &format!(
-                "test ! -e /dev/fd/{} && test ! -e /dev/fd/{} || exit 99; IFS= read -r line; printf '%s' \"$line\"; printf diagnostic >&2; exit 23",
+                "test ! -e /dev/fd/{} && test -e /dev/fd/{} || exit 99; IFS= read -r line; printf '%s' \"$line\"; printf diagnostic >&2; exit 23",
                 sentinel.as_raw_fd(),
                 high.as_raw_fd()
             )])
             .descriptor_policy(DescriptorPolicy::Explicit)
+            .preserve_fds(&[high.as_raw_fd()])
             .process_mode(mode);
         let mut child = command.spawn()?;
         assert!(matches!(child.inner, ChildKind::Tokio(_)));
