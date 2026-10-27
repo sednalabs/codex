@@ -19,7 +19,7 @@ jobs:
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
         with:
-          ref: 33b48c69dea8bb3d1fb8d5d410ae0bb5d237193c
+          ref: a04fe890c57e457daef25824f13feb8f85b9324e
           persist-credentials: false
 
       - name: Assert exact source candidate and initialize proof artifacts
@@ -27,7 +27,7 @@ jobs:
         run: |
           set -euo pipefail
           actual="$(git rev-parse HEAD)"
-          test "$actual" = "33b48c69dea8bb3d1fb8d5d410ae0bb5d237193c"
+          test "$actual" = "a04fe890c57e457daef25824f13feb8f85b9324e"
           echo "Validated source candidate: $actual"
           : > "$RUNNER_TEMP/crypto-lock-delta.patch"
           printf 'Candidate: %s\nFocused hosted consumer tests:\n' "$actual" \
@@ -79,6 +79,11 @@ jobs:
             //codex-rs/secrets:secrets-unit-tests \
             //codex-rs/login:login-unit-tests \
             //codex-rs/rmcp-client:rmcp-client-unit-tests \
+            //codex-rs/aws-auth:aws-auth-unit-tests \
+            //codex-rs/rollout:rollout-unit-tests \
+            //codex-rs/thread-store:thread-store-unit-tests \
+            //codex-rs/feedback:feedback-unit-tests \
+            //codex-rs/core-plugins:core-plugins-unit-tests \
             //codex-rs/cli:cli-mcp_device_login-test \
             //codex-rs/cli:cli-exec_server_websocket_auth-test \
             2>&1 | tee -a "$RUNNER_TEMP/crypto-focused-tests.log"
@@ -119,7 +124,7 @@ jobs:
         if: always()
         uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f # v7.0.0
         with:
-          name: rustsec-2026-0387-lock-and-consumer-proof-33b48c6
+          name: rustsec-2026-0387-crypto-compression-proof-a04fe890c57e
           if-no-files-found: error
           path: |
             MODULE.bazel.lock
