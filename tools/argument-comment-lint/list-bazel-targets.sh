@@ -14,6 +14,8 @@ manual_rust_test_targets="$(
     --output=label \
     -- 'kind("rust_test rule", attr(tags, "manual", //codex-rs/...))'
 )"
+# Do not re-add the Wine smoke target after its explicit no-lint exclusion.
+manual_rust_test_targets="$(printf '%s\n' "${manual_rust_test_targets}" | grep -v -- '^//codex-rs/core/tests/remote_env_windows:smoke-test$' || true)"
 if [[ "${RUNNER_OS:-}" != "Windows" ]]; then
   manual_rust_test_targets="$(printf '%s\n' "${manual_rust_test_targets}" | grep -v -- '-windows-cross-bin$' || true)"
 fi
