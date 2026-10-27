@@ -905,7 +905,7 @@ impl McpRuntime {
     }
 
     pub(crate) fn event_stream_opener(&self) -> anyhow::Result<McpEventStreamOpener> {
-        let cancellation = self
+        let mut cancellation = self
             .event_stream_cancellation
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
