@@ -8,7 +8,7 @@ on:
   workflow_dispatch:
     inputs:
       w14939_focused_tests:
-        description: Run only the two targeted PR 995 Linux regressions
+        description: Run the focused PR 995 Linux regression set
         required: false
         type: boolean
         default: false
@@ -30,7 +30,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        include: ${{ fromJSON((github.event_name == 'workflow_dispatch' && inputs.w14939_focused_tests) && '[{"os":"ubuntu-24.04","target":"x86_64-unknown-linux-gnu","timeout_minutes":30,"test_timeout_minutes":20}]' || '[{"os":"macos-15","target":"aarch64-apple-darwin","timeout_minutes":120,"test_timeout_minutes":105},{"os":"macos-15","target":"x86_64-apple-darwin","timeout_minutes":120,"test_timeout_minutes":105},{"os":"ubuntu-24.04","target":"x86_64-unknown-linux-gnu","timeout_minutes":120,"test_timeout_minutes":105},{"os":"ubuntu-24.04","target":"x86_64-unknown-linux-musl","timeout_minutes":120,"test_timeout_minutes":105}]') }}
+        include: ${{ fromJSON((github.event_name == 'workflow_dispatch' && inputs.w14939_focused_tests) && '[{"os":"ubuntu-24.04","target":"x86_64-unknown-linux-gnu","timeout_minutes":90,"test_timeout_minutes":80}]' || '[{"os":"macos-15","target":"aarch64-apple-darwin","timeout_minutes":120,"test_timeout_minutes":105},{"os":"macos-15","target":"x86_64-apple-darwin","timeout_minutes":120,"test_timeout_minutes":105},{"os":"ubuntu-24.04","target":"x86_64-unknown-linux-gnu","timeout_minutes":120,"test_timeout_minutes":105},{"os":"ubuntu-24.04","target":"x86_64-unknown-linux-musl","timeout_minutes":120,"test_timeout_minutes":105}]') }}
 
     runs-on: ${{ matrix.os }}
 
@@ -102,6 +102,7 @@ jobs:
             --build_metadata=COMMIT_SHA=${GITHUB_SHA}
           )
           if [[ "${W14939_FOCUSED_TESTS}" == "true" ]]; then
+            focused_status=0
             ./.github/scripts/run-bazel-ci.sh \
               --print-failed-test-logs \
               --print-failed-action-summary \
@@ -109,9 +110,9 @@ jobs:
               test \
               --test_tag_filters=-argument-comment-lint \
               --test_verbose_timeout_warnings \
-              --build_metadata=COMMIT_SHA=${GITHUB_SHA} \
+              --build_metadata="COMMIT_SHA=${GITHUB_SHA}" \
               -- \
-              //codex-rs/rollout:rollout-alternate-group-materialization-test
+              //codex-rs/rollout:rollout-alternate-group-materialization-test || focused_status=$?
             ./.github/scripts/run-bazel-ci.sh \
               --print-failed-test-logs \
               --print-failed-action-summary \
@@ -119,12 +120,38 @@ jobs:
               test \
               --test_tag_filters=-argument-comment-lint \
               --test_verbose_timeout_warnings \
-              --build_metadata=COMMIT_SHA=${GITHUB_SHA} \
+              --build_metadata="COMMIT_SHA=${GITHUB_SHA}" \
               --test_arg=--exact \
               --test_arg=suite::managed_proxy::managed_proxy_mode_routes_through_bridge_and_blocks_direct_egress \
               -- \
-              //codex-rs/linux-sandbox:linux-sandbox-all-test
-            exit 0
+              //codex-rs/linux-sandbox:linux-sandbox-all-test || focused_status=$?
+            ./.github/scripts/run-bazel-ci.sh \
+              --print-failed-test-logs \
+              --print-failed-action-summary \
+              -- \
+              test \
+              --test_tag_filters=-argument-comment-lint \
+              --test_verbose_timeout_warnings \
+              --test_output=all \
+              --build_metadata="COMMIT_SHA=${GITHUB_SHA}" \
+              --test_arg=--exact \
+              --test_arg=session::tests::isolated_guardian_sessions_skip_agent_mailbox_hooks \
+              -- \
+              //codex-rs/core:core-unit-tests || focused_status=$?
+            ./.github/scripts/run-bazel-ci.sh \
+              --print-failed-test-logs \
+              --print-failed-action-summary \
+              -- \
+              test \
+              --test_tag_filters=-argument-comment-lint \
+              --test_verbose_timeout_warnings \
+              --test_output=all \
+              --build_metadata="COMMIT_SHA=${GITHUB_SHA}" \
+              --test_arg=--exact \
+              --test_arg=suite::v2::guardian_v2::guardian_v2_propagates_root_user_input_to_worker_reviews::root_answer_survives_parent_compaction \
+              -- \
+              //codex-rs/app-server:app-server-all-test || focused_status=$?
+            exit "${focused_status}"
           fi
           ./.github/scripts/run-bazel-ci.sh \
             "${bazel_wrapper_args[@]}" \
