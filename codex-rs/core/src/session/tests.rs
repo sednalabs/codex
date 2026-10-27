@@ -254,6 +254,11 @@ fn isolated_guardian_sessions_skip_agent_mailbox_hooks() {
         &codex_protocol::protocol::SessionSource::Internal(InternalSessionSource::Guardian,),
     ));
     assert!(!super::should_use_agent_mailbox(
+        &codex_protocol::protocol::SessionSource::Internal(
+            InternalSessionSource::MemoryConsolidation,
+        ),
+    ));
+    assert!(!super::should_use_agent_mailbox(
         &codex_protocol::protocol::SessionSource::SubAgent(
             codex_protocol::protocol::SubAgentSource::Other("guardian".to_string()),
         )

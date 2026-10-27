@@ -147,6 +147,28 @@ jobs:
               --test_verbose_timeout_warnings \
               --test_output=all \
               --build_metadata="COMMIT_SHA=${GITHUB_SHA}" \
+              -- \
+              //codex-rs/ext/mcp:mcp-unit-tests || focused_status=$?
+            ./.github/scripts/run-bazel-ci.sh \
+              --print-failed-test-logs \
+              --print-failed-action-summary \
+              -- \
+              test \
+              --test_tag_filters=-argument-comment-lint \
+              --test_verbose_timeout_warnings \
+              --test_output=all \
+              --build_metadata="COMMIT_SHA=${GITHUB_SHA}" \
+              -- \
+              //codex-rs/memories/write:write-unit-tests || focused_status=$?
+            ./.github/scripts/run-bazel-ci.sh \
+              --print-failed-test-logs \
+              --print-failed-action-summary \
+              -- \
+              test \
+              --test_tag_filters=-argument-comment-lint \
+              --test_verbose_timeout_warnings \
+              --test_output=all \
+              --build_metadata="COMMIT_SHA=${GITHUB_SHA}" \
               --test_arg=--exact \
               --test_arg=suite::v2::guardian_v2::guardian_v2_propagates_root_user_input_to_worker_reviews::root_answer_survives_parent_compaction \
               -- \

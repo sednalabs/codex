@@ -487,6 +487,9 @@ impl From<CompactedHistoryMetadata> for CompactedHistoryInstallation<'_> {
 
 pub(crate) fn should_use_agent_mailbox(session_source: &SessionSource) -> bool {
     !crate::guardian::is_basic_session_source(session_source)
+        // Internal service sessions are intentionally hidden by the public thread lookup
+        // used by mailbox routing, so they do not participate in durable agent mail.
+        && !matches!(session_source, SessionSource::Internal(_))
 }
 
 pub(crate) struct SessionSpawnArgs {
