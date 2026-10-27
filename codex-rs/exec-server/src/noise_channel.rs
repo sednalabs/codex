@@ -48,6 +48,20 @@ const PROLOGUE_DOMAIN: &[u8] = b"codex-exec-server-relay-noise/v1";
 #[derive(Clone)]
 struct MlKem768;
 
+impl MlKem768 {
+    fn decapsulate_with_key(
+        ciphertext: &[u8],
+        decapsulation_key: &ml_kem::ml_kem_768::DecapsulationKey,
+    ) -> clatter::error::KemResult<<Self as Kem>::Ss> {
+        let ciphertext: ml_kem::ml_kem_768::Ciphertext =
+            ciphertext.try_into().map_err(|_| KemError::Input)?;
+        let mut shared_secret = decapsulation_key.decapsulate(&ciphertext);
+        let result = <Self as Kem>::Ss::from_slice(shared_secret.as_slice());
+        shared_secret.zeroize();
+        Ok(result)
+    }
+}
+
 impl CryptoComponent for MlKem768 {
     fn name() -> &'static str {
         "MLKEM768"
@@ -97,14 +111,9 @@ impl Kem for MlKem768 {
 
     fn decapsulate(ciphertext: &[u8], secret_key: &[u8]) -> clatter::error::KemResult<Self::Ss> {
         let mut seed: Seed = secret_key.try_into().map_err(|_| KemError::Input)?;
-        let ciphertext: ml_kem::ml_kem_768::Ciphertext =
-            ciphertext.try_into().map_err(|_| KemError::Input)?;
         let decapsulation_key = ml_kem::ml_kem_768::DecapsulationKey::from_seed(seed.clone());
         seed.zeroize();
-        let mut shared_secret = decapsulation_key.decapsulate(&ciphertext);
-        let result = Self::Ss::from_slice(shared_secret.as_slice());
-        shared_secret.zeroize();
-        Ok(result)
+        Self::decapsulate_with_key(ciphertext, &decapsulation_key)
     }
 }
 
