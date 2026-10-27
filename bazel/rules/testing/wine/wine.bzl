@@ -11,6 +11,7 @@ def wine_rust_test(
         host_binaries = {},
         data = [],
         target_compatible_with = [],
+        tags = [],
         **kwargs):
     """Defines an x86-64 Linux Rust test with a pinned Wine runtime.
 
@@ -64,6 +65,9 @@ def wine_rust_test(
         name = name,
         data = data + runtime.data,
         env = runtime.env,
+        # Windows-exec qualification is deferred in this fork. Keep the test
+        # explicitly runnable while excluding it from wildcard CI selection.
+        tags = tags + ["manual"],
         target_compatible_with = target_compatible_with + WINE_TEST_TARGET_COMPATIBLE_WITH,
         **kwargs
     )

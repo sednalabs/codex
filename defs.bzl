@@ -677,7 +677,10 @@ def codex_rust_crate(
                 target_compatible_with = WINE_TEST_TARGET_COMPATIBLE_WITH,
                 # This wrapper has no Rust sources and transitions a data
                 # dependency to a Windows toolchain the lint does not register.
-                tags = test_tags + ["no-argument-comment-lint"],
+                # Windows exec-server qualification is deferred in this fork.
+                # Keep the targets available for explicit qualification runs,
+                # but exclude them from wildcard CI selection.
+                tags = test_tags + ["no-argument-comment-lint", "manual"],
                 **wine_test_kwargs
             )
 

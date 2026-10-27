@@ -30,7 +30,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        include: ${{ fromJSON((github.event_name == 'workflow_dispatch' && inputs.w14939_focused_tests) && '[{"os":"ubuntu-24.04","target":"x86_64-unknown-linux-gnu","timeout_minutes":30}]' || '[{"os":"macos-15","target":"aarch64-apple-darwin","timeout_minutes":120},{"os":"macos-15","target":"x86_64-apple-darwin","timeout_minutes":120},{"os":"ubuntu-24.04","target":"x86_64-unknown-linux-gnu","timeout_minutes":120},{"os":"ubuntu-24.04","target":"x86_64-unknown-linux-musl","timeout_minutes":120}]') }}
+        include: ${{ fromJSON((github.event_name == 'workflow_dispatch' && inputs.w14939_focused_tests) && '[{"os":"ubuntu-24.04","target":"x86_64-unknown-linux-gnu","timeout_minutes":30,"test_timeout_minutes":20}]' || '[{"os":"macos-15","target":"aarch64-apple-darwin","timeout_minutes":120,"test_timeout_minutes":105},{"os":"macos-15","target":"x86_64-apple-darwin","timeout_minutes":120,"test_timeout_minutes":105},{"os":"ubuntu-24.04","target":"x86_64-unknown-linux-gnu","timeout_minutes":120,"test_timeout_minutes":105},{"os":"ubuntu-24.04","target":"x86_64-unknown-linux-musl","timeout_minutes":120,"test_timeout_minutes":105}]') }}
 
     runs-on: ${{ matrix.os }}
 
@@ -75,6 +75,8 @@ jobs:
           echo "CODEX_COMPAT_RELEASES=$releases" >> "$GITHUB_ENV"
 
       - name: Run Bazel tests
+        # Keep time for test-log upload and cache cleanup before the job limit.
+        timeout-minutes: ${{ matrix.test_timeout_minutes }}
         env:
           BUILDBUDDY_API_KEY: ${{ secrets.BUILDBUDDY_API_KEY }}
           W14939_FOCUSED_TESTS: ${{ github.event_name == 'workflow_dispatch' && inputs.w14939_focused_tests }}
