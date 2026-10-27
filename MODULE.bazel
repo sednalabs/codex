@@ -396,10 +396,6 @@ crate.annotation(
 crate.annotation(
     crate = "zstd-sys",
     gen_build_script = "on",
-    patch_args = ["-p1"],
-    patches = [
-        "//patches:zstd-sys_windows_msvc_include_dirs.patch",
-    ],
 )
 crate.annotation(
     crate = "ring",

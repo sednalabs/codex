@@ -19,7 +19,7 @@ jobs:
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
         with:
-          ref: a04fe890c57e457daef25824f13feb8f85b9324e
+          ref: 24d57b4f520e04bc4e4c459024830fbc3b2c0442
           persist-credentials: false
 
       - name: Assert exact source candidate and initialize proof artifacts
@@ -27,7 +27,7 @@ jobs:
         run: |
           set -euo pipefail
           actual="$(git rev-parse HEAD)"
-          test "$actual" = "a04fe890c57e457daef25824f13feb8f85b9324e"
+          test "$actual" = "24d57b4f520e04bc4e4c459024830fbc3b2c0442"
           echo "Validated source candidate: $actual"
           : > "$RUNNER_TEMP/crypto-lock-delta.patch"
           printf 'Candidate: %s\nFocused hosted consumer tests:\n' "$actual" \
@@ -124,7 +124,7 @@ jobs:
         if: always()
         uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f # v7.0.0
         with:
-          name: rustsec-2026-0387-crypto-compression-proof-a04fe890c57e
+          name: rustsec-2026-0387-crypto-compression-proof-24d57b4f520e
           if-no-files-found: error
           path: |
             MODULE.bazel.lock
