@@ -945,7 +945,9 @@ impl McpRuntime {
 
     pub async fn shutdown(&self) {
         let connections = {
-            let mut cancellation = self
+            // Serialize with publication; runtime retirement does not revoke
+            // task-owned event subscriptions.
+            let _cancellation = self
                 .event_stream_cancellation
                 .lock()
                 .unwrap_or_else(std::sync::PoisonError::into_inner);
@@ -957,13 +959,6 @@ impl McpRuntime {
             let retired = self.current.swap(Arc::new(PublishedMcpRuntime::empty(
                 /*prefix_mcp_tool_names*/ false,
             )));
-            cancellation.event_server_available = false;
-            cancellation
-                .cancel_event_streams_on_server_removal
-                .send_replace(());
-            if let Some(retained) = &cancellation.retained_subscription_cancellation {
-                retained.send_replace(());
-            }
             Arc::clone(&retired.connections)
         };
 
