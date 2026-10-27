@@ -1,5 +1,7 @@
 use base64::Engine;
-use clatter::traits::{CryptoRng, Kem, RngCore};
+use clatter::traits::CryptoRng;
+use clatter::traits::Kem;
+use clatter::traits::RngCore;
 #[allow(deprecated)]
 use ml_kem::ExpandedKeyEncoding;
 use ml_kem::kem::KeyExport;
