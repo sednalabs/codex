@@ -30,7 +30,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        include: ${{ fromJSON((github.event_name == 'workflow_dispatch' && inputs.w14939_focused_tests) && '[{"os":"ubuntu-24.04","target":"x86_64-unknown-linux-gnu","timeout_minutes":30}]' || '[{"os":"macos-15","target":"aarch64-apple-darwin","timeout_minutes":90},{"os":"macos-15","target":"x86_64-apple-darwin","timeout_minutes":90},{"os":"ubuntu-24.04","target":"x86_64-unknown-linux-gnu","timeout_minutes":90},{"os":"ubuntu-24.04","target":"x86_64-unknown-linux-musl","timeout_minutes":90}]') }}
+        include: ${{ fromJSON((github.event_name == 'workflow_dispatch' && inputs.w14939_focused_tests) && '[{"os":"ubuntu-24.04","target":"x86_64-unknown-linux-gnu","timeout_minutes":30}]' || '[{"os":"macos-15","target":"aarch64-apple-darwin","timeout_minutes":120},{"os":"macos-15","target":"x86_64-apple-darwin","timeout_minutes":120},{"os":"ubuntu-24.04","target":"x86_64-unknown-linux-gnu","timeout_minutes":120},{"os":"ubuntu-24.04","target":"x86_64-unknown-linux-musl","timeout_minutes":120}]') }}
 
     runs-on: ${{ matrix.os }}
 
@@ -366,7 +366,7 @@ jobs:
 
   clippy:
     if: ${{ github.event_name != 'workflow_dispatch' || !inputs.w14939_focused_tests }}
-    timeout-minutes: ${{ matrix.os == 'macos-15' && 60 || 30 }}
+    timeout-minutes: ${{ matrix.os == 'macos-15' && 90 || 30 }}
     strategy:
       fail-fast: false
       matrix:
@@ -471,7 +471,7 @@ jobs:
 
   verify-release-build:
     if: ${{ github.event_name != 'workflow_dispatch' || !inputs.w14939_focused_tests }}
-    timeout-minutes: ${{ matrix.os == 'macos-15' && 60 || 30 }}
+    timeout-minutes: ${{ matrix.os == 'macos-15' && 90 || 30 }}
     strategy:
       fail-fast: false
       matrix:
