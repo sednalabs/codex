@@ -173,6 +173,28 @@ fn should_use_test_thread_manager_behavior() -> bool {
     FORCE_TEST_THREAD_MANAGER_BEHAVIOR.load(Ordering::Relaxed)
 }
 
+// Temporary hosted diagnostic for the focused Guardian thread-identity investigation. Keep
+// disabled unless a single diagnostic test run explicitly opts in.
+#[track_caller]
+fn log_thread_lookup_diagnostic(thread_id: ThreadId, rejection: &'static str) {
+    if std::env::var_os("CODEX_DIAGNOSE_THREAD_LOOKUP").is_none() {
+        return;
+    }
+
+    let caller = std::panic::Location::caller();
+    let caller_file = std::path::Path::new(caller.file())
+        .file_name()
+        .and_then(|file| file.to_str())
+        .unwrap_or("unknown");
+    warn!(
+        %thread_id,
+        rejection,
+        caller_file,
+        caller_line = caller.line(),
+        "diagnostic: public thread lookup rejected an ID"
+    );
+}
+
 struct TempCodexHomeGuard {
     path: PathBuf,
 }
@@ -975,6 +997,7 @@ impl ThreadManager {
         self.state.thread_created_tx.subscribe()
     }
 
+    #[track_caller]
     pub async fn get_thread(&self, thread_id: ThreadId) -> CodexResult<Arc<CodexThread>> {
         self.state.get_thread(thread_id).await
     }
@@ -1774,11 +1797,19 @@ impl ThreadManagerState {
     }
 
     /// Fetch a thread by ID or return ThreadNotFound.
+    #[track_caller]
     pub(crate) async fn get_thread(&self, thread_id: ThreadId) -> CodexResult<Arc<CodexThread>> {
         let threads = self.threads.read().await;
         match threads.get(&thread_id) {
             Some(thread) if !thread.session_source.is_internal() => Ok(thread.clone()),
-            Some(_) | None => Err(CodexErr::ThreadNotFound(thread_id)),
+            Some(_) => {
+                log_thread_lookup_diagnostic(thread_id, "internal");
+                Err(CodexErr::ThreadNotFound(thread_id))
+            }
+            None => {
+                log_thread_lookup_diagnostic(thread_id, "absent");
+                Err(CodexErr::ThreadNotFound(thread_id))
+            }
         }
     }
 
