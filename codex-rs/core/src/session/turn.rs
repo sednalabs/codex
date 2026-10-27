@@ -2935,8 +2935,8 @@ async fn try_run_sampling_request(
 
         match event {
             ResponseEvent::Created { response_id } => {
-                if super::should_use_agent_mailbox(&turn_context.session_source) {
-                    if let Err(error) = sess
+                if super::should_use_agent_mailbox(&turn_context.session_source)
+                    && let Err(error) = sess
                         .services
                         .agent_control
                         .mailbox_record_admission(
@@ -2945,11 +2945,10 @@ async fn try_run_sampling_request(
                             mailbox_input_ids.clone(),
                         )
                         .await
-                    {
-                        // The provider request has been created, but durable work must not be
-                        // reported as admitted without recording this exact accepted snapshot.
-                        break Err(error);
-                    }
+                {
+                    // The provider request has been created, but durable work must not be
+                    // reported as admitted without recording this exact accepted snapshot.
+                    break Err(error);
                 }
                 if let Some(response_id) = response_id {
                     turn_context
