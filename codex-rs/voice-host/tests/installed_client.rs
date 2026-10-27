@@ -29,7 +29,7 @@ use webrtc::peer_connection::RTCIceConnectionState;
 use webrtc::peer_connection::RTCIceGatheringState;
 use webrtc::peer_connection::RTCPeerConnectionState;
 use webrtc::peer_connection::RTCSessionDescription;
-use webrtc::peer_connection::SettingEngine;
+use webrtc::peer_connection::SettingEngineBuilder;
 
 const DEADLINE: Duration = Duration::from_secs(/*secs*/ 10);
 
@@ -264,8 +264,9 @@ async fn installed_client_negotiates_and_closes_over_udp_and_tcp() -> Result<()>
         let negotiation = timeout(Duration::from_secs(/*secs*/ 30), async {
             let (sender, mut channels) = mpsc::channel(/*buffer*/ 1);
             let gathered = Arc::new(Notify::new());
-            let mut settings = SettingEngine::default();
-            settings.set_lite(/*lite*/ true);
+            let settings = SettingEngineBuilder::new()
+                .with_lite(/*lite*/ true)
+                .build();
             let mut media = MediaEngine::default();
             media.register_default_codecs()?;
             let builder = PeerConnectionBuilder::new()
