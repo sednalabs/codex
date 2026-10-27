@@ -240,3 +240,22 @@ async fn event_connections_open_after_runtime_shutdown_with_current_auth() -> Re
     timeout(WAIT, remote.notifications.closed()).await?;
     Ok(())
 }
+
+#[tokio::test]
+async fn direct_event_streams_close_on_runtime_shutdown() -> Result<()> {
+    let mut fixture = Fixture::new().await?;
+    let client = McpResourceClient::new(Arc::clone(&fixture.runtime));
+    let mut stream = client
+        .open_event_stream("test.event", &json!({}), /*request_meta*/ None)
+        .await?;
+    timeout(WAIT, fixture.opened.recv()).await?.unwrap();
+
+    fixture.runtime.shutdown().await;
+
+    let result = timeout(WAIT, stream.recv()).await?;
+    assert_eq!(
+        result.unwrap_err().to_string(),
+        "hosted MCP event server was removed"
+    );
+    Ok(())
+}

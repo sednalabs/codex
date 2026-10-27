@@ -922,8 +922,7 @@ impl McpRuntime {
             .ok_or_else(|| anyhow::anyhow!("Event subscriptions are unavailable for this task"))?;
         let cancel_event_streams_on_server_removal = cancellation
             .retained_subscription_cancellation
-            .as_ref()
-            .unwrap_or(&cancellation.cancel_event_streams_on_server_removal)
+            .get_or_insert_with(|| watch::channel(()).0)
             .clone();
         Ok(McpEventStreamOpener {
             connection,
@@ -945,9 +944,9 @@ impl McpRuntime {
 
     pub async fn shutdown(&self) {
         let connections = {
-            // Serialize with publication; runtime retirement does not revoke
-            // task-owned event subscriptions.
-            let _cancellation = self
+            // Serialize with publication; retire direct runtime-bound streams
+            // without revoking task-owned subscriptions retained by an opener.
+            let mut cancellation = self
                 .event_stream_cancellation
                 .lock()
                 .unwrap_or_else(std::sync::PoisonError::into_inner);
@@ -959,6 +958,10 @@ impl McpRuntime {
             let retired = self.current.swap(Arc::new(PublishedMcpRuntime::empty(
                 /*prefix_mcp_tool_names*/ false,
             )));
+            cancellation.event_server_available = false;
+            cancellation
+                .cancel_event_streams_on_server_removal
+                .send_replace(());
             Arc::clone(&retired.connections)
         };
 
