@@ -4508,7 +4508,10 @@ impl Session {
         // this snapshot remains in SQLite and waits behind the boundary; it is never inferred
         // from a volatile queue drain.
         let mailbox_enabled = self.enabled(Feature::AgentMailbox)
-            && should_use_agent_mailbox(&self.session_source);
+            && {
+                let state = self.state.lock().await;
+                should_use_agent_mailbox(&state.session_configuration.session_source)
+            };
         let _mailbox_boundary = if mailbox_enabled {
             Some(
                 self.code_mode_message_tasks
