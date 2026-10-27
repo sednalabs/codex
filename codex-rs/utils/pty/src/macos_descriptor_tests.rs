@@ -163,17 +163,13 @@ async fn high_stdio_descriptors_use_compatible_fallback() -> anyhow::Result<()> 
     let raw = unsafe { libc::fcntl(file.as_raw_fd(), libc::F_DUPFD, 3) };
     anyhow::ensure!(raw >= 3, "{}", io::Error::last_os_error());
     let sentinel = unsafe { OwnedFd::from_raw_fd(raw) };
-    let mut occupied = Vec::new();
-    loop {
-        let descriptor = file.try_clone()?;
-        let raw = descriptor.as_raw_fd();
-        occupied.push(descriptor);
-        // Darwin's spawn file actions reject valid descriptors >= OPEN_MAX
-        // (10240), even when RLIMIT_NOFILE allows the descriptor to be opened.
-        if raw >= 10_240 {
-            break;
-        }
-    }
+    // Darwin's spawn file actions reject valid descriptors >= OPEN_MAX
+    // (10240), even when RLIMIT_NOFILE allows the descriptor to be opened.
+    // Allocate one directly instead of opening every descriptor below it,
+    // which can exhaust the test process's shared descriptor budget.
+    let high_raw = unsafe { libc::fcntl(file.as_raw_fd(), libc::F_DUPFD, 10_240) };
+    anyhow::ensure!(high_raw >= 10_240, "{}", io::Error::last_os_error());
+    let high = unsafe { OwnedFd::from_raw_fd(high_raw) };
 
     let mut strict = Command::new("/usr/bin/true");
     strict.fallback(SpawnFallback::ReturnError);
@@ -187,8 +183,9 @@ async fn high_stdio_descriptors_use_compatible_fallback() -> anyhow::Result<()> 
         let mut command = Command::new("/bin/sh");
         command
             .args(["-c", &format!(
-                "test ! -e /dev/fd/{} || exit 99; IFS= read -r line; printf '%s' \"$line\"; printf diagnostic >&2; exit 23",
-                sentinel.as_raw_fd()
+                "test ! -e /dev/fd/{} && test ! -e /dev/fd/{} || exit 99; IFS= read -r line; printf '%s' \"$line\"; printf diagnostic >&2; exit 23",
+                sentinel.as_raw_fd(),
+                high.as_raw_fd()
             )])
             .descriptor_policy(DescriptorPolicy::Explicit)
             .process_mode(mode);
@@ -214,5 +211,6 @@ async fn high_stdio_descriptors_use_compatible_fallback() -> anyhow::Result<()> 
         unsafe { libc::fcntl(sentinel.as_raw_fd(), libc::F_GETFD) },
         0
     );
+    assert_eq!(unsafe { libc::fcntl(high.as_raw_fd(), libc::F_GETFD) }, 0);
     Ok(())
 }

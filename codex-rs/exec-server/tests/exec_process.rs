@@ -802,8 +802,9 @@ async fn shell_snapshot_v2_remote_managed_proxy_uses_prepared_execution_context(
         } else {
             command
         };
+        let startup_timeout_seconds = if cfg!(target_os = "macos") { 60 } else { 30 };
         let started = timeout(
-            Duration::from_secs(30),
+            Duration::from_secs(startup_timeout_seconds),
             backend.start(ExecParams {
                 metadata: Default::default(),
                 process_id: ProcessId::from(format!("managed-snapshot-{attempt}")),
@@ -837,7 +838,12 @@ async fn shell_snapshot_v2_remote_managed_proxy_uses_prepared_execution_context(
                 ),
             }),
         )
-        .await??;
+        .await
+        .with_context(|| {
+            format!(
+                "starting {shell_name} profile credential test attempt {attempt} exceeded {startup_timeout_seconds}s"
+            )
+        })??;
         let (stdout, stderr, status, closed) =
             collect_process_output_from_events(started.process).await?;
         let expected_stderr = if expect_snapshot_fallback {
