@@ -133,12 +133,13 @@ async fn inherited_descriptors_survive_native_and_executable_text_spawns() -> an
 }
 
 #[tokio::test]
-async fn high_inherited_descriptor_action_uses_compatible_fallback() -> anyhow::Result<()> {
+async fn high_inherited_descriptor_action_uses_compatible_fallback_when_supported()
+-> anyhow::Result<()> {
     if std::env::var_os("CODEX_TEST_HIGH_STDIO_FDS").is_none() {
         let output = std::process::Command::new(std::env::current_exe()?)
             .args([
                 "--exact",
-                "child_command::descriptor_tests::high_inherited_descriptor_action_uses_compatible_fallback",
+                "child_command::descriptor_tests::high_inherited_descriptor_action_uses_compatible_fallback_when_supported",
                 "--nocapture",
             ])
             .env("CODEX_TEST_HIGH_STDIO_FDS", "1")
@@ -155,7 +156,16 @@ async fn high_inherited_descriptor_action_uses_compatible_fallback() -> anyhow::
         0
     );
     let mut limit = unsafe { limit.assume_init() };
-    limit.rlim_cur = limit.rlim_cur.max(16_384);
+    // OPEN_MAX is 10240 on the affected Darwin runners. A descriptor at that
+    // index is representable only if the process hard limit permits it.
+    if limit.rlim_max <= 10_240 {
+        eprintln!(
+            "skipping high-descriptor fallback assertions: RLIMIT_NOFILE hard limit ({}) cannot represent fd 10240",
+            limit.rlim_max
+        );
+        return Ok(());
+    }
+    limit.rlim_cur = limit.rlim_cur.max(10_241);
     assert_eq!(unsafe { libc::setrlimit(libc::RLIMIT_NOFILE, &limit) }, 0);
 
     let file = fs::File::open("/dev/null")?;
@@ -165,10 +175,22 @@ async fn high_inherited_descriptor_action_uses_compatible_fallback() -> anyhow::
     let sentinel = unsafe { OwnedFd::from_raw_fd(raw) };
     // Darwin's spawn file actions reject valid inherited descriptors >=
     // OPEN_MAX (10240), even when RLIMIT_NOFILE allows the descriptor to be
-    // opened. Allocate one directly instead of opening every descriptor below
-    // it, which can exhaust the test process's shared descriptor budget.
+    // opened. Probe that precise descriptor without consuming lower slots.
     let high_raw = unsafe { libc::fcntl(file.as_raw_fd(), libc::F_DUPFD, 10_240) };
-    anyhow::ensure!(high_raw >= 10_240, "{}", io::Error::last_os_error());
+    if high_raw < 0 {
+        let error = io::Error::last_os_error();
+        if error.raw_os_error() == Some(libc::EINVAL) {
+            eprintln!(
+                "skipping high-descriptor fallback assertions: Darwin rejected F_DUPFD(10240) despite the process limit"
+            );
+            return Ok(());
+        }
+        return Err(error.into());
+    }
+    anyhow::ensure!(
+        high_raw >= 10_240,
+        "F_DUPFD returned unexpected descriptor {high_raw}"
+    );
     let high = unsafe { OwnedFd::from_raw_fd(high_raw) };
 
     let mut strict = Command::new("/usr/bin/true");
