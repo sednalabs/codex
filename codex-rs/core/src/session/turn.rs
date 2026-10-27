@@ -556,7 +556,7 @@ pub(crate) async fn run_turn(
                 .await?;
 
             // Isolated Guardian reviewers deliberately have no skill catalog.
-            if !crate::guardian::is_basic_session_source(&turn_context.session_source) {
+            if super::should_use_agent_mailbox(&turn_context.session_source) {
                 validate_required_skills(
                     &step_context.extension_data,
                     step_context.environments.required_skills(),
@@ -2935,7 +2935,7 @@ async fn try_run_sampling_request(
 
         match event {
             ResponseEvent::Created { response_id } => {
-                if !crate::guardian::is_basic_session_source(&turn_context.session_source) {
+                if super::should_use_agent_mailbox(&turn_context.session_source) {
                     if let Err(error) = sess
                         .services
                         .agent_control

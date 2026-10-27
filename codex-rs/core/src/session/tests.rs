@@ -248,6 +248,21 @@ pub(crate) fn mcp_config_for_test(config: &crate::config::Config) -> Arc<codex_m
     ))
 }
 
+#[test]
+fn isolated_guardian_sessions_skip_agent_mailbox_hooks() {
+    assert!(!super::should_use_agent_mailbox(
+        &codex_protocol::protocol::SessionSource::Internal(InternalSessionSource::Guardian,),
+    ));
+    assert!(!super::should_use_agent_mailbox(
+        &codex_protocol::protocol::SessionSource::SubAgent(
+            codex_protocol::protocol::SubAgentSource::Other("guardian".to_string()),
+        )
+    ));
+    assert!(super::should_use_agent_mailbox(
+        &codex_protocol::protocol::SessionSource::VSCode,
+    ));
+}
+
 pub(crate) fn test_environment_id(turn: &TurnContext) -> &str {
     &turn
         .initial_environments

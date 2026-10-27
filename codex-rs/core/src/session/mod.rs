@@ -485,6 +485,10 @@ impl From<CompactedHistoryMetadata> for CompactedHistoryInstallation<'_> {
     }
 }
 
+pub(crate) fn should_use_agent_mailbox(session_source: &SessionSource) -> bool {
+    !crate::guardian::is_basic_session_source(session_source)
+}
+
 pub(crate) struct SessionSpawnArgs {
     pub(crate) attached_thread: bool,
     pub(crate) startup: Option<Arc<startup::SessionStartup>>,
@@ -4504,7 +4508,7 @@ impl Session {
         // this snapshot remains in SQLite and waits behind the boundary; it is never inferred
         // from a volatile queue drain.
         let mailbox_enabled = self.enabled(Feature::AgentMailbox)
-            && !crate::guardian::is_basic_session_source(&self.session_source);
+            && should_use_agent_mailbox(&self.session_source);
         let _mailbox_boundary = if mailbox_enabled {
             Some(
                 self.code_mode_message_tasks
