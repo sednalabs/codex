@@ -264,9 +264,7 @@ async fn installed_client_negotiates_and_closes_over_udp_and_tcp() -> Result<()>
         let negotiation = timeout(Duration::from_secs(/*secs*/ 30), async {
             let (sender, mut channels) = mpsc::channel(/*buffer*/ 1);
             let gathered = Arc::new(Notify::new());
-            let settings = SettingEngineBuilder::new()
-                .with_lite(/*lite*/ true)
-                .build();
+            let settings = SettingEngineBuilder::new().with_lite(/*lite*/ true).build();
             let mut media = MediaEngine::default();
             media.register_default_codecs()?;
             let builder = PeerConnectionBuilder::new()
