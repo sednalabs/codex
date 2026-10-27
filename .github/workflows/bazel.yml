@@ -8,7 +8,7 @@ on:
   workflow_dispatch:
     inputs:
       w14939_focused_tests:
-        description: Run only the two targeted PR 995 Linux regressions
+        description: Run focused PR 995 Linux regressions, including Guardian root-compaction behavior
         required: false
         type: boolean
         default: false
@@ -124,6 +124,18 @@ jobs:
               --test_arg=suite::managed_proxy::managed_proxy_mode_routes_through_bridge_and_blocks_direct_egress \
               -- \
               //codex-rs/linux-sandbox:linux-sandbox-all-test
+            CODEX_DIAGNOSE_THREAD_LOOKUP=1 ./.github/scripts/run-bazel-ci.sh \
+              --print-failed-test-logs \
+              --print-failed-action-summary \
+              -- \
+              test \
+              --test_tag_filters=-argument-comment-lint \
+              --test_verbose_timeout_warnings \
+              --build_metadata=COMMIT_SHA=${GITHUB_SHA} \
+              --test_arg=--exact \
+              --test_arg=suite::v2::guardian_v2::guardian_v2_propagates_root_user_input_to_worker_reviews::root_answer_survives_parent_compaction \
+              -- \
+              //codex-rs/app-server:app-server-all-test
             exit 0
           fi
           ./.github/scripts/run-bazel-ci.sh \
