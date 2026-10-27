@@ -556,7 +556,7 @@ pub(crate) async fn run_turn(
                 .await?;
 
             // Isolated Guardian reviewers deliberately have no skill catalog.
-            if super::should_use_agent_mailbox(&turn_context.session_source) {
+            if !crate::guardian::is_basic_session_source(&turn_context.session_source) {
                 validate_required_skills(
                     &step_context.extension_data,
                     step_context.environments.required_skills(),
@@ -574,7 +574,7 @@ pub(crate) async fn run_turn(
             // Isolated Guardian reviewers are not public agent-mailbox recipients.
             // In particular, do not resolve their private thread IDs through the
             // public ThreadManager registry while lazily opening a mailbox.
-            if !crate::guardian::is_basic_session_source(&turn_context.session_source) {
+            if super::should_use_agent_mailbox(&turn_context.session_source) {
                 for communication in sess
                     .services
                     .agent_control
