@@ -227,11 +227,13 @@ async fn assert_legacy_oauth_without_starting_an_mcp_session(
         let discovery = discover_with_local_http_client(&resource_url, redirect_mode).await;
         match metadata_issuer {
             AuthorizationMetadataIssuer::Matching | AuthorizationMetadataIssuer::Missing => {
+                let issuer = matches!(metadata_issuer, AuthorizationMetadataIssuer::Matching)
+                    .then(|| authorization_server.uri());
                 assert_eq!(
                     discovery?,
                     Some(StreamableHttpOAuthDiscovery {
-                        token_endpoint: None,
-                        issuer: None,
+                        token_endpoint: Some(format!("{}/token", authorization_server.uri())),
+                        issuer,
                         device_authorization_endpoint: None,
                         grant_types_supported: None,
                         scopes_supported: Some(vec!["mcp:read".to_string()]),
