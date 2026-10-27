@@ -226,7 +226,7 @@ impl Executor {
         let client = LazyRemoteExecServerClient::new(
             ExecServerTransportParams::NoiseRendezvous {
                 provider: registry.clone(),
-                identity: NoiseChannelIdentity::generate()?,
+                identity: Box::new(NoiseChannelIdentity::generate()?),
             },
             HttpClientFactory::new(OutboundProxyPolicy::ReqwestDefault),
         );
@@ -1086,7 +1086,7 @@ async fn application_policy_registry_denial_does_not_poison_later_noise_startup(
     let client = LazyRemoteExecServerClient::new(
         ExecServerTransportParams::NoiseRendezvous {
             provider,
-            identity: NoiseChannelIdentity::generate()?,
+            identity: Box::new(NoiseChannelIdentity::generate()?),
         },
         factory,
     );

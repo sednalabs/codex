@@ -80,7 +80,7 @@ impl Kem for MlKem768 {
         let mut seed_bytes = [0u8; 64];
         rng.fill_bytes(&mut seed_bytes);
         let mut seed = Seed::from(seed_bytes);
-        let decapsulation_key = ml_kem::ml_kem_768::DecapsulationKey::from_seed(seed.clone());
+        let decapsulation_key = ml_kem::ml_kem_768::DecapsulationKey::from_seed(seed);
         seed.zeroize();
         let public_key = decapsulation_key.encapsulation_key().to_bytes();
         let key_pair = KeyPair {
@@ -111,7 +111,7 @@ impl Kem for MlKem768 {
 
     fn decapsulate(ciphertext: &[u8], secret_key: &[u8]) -> clatter::error::KemResult<Self::Ss> {
         let mut seed: Seed = secret_key.try_into().map_err(|_| KemError::Input)?;
-        let decapsulation_key = ml_kem::ml_kem_768::DecapsulationKey::from_seed(seed.clone());
+        let decapsulation_key = ml_kem::ml_kem_768::DecapsulationKey::from_seed(seed);
         seed.zeroize();
         Self::decapsulate_with_key(ciphertext, &decapsulation_key)
     }

@@ -122,7 +122,7 @@ impl SequenceNoiseConnectProvider {
                 readiness,
                 transport: ExecServerTransportParams::NoiseRendezvous {
                     provider: self.clone(),
-                    identity: identity.clone(),
+                    identity: Box::new(identity.clone()),
                 },
             })),
             codex_http_client::HttpClientFactory::new(
@@ -693,7 +693,7 @@ async fn noise_session_resume_rejects_a_changed_noise_key_before_connecting() ->
     let strategy = ExecServerReconnectStrategy::NoiseRendezvous {
         executor_public_key,
         provider: sequence,
-        identity: NoiseChannelIdentity::generate()?,
+        identity: Box::new(NoiseChannelIdentity::generate()?),
         client_name: "test".to_string(),
         connect_timeout: DEFAULT_REMOTE_EXEC_SERVER_CONNECT_TIMEOUT,
         initialize_timeout: DEFAULT_REMOTE_EXEC_SERVER_INITIALIZE_TIMEOUT,
@@ -718,7 +718,7 @@ async fn noise_session_resume_leaves_offline_retries_to_recovery() -> Result<()>
     let strategy = ExecServerReconnectStrategy::NoiseRendezvous {
         executor_public_key: NoiseChannelIdentity::generate()?.public_key(),
         provider: sequence.clone(),
-        identity: identity.clone(),
+        identity: Box::new(identity.clone()),
         client_name: "test".to_string(),
         connect_timeout: DEFAULT_REMOTE_EXEC_SERVER_CONNECT_TIMEOUT,
         initialize_timeout: DEFAULT_REMOTE_EXEC_SERVER_INITIALIZE_TIMEOUT,

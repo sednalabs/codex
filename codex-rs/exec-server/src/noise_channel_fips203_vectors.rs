@@ -86,5 +86,5 @@ pub(super) const C: &str = concat!(
     "nRFE72w2KUvQagGe/sIC/EYojroq3oKqM2P68yubAnx1p9YVhFzy7FOBQfF0YAlzdgD2l8yNkMgMHhnx",
     "qywIZGwOOVg=",
 );
-pub(super) const K: &str = concat!("eddPbGwtkWvsR72Cj9m2cpWjf1SSf6sSY8DRIvHG8e0=",);
-pub(super) const M: &str = concat!("TndZYWhxHpE5ZdgXWsO9dqqwi3+ThaAq6IPPbG4X3YE=",);
+pub(super) const K: &str = "eddPbGwtkWvsR72Cj9m2cpWjf1SSf6sSY8DRIvHG8e0=";
+pub(super) const M: &str = "TndZYWhxHpE5ZdgXWsO9dqqwi3+ThaAq6IPPbG4X3YE=";

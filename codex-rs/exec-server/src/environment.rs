@@ -256,7 +256,7 @@ impl EnvironmentManager {
         let environment = Arc::new(Environment::remote_with_transport(
             ExecServerTransportParams::NoiseRendezvous {
                 provider: connect_provider,
-                identity,
+                identity: Box::new(identity),
             },
             manager.local_runtime_paths.clone(),
             manager.http_client_factory.clone(),
@@ -559,7 +559,10 @@ impl EnvironmentManager {
         let mut environment = Environment::remote_with_transport(
             ExecServerTransportParams::Deferred(Box::new(crate::client_api::Deferred {
                 readiness: provisioning_status_rx,
-                transport: ExecServerTransportParams::NoiseRendezvous { provider, identity },
+                transport: ExecServerTransportParams::NoiseRendezvous {
+                    provider,
+                    identity: Box::new(identity),
+                },
             })),
             self.local_runtime_paths.clone(),
             self.http_client_factory.clone(),

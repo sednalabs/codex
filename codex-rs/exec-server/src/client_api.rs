@@ -113,7 +113,7 @@ pub(crate) enum ExecServerTransportParams {
     },
     NoiseRendezvous {
         provider: Arc<dyn NoiseRendezvousConnectProvider>,
-        identity: NoiseChannelIdentity,
+        identity: Box<NoiseChannelIdentity>,
     },
     #[allow(dead_code)]
     StdioCommand {

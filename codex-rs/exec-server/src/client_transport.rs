@@ -266,7 +266,7 @@ pub(crate) enum ExecServerReconnectStrategy {
         // Registration can renew; recovery still pins the executor's Noise identity.
         executor_public_key: crate::NoiseChannelPublicKey,
         provider: Arc<dyn NoiseRendezvousConnectProvider>,
-        identity: NoiseChannelIdentity,
+        identity: Box<NoiseChannelIdentity>,
         client_name: String,
         connect_timeout: Duration,
         initialize_timeout: Duration,
@@ -308,7 +308,7 @@ impl ExecServerReconnectStrategy {
                 let opened = ExecServerClient::open_noise_rendezvous_connection(
                     NoiseRendezvousConnectArgs {
                         bundle,
-                        harness_identity: identity.clone(),
+                        harness_identity: identity.as_ref().clone(),
                         client_name: client_name.clone(),
                         connect_timeout: *connect_timeout,
                         initialize_timeout: *initialize_timeout,

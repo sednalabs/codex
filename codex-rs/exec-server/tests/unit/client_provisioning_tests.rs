@@ -16,7 +16,7 @@ async fn caller_after_ready_retries_an_unpublished_provisioning_failure(reconnec
             readiness: readiness_rx,
             transport: ExecServerTransportParams::NoiseRendezvous {
                 provider: Arc::new(FailingProvider),
-                identity: NoiseChannelIdentity::generate().expect("Noise identity"),
+                identity: Box::new(NoiseChannelIdentity::generate().expect("Noise identity")),
             },
         })),
         HttpClientFactory::new(codex_http_client::OutboundProxyPolicy::ReqwestDefault),
