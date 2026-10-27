@@ -53,7 +53,7 @@ http = { workspace = true }
 ml-kem = { workspace = true }
 opentelemetry = { workspace = true }
 prost = "0.14.3"
-rand_core_10 = { workspace = true }
+rand_core = { workspace = true }
 serde = { workspace = true, features = ["derive"] }
 serde_json = { workspace = true }
 thiserror = { workspace = true }

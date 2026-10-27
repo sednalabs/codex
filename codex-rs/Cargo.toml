@@ -447,7 +447,7 @@ pulldown-cmark = { version = "0.10", default-features = false }
 quick-xml = "0.41.0"
 rand = "0.9"
 rand_regex = "0.18.1"
-rand_core_10 = { package = "rand_core", version = "0.10" }
+rand_core = { package = "rand_core", version = "0.10" }
 ratatui = { version = "0.30.2", default-features = false, features = [
     "crossterm",
     "layout-cache",

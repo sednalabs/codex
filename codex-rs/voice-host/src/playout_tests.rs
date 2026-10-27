@@ -108,7 +108,8 @@ fn jitter_buffer_preserves_packets_delivered_in_a_burst() {
                         ..Default::default()
                     },
                     payload: encoded.clone().into(),
-                }),
+                })
+                .into(),
             })
             .unwrap();
         let packet = incoming.take().unwrap().unwrap();
@@ -217,7 +218,8 @@ fn real_decoder_renders_current_rtp_and_rejects_pre_epoch_arrivals() {
                             ..Default::default()
                         },
                         payload: encoded.into(),
-                    }),
+                    })
+                    .into(),
                 })
                 .unwrap();
             let mut packet = incoming.take().unwrap().unwrap();

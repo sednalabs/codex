@@ -136,6 +136,7 @@ impl Transport {
                     DataChannelEvent::OnMessage(_)
                     | DataChannelEvent::OnBufferedAmountLow
                     | DataChannelEvent::OnBufferedAmountHigh => {}
+                    _ => {}
                 }
             }
             sender.send_replace(false);

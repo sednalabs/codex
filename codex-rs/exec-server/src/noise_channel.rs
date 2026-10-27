@@ -120,24 +120,24 @@ impl Kem for MlKem768 {
 struct MlKemRngAdapter<'a, R>(&'a mut R);
 
 // Clatter's RNG trait uses rand_core 0.6; stable RustCrypto ML-KEM uses rand_core 0.10.
-impl<R: Rng> rand_core_10::TryRng for MlKemRngAdapter<'_, R> {
+impl<R: Rng> rand_core::TryRng for MlKemRngAdapter<'_, R> {
     type Error = std::convert::Infallible;
 
-    fn try_next_u32(&mut self) -> Result<u32, Self::Error> {
+    fn try_next_u32(&mut self) -> Result<u32, std::convert::Infallible> {
         Ok(RngCore::next_u32(self.0))
     }
 
-    fn try_next_u64(&mut self) -> Result<u64, Self::Error> {
+    fn try_next_u64(&mut self) -> Result<u64, std::convert::Infallible> {
         Ok(RngCore::next_u64(self.0))
     }
 
-    fn try_fill_bytes(&mut self, dest: &mut [u8]) -> Result<(), Self::Error> {
+    fn try_fill_bytes(&mut self, dest: &mut [u8]) -> Result<(), std::convert::Infallible> {
         RngCore::fill_bytes(self.0, dest);
         Ok(())
     }
 }
 
-impl<R: Rng> rand_core_10::TryCryptoRng for MlKemRngAdapter<'_, R> {}
+impl<R: Rng> rand_core::TryCryptoRng for MlKemRngAdapter<'_, R> {}
 
 type Handshake = HybridHandshake<X25519, MlKem768, MlKem768, AesGcm, Sha256>;
 type Transport = TransportState<AesGcm, Sha256>;
