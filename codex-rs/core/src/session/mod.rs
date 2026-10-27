@@ -4503,7 +4503,9 @@ impl Session {
         // Serialize compaction with accepted mailbox history recording. A durable arrival after
         // this snapshot remains in SQLite and waits behind the boundary; it is never inferred
         // from a volatile queue drain.
-        let _mailbox_boundary = if self.enabled(Feature::AgentMailbox) {
+        let mailbox_enabled = self.enabled(Feature::AgentMailbox)
+            && !crate::guardian::is_basic_session_source(&self.session_source);
+        let _mailbox_boundary = if mailbox_enabled {
             Some(
                 self.code_mode_message_tasks
                     .communication_boundary
@@ -4517,7 +4519,7 @@ impl Session {
         let mut mailbox_items = Vec::new();
         let mut mailbox_input_ids = Vec::new();
         let mut mailbox_message_ids = Vec::new();
-        if self.enabled(Feature::AgentMailbox) {
+        if mailbox_enabled {
             let pending = match self
                 .services
                 .agent_control

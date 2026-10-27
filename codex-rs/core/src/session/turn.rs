@@ -571,18 +571,23 @@ pub(crate) async fn run_turn(
             // Reconcile durable recipient mail before taking the provider snapshot. The read
             // is bounded and non-consuming; each item is acknowledged only after its stable
             // response-item ID is appended and the rollout flush succeeds.
-            for communication in sess
-                .services
-                .agent_control
-                .mailbox_pending_inputs(sess.thread_id)
-                .await?
-            {
-                sess.record_inter_agent_communication_checked(
-                    turn_context.as_ref(),
-                    &step_context.settings.model_info,
-                    communication,
-                )
-                .await?;
+            // Isolated Guardian reviewers are not public agent-mailbox recipients.
+            // In particular, do not resolve their private thread IDs through the
+            // public ThreadManager registry while lazily opening a mailbox.
+            if !crate::guardian::is_basic_session_source(&turn_context.session_source) {
+                for communication in sess
+                    .services
+                    .agent_control
+                    .mailbox_pending_inputs(sess.thread_id)
+                    .await?
+                {
+                    sess.record_inter_agent_communication_checked(
+                        turn_context.as_ref(),
+                        &step_context.settings.model_info,
+                        communication,
+                    )
+                    .await?;
+                }
             }
 
             // Construct the input that we will send to the model.
@@ -2930,19 +2935,21 @@ async fn try_run_sampling_request(
 
         match event {
             ResponseEvent::Created { response_id } => {
-                if let Err(error) = sess
-                    .services
-                    .agent_control
-                    .mailbox_record_admission(
-                        sess.thread_id,
-                        &turn_context.sub_id,
-                        mailbox_input_ids.clone(),
-                    )
-                    .await
-                {
-                    // The provider request has been created, but durable work must not be
-                    // reported as admitted without recording this exact accepted snapshot.
-                    break Err(error);
+                if !crate::guardian::is_basic_session_source(&turn_context.session_source) {
+                    if let Err(error) = sess
+                        .services
+                        .agent_control
+                        .mailbox_record_admission(
+                            sess.thread_id,
+                            &turn_context.sub_id,
+                            mailbox_input_ids.clone(),
+                        )
+                        .await
+                    {
+                        // The provider request has been created, but durable work must not be
+                        // reported as admitted without recording this exact accepted snapshot.
+                        break Err(error);
+                    }
                 }
                 if let Some(response_id) = response_id {
                     turn_context
