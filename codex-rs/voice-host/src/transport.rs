@@ -90,10 +90,14 @@ impl Transport {
             .map_err(|_| "invalid voice ICE attempt budget")?;
         let settings = webrtc::peer_connection::SettingEngineBuilder::new()
             .with_ice_connection_attempts(Some(check_interval), Some(attempts))
+            .with_sctp_max_receive_buffer_size(/*size*/ 64 * 1024)
             .build();
         let connection: Arc<dyn PeerConnection> = Arc::new(
             PeerConnectionBuilder::new()
-                .with_interceptor_registry(rtc::interceptor::Registry::from(ingress))
+                .with_interceptor_registry(
+                    rtc::interceptor::Registry::new()
+                        .with(rtc::interceptor::Slot::Custom(/*slot*/ 6_500), ingress),
+                )
                 .with_media_engine(media)
                 .with_runtime(runtime)
                 .with_setting_engine(settings)
@@ -101,7 +105,6 @@ impl Transport {
                 .with_udp_addrs(vec!["0.0.0.0:0", "[::]:0"])
                 .with_tcp_addrs(vec!["0.0.0.0:0", "[::]:0"])
                 .with_data_channel_send_buffer_limit(/*bytes*/ 64 * 1024)
-                .with_sctp_receive_buffer_size(/*size*/ 64 * 1024)
                 .build()
                 .await
                 .map_err(|_| "failed to create voice peer")?,

@@ -21,7 +21,8 @@ fn packet(size: usize, at: Instant) -> TaggedPacket {
                 ..Default::default()
             },
             payload: vec![5; size - 12].into(),
-        }),
+        })
+        .into(),
     }
 }
 
@@ -30,7 +31,7 @@ fn arrival_and_rtp_bytes_survive_the_adapter_without_an_upstream_copy() {
     let (mut incoming, mut ingress) = pair();
     let at = Instant::now() - Duration::from_millis(/*millis*/ 20);
     let input = packet(/*size*/ 32, at);
-    let Packet::Rtp(expected) = &input.message else {
+    let Packet::Rtp(expected) = &input.message.packet else {
         panic!()
     };
     let expected = expected.marshal().unwrap();
@@ -38,6 +39,27 @@ fn arrival_and_rtp_bytes_survive_the_adapter_without_an_upstream_copy() {
     let received = incoming.take().unwrap().unwrap();
     assert_eq!((received.at, received.as_ref()), (at, expected.as_ref()));
     assert!(ingress.poll_read().is_none());
+}
+
+#[test]
+fn outgoing_rtp_passes_through_the_incoming_adapter() {
+    let (_, mut ingress) = pair();
+    let input = packet(/*size*/ 32, Instant::now());
+    let expected_at = input.now;
+    let Packet::Rtp(expected_packet) = &input.message.packet else {
+        panic!()
+    };
+    let expected_packet = expected_packet.marshal().unwrap();
+
+    ingress.handle_write(input).unwrap();
+
+    let output = ingress.poll_write().unwrap();
+    assert_eq!(output.now, expected_at);
+    let Packet::Rtp(output_packet) = output.message.packet else {
+        panic!()
+    };
+    assert_eq!(output_packet.marshal().unwrap(), expected_packet);
+    assert!(ingress.poll_write().is_none());
 }
 
 #[test]
@@ -109,7 +131,7 @@ fn invalid_stream_and_oversize_packets_fail_without_returning_media() {
         let (mut incoming, mut ingress) = pair();
         let mut input = packet(size, Instant::now());
         if size == 32
-            && let Packet::Rtp(packet) = &mut input.message
+            && let Packet::Rtp(packet) = &mut input.message.packet
         {
             packet.header.payload_type = 96;
         }
