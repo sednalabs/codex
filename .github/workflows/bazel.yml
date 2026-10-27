@@ -132,6 +132,7 @@ jobs:
               --test_tag_filters=-argument-comment-lint \
               --test_verbose_timeout_warnings \
               --build_metadata=COMMIT_SHA=${GITHUB_SHA} \
+              --test_env=CODEX_DIAGNOSE_THREAD_LOOKUP=1 \
               --test_arg=--exact \
               --test_arg=suite::v2::guardian_v2::guardian_v2_propagates_root_user_input_to_worker_reviews::root_answer_survives_parent_compaction \
               -- \

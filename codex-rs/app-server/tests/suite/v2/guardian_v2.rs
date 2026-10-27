@@ -2775,6 +2775,11 @@ async fn guardian_v2_validates_user_input_before_history_truncation(
 async fn guardian_v2_propagates_root_user_input_to_worker_reviews(
     lifecycle: ThreadLifecycle,
 ) -> Result<()> {
+    if std::env::var_os("CODEX_DIAGNOSE_THREAD_LOOKUP").is_some() {
+        eprintln!(
+            "guardian diagnostic: focused test process received lookup instrumentation flag"
+        );
+    }
     skip_if_no_network!(Ok(()));
     guardian_v2_routes_scoped_tool_approvals(
         GuardianRisk::High,
