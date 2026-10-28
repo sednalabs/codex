@@ -486,10 +486,23 @@ impl From<CompactedHistoryMetadata> for CompactedHistoryInstallation<'_> {
 }
 
 pub(crate) fn should_use_agent_mailbox(session_source: &SessionSource) -> bool {
-    !crate::guardian::is_basic_session_source(session_source)
-        // Internal service sessions are intentionally hidden by the public thread lookup
-        // used by mailbox routing, so they do not participate in durable agent mail.
-        && !matches!(session_source, SessionSource::Internal(_))
+    match session_source {
+        // Internal services and non-ThreadSpawn subagents are private one-shot sessions,
+        // not recipients registered with the public thread manager used by mailbox routing.
+        SessionSource::Internal(_) => false,
+        SessionSource::SubAgent(source) => {
+            matches!(
+                source,
+                codex_protocol::protocol::SubAgentSource::ThreadSpawn { .. }
+            )
+        }
+        SessionSource::Cli
+        | SessionSource::VSCode
+        | SessionSource::Exec
+        | SessionSource::Mcp
+        | SessionSource::Custom(_)
+        | SessionSource::Unknown => true,
+    }
 }
 
 pub(crate) struct SessionSpawnArgs {

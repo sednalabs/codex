@@ -249,7 +249,7 @@ pub(crate) fn mcp_config_for_test(config: &crate::config::Config) -> Arc<codex_m
 }
 
 #[test]
-fn isolated_guardian_sessions_skip_agent_mailbox_hooks() {
+fn agent_mailbox_eligibility_excludes_private_sessions_and_keeps_public_recipients() {
     assert!(!super::should_use_agent_mailbox(
         &codex_protocol::protocol::SessionSource::Internal(InternalSessionSource::Guardian,),
     ));
@@ -258,10 +258,26 @@ fn isolated_guardian_sessions_skip_agent_mailbox_hooks() {
             InternalSessionSource::MemoryConsolidation,
         ),
     ));
-    assert!(!super::should_use_agent_mailbox(
+    for source in [
+        codex_protocol::protocol::SubAgentSource::Review,
+        codex_protocol::protocol::SubAgentSource::Compact,
+        codex_protocol::protocol::SubAgentSource::MemoryConsolidation,
+        codex_protocol::protocol::SubAgentSource::Other("guardian".to_string()),
+    ] {
+        assert!(!super::should_use_agent_mailbox(
+            &codex_protocol::protocol::SessionSource::SubAgent(source),
+        ));
+    }
+    assert!(super::should_use_agent_mailbox(
         &codex_protocol::protocol::SessionSource::SubAgent(
-            codex_protocol::protocol::SubAgentSource::Other("guardian".to_string()),
-        )
+            codex_protocol::protocol::SubAgentSource::ThreadSpawn {
+                parent_thread_id: ThreadId::new(),
+                depth: 1,
+                agent_path: None,
+                agent_nickname: None,
+                agent_role: None,
+            },
+        ),
     ));
     assert!(super::should_use_agent_mailbox(
         &codex_protocol::protocol::SessionSource::VSCode,
