@@ -1,0 +1,50 @@
+name: Temporary Dylint lock compatibility proof
+
+on:
+  push:
+    branches: [codex/dylint-lock-compat-20261029]
+
+permissions:
+  contents: read
+
+jobs:
+  dylint-lock-and-test:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          persist-credentials: false
+
+      - uses: dtolnay/rust-toolchain@d124f86f28ff42855784ff3319f48ac182c248f8 # 1.99.1
+
+      - name: Install argument-comment-lint nightly toolchain
+        run: |
+          rustup toolchain install nightly-2026-08-20 \
+            --profile minimal \
+            --component llvm-tools-preview \
+            --component rustc-dev \
+            --component rust-src \
+            --no-self-update
+
+      - name: Update the package lock for Dylint 6.3.0
+        working-directory: tools/argument-comment-lint
+        run: |
+          grep -Fx 'dylint_testing = "6.3.0"' Cargo.toml
+          cargo update -p dylint_testing --precise 6.3.0
+          test "$(git -C "$GITHUB_WORKSPACE" diff --name-only)" = 'tools/argument-comment-lint/Cargo.lock'
+          git -C "$GITHUB_WORKSPACE" diff --check
+
+      - name: Test argument-comment-lint package
+        working-directory: tools/argument-comment-lint
+        env:
+          RUST_MIN_STACK: "8388608"
+        run: cargo test --locked
+
+      - name: Upload generated lockfile
+        if: always()
+        uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f # v7.0.0
+        with:
+          name: dylint-testing-6.3.0-lock-2f537b87a6d7
+          path: tools/argument-comment-lint/Cargo.lock
+          if-no-files-found: error
