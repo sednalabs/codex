@@ -103,6 +103,23 @@ jobs:
           )
           if [[ "${W14939_FOCUSED_TESTS}" == "true" ]]; then
             focused_status=0
+            run_focused_selector() {
+              local target="$1"
+              local selector="$2"
+              ./.github/scripts/run-bazel-ci.sh \
+                --print-failed-test-logs \
+                --print-failed-action-summary \
+                -- \
+                test \
+                --test_tag_filters=-argument-comment-lint \
+                --test_verbose_timeout_warnings \
+                --test_output=all \
+                --build_metadata="COMMIT_SHA=${GITHUB_SHA}" \
+                --test_arg=--exact \
+                --test_arg="$selector" \
+                -- \
+                "$target" || focused_status=$?
+            }
             ./.github/scripts/run-bazel-ci.sh \
               --print-failed-test-logs \
               --print-failed-action-summary \
@@ -173,6 +190,36 @@ jobs:
               --test_arg=suite::v2::guardian_v2::guardian_v2_propagates_root_user_input_to_worker_reviews::root_answer_survives_parent_compaction \
               -- \
               //codex-rs/app-server:app-server-all-test || focused_status=$?
+
+            # Exercise quiet/actionable mailbox admission and goal-generation handback
+            # without triggering a full core, state, or mailbox suite.
+            run_focused_selector \
+              //codex-rs/core:core-unit-tests \
+              session::input_queue::tests::quiet_durable_mail_does_not_preempt_but_legacy_and_actionable_mail_do
+            run_focused_selector \
+              //codex-rs/core:core-unit-tests \
+              agent::control::completion::tests::same_id_external_control_change_cancels_old_binding
+            run_focused_selector \
+              //codex-rs/core:core-unit-tests \
+              agent::control::completion::tests::active_turn_goal_update_and_quiet_continuation_are_preserved
+            run_focused_selector \
+              //codex-rs/core:core-unit-tests \
+              agent::control::completion::tests::explicit_cancellation_never_infers_goal_continuation
+            run_focused_selector \
+              //codex-rs/state:state-unit-tests \
+              runtime::goals::tests::external_goal_control_revision_invalidates_same_id_but_not_turn_updates
+            run_focused_selector \
+              //codex-rs/agent-mailbox:agent-mailbox-unit-tests \
+              tests::admission_is_incremental_but_outcomes_and_snapshots_stay_exactly_scoped
+            run_focused_selector \
+              //codex-rs/agent-mailbox:agent-mailbox-unit-tests \
+              tests::stale_quiet_turn_cannot_settle_linked_continuations_after_a_newer_turn_starts
+            run_focused_selector \
+              //codex-rs/agent-mailbox:agent-mailbox-unit-tests \
+              tests::canonical_outcomes_are_observed_per_item_without_cursor_loss
+            run_focused_selector \
+              //codex-rs/tui:tui-unit-tests \
+              multi_agents::tests::completed_wait_renders_wake_report_without_message_body
             exit "${focused_status}"
           fi
           ./.github/scripts/run-bazel-ci.sh \
