@@ -2396,9 +2396,19 @@ async fn multi_agent_v2_interrupted_native_work_settles_before_followup_all_join
     let report = result
         .mailbox_wait_report
         .expect("native mailbox wait should include its report");
-    assert!(report.condition_satisfied);
-    assert!(report.pending.is_empty());
+    assert_eq!(
+        report.completion_reason,
+        Some(codex_protocol::items::MailboxWakeCause::NeedsAttention),
+        "cancelled work should wake the all-work join with its terminal report: {report:#?}"
+    );
+    assert!(report.pending.is_empty(), "{report:#?}");
     assert_eq!(report.completed.len(), 2);
+    assert!(report.completed.iter().any(|item| {
+        item.work_ref.as_deref() == Some(first_work.id.as_str()) && item.status == "cancelled"
+    }));
+    assert!(report.completed.iter().any(|item| {
+        item.work_ref.as_deref() == Some(second_work.id.as_str()) && item.status == "completed"
+    }));
     let mut statuses = report
         .completed
         .iter()
