@@ -2237,16 +2237,19 @@ async fn multi_agent_v2_interrupted_native_work_settles_before_followup_all_join
     let session = Arc::new(session);
     let turn = Arc::new(turn);
 
+    let first_call_id = "initial-work-call";
+    let mut spawn_invocation = invocation(
+        session.clone(),
+        turn.clone(),
+        "spawn_agent",
+        function_payload(json!({
+            "message": "boot worker",
+            "task_name": "worker"
+        })),
+    );
+    spawn_invocation.call_id = first_call_id.to_string();
     SpawnAgentHandlerV2::default()
-        .handle(invocation(
-            session.clone(),
-            turn.clone(),
-            "spawn_agent",
-            function_payload(json!({
-                "message": "boot worker",
-                "task_name": "worker"
-            })),
-        ))
+        .handle(spawn_invocation)
         .await
         .expect("spawn worker");
     let agent_id = session
@@ -2259,22 +2262,6 @@ async fn multi_agent_v2_interrupted_native_work_settles_before_followup_all_join
         .get_thread(agent_id)
         .await
         .expect("worker thread should exist");
-
-    let first_call_id = "initial-work-call";
-    let mut first_invocation = invocation(
-        session.clone(),
-        turn.clone(),
-        "followup_task",
-        function_payload(json!({
-            "target": agent_id.to_string(),
-            "message": "initial work"
-        })),
-    );
-    first_invocation.call_id = first_call_id.to_string();
-    FollowupTaskHandlerV2
-        .handle(first_invocation)
-        .await
-        .expect("initial follow-up should be accepted");
 
     let root_control = root
         .thread
@@ -2292,8 +2279,8 @@ async fn multi_agent_v2_interrupted_native_work_settles_before_followup_all_join
     let first_work = mailbox
         .work_for_native_key(root.thread_id, first_call_id)
         .await
-        .expect("initial work lookup should succeed")
-        .expect("initial work should be durable");
+        .expect("spawn work lookup should succeed")
+        .expect("spawn work should be durable");
     let first_input = mailbox
         .accepted_input(&first_work)
         .await
@@ -2319,7 +2306,7 @@ async fn multi_agent_v2_interrupted_native_work_settles_before_followup_all_join
                 .to_string()],
         )
         .await
-        .expect("initial work should be admitted to its source turn");
+        .expect("initial spawn work should be admitted to its source turn");
     worker
         .session
         .send_event(
