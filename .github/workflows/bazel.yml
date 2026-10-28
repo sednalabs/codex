@@ -161,7 +161,7 @@ jobs:
               --build_metadata="COMMIT_SHA=${GITHUB_SHA}" \
               --test_arg=multi_agent_v2_interrupted_native_work_settles_before_followup_all_join \
               -- \
-              //codex-rs/core:core-all-test || focused_status=$?
+              //codex-rs/core:core-unit-tests || focused_status=$?
             ./.github/scripts/run-bazel-ci.sh \
               --print-failed-test-logs \
               --print-failed-action-summary \
