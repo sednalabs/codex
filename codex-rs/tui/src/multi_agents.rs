@@ -14,6 +14,8 @@ use codex_app_server_protocol::CollabAgentTool;
 use codex_app_server_protocol::CollabAgentToolCallStatus;
 use codex_app_server_protocol::SubAgentActivityKind;
 use codex_app_server_protocol::ThreadItem;
+use codex_protocol::items::MailboxWaitReport;
+use codex_protocol::items::MailboxWakeCause;
 use codex_protocol::ThreadId;
 use codex_protocol::openai_models::ReasoningEffort as ReasoningEffortConfig;
 use crossterm::event::KeyCode;
@@ -212,6 +214,7 @@ pub(crate) fn tool_call_history_cell(
         receiver_thread_ids,
         prompt,
         agents_states,
+        mailbox_wait_report,
         ..
     } = item
     else {
@@ -270,6 +273,7 @@ pub(crate) fn tool_call_history_cell(
                 Some(waiting_end(
                     receiver_thread_ids,
                     agents_states,
+                    mailbox_wait_report.as_ref(),
                     &mut agent_metadata,
                 ))
             }
@@ -407,10 +411,78 @@ fn waiting_begin(
 fn waiting_end(
     receiver_thread_ids: &[String],
     agents_states: &std::collections::HashMap<String, CollabAgentState>,
+    mailbox_wait_report: Option<&MailboxWaitReport>,
     agent_metadata: &mut impl FnMut(ThreadId) -> AgentMetadata,
 ) -> PlainHistoryCell {
-    let details = wait_complete_lines(receiver_thread_ids, agents_states, agent_metadata);
+    let mut details = mailbox_wait_report
+        .map(mailbox_wait_report_lines)
+        .unwrap_or_default();
+    details.extend(wait_complete_lines(
+        receiver_thread_ids,
+        agents_states,
+        agent_metadata,
+    ));
     collab_event(title_text("Finished waiting"), details)
+}
+
+fn mailbox_wait_report_lines(report: &MailboxWaitReport) -> Vec<Line<'static>> {
+    let mut lines = vec![Line::from(format!(
+        "Quiet messages queued: {}",
+        report.quiet_count
+    ))];
+    lines.push(Line::from(format!(
+        "Wait condition: {}",
+        if report.condition_satisfied {
+            "satisfied"
+        } else {
+            "still pending"
+        }
+    )));
+
+    if let Some(reason) = report.completion_reason {
+        lines.push(Line::from(format!(
+            "Wake reason: {}",
+            mailbox_wake_cause_label(reason)
+        )));
+    }
+    if let Some(sender) = report.wake_sender.as_deref().map(str::trim)
+        && !sender.is_empty()
+    {
+        let sender = sender.split_whitespace().collect::<Vec<_>>().join(" ");
+        lines.push(Line::from(format!(
+            "Wake sender: {}",
+            truncate_text(&sender, COLLAB_PROMPT_PREVIEW_GRAPHEMES)
+        )));
+    }
+    if let Some(wake_ref) = report.wake_ref.as_deref().map(str::trim)
+        && !wake_ref.is_empty()
+    {
+        let wake_ref = wake_ref.split_whitespace().collect::<Vec<_>>().join(" ");
+        lines.push(Line::from(format!(
+            "Wake reference: {}",
+            truncate_text(&wake_ref, COLLAB_PROMPT_PREVIEW_GRAPHEMES)
+        )));
+    }
+    lines
+}
+
+fn mailbox_wake_cause_label(cause: MailboxWakeCause) -> &'static str {
+    match cause {
+        MailboxWakeCause::Result => "result",
+        MailboxWakeCause::Reply => "reply",
+        MailboxWakeCause::Request => "request",
+        MailboxWakeCause::Human => "human",
+        MailboxWakeCause::Tool => "tool",
+        MailboxWakeCause::Deadline => "deadline",
+        MailboxWakeCause::Cancel => "canceled",
+        MailboxWakeCause::Interrupted => "interrupted",
+        MailboxWakeCause::SubscriptionLoss => "subscription loss",
+        MailboxWakeCause::RuntimeFault => "runtime fault",
+        MailboxWakeCause::NoMatchingWork => "no matching work",
+        MailboxWakeCause::AlreadySatisfied => "already satisfied",
+        MailboxWakeCause::Cycle => "cycle",
+        MailboxWakeCause::NeedsAttention => "needs attention",
+    }
 }
 
 fn close_end(
@@ -837,6 +909,55 @@ mod tests {
             .collect::<Vec<_>>()
             .join("\n\n");
         assert_snapshot!("collab_agent_transcript", snapshot);
+    }
+
+    #[test]
+    fn completed_wait_renders_wake_report_without_message_body() {
+        let sender_thread_id = ThreadId::from_string("00000000-0000-0000-0000-000000000001")
+            .expect("valid sender thread id");
+        let receiver_thread_id = ThreadId::from_string("00000000-0000-0000-0000-000000000002")
+            .expect("valid receiver thread id");
+        let report = MailboxWaitReport {
+            requested_targets: vec!["/root/robie".to_string()],
+            requested_replies_to: Vec::new(),
+            return_when: codex_protocol::items::MailboxWaitReturnWhen::Any,
+            completed: Vec::new(),
+            pending: Vec::new(),
+            completion_reason: Some(MailboxWakeCause::Request),
+            condition_satisfied: false,
+            quiet_count: 2,
+            wake_sender: Some("/root/bob".to_string()),
+            wake_ref: Some("amsg_request-1".to_string()),
+        };
+        let cell = tool_call_history_cell(
+            &ThreadItem::CollabAgentToolCall {
+                id: "call-wait".to_string(),
+                tool: CollabAgentTool::Wait,
+                status: CollabAgentToolCallStatus::Completed,
+                sender_thread_id: sender_thread_id.to_string(),
+                receiver_thread_ids: vec![receiver_thread_id.to_string()],
+                prompt: Some("private request body must not be shown".to_string()),
+                model: None,
+                reasoning_effort: None,
+                agents_states: HashMap::from([(
+                    receiver_thread_id.to_string(),
+                    agent_state(CollabAgentStatus::Running, /*message*/ None),
+                )]),
+                mailbox_wait_report: Some(report),
+            },
+            /*cached_spawn_request*/ None,
+            |thread_id| metadata_for(thread_id, receiver_thread_id, ThreadId::new()),
+        )
+        .expect("completed wait item renders");
+
+        let rendered = cell_to_text(&cell);
+        assert!(rendered.contains("Quiet messages queued: 2"));
+        assert!(rendered.contains("Wait condition: still pending"));
+        assert!(rendered.contains("Wake reason: request"));
+        assert!(rendered.contains("Wake sender: /root/bob"));
+        assert!(rendered.contains("Wake reference: amsg_request-1"));
+        assert!(rendered.contains("Robie [explorer]"));
+        assert!(!rendered.contains("private request body"));
     }
 
     #[cfg(target_os = "macos")]
