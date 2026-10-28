@@ -15,7 +15,7 @@ DECLARATIONS = {
     "computer_use_client_base.d.ts": "6afb8fbcd3f554e715f1b2d7d80b7237dcc6dfe48725deda730903da35e302eb",
     "helper_transport.d.ts": "f3e75b0fbf6f16f0d8a422394c70b0b207032e8130f8fd847d475a8b930b474e",
 }
-TARGET_DIR = "/dist/project/cua/sky_js/src/targets/windows/internal/"
+TARGET_DIR = "app/resources/cua_node/bin/node_modules/%40oai/cua/dist/project/cua/sky_js/src/targets/windows/internal/"
 IDENT = re.compile(r"[A-Za-z_$][A-Za-z0-9_$./:-]{0,100}\Z")
 TYPE = re.compile(r"[\w\s.$<>{}\[\]|&?:,'\"(),=;\-]+\Z")
 
@@ -92,8 +92,9 @@ def main():
         except json.JSONDecodeError as error:
             api.update({"parse": "json_error", "message": error.msg, "line": error.lineno, "column": error.colno, "position": error.pos})
         report["api"] = api
+        print(json.dumps({"package_sha256": package_hash.hexdigest(), "api": api}, sort_keys=True), flush=True)
         for name, expected in DECLARATIONS.items():
-            matches = [p for p in paths if TARGET_DIR in p and p.endswith("/" + name)]
+            matches = [p for p in paths if p == TARGET_DIR + name]
             if len(matches) != 1:
                 raise ValueError(f"expected one declaration for {name}, found {len(matches)}")
             data = package.read(matches[0])
