@@ -689,8 +689,17 @@ fn classified_overlay_handles_long_history_and_bounds_output() -> anyhow::Result
     };
     let request = build(&prompt)?;
     assert_eq!(prompt.input, original);
-    assert_eq!(request.input.len(), original.len());
-    for (i, item) in request.input[..90].iter().enumerate() {
+    assert_eq!(request.input.len(), original.len() + 1);
+    let ResponseItem::Message { role, content, .. } = &request.input[0] else {
+        panic!("expected generated base-instruction prefix")
+    };
+    assert_eq!(role, "developer");
+    assert!(matches!(
+        content.first(),
+        Some(ContentItem::InputText { text }) if text == &prompt.base_instructions.text
+    ));
+    let request_history = &request.input[1..];
+    for (i, item) in request_history[..90].iter().enumerate() {
         let ResponseItem::Message { id, content, .. } = item else {
             panic!("expected message")
         };
@@ -705,7 +714,7 @@ fn classified_overlay_handles_long_history_and_bounds_output() -> anyhow::Result
             assert!(text.contains("unchanged"));
         }
     }
-    assert_eq!(&request.input[90..], &original[90..]);
+    assert_eq!(&request_history[90..], &original[90..]);
 
     let oversized = Prompt {
         input: (0..17)
