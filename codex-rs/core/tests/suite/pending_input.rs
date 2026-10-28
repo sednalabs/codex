@@ -746,12 +746,57 @@ async fn input_interrupts_wait_agent_and_is_sent_in_follow_up_request(input: Wai
         .codex;
 
     submit_user_input(&codex, INITIAL_PROMPT).await;
-    tokio::time::timeout(
+    if tokio::time::timeout(
         std::time::Duration::from_secs(30),
         server.wait_for_request_count(/*count*/ 1),
     )
     .await
-    .expect("first model request did not reach the streaming SSE server");
+    .is_err()
+    {
+        let request_count = server.requests().await.len();
+        if request_count == 0 {
+            let terminal_event = tokio::time::timeout(std::time::Duration::from_secs(1), async {
+                loop {
+                    let event = codex
+                        .next_event()
+                        .await
+                        .expect("event stream ended while diagnosing the first request");
+                    match event.msg {
+                        EventMsg::Error(error) => {
+                            let message = error.message.chars().take(256).collect::<String>();
+                            return format!(
+                                "Error(message={message:?}, codex_error_info={:?})",
+                                error.codex_error_info
+                            );
+                        }
+                        EventMsg::StreamError(error) => {
+                            let message = error.message.chars().take(256).collect::<String>();
+                            return format!(
+                                "StreamError(message={message:?}, codex_error_info={:?})",
+                                error.codex_error_info
+                            );
+                        }
+                        EventMsg::TurnComplete(turn) => {
+                            let error = turn.error.map(|error| {
+                                let message = error.message.chars().take(256).collect::<String>();
+                                format!(
+                                    "message={message:?}, codex_error_info={:?}",
+                                    error.codex_error_info
+                                )
+                            });
+                            return format!("TurnComplete(error={error:?})");
+                        }
+                        _ => {}
+                    }
+                }
+            })
+            .await
+            .ok();
+            panic!(
+                "first model request did not reach the streaming SSE server after 30s; request_count={request_count}, terminal_event={terminal_event:?}"
+            );
+        }
+    }
     if matches!(input, WaitInput::PendingInjection) {
         // Hold the tool call until the injection and its activity signal are queued.
         codex
