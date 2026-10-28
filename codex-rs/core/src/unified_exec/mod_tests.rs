@@ -508,13 +508,13 @@ async fn unified_exec_pause_blocks_yield_timeout() -> anyhow::Result<()> {
 
     let (session, turn) = test_session_and_turn().await;
     let elicitation = session.services.elicitations.register();
+    let started = tokio::time::Instant::now();
 
     tokio::spawn(async move {
         tokio::time::sleep(Duration::from_secs(2)).await;
         drop(elicitation);
     });
 
-    let started = tokio::time::Instant::now();
     let response = exec_command(
         &session,
         &turn,
