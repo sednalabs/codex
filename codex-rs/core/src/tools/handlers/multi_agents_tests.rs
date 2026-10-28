@@ -3064,6 +3064,143 @@ async fn multi_agent_v2_wait_agent_accepts_timeout_only_argument() {
 }
 
 #[tokio::test]
+async fn multi_agent_v2_wait_agent_wakes_on_child_completion_without_mailbox() {
+    let (_bootstrap_session, bootstrap_turn) = make_session_and_context().await;
+    let manager = thread_manager();
+    let mut config = (*bootstrap_turn.config).clone();
+    config
+        .features
+        .enable(Feature::MultiAgentV2)
+        .expect("test config should allow feature update");
+    config.features.disable(Feature::AgentMailbox);
+    let root = manager
+        .start_thread(StartThreadOptions::new(config))
+        .await
+        .expect("root thread should start");
+    let session = root.thread.session.clone();
+    let turn = root.thread.session.new_default_turn().await;
+
+    SpawnAgentHandlerV2::default()
+        .handle(invocation(
+            session.clone(),
+            turn.clone(),
+            "spawn_agent",
+            function_payload(json!({
+                "message": "finish this task",
+                "task_name": "worker"
+            })),
+        ))
+        .await
+        .expect("spawn worker");
+    let agent_id = session
+        .services
+        .local_agent_runtime
+        .resolve_agent_reference(session.thread_id, &turn.session_source, "worker")
+        .await
+        .expect("worker should resolve");
+    let worker = manager
+        .get_thread(agent_id)
+        .await
+        .expect("worker thread should exist");
+    let worker_path = AgentPath::try_from("/root/worker").expect("worker path");
+
+    let wait_task = tokio::spawn({
+        let session = session.clone();
+        let turn = turn.clone();
+        async move {
+            WaitAgentHandlerV2::default()
+                .handle(invocation(
+                    session,
+                    turn,
+                    "wait_agent",
+                    function_payload(json!({"timeout_ms": 10_000})),
+                ))
+                .await
+        }
+    });
+
+    timeout(Duration::from_secs(5), async {
+        loop {
+            let event = session
+                .next_event()
+                .await
+                .expect("parent event stream should stay open");
+            if matches!(
+                event.msg,
+                EventMsg::ItemStarted(codex_protocol::protocol::ItemStartedEvent {
+                    item: TurnItem::CollabAgentToolCall(ref item),
+                    ..
+                }) if item.tool == codex_protocol::items::CollabAgentTool::Wait
+                    && item.status
+                        == codex_protocol::items::CollabAgentToolCallStatus::InProgress
+            ) {
+                break;
+            }
+        }
+    })
+    .await
+    .expect("wait_agent should be active before the child completes");
+    assert!(
+        !wait_task.is_finished(),
+        "wait_agent should still be waiting"
+    );
+
+    let worker_turn = worker.session.new_default_turn().await;
+    worker
+        .session
+        .send_event(
+            worker_turn.as_ref(),
+            EventMsg::TurnComplete(TurnCompleteEvent {
+                root_turn_id: None,
+                turn_id: worker_turn.sub_id.clone(),
+                started_at: None,
+                last_agent_message: Some("worker done".to_string()),
+                error: None,
+                completed_at: None,
+                duration_ms: None,
+                time_to_first_token_ms: None,
+            }),
+        )
+        .await;
+
+    let output = timeout(Duration::from_secs(5), wait_task)
+        .await
+        .expect("child completion should wake wait_agent before its deadline")
+        .expect("wait task should join")
+        .expect("wait_agent should succeed");
+    let (content, success) = expect_text_output(output);
+    let result: crate::tools::handlers::multi_agents_v2::wait::WaitAgentResult =
+        serde_json::from_str(&content).expect("wait_agent result should be json");
+    assert_eq!(
+        result,
+        crate::tools::handlers::multi_agents_v2::wait::WaitAgentResult {
+            message: "Wait completed.".to_string(),
+            timed_out: false,
+            mailbox_wait_report: None,
+        }
+    );
+    assert_eq!(success, None);
+
+    let expected_message = format_inter_agent_completion_message(
+        AgentPath::root(),
+        worker_path.clone(),
+        &AgentStatus::Completed(Some("worker done".to_string())),
+    )
+    .expect("completed status should render");
+    assert!(manager.captured_ops().iter().any(|(id, op)| {
+        *id == root.thread_id
+            && matches!(
+                op,
+                Op::InterAgentCommunication { communication, .. }
+                    if communication.author == worker_path
+                        && communication.recipient == AgentPath::root()
+                        && !communication.trigger_turn
+                        && communication.content == expected_message
+            )
+    }));
+}
+
+#[tokio::test]
 async fn multi_agent_v2_wait_agent_clamps_timeout_below_configured_min() {
     let (session, mut turn) = make_session_and_context().await;
     let mut config = (*turn.config).clone();

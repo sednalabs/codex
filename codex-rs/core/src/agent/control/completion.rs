@@ -19,6 +19,7 @@ use codex_protocol::items::SubAgentActivityItem;
 use codex_protocol::protocol::AgentStatus;
 use codex_protocol::protocol::CodexErrorInfo;
 use codex_protocol::protocol::InterAgentCommunication;
+use codex_protocol::protocol::MultiAgentVersion;
 use codex_protocol::protocol::SessionSource;
 use codex_protocol::protocol::SubAgentActivityKind;
 use codex_protocol::protocol::SubAgentSource;
@@ -112,7 +113,19 @@ impl LocalAgentControl {
         };
         let trace_message = trace.is_enabled().then(|| message.clone());
 
-        if let Some(mailbox) = self.mailbox_v2() {
+        let parent_config = match self.runtime.upgrade() {
+            Ok(state) => match state.get_thread(parent_thread_id).await {
+                Ok(parent_thread) => Some(parent_thread.session.get_config().await),
+                Err(_) => None,
+            },
+            Err(_) => None,
+        };
+        let parent_supports_native_mailbox = parent_config.as_ref().is_some_and(|config| {
+            config.multi_agent_version_from_features() == MultiAgentVersion::V2
+                && config.features.enabled(Feature::AgentMailbox)
+        });
+
+        if parent_supports_native_mailbox && let Some(mailbox) = self.mailbox_v2() {
             let logical_goal = match outcome.logical_goal.as_ref() {
                 Ok(goal) => goal,
                 Err(error) => {
@@ -153,17 +166,9 @@ impl LocalAgentControl {
                     }
                 }
             });
-            let activate_if_idle = match self.runtime.upgrade() {
-                Ok(state) => match state.get_thread(parent_thread_id).await {
-                    Ok(thread) => {
-                        let config = thread.session.get_config().await;
-                        config.features.enabled(Feature::AgentMailbox)
-                            && config.features.enabled(Feature::AgentMailboxIdleActivation)
-                    }
-                    Err(_) => false,
-                },
-                Err(_) => false,
-            };
+            let activate_if_idle = parent_config
+                .as_ref()
+                .is_some_and(|config| config.features.enabled(Feature::AgentMailboxIdleActivation));
             let response = (message.len() <= 8_192).then(|| {
                 InterAgentCommunication::new(
                     child_agent_path.clone(),
@@ -228,7 +233,7 @@ impl LocalAgentControl {
         );
         let context =
             AgentCommunicationContext::new(AgentCommunicationKind::Result, outcome.thread_id)
-                .with_native_key(Some(outcome.turn_id.clone()));
+                .with_native_key(parent_supports_native_mailbox.then(|| outcome.turn_id.clone()));
         let delivery = self
             .send_inter_agent_communication(
                 parent_thread_id,
