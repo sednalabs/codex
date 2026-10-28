@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Query one root thread and its spawned descendants through Codex app-server."""
+"""Query a Codex thread tree through app-server or explicitly named local rollouts."""
 
 from __future__ import annotations
 
@@ -16,6 +16,7 @@ from typing import Any
 PAGE_SIZE = 100
 DEFAULT_MAX_THREADS_PER_STATE = 100
 MAX_THREADS_PER_STATE = 500
+MAX_LOCAL_ROLLOUT_BYTES = 10 * 1024 * 1024
 TOKEN_FIELDS = {
     "uncachedInput": ("netNewInputTokens", "input"),
     "cachedInput": ("cachedInputTokens", "cached_input"),
@@ -274,6 +275,7 @@ def _cost(group: dict[str, Any], rates: dict[str, Any]) -> dict[str, Any]:
                 )
             else:
                 known += Decimal(tokens) * rate / Decimal(1_000_000)
+    missing_tokens.extend(group.get("unpricedTokenDimensions", []))
     complete = not missing_tokens and not missing_rates
     return {
         "credits": _decimal_text(known) if complete else None,
@@ -310,6 +312,20 @@ def aggregate(rows: list[dict[str, Any]], rates: dict[str, Any]) -> dict[str, An
                 "knownSubtotal": subtotal,
                 "complete": not missing,
                 "missingValues": missing,
+            }
+        if any("cacheWriteInputTokens" in group for group in groups):
+            cache_write_values = [group.get("cacheWriteInputTokens") for group in groups]
+            cache_write_subtotal = sum(
+                value for value in cache_write_values if value is not None
+            )
+            cache_write_missing = (
+                sum(value is None for value in cache_write_values) + len(missing_ids)
+            )
+            tokens["cacheWriteInput"] = {
+                "value": cache_write_subtotal if not cache_write_missing else None,
+                "knownSubtotal": cache_write_subtotal,
+                "complete": not cache_write_missing,
+                "missingValues": cache_write_missing,
             }
         cost_parts = [_cost(group, rates) for group in groups]
         known_credits = sum(
@@ -353,6 +369,335 @@ def aggregate(rows: list[dict[str, Any]], rates: dict[str, Any]) -> dict[str, An
         "threadIds": [row["threadId"] for row in rows],
         "missingUsageThreadIds": missing_ids,
         "groups": totals,
+    }
+
+
+def _read_local_rollout(path: str) -> dict[str, Any]:
+    """Read only native usage/context metadata from one explicitly named rollout."""
+    rollout_path = Path(path)
+    try:
+        if rollout_path.stat().st_size > MAX_LOCAL_ROLLOUT_BYTES:
+            raise UsageError("local rollout exceeds the 10 MiB read limit")
+        handle = rollout_path.open("rb")
+    except UsageError:
+        raise
+    except OSError as exc:
+        raise UsageError("could not open an explicitly supplied local rollout") from exc
+
+    session_meta: dict[str, Any] | None = None
+    contexts: dict[str, list[dict[str, Any]]] = {}
+    records: list[dict[str, Any]] = []
+    response_ids: set[str] = set()
+    bytes_read = 0
+    try:
+        with handle:
+            while True:
+                line = handle.readline(MAX_LOCAL_ROLLOUT_BYTES - bytes_read + 1)
+                if not line:
+                    break
+                bytes_read += len(line)
+                if bytes_read > MAX_LOCAL_ROLLOUT_BYTES:
+                    raise UsageError("local rollout exceeds the 10 MiB read limit")
+                try:
+                    item = json.loads(line.decode("utf-8"))
+                except (json.JSONDecodeError, UnicodeDecodeError) as exc:
+                    raise UsageError("local rollout contains malformed JSON") from exc
+                if not isinstance(item, dict):
+                    continue
+                item_type = item.get("type")
+                if item_type not in {"session_meta", "turn_context", "token_usage_record"}:
+                    continue
+                payload = item.get("payload")
+                if not isinstance(payload, dict):
+                    raise UsageError("local rollout usage metadata is malformed")
+                if item_type == "session_meta":
+                    if session_meta is not None:
+                        raise UsageError("local rollout has duplicate session metadata")
+                    thread_id = payload.get("id")
+                    parent_thread_id = payload.get("parent_thread_id")
+                    if not isinstance(thread_id, str) or not thread_id:
+                        raise UsageError("local rollout has no thread identity")
+                    if parent_thread_id is not None and not isinstance(parent_thread_id, str):
+                        raise UsageError("local rollout has malformed parent identity")
+                    session_meta = {
+                        "threadId": thread_id,
+                        "parentThreadId": parent_thread_id,
+                    }
+                elif item_type == "turn_context":
+                    turn_id = payload.get("turn_id")
+                    if not isinstance(turn_id, str) or not turn_id:
+                        raise UsageError("local rollout has malformed turn context")
+                    model = _optional_text(payload.get("model"), "turn_context.model")
+                    effort = _optional_text(payload.get("effort"), "turn_context.effort")
+                    contexts.setdefault(turn_id, []).append(
+                        {"model": model, "reasoningEffort": effort}
+                    )
+                else:
+                    thread_id = payload.get("thread_id")
+                    turn_id = payload.get("turn_id")
+                    root_turn_id = payload.get("root_turn_id")
+                    response_id = payload.get("response_id")
+                    usage = payload.get("usage")
+                    if (
+                        not isinstance(thread_id, str)
+                        or not isinstance(turn_id, str)
+                        or not isinstance(root_turn_id, str)
+                        or not isinstance(response_id, str)
+                        or not isinstance(usage, dict)
+                    ):
+                        raise UsageError("local rollout has malformed response usage")
+                    if response_id in response_ids:
+                        raise UsageError("local rollout repeats a response usage record")
+                    response_ids.add(response_id)
+                    records.append(
+                        {
+                            "threadId": thread_id,
+                            "turnId": turn_id,
+                            "rootTurnId": root_turn_id,
+                            "usage": {
+                                name: _optional_int(usage.get(field), field)
+                                for name, field in (
+                                    ("input", "input_tokens"),
+                                    ("cachedInput", "cached_input_tokens"),
+                                    ("output", "output_tokens"),
+                                )
+                            },
+                            "cacheWriteInput": _optional_int(
+                                usage.get("cache_write_input_tokens", 0),
+                                "cache_write_input_tokens",
+                            ),
+                        }
+                    )
+    except OSError as exc:
+        raise UsageError("could not read an explicitly supplied local rollout") from exc
+
+    if session_meta is None:
+        raise UsageError("local rollout has no session metadata")
+    if any(record["threadId"] != session_meta["threadId"] for record in records):
+        raise UsageError("local rollout usage does not match its thread identity")
+    return {**session_meta, "contexts": contexts, "records": records}
+
+
+def _local_groups(rollout: dict[str, Any]) -> tuple[list[dict[str, Any]], bool]:
+    grouped: dict[tuple[Any, Any], list[dict[str, Any]]] = {}
+    model_context_complete = True
+    for record in rollout["records"]:
+        contexts = rollout["contexts"].get(record["turnId"], [])
+        context_pairs = {
+            (context["model"], context["reasoningEffort"]) for context in contexts
+        }
+        model, effort = next(iter(context_pairs)) if len(context_pairs) == 1 else (None, None)
+        if model is None:
+            model_context_complete = False
+        values = record["usage"]
+        input_tokens, cached_tokens = values["input"], values["cachedInput"]
+        if (
+            input_tokens is not None
+            and cached_tokens is not None
+            and cached_tokens > input_tokens
+        ):
+            raise UsageError("local rollout cached input exceeds total input")
+        cache_write_tokens = values["cacheWriteInput"]
+        uncached_tokens = (
+            None
+            if input_tokens is None or cached_tokens is None or cache_write_tokens != 0
+            else input_tokens - cached_tokens
+        )
+        key = (model, effort)
+        grouped.setdefault(key, []).append(
+            {
+                "netNewInputTokens": uncached_tokens,
+                "cachedInputTokens": cached_tokens,
+                "outputTokens": values["output"],
+                "cacheWriteInputTokens": cache_write_tokens,
+                "unpricedTokenDimensions": (
+                    ["cacheWriteInputTokens"]
+                    if cache_write_tokens != 0
+                    else []
+                ),
+            }
+        )
+
+    groups = []
+    for (model, effort), items in sorted(
+        grouped.items(), key=lambda item: tuple(value or "" for value in item[0])
+    ):
+        def total(field: str) -> int | None:
+            values = [item[field] for item in items]
+            return sum(value for value in values if value is not None) if all(
+                value is not None for value in values
+            ) else None
+
+        groups.append(
+            {
+                "model": model,
+                "reasoningEffort": effort,
+                "speed": None,
+                "netNewInputTokens": total("netNewInputTokens"),
+                "cachedInputTokens": total("cachedInputTokens"),
+                "outputTokens": total("outputTokens"),
+                "estimatedUsageCreditsMicros": None,
+                "cacheWriteInputTokens": total("cacheWriteInputTokens"),
+                "unpricedTokenDimensions": sorted(
+                    {
+                        dimension
+                        for item in items
+                        for dimension in item["unpricedTokenDimensions"]
+                    }
+                ),
+            }
+        )
+    return groups, model_context_complete
+
+
+def collect_local_tree(
+    root_id: str,
+    rollout_paths: list[str],
+    expected_child_ids: list[str],
+    rates: dict[str, Any],
+) -> dict[str, Any]:
+    """Aggregate explicit local rollout files without starting app-server or scanning state."""
+    if not isinstance(root_id, str) or not root_id.strip():
+        raise UsageError("root thread ID must be non-empty")
+    if not rollout_paths:
+        raise UsageError("local rollout mode requires at least one --rollout-file")
+    if len(rollout_paths) > MAX_THREADS_PER_STATE * 2 + 1:
+        raise UsageError("too many explicit local rollout files")
+    if any(
+        not isinstance(thread_id, str) or not thread_id.strip()
+        for thread_id in expected_child_ids
+    ):
+        raise UsageError("expected child thread IDs must be non-empty")
+    if len(set(expected_child_ids)) != len(expected_child_ids) or root_id in expected_child_ids:
+        raise UsageError("expected local thread IDs must be distinct descendants, excluding root")
+
+    rollouts = [_read_local_rollout(path) for path in rollout_paths]
+    by_id = {row["threadId"]: row for row in rollouts}
+    if len(by_id) != len(rollouts):
+        raise UsageError("local rollout files repeat a thread identity")
+    if root_id not in by_id:
+        raise UsageError("local rollout files do not include the root thread")
+    root_turn_ids = set(by_id[root_id]["contexts"])
+    for rollout in rollouts:
+        if any(
+            record["rootTurnId"] not in root_turn_ids for record in rollout["records"]
+        ):
+            raise UsageError("usage references a turn outside the supplied root rollout")
+    unexpected = set(by_id) - {root_id, *expected_child_ids}
+    if unexpected:
+        raise UsageError("local rollout files include an unexpected thread")
+
+    expected_ids = {root_id, *expected_child_ids} if expected_child_ids else set(by_id)
+    missing_files = expected_ids - set(by_id)
+    rows = []
+    model_context_complete = not missing_files
+    for thread_id in sorted(expected_ids, key=lambda value: (value != root_id, value)):
+        rollout = by_id.get(thread_id)
+        if rollout is None:
+            rows.append(
+                {
+                    "threadId": thread_id,
+                    "parentThreadId": None,
+                    "role": "root" if thread_id == root_id else "child",
+                    "usageStatus": "rollout_not_supplied",
+                    "usage": None,
+                }
+            )
+            continue
+        groups, has_model_context = _local_groups(rollout)
+        model_context_complete = model_context_complete and has_model_context
+        rows.append(
+            {
+                "threadId": thread_id,
+                "parentThreadId": rollout["parentThreadId"],
+                "role": "root" if thread_id == root_id else "child",
+                "usageStatus": (
+                    "observed_local_records" if rollout["records"] else "no_usage_records"
+                ),
+                "usage": {"groups": groups} if groups else None,
+                "responseUsageRecordCount": len(rollout["records"]),
+                "modelSource": "persisted_turn_context",
+            }
+        )
+
+    parents = {row["threadId"]: row["parentThreadId"] for row in rows}
+    lineage_complete = bool(expected_child_ids) and not missing_files
+    for row in rows:
+        if row["threadId"] == root_id:
+            lineage_complete = lineage_complete and row["parentThreadId"] is None
+            continue
+        parent = parents.get(row["threadId"])
+        seen: set[str] = set()
+        while (
+            parent is not None
+            and parent != root_id
+            and parent in parents
+            and parent not in seen
+        ):
+            seen.add(parent)
+            parent = parents[parent]
+        lineage_complete = lineage_complete and parent == root_id
+
+    root_rows = [rows[0]]
+    child_rows = rows[1:]
+    root_total = aggregate(root_rows, rates)
+    child_total = aggregate(child_rows, rates)
+    tree_total = aggregate(rows, rates)
+    pricing_complete = any(
+        summary["groups"] for summary in (root_total, child_total, tree_total)
+    ) and all(
+        group["calculatedCredits"]["complete"]
+        for summary in (root_total, child_total, tree_total)
+        for group in summary["groups"]
+    )
+    return {
+        "schema": "codex-usage-tree/v1",
+        "status": "partial",
+        "scope": "root_and_spawned_descendants",
+        "rootThreadId": root_id,
+        "lineage": {
+            "source": "local_rollout_session_meta",
+            "expectedThreadIdsSource": (
+                "caller-supplied IDs from a previously validated complete thread/list"
+                if expected_child_ids
+                else None
+            ),
+            "expectedThreadIds": sorted(expected_ids),
+            "suppliedThreadIds": sorted(by_id),
+            "missingRolloutFiles": sorted(missing_files),
+            "complete": lineage_complete,
+        },
+        "usage": {
+            "source": "local TokenUsageRecord rollout items",
+            "availableThreadCount": sum(row["usage"] is not None for row in rows),
+            "requestedThreadCount": len(rows),
+            "responseUsageRecordCount": sum(
+                row.get("responseUsageRecordCount", 0) for row in rows
+            ),
+            "bestEffort": True,
+            "coverageNote": (
+                "sums observed usage records only; this source has no independent "
+                "response denominator"
+            ),
+            "nativeEstimatedCreditsAvailable": False,
+        },
+        "rateMap": {
+            "source": rates["source"],
+            "date": rates["date"],
+            "unit": "credits per 1,000,000 exact-model tokens",
+            "creditsPerMillionTokens": {
+                model: {name: _decimal_text(rate) for name, rate in entries.items()}
+                for model, entries in sorted(rates["models"].items())
+            },
+        },
+        "threads": rows,
+        "totals": {"root": root_total, "children": child_total, "tree": tree_total},
+        "completeness": {
+            "lineageComplete": lineage_complete,
+            "usageComplete": False,
+            "modelContextComplete": model_context_complete,
+            "pricingComplete": pricing_complete,
+        },
     }
 
 
@@ -588,6 +933,17 @@ def error_document(root_id: str, exc: UsageError):
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--thread-id", required=True, help="root thread UUID")
+    parser.add_argument(
+        "--rollout-file",
+        action="append",
+        help="read this local rollout JSONL file only (repeat for each known tree thread)",
+    )
+    parser.add_argument(
+        "--expected-child-id",
+        action="append",
+        default=[],
+        help="descendant ID from a previously complete thread/list result (repeat as needed)",
+    )
     parser.add_argument("--codex-bin", default="codex", help="Codex executable")
     parser.add_argument(
         "--allow-local-app-server-startup",
@@ -605,13 +961,17 @@ def main(argv: list[str] | None = None) -> int:
     args = parser.parse_args(argv)
     if not args.thread_id.strip():
         parser.error("--thread-id cannot be empty")
+    if args.rollout_file and args.allow_local_app_server_startup:
+        parser.error("local rollout mode does not start an app-server")
+    if args.expected_child_id and not args.rollout_file:
+        parser.error("--expected-child-id requires --rollout-file")
     if not 1 <= args.max_threads_per_state <= MAX_THREADS_PER_STATE:
         parser.error(f"--max-threads-per-state must be in 1..{MAX_THREADS_PER_STATE}")
     if not 1 <= args.timeout_seconds <= 120:
         parser.error("--timeout-seconds must be in 1..120")
     if not 1 <= args.overall_timeout_seconds <= 3600:
         parser.error("--overall-timeout-seconds must be in 1..3600")
-    if not args.allow_local_app_server_startup:
+    if not args.rollout_file and not args.allow_local_app_server_startup:
         parser.error(
             "starting a local app-server is not strictly read-only; pass "
             "--allow-local-app-server-startup only if its normal state initialization is acceptable"
@@ -619,6 +979,15 @@ def main(argv: list[str] | None = None) -> int:
     client = None
     try:
         rates = load_rates(args.rates_json)
+        if args.rollout_file:
+            result = collect_local_tree(
+                args.thread_id,
+                args.rollout_file,
+                args.expected_child_id,
+                rates,
+            )
+            print(json.dumps(result, indent=2, sort_keys=True))
+            return 0 if result["status"] == "complete" else 2
         client = AppServer(
             args.codex_bin, args.timeout_seconds, args.overall_timeout_seconds
         )

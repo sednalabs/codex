@@ -42,14 +42,57 @@ initialization or backfill. This script does not attach to an existing server.
 Do not use it where normal app-server startup effects are unacceptable; the
 explicit flag is an acknowledgement of that boundary, not a no-write guarantee.
 
+## Explicit local rollout mode
+
+When the account-scoped usage API is unavailable, the command also accepts
+explicit rollout paths and can aggregate native per-response usage already
+persisted in those files without starting app-server or searching the sessions
+directory:
+
+```sh
+python3 scripts/codex_usage_tree.py \
+  --thread-id <root-thread-uuid> \
+  --rollout-file <exact-root-rollout.jsonl> \
+  --rollout-file <exact-child-rollout.jsonl> \
+  --expected-child-id <child-thread-uuid>
+```
+
+Supply one `--rollout-file` per known tree thread. Supply every descendant ID
+from a previously complete, bounded `thread/list` result with repeated
+`--expected-child-id`; the command cross-checks those IDs and the persisted
+parent chain against the named files. It cannot independently prove that the
+caller supplied a complete descendant list. The command reads no SQLite
+database, starts no app-server, discovers no rollout paths, and emits no raw
+rollout lines. Each explicitly named JSONL file is limited to 10 MiB; only
+session identity, parent identity, turn model/effort, and token-usage fields
+are retained for the report.
+
+Local usage comes from the per-response `TokenUsageRecord.usage` fields joined
+to persisted `turn_context` model/effort. The record's cumulative turn/thread
+snapshots are ignored so they are not double-counted. This is best-effort:
+those rollout events do not
+provide an independent expected-response denominator, so this mode always
+reports `status: partial`, `usageComplete: false`, and exit status 2 even when
+all supplied files and rate classes are present. Missing files and null token
+fields remain null/incomplete. Uncached input is calculated as total input
+minus cached input only when cache-write input is zero. A missing cache-write
+field follows the native `TokenUsage` default of zero; a null or nonzero
+cache-write class has no supplied operator rate and makes affected uncached
+input/cost incomplete. Local calculated credits use the dated operator rate
+map; they are estimates, not provider-reported credits, quota usage, or debit.
+The API route remains the only source this tool can classify as complete, and
+neither source replaces an existing durable ledger until a consumer accepts
+its coverage.
+
 Output is JSON on stdout. It includes the root, unique children with parent
-IDs, root-only / child-only / whole-tree sums grouped by the exact usage API
-model, reasoning effort, and speed. Null token fields and missing thread usage
-remain incomplete rather than becoming zero. Native estimated credits remain
-separate from locally calculated credits; native estimates are not debit or
-invoice records. Local credits are the sum of `tokens × rate / 1,000,000`,
-using `netNewInputTokens` as uncached input, `cachedInputTokens` as cached input,
-and `outputTokens` as output. The dated operator rate table embedded in the
+IDs, and root-only / child-only / whole-tree sums grouped by the exact model
+reported by the usage API or joined from persisted `turn_context` in local
+mode, plus reasoning effort and speed where available. Null token fields and
+missing thread usage remain incomplete rather than becoming zero. Native
+estimated credits remain separate from locally calculated credits; native
+estimates are not debit or invoice records. Local credits are the sum of
+`tokens × rate / 1,000,000`, using `netNewInputTokens` as uncached input,
+`cachedInputTokens` as cached input, and `outputTokens` as output. The dated operator rate table embedded in the
 script is included in each result; unknown models or rate classes are named in
 `missingRates`, and incomplete costs have `credits: null` plus any known
 subtotal. `--rates-json` can supply a replacement map with this format:
@@ -66,8 +109,9 @@ subtotal. `--rates-json` can supply a replacement map with this format:
 
 Exit status is 0 only for a complete result; partial or unavailable results
 exit 2 and state the boundary in the JSON. In particular, accounts for which
-`account/usage/read` is denied or absent must not treat the command as
-available: the native route may be plan/account gated. This adapter does not
-replace or retire existing usage capability until a real consumer confirms
-route availability and accepts the resulting scope. It does not read raw
-response history, scan rollouts, write a runtime ledger, or persist results.
+`account/usage/read` is denied or absent must not treat API mode as available:
+the native route may be plan/account gated. API mode does not read rollout
+history; local mode reads only explicitly named rollout files. Neither mode
+writes a runtime ledger or persists results. This adapter does not replace or
+retire existing usage capability until a real consumer confirms route
+availability and accepts the resulting scope.
