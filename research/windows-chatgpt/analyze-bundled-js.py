@@ -154,7 +154,6 @@ MAX_TOOL_SITE_RECORDS = 400
 
 SURFACE_PATH_MARKERS = (
     "browser-service.mjs",
-    "%40oai/browser-desktop/environment-docs/",
     "%40oai/cua/dist/lib/js/oai_js_browser/dist/skill/",
     "%40oai/cua/dist/lib/js/oai_js_cua/src/",
     "%40oai/cua/dist/project/cua/sky_js/src/targets/windows/",
@@ -310,6 +309,26 @@ def identifier_literal_matches(text: str):
 
 def is_surface_path(path: str) -> bool:
     lowered = path.lower()
+    # Keep the selected product/skill modules, not vendored dependencies
+    # nested below those module roots.
+    if lowered.count("/node_modules/") > 1:
+        return False
+    if "%40oai/browser-desktop/environment-docs/codex-app/" in lowered:
+        basename = PurePosixPath(lowered).name
+        if basename in {
+            "accessibility.md",
+            "api-use-behavior.md",
+            "api.json",
+            "browser-control-interruption.md",
+            "browser-safety.md",
+            "browser-troubleshooting.md",
+            "confirmations.md",
+            "documents.json",
+            "screenshots.md",
+            "session-naming.md",
+            "webmcp.md",
+        } or "/capabilities/" in lowered:
+            return True
     return any(marker in lowered for marker in SURFACE_PATH_MARKERS)
 
 
@@ -636,14 +655,15 @@ def main() -> int:
                         continue
                     member_data = data[start:end]
                     member_hash = sha256(member_data)
-                    if is_surface_path(entry_path) and len(surface_modules) < MAX_SURFACE_MODULE_RECORDS:
-                        surface_modules.append(
-                            {
-                                "path": f"{path}!/{entry_path}",
-                                "bytes": entry_size,
-                                "sha256": member_hash,
-                            }
-                        )
+                    if is_surface_path(entry_path):
+                        if len(surface_modules) < MAX_SURFACE_MODULE_RECORDS:
+                            surface_modules.append(
+                                {
+                                    "path": f"{path}!/{entry_path}",
+                                    "bytes": entry_size,
+                                    "sha256": member_hash,
+                                }
+                            )
                         surface_tool_sites.extend(analyze_tool_name_sites(entry_path, member_data))
                         api_summary = analyze_api_declarations(entry_path, member_data)
                         if api_summary:
@@ -687,8 +707,9 @@ def main() -> int:
             except (OSError, zipfile.BadZipFile):
                 continue
             refs, regs, result_shapes, serialized = analyze_text_member(path, member_data)
-            if is_surface_path(path) and len(surface_modules) < MAX_SURFACE_MODULE_RECORDS:
-                surface_modules.append({"path": path, "bytes": info.file_size, "sha256": sha256(member_data)})
+            if is_surface_path(path):
+                if len(surface_modules) < MAX_SURFACE_MODULE_RECORDS:
+                    surface_modules.append({"path": path, "bytes": info.file_size, "sha256": sha256(member_data)})
                 surface_tool_sites.extend(analyze_tool_name_sites(path, member_data))
                 api_summary = analyze_api_declarations(path, member_data)
                 if api_summary:

@@ -106,6 +106,46 @@ TEXT_SUFFIXES = {
 }
 PE_SUFFIXES = {".exe", ".dll", ".node"}
 NATIVE_SURFACE_PATH = "app/resources/cua_node/bin/node_modules/%40oai/cua/bin/windows/codex-computer-use.exe"
+NATIVE_IMPORT_API_NAMES = {
+    "D2D1CreateFactory",
+    "D3D11CreateDevice",
+    "CreateDirect3D11DeviceFromDXGIDevice",
+    "DwmFlush",
+    "DwmGetWindowAttribute",
+    "DWriteCreateFactory",
+    "UiaHostProviderFromHwnd",
+    "UiaRaiseAutomationEvent",
+    "UiaRaiseNotificationEvent",
+    "UiaRaiseStructureChangedEvent",
+    "UiaReturnRawElementProvider",
+    "AttachThreadInput",
+    "BringWindowToTop",
+    "EnumChildWindows",
+    "EnumDisplayMonitors",
+    "EnumWindows",
+    "GetClipboardData",
+    "GetCursorPos",
+    "GetDpiForSystem",
+    "GetDpiForWindow",
+    "GetForegroundWindow",
+    "GetMonitorInfoW",
+    "GetSystemMetrics",
+    "GetWindowRect",
+    "GetWindowTextW",
+    "OpenClipboard",
+    "OpenInputDesktop",
+    "SendInput",
+    "SetClipboardData",
+    "SetCursorPos",
+    "SetFocus",
+    "SetForegroundWindow",
+    "SetThreadDesktop",
+    "SetThreadDpiAwarenessContext",
+    "SetWinEventHook",
+    "SetWindowsHookExW",
+    "SwitchToThisWindow",
+    "WindowFromPoint",
+}
 MAX_ENTRY_BYTES_FOR_TEXT = 128 * 1024 * 1024
 MAX_SCHEMA_BYTES = 4 * 1024 * 1024
 MAX_MODULES_REPORTED = 40
@@ -367,7 +407,11 @@ def main() -> int:
                         "sha256": sha256_member(archive, info.filename),
                         "machine": pe.get("machine"),
                         "dll_imports": pe.get("imports", []),
-                        "imported_symbol_names": pe.get("imported_symbols", []),
+                        "imported_api_names_allowlisted": sorted(
+                            symbol.split("!", 1)[1]
+                            for symbol in pe.get("imported_symbols", [])
+                            if "!" in symbol and symbol.split("!", 1)[1] in NATIVE_IMPORT_API_NAMES
+                        ),
                         "evidence_class": "static_pe_import_table_not_callsite_or_runtime_proof",
                     }
                 )
