@@ -337,6 +337,63 @@ def is_tool_site_path(path: str) -> bool:
     return any(marker in lowered for marker in TOOL_SITE_PATH_MARKERS)
 
 
+def analyze_api_json_schemas(path: str, data: bytes) -> list[dict[str, object]]:
+    if not path.lower().endswith("/environment-docs/codex-app/api.json"):
+        return []
+    try:
+        root = json.loads(data.decode("utf-8-sig"))
+    except (UnicodeDecodeError, json.JSONDecodeError):
+        return []
+    file_hash = sha256(data)
+    records: list[dict[str, object]] = []
+    identifier = re.compile(r"[A-Za-z][A-Za-z0-9_.:/-]{0,95}")
+    property_identifier = re.compile(r"[A-Za-z_$][A-Za-z0-9_$.-]{0,95}")
+
+    def visit(value: object, json_path: str = "$", operation: str | None = None) -> None:
+        if len(records) >= 200:
+            return
+        if isinstance(value, dict):
+            for key in ("operationId", "methodName", "tool", "name", "method", "id"):
+                candidate = value.get(key)
+                if isinstance(candidate, str) and identifier.fullmatch(candidate):
+                    operation = candidate
+                    break
+            properties = value.get("properties")
+            if isinstance(properties, dict):
+                fields = sorted(key for key in properties if isinstance(key, str) and property_identifier.fullmatch(key))
+                required_value = value.get("required")
+                required = sorted(
+                    item for item in required_value
+                    if isinstance(item, str) and item in fields
+                ) if isinstance(required_value, list) else []
+                path_lower = json_path.lower()
+                if any(token in path_lower for token in ("request", "input", "parameter", "args", "response", "output", "result", "return")):
+                    direction = "output" if any(token in path_lower for token in ("response", "output", "result", "return")) else "input"
+                else:
+                    direction = "unclassified"
+                records.append(
+                    {
+                        "path": path,
+                        "sha256": file_hash,
+                        "json_path": json_path,
+                        "operation_name_candidate": operation,
+                        "direction_candidate": direction,
+                        "schema_type": value.get("type") if isinstance(value.get("type"), str) else None,
+                        "property_names": fields[:150],
+                        "required_property_names": required,
+                        "evidence_class": "bundled_api_json_schema_key_summary_not_runtime_registration_proof",
+                    }
+                )
+            for key, child in value.items():
+                visit(child, f"{json_path}.{key}", operation)
+        elif isinstance(value, list):
+            for index, child in enumerate(value):
+                visit(child, f"{json_path}[{index}]", operation)
+
+    visit(root)
+    return records
+
+
 def analyze_api_declarations(path: str, data: bytes) -> dict[str, object] | None:
     if not is_surface_path(path):
         return None
@@ -392,7 +449,7 @@ def analyze_tool_name_sites(path: str, data: bytes) -> list[dict[str, object]]:
     file_hash = sha256(data)
     sites: list[dict[str, object]] = []
     for tool_name in sorted(EXPECTED_TOOLS):
-        pattern = re.compile(rf"(?<![A-Za-z0-9_$]){re.escape(tool_name)}(?![A-Za-z0-9_$])")
+        pattern = re.compile(re.escape(tool_name))
         for match in list(pattern.finditer(text))[:20]:
             position = match.start()
             window_start = max(0, position - 1024)
@@ -608,6 +665,7 @@ def main() -> int:
     surface_results: list[dict[str, object]] = []
     surface_serialized: list[dict[str, object]] = []
     surface_api_declarations: list[dict[str, object]] = []
+    surface_api_json_schemas: list[dict[str, object]] = []
 
     with zipfile.ZipFile(args.package, "r") as package:
         infos = [info for info in package.infolist() if not info.is_dir()]
@@ -655,6 +713,8 @@ def main() -> int:
                         continue
                     member_data = data[start:end]
                     member_hash = sha256(member_data)
+                    if is_surface_path(entry_path):
+                        surface_api_json_schemas.extend(analyze_api_json_schemas(entry_path, member_data))
                     if is_surface_path(entry_path):
                         if len(surface_modules) < MAX_SURFACE_MODULE_RECORDS:
                             surface_modules.append(
@@ -708,6 +768,7 @@ def main() -> int:
                 continue
             refs, regs, result_shapes, serialized = analyze_text_member(path, member_data)
             if is_surface_path(path):
+                surface_api_json_schemas.extend(analyze_api_json_schemas(path, member_data))
                 if len(surface_modules) < MAX_SURFACE_MODULE_RECORDS:
                     surface_modules.append({"path": path, "bytes": info.file_size, "sha256": sha256(member_data)})
                 surface_tool_sites.extend(analyze_tool_name_sites(path, member_data))
@@ -742,6 +803,7 @@ def main() -> int:
         "focused_agent_surface_modules": surface_modules[:MAX_SURFACE_MODULE_RECORDS],
         "focused_tool_name_sites": surface_tool_sites[:MAX_TOOL_SITE_RECORDS],
         "focused_api_declarations": surface_api_declarations[:MAX_SURFACE_MODULE_RECORDS],
+        "focused_api_json_schemas": surface_api_json_schemas[:200],
         "focused_registration_candidates": surface_registrations[:MAX_REGISTRATION_RECORDS],
         "focused_static_call_site_references": surface_references[:MAX_REFERENCE_RECORDS],
         "focused_result_shape_candidates": surface_results[:MAX_RESULT_RECORDS],
