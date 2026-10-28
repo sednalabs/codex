@@ -105,6 +105,11 @@ TEXT_SUFFIXES = {
     ".yml",
 }
 PE_SUFFIXES = {".exe", ".dll", ".node"}
+NATIVE_SURFACE_BASENAMES = {
+    "codex-computer-use.exe",
+    "codex-windows-sandbox-service.exe",
+    "codex.exe",
+}
 MAX_ENTRY_BYTES_FOR_TEXT = 128 * 1024 * 1024
 MAX_SCHEMA_BYTES = 4 * 1024 * 1024
 MAX_MODULES_REPORTED = 40
@@ -175,6 +180,7 @@ def parse_pe_header(data: bytes) -> dict[str, object] | None:
         return None
 
     imports: list[str] = []
+    imported_symbols: list[str] = []
     import_offset = rva_to_offset(import_rva) if import_rva else None
     if import_offset is not None and import_size:
         for index in range(min(import_size // 20, 512)):
@@ -191,7 +197,34 @@ def parse_pe_header(data: bytes) -> dict[str, object] | None:
             end = data.find(b"\0", name_offset, min(name_offset + 256, len(data)))
             if end < 0:
                 continue
-            imports.append(data[name_offset:end].decode("ascii", "replace"))
+            dll_name = data[name_offset:end].decode("ascii", "replace")
+            imports.append(dll_name)
+
+            thunk_rva = descriptor[0] or descriptor[4]
+            thunk_offset = rva_to_offset(thunk_rva) if thunk_rva else None
+            pointer_width = 8 if magic == 0x20B else 4
+            ordinal_mask = 1 << (pointer_width * 8 - 1)
+            if thunk_offset is None:
+                continue
+            for thunk_index in range(2048):
+                entry_offset = thunk_offset + thunk_index * pointer_width
+                if entry_offset + pointer_width > len(data):
+                    break
+                thunk_value = int.from_bytes(data[entry_offset : entry_offset + pointer_width], "little")
+                if thunk_value == 0:
+                    break
+                if thunk_value & ordinal_mask:
+                    continue
+                symbol_offset = rva_to_offset(thunk_value & (ordinal_mask - 1))
+                if symbol_offset is None or symbol_offset + 2 >= len(data):
+                    continue
+                symbol_start = symbol_offset + 2  # IMAGE_IMPORT_BY_NAME hint
+                symbol_end = data.find(b"\0", symbol_start, min(symbol_start + 256, len(data)))
+                if symbol_end < 0:
+                    continue
+                symbol_name = data[symbol_start:symbol_end].decode("ascii", "replace")
+                if symbol_name and len(imported_symbols) < 512:
+                    imported_symbols.append(f"{dll_name}!{symbol_name}")
 
     section_names = []
     for index in range(min(section_count, 96)):
@@ -207,6 +240,7 @@ def parse_pe_header(data: bytes) -> dict[str, object] | None:
         "sections": section_names[:16],
         "managed_cli_header": bool(clr_rva and clr_size),
         "imports": sorted(set(imports))[:16],
+        "imported_symbols": sorted(set(imported_symbols))[:512],
         "resource_directory_present": bool(resource_rva and resource_size),
     }
 
@@ -308,6 +342,7 @@ def main() -> int:
         managed_count = 0
         pe_summary = Counter()
         module_reports: list[dict[str, object]] = []
+        native_interop_modules: list[dict[str, object]] = []
         static_hits: list[dict[str, object]] = []
         text_schemas: list[dict[str, object]] = []
 
@@ -328,14 +363,27 @@ def main() -> int:
                     managed_count += 1
             lower_path = info.filename.lower()
             basename = PurePosixPath(lower_path).name
+            if basename in NATIVE_SURFACE_BASENAMES:
+                native_interop_modules.append(
+                    {
+                        "path": info.filename,
+                        "bytes": info.file_size,
+                        "sha256": sha256_member(archive, info.filename),
+                        "machine": pe.get("machine"),
+                        "dll_imports": pe.get("imports", []),
+                        "imported_symbol_names": pe.get("imported_symbols", []),
+                        "evidence_class": "static_pe_import_table_not_callsite_or_runtime_proof",
+                    }
+                )
             relevant_name = basename in executable_names or any(key in lower_path for key in keyword_paths)
             if relevant_name and len(module_reports) < MAX_MODULES_REPORTED:
+                pe_report = {key: value for key, value in pe.items() if key != "imported_symbols"}
                 module_reports.append(
                     {
                         "path": info.filename,
                         "bytes": info.file_size,
                         "sha256": sha256_member(archive, info.filename),
-                        "pe": pe,
+                        "pe": pe_report,
                     }
                 )
 
@@ -432,6 +480,7 @@ def main() -> int:
                 "pe_module_count": len(pe_entries),
                 "modules": module_reports,
             },
+            "native_interop_modules": native_interop_modules,
             "runtime_indicators": runtime_indicators,
             "static_interface_evidence": {
                 "tool_name_static_strings": sorted(

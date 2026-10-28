@@ -122,6 +122,39 @@ MAX_MODULE_RECORDS = 100
 MAX_REFERENCE_RECORDS = 500
 MAX_REGISTRATION_RECORDS = 100
 MAX_RESULT_RECORDS = 100
+MAX_SURFACE_MODULE_RECORDS = 100
+MAX_TOOL_SITE_RECORDS = 200
+
+SURFACE_PATH_MARKERS = (
+    "browser-service.mjs",
+    ".vite/build/browser-page-preload",
+    ".vite/build/browser-background-switches",
+    ".vite/build/mcp-annotation-runtime",
+    "oai_js_cua/src/targets/windows/",
+    "playwright/lib/mcp/browser/tools/",
+    "playwright/lib/mcp/browser/response.js",
+    "plugins/openai-bundled/plugins/browser/",
+)
+
+SCHEMA_CUES = (
+    "inputSchema",
+    "input_schema",
+    "parameters",
+    "schema",
+    "z.object",
+    "Type.Object",
+)
+
+DISPATCH_CUES = (
+    "registerTool",
+    "register_tool",
+    "server.tool(",
+    "addTool(",
+    "tools/call",
+    "CallToolRequestSchema",
+    "dispatch",
+    "handler",
+)
 
 
 def sha256(data: bytes) -> str:
@@ -234,6 +267,54 @@ def identifier_literal_matches(text: str):
     pattern = re.compile(r"[\"'`]((?:browser|computer|screen|desktop)(?:[._-][A-Za-z0-9]+){1,4})[\"'`]", re.IGNORECASE)
     for match in pattern.finditer(text):
         yield match.group(1), match.start(1)
+
+
+def is_surface_path(path: str) -> bool:
+    lowered = path.lower()
+    return any(marker in lowered for marker in SURFACE_PATH_MARKERS)
+
+
+def analyze_tool_name_sites(path: str, data: bytes) -> list[dict[str, object]]:
+    if not is_surface_path(path):
+        return []
+    text = data.decode("utf-8-sig", errors="ignore")
+    file_hash = sha256(data)
+    sites: list[dict[str, object]] = []
+    for tool_name in sorted(EXPECTED_TOOLS):
+        pattern = re.compile(rf"(?<![A-Za-z0-9_$]){re.escape(tool_name)}(?![A-Za-z0-9_$])")
+        for match in list(pattern.finditer(text))[:20]:
+            position = match.start()
+            window_start = max(0, position - 1024)
+            window_end = min(len(text), position + 8192)
+            context = text[window_start:window_end]
+            schema_keys: set[str] = set()
+            schema_cues_found: set[str] = set()
+            for cue in SCHEMA_CUES:
+                cursor = 0
+                while True:
+                    cue_position = context.find(cue, cursor)
+                    if cue_position < 0:
+                        break
+                    schema_cues_found.add(cue)
+                    object_text = balanced_object(context, cue_position)
+                    if object_text:
+                        schema_keys |= keys_from_object_text(object_text)
+                    cursor = cue_position + len(cue)
+            dispatch_cues_found = [cue for cue in DISPATCH_CUES if cue in context]
+            if len(sites) < MAX_TOOL_SITE_RECORDS:
+                sites.append(
+                    {
+                        "path": path,
+                        "sha256": file_hash,
+                        "static_name": tool_name,
+                        "offset_utf8_bytes": byte_offset(text, position),
+                        "nearby_schema_cues": sorted(schema_cues_found),
+                        "nearby_allowlisted_parameter_key_candidates": sorted(schema_keys),
+                        "nearby_dispatch_cues": dispatch_cues_found,
+                        "evidence_class": "static_neighborhood_candidate_not_exact_schema_or_execution_proof",
+                    }
+                )
+    return sites
 
 
 def analyze_text_member(path: str, data: bytes) -> tuple[list[dict[str, object]], list[dict[str, object]], list[dict[str, object]], list[dict[str, object]]]:
@@ -409,6 +490,12 @@ def main() -> int:
     all_registrations: list[dict[str, object]] = []
     all_results: list[dict[str, object]] = []
     all_serialized: list[dict[str, object]] = []
+    surface_modules: list[dict[str, object]] = []
+    surface_tool_sites: list[dict[str, object]] = []
+    surface_references: list[dict[str, object]] = []
+    surface_registrations: list[dict[str, object]] = []
+    surface_results: list[dict[str, object]] = []
+    surface_serialized: list[dict[str, object]] = []
 
     with zipfile.ZipFile(args.package, "r") as package:
         infos = [info for info in package.infolist() if not info.is_dir()]
@@ -456,6 +543,15 @@ def main() -> int:
                         continue
                     member_data = data[start:end]
                     member_hash = sha256(member_data)
+                    if is_surface_path(entry_path) and len(surface_modules) < MAX_SURFACE_MODULE_RECORDS:
+                        surface_modules.append(
+                            {
+                                "path": f"{path}!/{entry_path}",
+                                "bytes": entry_size,
+                                "sha256": member_hash,
+                            }
+                        )
+                        surface_tool_sites.extend(analyze_tool_name_sites(entry_path, member_data))
                     if len(module_records) < MAX_MODULE_RECORDS and any(
                         token in entry_path.lower()
                         for token in ("browser", "computer", "mcp", "agent", "tool", "plugin")
@@ -470,12 +566,20 @@ def main() -> int:
                     refs, regs, result_shapes, serialized = analyze_text_member(entry_path, member_data)
                     if refs:
                         all_references.extend({"archive": path, **item} for item in refs[:5000 - len(all_references)])
+                        if is_surface_path(entry_path):
+                            surface_references.extend({"archive": path, **item} for item in refs)
                     if regs:
                         all_registrations.extend({"archive": path, **item} for item in regs[:2000 - len(all_registrations)])
+                        if is_surface_path(entry_path):
+                            surface_registrations.extend({"archive": path, **item} for item in regs)
                     if result_shapes:
                         all_results.extend({"archive": path, **item} for item in result_shapes[:2000 - len(all_results)])
+                        if is_surface_path(entry_path):
+                            surface_results.extend({"archive": path, **item} for item in result_shapes)
                     if serialized:
                         all_serialized.extend({"archive": path, **item} for item in serialized[:2000 - len(all_serialized)])
+                        if is_surface_path(entry_path):
+                            surface_serialized.extend({"archive": path, **item} for item in serialized)
                 continue
 
             if suffix not in {".js", ".mjs", ".cjs", ".json", ".html", ".ts", ".map"}:
@@ -487,6 +591,13 @@ def main() -> int:
             except (OSError, zipfile.BadZipFile):
                 continue
             refs, regs, result_shapes, serialized = analyze_text_member(path, member_data)
+            if is_surface_path(path) and len(surface_modules) < MAX_SURFACE_MODULE_RECORDS:
+                surface_modules.append({"path": path, "bytes": info.file_size, "sha256": sha256(member_data)})
+                surface_tool_sites.extend(analyze_tool_name_sites(path, member_data))
+                surface_references.extend(refs)
+                surface_registrations.extend(regs)
+                surface_results.extend(result_shapes)
+                surface_serialized.extend(serialized)
             if refs:
                 all_references.extend(refs)
             if regs:
@@ -508,6 +619,12 @@ def main() -> int:
         "package_sha256_binding": package_sha,
         "asar_archives": asar_reports,
         "selected_modules": module_records[:MAX_MODULE_RECORDS],
+        "focused_agent_surface_modules": surface_modules[:MAX_SURFACE_MODULE_RECORDS],
+        "focused_tool_name_sites": surface_tool_sites[:MAX_TOOL_SITE_RECORDS],
+        "focused_registration_candidates": surface_registrations[:MAX_REGISTRATION_RECORDS],
+        "focused_static_call_site_references": surface_references[:MAX_REFERENCE_RECORDS],
+        "focused_result_shape_candidates": surface_results[:MAX_RESULT_RECORDS],
+        "focused_serialized_schema_evidence": surface_serialized[:MAX_REGISTRATION_RECORDS],
         "static_call_site_references": all_references[:MAX_REFERENCE_RECORDS],
         "registration_pattern_candidates": all_registrations[:MAX_REGISTRATION_RECORDS],
         "result_shape_candidates": all_results[:MAX_RESULT_RECORDS],
