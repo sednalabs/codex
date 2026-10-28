@@ -1088,7 +1088,6 @@ fn classified_overlays_reach_serialized_root_and_child_requests() -> anyhow::Res
         model_switch_guidance: Some(component_plan()),
         collaboration_guidance: Some(component_plan()),
         persistent_guidance: Some(component_plan()),
-        ..Default::default()
     };
     for component in [
         overlays.model_baseline.as_ref(),
@@ -1361,7 +1360,7 @@ fn classified_overlays_reach_serialized_root_and_child_requests() -> anyhow::Res
                         &client,
                         /*turn_id*/ None,
                         format!("{}:0", client.state.thread_id),
-                        metadata_parent_id.clone(),
+                        *metadata_parent_id,
                         TestCodexResponsesRequestKind::Turn,
                     ),
                     /*include_internal*/ true,
