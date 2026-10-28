@@ -3072,7 +3072,10 @@ async fn multi_agent_v2_wait_agent_wakes_on_child_completion_without_mailbox() {
         .features
         .enable(Feature::MultiAgentV2)
         .expect("test config should allow feature update");
-    config.features.disable(Feature::AgentMailbox);
+    config
+        .features
+        .disable(Feature::AgentMailbox)
+        .expect("test config should allow feature update");
     let root = manager
         .start_thread(StartThreadOptions::new(config))
         .await
