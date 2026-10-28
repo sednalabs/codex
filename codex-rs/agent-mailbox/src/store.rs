@@ -1,10 +1,12 @@
 use crate::error::MailboxResult;
+use codex_protocol::ThreadId;
 use sqlx::SqlitePool;
 use std::collections::HashMap;
 use std::sync::Arc;
 use std::sync::Mutex;
 use std::sync::atomic::AtomicU64;
 use std::sync::atomic::AtomicUsize;
+use tokio::sync::Mutex as AsyncMutex;
 use tokio::sync::watch;
 
 #[derive(Clone)]
@@ -18,6 +20,10 @@ pub struct Mailbox {
     pub(crate) wait_input_generation: Arc<AtomicU64>,
     pub(crate) pending_input_arrivals: Arc<AtomicUsize>,
     pub(crate) runtime_faults: Arc<Mutex<crate::runtime_fault::RuntimeFaults>>,
+    /// Exact currently executing turn per recipient. Volatile is sufficient: a terminal
+    /// callback from a prior process cannot outlive that process, while a later in-process
+    /// launch must supersede it before linked continuation settlement.
+    pub(crate) active_turns: Arc<AsyncMutex<HashMap<ThreadId, String>>>,
 }
 
 impl Mailbox {
@@ -38,6 +44,7 @@ impl Mailbox {
             wait_input_generation: Arc::new(AtomicU64::new(0)),
             pending_input_arrivals: Arc::new(AtomicUsize::new(0)),
             runtime_faults: Arc::new(Mutex::new(crate::runtime_fault::RuntimeFaults::default())),
+            active_turns: Arc::new(AsyncMutex::new(HashMap::new())),
         })
     }
 

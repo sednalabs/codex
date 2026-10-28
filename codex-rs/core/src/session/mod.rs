@@ -15,6 +15,7 @@ use std::time::UNIX_EPOCH;
 use crate::agent::AgentStatus;
 use crate::agent::agent_status_from_event;
 use crate::agent::api::AgentConfigUpdate;
+use crate::agent::api::AgentGoalControlSnapshot;
 use crate::agent::api::AgentLogicalGoal;
 use crate::agent::api::AgentTurnOutcome;
 use crate::agent::control::AgentControlInit;
@@ -2506,6 +2507,71 @@ impl Session {
     }
 
     pub(crate) async fn emit_turn_started(&self, turn_context: &TurnContext, task_kind: TaskKind) {
+        if matches!(
+            &turn_context.session_source,
+            SessionSource::SubAgent(SubAgentSource::ThreadSpawn {
+                agent_path: Some(_),
+                ..
+            })
+        ) && turn_context.multi_agent_version == MultiAgentVersion::V2
+        {
+            let mailbox_enabled = turn_context.config.features.enabled(Feature::AgentMailbox);
+            let goal_control_snapshot = if mailbox_enabled {
+                match self.state_db() {
+                    Some(state_db) => state_db
+                        .thread_goals()
+                        .get_thread_goal_snapshot(self.thread_id)
+                        .await
+                        .map(|(goal, control_generation)| AgentGoalControlSnapshot {
+                            goal_id: goal.map(|goal| goal.goal_id),
+                            control_generation,
+                        })
+                        .map_err(|error| error.to_string()),
+                    None => Err("native goal state database is unavailable".to_string()),
+                }
+            } else {
+                Ok(AgentGoalControlSnapshot {
+                    goal_id: None,
+                    control_generation: 0,
+                })
+            };
+            let _ = turn_context
+                .agent_goal_control_snapshot
+                .set(goal_control_snapshot);
+
+            if mailbox_enabled {
+                match self
+                    .services
+                    .agent_control
+                    .mailbox_v2_open(&turn_context.config)
+                    .await
+                {
+                    Ok(Some(mailbox)) => {
+                        if let Err(error) = mailbox
+                            .record_turn_started(self.thread_id, &turn_context.sub_id)
+                            .await
+                        {
+                            warn!(
+                                thread_id = %self.thread_id,
+                                turn_id = %turn_context.sub_id,
+                                %error,
+                                "failed to register current child turn for mailbox settlement"
+                            );
+                        }
+                    }
+                    Ok(None) => debug!(
+                        thread_id = %self.thread_id,
+                        "native mailbox is unavailable for child turn registration"
+                    ),
+                    Err(error) => warn!(
+                        thread_id = %self.thread_id,
+                        %error,
+                        "failed to open native mailbox for child turn registration"
+                    ),
+                }
+            }
+        }
+
         let event = TurnStartedEvent {
             turn_attribution: (task_kind == TaskKind::Regular).then(|| turn_context.attribution()),
             turn_id: turn_context.sub_id.clone(),
@@ -2638,9 +2704,9 @@ impl Session {
             match self.state_db() {
                 Some(state_db) => state_db
                     .thread_goals()
-                    .get_thread_goal(self.thread_id)
+                    .get_thread_goal_snapshot(self.thread_id)
                     .await
-                    .map(|goal| {
+                    .map(|(goal, control_generation)| {
                         goal.map(|goal| AgentLogicalGoal {
                             goal_id: goal.goal_id,
                             status: match goal.status {
@@ -2663,6 +2729,7 @@ impl Session {
                                     codex_protocol::protocol::ThreadGoalStatus::Complete
                                 }
                             },
+                            control_generation,
                         })
                     })
                     .map_err(|error| error.to_string()),
@@ -2686,6 +2753,13 @@ impl Session {
                         .cloned(),
                     status,
                     error_info,
+                    goal_control_snapshot_at_start: turn_context
+                        .agent_goal_control_snapshot
+                        .get()
+                        .cloned()
+                        .unwrap_or_else(|| {
+                            Err("goal control snapshot was not captured at turn start".to_string())
+                        }),
                     logical_goal,
                 },
                 &self.services.rollout_thread_trace,

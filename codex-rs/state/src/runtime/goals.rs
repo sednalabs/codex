@@ -67,6 +67,40 @@ WHERE thread_id = ?
         row.map(|row| thread_goal_from_row(&row)).transpose()
     }
 
+    /// Read the goal and its control revision from one SQLite snapshot. A missing goal starts at
+    /// revision zero; externally-created goals start at a nonzero revision.
+    pub async fn get_thread_goal_snapshot(
+        &self,
+        thread_id: ThreadId,
+    ) -> anyhow::Result<(Option<crate::ThreadGoal>, u64)> {
+        let row = sqlx::query(
+            r#"
+SELECT
+    thread_id,
+    goal_id,
+    objective,
+    status,
+    token_budget,
+    tokens_used,
+    time_used_seconds,
+    created_at_ms,
+    updated_at_ms,
+    control_generation
+FROM thread_goals
+WHERE thread_id = ?
+            "#,
+        )
+        .bind(thread_id.to_string())
+        .fetch_optional(self.pool.as_ref())
+        .await?;
+
+        let Some(row) = row else {
+            return Ok((None, 0));
+        };
+        let control_generation = u64::try_from(row.try_get::<i64, _>("control_generation")?)?;
+        Ok((Some(thread_goal_from_row(&row)?), control_generation))
+    }
+
     pub async fn replace_thread_goal_snapshot(
         &self,
         goal: &crate::ThreadGoal,
@@ -162,6 +196,43 @@ SELECT EXISTS(
         status: crate::ThreadGoalStatus,
         token_budget: Option<i64>,
     ) -> anyhow::Result<crate::ThreadGoal> {
+        self.replace_thread_goal_inner(
+            thread_id,
+            objective,
+            status,
+            token_budget,
+            /*external_control*/ false,
+        )
+        .await
+    }
+
+    /// Replace a goal through an external control surface. The new row starts at a nonzero
+    /// control revision so an in-flight turn that began without this goal cannot bind to it.
+    pub async fn replace_thread_goal_for_control(
+        &self,
+        thread_id: ThreadId,
+        objective: &str,
+        status: crate::ThreadGoalStatus,
+        token_budget: Option<i64>,
+    ) -> anyhow::Result<crate::ThreadGoal> {
+        self.replace_thread_goal_inner(
+            thread_id,
+            objective,
+            status,
+            token_budget,
+            /*external_control*/ true,
+        )
+        .await
+    }
+
+    async fn replace_thread_goal_inner(
+        &self,
+        thread_id: ThreadId,
+        objective: &str,
+        status: crate::ThreadGoalStatus,
+        token_budget: Option<i64>,
+        external_control: bool,
+    ) -> anyhow::Result<crate::ThreadGoal> {
         let goal_id = Uuid::new_v4().to_string();
         let now_ms = datetime_to_epoch_millis(Utc::now());
         let status = status_after_budget_limit(status, /*tokens_used*/ 0, token_budget);
@@ -176,8 +247,9 @@ INSERT INTO thread_goals (
     tokens_used,
     time_used_seconds,
     created_at_ms,
-    updated_at_ms
-) VALUES (?, ?, ?, ?, ?, 0, 0, ?, ?)
+    updated_at_ms,
+    control_generation
+) VALUES (?, ?, ?, ?, ?, 0, 0, ?, ?, ?)
 ON CONFLICT(thread_id) DO UPDATE SET
     goal_id = excluded.goal_id,
     objective = excluded.objective,
@@ -186,7 +258,11 @@ ON CONFLICT(thread_id) DO UPDATE SET
     tokens_used = 0,
     time_used_seconds = 0,
     created_at_ms = excluded.created_at_ms,
-    updated_at_ms = excluded.updated_at_ms
+    updated_at_ms = excluded.updated_at_ms,
+    control_generation = CASE
+        WHEN ? = 1 THEN thread_goals.control_generation + 1
+        ELSE 0
+    END
 RETURNING
     thread_id,
     goal_id,
@@ -206,6 +282,8 @@ RETURNING
         .bind(token_budget)
         .bind(now_ms)
         .bind(now_ms)
+        .bind(external_control as i64)
+        .bind(external_control as i64)
         .fetch_one_write(self.pool.as_ref())
         .await?;
 
@@ -275,6 +353,35 @@ RETURNING
         thread_id: ThreadId,
         update: GoalUpdate,
     ) -> anyhow::Result<Option<crate::ThreadGoal>> {
+        self.update_thread_goal_inner(
+            thread_id,
+            update,
+            /*external_control*/ false,
+        )
+        .await
+    }
+
+    /// Update a goal through an external control surface. In-place updates retain `goal_id`, so
+    /// increment a separate revision that active turns can compare before settling work.
+    pub async fn update_thread_goal_for_control(
+        &self,
+        thread_id: ThreadId,
+        update: GoalUpdate,
+    ) -> anyhow::Result<Option<crate::ThreadGoal>> {
+        self.update_thread_goal_inner(
+            thread_id,
+            update,
+            /*external_control*/ true,
+        )
+        .await
+    }
+
+    async fn update_thread_goal_inner(
+        &self,
+        thread_id: ThreadId,
+        update: GoalUpdate,
+        external_control: bool,
+    ) -> anyhow::Result<Option<crate::ThreadGoal>> {
         let GoalUpdate {
             objective,
             status,
@@ -297,7 +404,8 @@ SET
         ELSE ?
     END,
     token_budget = ?,
-    updated_at_ms = ?
+    updated_at_ms = ?,
+    control_generation = control_generation + ?
 WHERE thread_id = ?
   AND (? IS NULL OR goal_id = ?)
             "#,
@@ -314,6 +422,7 @@ WHERE thread_id = ?
                 .bind(status.as_str())
                 .bind(token_budget)
                 .bind(now_ms)
+                .bind(external_control as i64)
                 .bind(thread_id.to_string())
                 .bind(expected_goal_id)
                 .bind(expected_goal_id)
@@ -331,7 +440,8 @@ SET
         WHEN ? = 'active' AND token_budget IS NOT NULL AND tokens_used >= token_budget THEN ?
         ELSE ?
     END,
-    updated_at_ms = ?
+    updated_at_ms = ?,
+    control_generation = control_generation + ?
 WHERE thread_id = ?
   AND (? IS NULL OR goal_id = ?)
             "#,
@@ -345,6 +455,7 @@ WHERE thread_id = ?
                 .bind(crate::ThreadGoalStatus::BudgetLimited.as_str())
                 .bind(status.as_str())
                 .bind(now_ms)
+                .bind(external_control as i64)
                 .bind(thread_id.to_string())
                 .bind(expected_goal_id)
                 .bind(expected_goal_id)
@@ -362,7 +473,8 @@ SET
         WHEN status = 'active' AND ? IS NOT NULL AND tokens_used >= ? THEN ?
         ELSE status
     END,
-    updated_at_ms = ?
+    updated_at_ms = ?,
+    control_generation = control_generation + ?
 WHERE thread_id = ?
   AND (? IS NULL OR goal_id = ?)
             "#,
@@ -373,6 +485,7 @@ WHERE thread_id = ?
                 .bind(token_budget)
                 .bind(crate::ThreadGoalStatus::BudgetLimited.as_str())
                 .bind(now_ms)
+                .bind(external_control as i64)
                 .bind(thread_id.to_string())
                 .bind(expected_goal_id)
                 .bind(expected_goal_id)
@@ -386,13 +499,15 @@ WHERE thread_id = ?
 UPDATE thread_goals
 SET
     objective = ?,
-    updated_at_ms = ?
+    updated_at_ms = ?,
+    control_generation = control_generation + ?
 WHERE thread_id = ?
   AND (? IS NULL OR goal_id = ?)
             "#,
                     )
                     .bind(objective)
                     .bind(now_ms)
+                    .bind(external_control as i64)
                     .bind(thread_id.to_string())
                     .bind(expected_goal_id)
                     .bind(expected_goal_id)
@@ -844,6 +959,100 @@ mod tests {
         assert_eq!(Some(0), inserted.token_budget);
         assert_eq!(0, inserted.tokens_used);
         assert_eq!(0, inserted.time_used_seconds);
+    }
+
+    #[tokio::test]
+    async fn external_goal_control_revision_invalidates_same_id_but_not_turn_updates() {
+        let runtime = test_runtime().await;
+        let thread_id = test_thread_id();
+        upsert_test_thread(&runtime, thread_id).await;
+
+        let created = runtime
+            .thread_goals()
+            .insert_thread_goal(
+                thread_id,
+                "original objective",
+                crate::ThreadGoalStatus::Active,
+                /*token_budget*/ None,
+            )
+            .await
+            .expect("goal insert should succeed")
+            .expect("goal should exist");
+        let (starting_goal, starting_generation) = runtime
+            .thread_goals()
+            .get_thread_goal_snapshot(thread_id)
+            .await
+            .expect("starting snapshot should read");
+        assert_eq!(Some(created.clone()), starting_goal);
+        assert_eq!(0, starting_generation);
+
+        let turn_update = runtime
+            .thread_goals()
+            .update_thread_goal(
+                thread_id,
+                GoalUpdate {
+                    objective: None,
+                    status: Some(crate::ThreadGoalStatus::Paused),
+                    token_budget: None,
+                    expected_goal_id: Some(created.goal_id.clone()),
+                },
+            )
+            .await
+            .expect("active-turn goal update should succeed")
+            .expect("goal should remain present");
+        let (turn_goal, turn_generation) = runtime
+            .thread_goals()
+            .get_thread_goal_snapshot(thread_id)
+            .await
+            .expect("turn-updated snapshot should read");
+        assert_eq!(Some(turn_update), turn_goal);
+        assert_eq!(starting_generation, turn_generation);
+
+        let external_update = runtime
+            .thread_goals()
+            .update_thread_goal_for_control(
+                thread_id,
+                GoalUpdate {
+                    objective: Some("externally revised objective".to_string()),
+                    status: Some(crate::ThreadGoalStatus::Active),
+                    token_budget: None,
+                    expected_goal_id: Some(created.goal_id.clone()),
+                },
+            )
+            .await
+            .expect("external control update should succeed")
+            .expect("goal should remain present");
+        let (external_goal, external_generation) = runtime
+            .thread_goals()
+            .get_thread_goal_snapshot(thread_id)
+            .await
+            .expect("externally updated snapshot should read");
+        assert_eq!(Some(external_update.clone()), external_goal);
+        assert_eq!(created.goal_id, external_update.goal_id);
+        assert_eq!(starting_generation + 1, external_generation);
+
+        runtime
+            .thread_goals()
+            .delete_thread_goal(thread_id)
+            .await
+            .expect("goal clear should succeed");
+        let recreated = runtime
+            .thread_goals()
+            .replace_thread_goal_for_control(
+                thread_id,
+                "externally created objective",
+                crate::ThreadGoalStatus::Active,
+                /*token_budget*/ None,
+            )
+            .await
+            .expect("external goal creation should succeed");
+        let (recreated_goal, recreated_generation) = runtime
+            .thread_goals()
+            .get_thread_goal_snapshot(thread_id)
+            .await
+            .expect("recreated goal snapshot should read");
+        assert_eq!(Some(recreated), recreated_goal);
+        assert_eq!(1, recreated_generation);
     }
 
     #[tokio::test]

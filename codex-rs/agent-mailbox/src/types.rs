@@ -163,6 +163,8 @@ pub struct TurnOutcomeReceipt {
     pub response_message_ids: Vec<String>,
     pub no_matching_work: bool,
     pub already_recorded: bool,
+    /// The supplied terminal event did not belong to the recipient's current turn.
+    pub stale_turn: bool,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]

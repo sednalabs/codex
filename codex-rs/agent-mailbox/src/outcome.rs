@@ -28,6 +28,21 @@ const MAX_TURN_INPUTS: usize = 100;
 const MAX_KEY_BYTES: usize = 256;
 
 impl Mailbox {
+    /// Register the exact current child turn before it becomes visible or starts model work.
+    /// Terminal settlement uses this identity for both direct admissions and linked continuations.
+    pub async fn record_turn_started(
+        &self,
+        recipient: ThreadId,
+        source_turn_id: &str,
+    ) -> MailboxResult<()> {
+        validate_key(source_turn_id)?;
+        self.active_turns
+            .lock()
+            .await
+            .insert(recipient, source_turn_id.to_string());
+        Ok(())
+    }
+
     /// Freeze and record only the work admitted to this native turn. A pending
     /// or deferred goal binding is stored separately and is not a terminal outcome.
     pub async fn record_turn_outcome(
@@ -39,8 +54,21 @@ impl Mailbox {
         continuation: Continuation,
         activate_if_idle: bool,
     ) -> MailboxResult<TurnOutcomeReceipt> {
-        let _input_arrival = self.begin_input_arrival();
         validate_key(source_turn_id)?;
+        // Hold the lease through selection and commit. A later turn start cannot race an older
+        // terminal event into settling work linked to the same goal binding.
+        let mut active_turns = self.active_turns.lock().await;
+        if active_turns.get(&recipient).map(String::as_str) != Some(source_turn_id) {
+            return Ok(TurnOutcomeReceipt {
+                outcomes: Vec::new(),
+                continuation_work: Vec::new(),
+                response_message_ids: Vec::new(),
+                no_matching_work: true,
+                already_recorded: false,
+                stale_turn: true,
+            });
+        }
+        let _input_arrival = self.begin_input_arrival();
         let mut transaction = self.pool.begin_with("BEGIN IMMEDIATE").await?;
         let admitted_rows = sqlx::query(
             "SELECT work.* FROM mailbox_work AS work
@@ -126,12 +154,14 @@ impl Mailbox {
 
         if refs.is_empty() {
             transaction.commit().await?;
+            active_turns.remove(&recipient);
             return Ok(TurnOutcomeReceipt {
                 outcomes: Vec::new(),
                 continuation_work: Vec::new(),
                 response_message_ids: Vec::new(),
                 no_matching_work: true,
                 already_recorded: false,
+                stale_turn: false,
             });
         }
         for work_ref in &refs {
@@ -209,6 +239,7 @@ impl Mailbox {
                 .await?;
             }
             transaction.commit().await?;
+            active_turns.remove(&recipient);
             for group in &groups {
                 if group.response.is_some() {
                     self.invalidate_waits(group.issuer);
@@ -221,6 +252,7 @@ impl Mailbox {
                 response_message_ids,
                 no_matching_work: false,
                 already_recorded: false,
+                stale_turn: false,
             });
         }
 
@@ -328,6 +360,7 @@ impl Mailbox {
             }
         }
         transaction.commit().await?;
+        active_turns.remove(&recipient);
         for group in &groups {
             if group.response.is_some() {
                 self.invalidate_waits(group.issuer);
@@ -357,6 +390,7 @@ impl Mailbox {
                 .collect(),
             no_matching_work: false,
             already_recorded,
+            stale_turn: false,
         })
     }
 

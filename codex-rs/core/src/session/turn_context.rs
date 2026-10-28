@@ -2,6 +2,7 @@ use super::step_settings::ResolvedStepSettings;
 use super::token_budget::has_explicit_settings;
 use super::token_budget::resolve_token_budget;
 use super::*;
+use crate::agent::api::AgentGoalControlSnapshot;
 use crate::config::TokenBudgetConfig;
 use crate::cyber_access_program;
 use crate::environment_selection::EnvironmentConfigOrigin;
@@ -373,6 +374,9 @@ pub struct TurnContext {
     pub(crate) extension_data: Arc<codex_extension_api::ExtensionData>,
     pub(crate) turn_timing_state: Arc<TurnTimingState>,
     pub(crate) terminal_error: Arc<Mutex<Option<ErrorEvent>>>,
+    /// Captured before a regular turn starts so a terminal result cannot bind to later control.
+    pub(crate) agent_goal_control_snapshot:
+        Arc<tokio::sync::OnceCell<Result<AgentGoalControlSnapshot, String>>>,
     /// Shares the session-owned store; session approvals remain live across turns.
     session_grants: Arc<StdMutex<HashMap<String, AdditionalPermissionProfile>>>,
     /// Retained by background cells so a later active turn cannot replace their grants.
@@ -457,6 +461,7 @@ impl TurnContext {
             extension_data,
             turn_timing_state: Arc::new(TurnTimingState::default()),
             terminal_error: Arc::new(Mutex::new(None)),
+            agent_goal_control_snapshot: Arc::new(tokio::sync::OnceCell::new()),
             session_grants: Arc::clone(&self.session_grants),
             turn_grants: Arc::default(),
             server_model_warning_emitted: AtomicBool::new(false),
@@ -1154,6 +1159,7 @@ impl Session {
             extension_data,
             turn_timing_state: Arc::new(TurnTimingState::default()),
             terminal_error: Arc::new(Mutex::new(None)),
+            agent_goal_control_snapshot: Arc::new(tokio::sync::OnceCell::new()),
             session_grants,
             turn_grants: Arc::default(),
             server_model_warning_emitted: AtomicBool::new(false),

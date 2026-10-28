@@ -325,9 +325,36 @@ pub struct AgentTurnOutcome {
     pub status: AgentStatus,
     /// Typed reason used to choose guidance in the parent notification.
     pub error_info: Option<CodexErrorInfo>,
+    /// Goal identity/revision captured when this exact child turn was admitted.
+    /// `Err` means capture failed and must not be inferred from terminal state.
+    pub goal_control_snapshot_at_start: std::result::Result<AgentGoalControlSnapshot, String>,
     /// Exact lower-level goal projection captured when the terminal event is reduced.
     /// `Err` means the native goal state could not be read and must not be inferred.
     pub logical_goal: std::result::Result<Option<AgentLogicalGoal>, String>,
+}
+
+/// Small immutable guard against applying a terminal turn to later goal control.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct AgentGoalControlSnapshot {
+    pub goal_id: Option<String>,
+    pub control_generation: u64,
+}
+
+impl AgentGoalControlSnapshot {
+    pub(crate) fn matches(&self, goal: Option<&AgentLogicalGoal>) -> bool {
+        match (self.goal_id.as_deref(), goal) {
+            (Some(goal_id), Some(goal)) => {
+                goal.goal_id == goal_id && goal.control_generation == self.control_generation
+            }
+            (None, None) => self.control_generation == 0,
+            // A goal created by the executing turn is a legitimate update; external creation
+            // starts at generation one and therefore cannot be mistaken for that case.
+            (None, Some(goal)) => {
+                self.control_generation == 0 && goal.control_generation == 0
+            }
+            (Some(_), None) => false,
+        }
+    }
 }
 
 /// Minimal typed goal state needed to bind durable work continuation. The core
@@ -337,6 +364,7 @@ pub struct AgentTurnOutcome {
 pub struct AgentLogicalGoal {
     pub goal_id: String,
     pub status: ThreadGoalStatus,
+    pub control_generation: u64,
 }
 
 /// Settings shared by the tree. A service tier of `None` restores the default tier.

@@ -188,6 +188,10 @@ async fn finish(
     continuation: Continuation,
 ) -> TurnOutcomeReceipt {
     mailbox
+        .record_turn_started(agent, turn)
+        .await
+        .expect("register current turn");
+    mailbox
         .record_turn_outcome(
             agent,
             turn,
@@ -254,6 +258,11 @@ async fn new_continuation_binding_requires_native_incarnation() {
         thread_id(/*index*/ 42),
     );
     legacy_binding.incarnation = None;
+    fixture
+        .mailbox
+        .record_turn_started(agent, "missing-incarnation-turn")
+        .await
+        .unwrap();
     let result = fixture
         .mailbox
         .record_turn_outcome(
@@ -709,6 +718,124 @@ async fn pending_deferred_and_terminal_continuations_bind_to_exact_generation() 
             Continuation::Terminal(binding)
         );
     }
+}
+
+#[tokio::test]
+async fn stale_quiet_turn_cannot_settle_linked_continuations_after_a_newer_turn_starts() {
+    let fixture = test_mailbox().await;
+    let (issuer, agent) = (thread_id(/*index*/ 29), thread_id(/*index*/ 30));
+    let binding = goal_binding(
+        issuer,
+        agent,
+        /*generation*/ 6,
+        thread_id(/*index*/ 31),
+    );
+
+    let (first_work, first_input) =
+        accept_work(&fixture.mailbox, issuer, agent, "first-goal-work", "first").await;
+    fixture
+        .mailbox
+        .record_turn_started(agent, "turn-before-quiet")
+        .await
+        .unwrap();
+    admit(
+        &fixture.mailbox,
+        agent,
+        "turn-before-quiet",
+        &[first_input],
+    )
+    .await;
+    finish(
+        &fixture.mailbox,
+        agent,
+        "turn-before-quiet",
+        Outcome::Completed,
+        /*response*/ None,
+        Continuation::PendingGoalBinding(binding.clone()),
+    )
+    .await;
+
+    // This quiet goal turn is superseded before it returns. A later turn adds another
+    // unresolved continuation under the same goal and child binding.
+    fixture
+        .mailbox
+        .record_turn_started(agent, "stale-quiet-turn")
+        .await
+        .unwrap();
+    let (second_work, second_input) =
+        accept_work(&fixture.mailbox, issuer, agent, "second-goal-work", "second").await;
+    fixture
+        .mailbox
+        .record_turn_started(agent, "newer-turn")
+        .await
+        .unwrap();
+    admit(
+        &fixture.mailbox,
+        agent,
+        "newer-turn",
+        &[second_input],
+    )
+    .await;
+    finish(
+        &fixture.mailbox,
+        agent,
+        "newer-turn",
+        Outcome::Completed,
+        /*response*/ None,
+        Continuation::PendingGoalBinding(binding.clone()),
+    )
+    .await;
+
+    fixture
+        .mailbox
+        .record_turn_started(agent, "current-quiet-turn")
+        .await
+        .unwrap();
+    let stale = fixture
+        .mailbox
+        .record_turn_outcome(
+            agent,
+            "stale-quiet-turn",
+            Outcome::Completed,
+            /*response*/ None,
+            Continuation::Terminal(binding.clone()),
+            /*activate_if_idle*/ false,
+        )
+        .await
+        .unwrap();
+    assert!(stale.no_matching_work);
+    assert!(stale.stale_turn);
+
+    for work in [&first_work, &second_work] {
+        let snapshot = take_snapshot(
+            &fixture.mailbox,
+            issuer,
+            Some(agent),
+            vec![Selector::Work(work.id.clone())],
+            ReturnWhen::Any,
+        )
+        .await;
+        let item = work_item(&snapshot, &work.id);
+        assert!(item.outcome.is_none());
+        assert_eq!(
+            item.continuations[0].state,
+            ContinuationState::PendingGoalBinding
+        );
+    }
+
+    let current = finish(
+        &fixture.mailbox,
+        agent,
+        "current-quiet-turn",
+        Outcome::Completed,
+        /*response*/ None,
+        Continuation::Terminal(binding),
+    )
+    .await;
+    assert_eq!(current.outcomes.len(), 2);
+    assert!(current.outcomes.iter().all(|outcome| {
+        [&first_work, &second_work].contains(&&outcome.work_ref)
+    }));
 }
 
 #[tokio::test]

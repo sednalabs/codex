@@ -214,7 +214,7 @@ impl GoalService {
                 let previous_goal = PreviousGoalSnapshot::from(existing_goal);
                 state_db
                     .thread_goals()
-                    .update_thread_goal(
+                    .update_thread_goal_for_control(
                         thread_id,
                         codex_state::GoalUpdate {
                             objective: Some(objective.to_string()),
@@ -236,7 +236,7 @@ impl GoalService {
             } else {
                 state_db
                     .thread_goals()
-                    .replace_thread_goal(
+                    .replace_thread_goal_for_control(
                         thread_id,
                         objective,
                         status.unwrap_or(codex_state::ThreadGoalStatus::Active),
@@ -258,7 +258,7 @@ impl GoalService {
             let expected_goal_id = existing_goal.goal_id.clone();
             state_db
                 .thread_goals()
-                .update_thread_goal(
+                .update_thread_goal_for_control(
                     thread_id,
                     codex_state::GoalUpdate {
                         objective: None,
