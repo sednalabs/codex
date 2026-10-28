@@ -2194,8 +2194,16 @@ async fn multi_agent_v2_interrupted_turn_does_not_notify_parent() {
 
 #[tokio::test]
 async fn multi_agent_v2_interrupted_native_work_settles_before_followup_all_join() {
-    let (mut session, mut turn) = make_session_and_context().await;
-    let manager = thread_manager();
+    let codex_home = tempfile::tempdir().expect("create codex home");
+    let (session, turn, _) = make_session_and_context_with_auth_config_home_and_rx(
+        CodexAuth::from_api_key("Test API Key"),
+        Vec::new(),
+        codex_home.path(),
+        |_config| {},
+    )
+    .await;
+    let mut session = Arc::into_inner(session).expect("unshared test session");
+    let mut turn = Arc::into_inner(turn).expect("unshared test turn");
     let mut config = turn.config.as_ref().clone();
     config
         .features
@@ -2209,6 +2217,16 @@ async fn multi_agent_v2_interrupted_native_work_settles_before_followup_all_join
         .features
         .enable(Feature::AgentMailbox)
         .expect("test config should allow feature update");
+    let state_db = init_state_db(&config)
+        .await
+        .expect("sqlite state db should initialize");
+    let manager = ThreadManager::with_models_provider_home_and_state_for_tests(
+        CodexAuth::from_api_key("dummy"),
+        config.model_provider.clone(),
+        config.codex_home.to_path_buf(),
+        Arc::new(codex_exec_server::EnvironmentManager::default_for_tests()),
+        Some(state_db.clone()),
+    );
     set_turn_config(&mut turn, config.clone());
     let root = manager
         .start_thread(StartThreadOptions::new(config.clone()))
