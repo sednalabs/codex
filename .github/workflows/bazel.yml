@@ -60,11 +60,48 @@ jobs:
           just test-github-scripts
 
       - name: Check MODULE.bazel.lock is up to date
+        id: module_lock_check
         if: matrix.os == 'ubuntu-24.04' && matrix.target == 'x86_64-unknown-linux-gnu'
         env:
           BUILDBUDDY_API_KEY: ${{ secrets.BUILDBUDDY_API_KEY }}
         shell: bash
         run: ./scripts/check-module-bazel-lock.sh
+
+      - name: Diagnose focused MODULE.bazel.lock failure
+        if: >-
+          always() && github.event_name == 'workflow_dispatch' &&
+          inputs.w14939_focused_tests &&
+          steps.module_lock_check.outcome == 'failure'
+        continue-on-error: true
+        env:
+          BUILDBUDDY_API_KEY: ${{ secrets.BUILDBUDDY_API_KEY }}
+        shell: bash
+        run: |
+          set +e
+          ./.github/scripts/run_bazel_with_buildbuddy.py mod deps --lockfile_mode=update
+          update_status=$?
+          set -e
+
+          lock_patch="${RUNNER_TEMP}/module-bazel-lock-diagnostic.patch"
+          if git diff --quiet -- MODULE.bazel.lock; then
+            printf '# no generated MODULE.bazel.lock delta\n' > "${lock_patch}"
+          else
+            git diff -- MODULE.bazel.lock > "${lock_patch}"
+            git diff --stat -- MODULE.bazel.lock
+          fi
+          printf 'lock_update_exit=%s\n' "${update_status}" >> "${GITHUB_STEP_SUMMARY}"
+          git restore -- MODULE.bazel.lock
+
+      - name: Upload focused MODULE.bazel.lock diagnostic
+        if: >-
+          always() && github.event_name == 'workflow_dispatch' &&
+          inputs.w14939_focused_tests &&
+          steps.module_lock_check.outcome == 'failure'
+        uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f # v7.0.0
+        with:
+          name: module-bazel-lock-diagnostic-${{ github.sha }}
+          path: ${{ runner.temp }}/module-bazel-lock-diagnostic.patch
+          if-no-files-found: error
 
       - name: Resolve app-server/exec-server compatibility releases
         if: runner.os == 'Linux'
