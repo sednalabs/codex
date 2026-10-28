@@ -36,6 +36,7 @@ impl Mailbox {
         source_turn_id: &str,
     ) -> MailboxResult<()> {
         validate_key(source_turn_id)?;
+        let _turn_outcome_gate = self.turn_outcome_gate.clone().lock_owned().await;
         self.active_turns
             .lock()
             .await
@@ -57,16 +58,19 @@ impl Mailbox {
         validate_key(source_turn_id)?;
         // Hold the lease through selection and commit. A later turn start cannot race an older
         // terminal event into settling work linked to the same goal binding.
-        let mut active_turns = self.active_turns.lock().await;
-        if active_turns.get(&recipient).map(String::as_str) != Some(source_turn_id) {
-            return Ok(TurnOutcomeReceipt {
-                outcomes: Vec::new(),
-                continuation_work: Vec::new(),
-                response_message_ids: Vec::new(),
-                no_matching_work: true,
-                already_recorded: false,
-                stale_turn: true,
-            });
+        let _turn_outcome_gate = self.turn_outcome_gate.clone().lock_owned().await;
+        {
+            let active_turns = self.active_turns.lock().await;
+            if active_turns.get(&recipient).map(String::as_str) != Some(source_turn_id) {
+                return Ok(TurnOutcomeReceipt {
+                    outcomes: Vec::new(),
+                    continuation_work: Vec::new(),
+                    response_message_ids: Vec::new(),
+                    no_matching_work: true,
+                    already_recorded: false,
+                    stale_turn: true,
+                });
+            }
         }
         let _input_arrival = self.begin_input_arrival();
         let mut transaction = self.pool.begin_with("BEGIN IMMEDIATE").await?;
@@ -154,7 +158,7 @@ impl Mailbox {
 
         if refs.is_empty() {
             transaction.commit().await?;
-            active_turns.remove(&recipient);
+            self.active_turns.lock().await.remove(&recipient);
             return Ok(TurnOutcomeReceipt {
                 outcomes: Vec::new(),
                 continuation_work: Vec::new(),
@@ -239,7 +243,7 @@ impl Mailbox {
                 .await?;
             }
             transaction.commit().await?;
-            active_turns.remove(&recipient);
+            self.active_turns.lock().await.remove(&recipient);
             for group in &groups {
                 if group.response.is_some() {
                     self.invalidate_waits(group.issuer);
@@ -360,7 +364,7 @@ impl Mailbox {
             }
         }
         transaction.commit().await?;
-        active_turns.remove(&recipient);
+        self.active_turns.lock().await.remove(&recipient);
         for group in &groups {
             if group.response.is_some() {
                 self.invalidate_waits(group.issuer);

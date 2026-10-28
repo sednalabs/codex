@@ -24,6 +24,8 @@ pub struct Mailbox {
     /// callback from a prior process cannot outlive that process, while a later in-process
     /// launch must supersede it before linked continuation settlement.
     pub(crate) active_turns: Arc<AsyncMutex<HashMap<ThreadId, String>>>,
+    /// Serializes turn registration with outcome selection and commit.
+    pub(crate) turn_outcome_gate: Arc<AsyncMutex<()>>,
 }
 
 impl Mailbox {
@@ -45,6 +47,7 @@ impl Mailbox {
             pending_input_arrivals: Arc::new(AtomicUsize::new(0)),
             runtime_faults: Arc::new(Mutex::new(crate::runtime_fault::RuntimeFaults::default())),
             active_turns: Arc::new(AsyncMutex::new(HashMap::new())),
+            turn_outcome_gate: Arc::new(AsyncMutex::new(())),
         })
     }
 
