@@ -131,12 +131,27 @@ def sha256(data: bytes) -> str:
 def parse_asar(data: bytes) -> tuple[dict[str, object], int]:
     if len(data) < 16:
         raise ValueError("asar header too small")
-    outer_pickle_size, header_pickle_size, repeated_size, json_size = struct.unpack_from("<IIII", data, 0)
-    if outer_pickle_size != 8 or header_pickle_size != repeated_size:
-        raise ValueError("asar pickle size fields are inconsistent")
+    # ASAR uses a Chromium Pickle containing the size of a second Pickle,
+    # followed by that Pickle's serialized JSON string. Each Pickle starts
+    # with its payload byte count; the string length and bytes are 4-byte
+    # aligned inside the second Pickle.
+    outer_payload_size, header_pickle_size = struct.unpack_from("<II", data, 0)
+    if outer_payload_size != 4:
+        raise ValueError("asar outer pickle is not a single uint32")
+    if header_pickle_size < 8 or header_pickle_size % 4:
+        raise ValueError("asar header pickle size is invalid")
+    header_payload_size, json_size = struct.unpack_from("<II", data, 8)
+    if header_payload_size != header_pickle_size - 4:
+        raise ValueError("asar header pickle payload size is inconsistent")
     header_json_start = 16
     data_start = 8 + header_pickle_size
-    if json_size > len(data) or header_json_start + json_size > data_start or data_start > len(data):
+    padded_json_size = (json_size + 3) & ~3
+    if (
+        json_size > len(data)
+        or header_json_start + padded_json_size > data_start
+        or header_json_start + json_size > len(data)
+        or data_start > len(data)
+    ):
         raise ValueError("asar header offsets are outside the archive")
     header = json.loads(data[header_json_start : header_json_start + json_size].decode("utf-8"))
     if not isinstance(header, dict) or not isinstance(header.get("files"), dict):
