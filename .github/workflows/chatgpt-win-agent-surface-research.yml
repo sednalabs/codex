@@ -1,0 +1,21 @@
+name: ChatGPT Windows app binary research
+
+on:
+  push:
+    branches:
+      - research/chatgpt-desktop-windows-surfaces-20261028
+
+permissions:
+  contents: read
+
+jobs:
+  inspect:
+    runs-on: windows-latest
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+      - name: Inspect the official Store-signed app package
+        shell: pwsh
+        run: ./research/windows-chatgpt/inspect-package.ps1
