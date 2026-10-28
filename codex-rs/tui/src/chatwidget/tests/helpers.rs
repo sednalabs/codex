@@ -40,8 +40,13 @@ pub(super) fn truncated_path_variants(path: &str) -> Vec<String> {
         .collect()
 }
 
+pub(crate) fn normalize_cli_version(text: impl Into<String>) -> String {
+    text.into()
+        .replace(&format!("v{}", crate::version::CODEX_CLI_VERSION), "v0.0.0")
+}
+
 pub(crate) fn normalize_snapshot_paths(text: impl Into<String>) -> String {
-    let mut text = text.into();
+    let mut text = normalize_cli_version(text);
 
     for unix_path in ["/tmp/project", "/tmp/hooks.json"] {
         let platform_path = test_path_display(unix_path);
