@@ -610,7 +610,7 @@ fn classified_overlay_handles_long_history_and_bounds_output() -> anyhow::Result
     let message = |role: &str, text: String, kind: Option<&str>, id: &str| ResponseItem::Message {
         encrypted_content: None,
         status: None,
-        id: Some(id.to_string()),
+        id: Some(codex_protocol::ResponseItemId::from_server(id.to_string())),
         role: role.to_string(),
         content: vec![ContentItem::InputText { text }],
         phase: None,
