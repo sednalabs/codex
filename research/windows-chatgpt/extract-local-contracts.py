@@ -62,6 +62,69 @@ def declarations(data):
     return {"declared_types": [m.group(1) for m in owners], "method_signatures": methods}
 
 
+def strings(value):
+    if isinstance(value, str):
+        yield value
+    elif isinstance(value, list):
+        for child in value:
+            yield from strings(child)
+    elif isinstance(value, dict):
+        for key, child in value.items():
+            if key not in {"description", "documentation", "comment", "examples"}:
+                yield from strings(child)
+
+
+def clean_type(value):
+    value = " ".join(value.split())
+    return value if len(value) <= 800 and (not value or TYPE.fullmatch(value)) else None
+
+
+def api_contract(root):
+    interfaces = root.get("interfaces", {})
+    types = root.get("types", {})
+    if not isinstance(interfaces, dict) or not isinstance(types, dict):
+        raise ValueError("unexpected API representation")
+    records = []
+    for owner, members in interfaces.items():
+        if not IDENT.fullmatch(owner) or not isinstance(members, dict):
+            continue
+        for member, entry in members.items():
+            if not IDENT.fullmatch(member) or not isinstance(entry, dict):
+                continue
+            found = []
+            for text in strings(entry.get("declarations", [])):
+                text = re.sub(r"/\*.*?\*/|//[^\n]*", "", text, flags=re.S)
+                pattern = rf"\b{re.escape(member)}\s*\((.*?)\)\s*:\s*([^;\n]+)"
+                for match in re.finditer(pattern, text, re.S):
+                    params, result = clean_type(match.group(1)), clean_type(match.group(2))
+                    if params is not None and result is not None:
+                        found.append({"parameters": params, "return_type": result})
+            unsupported = entry.get("unsupportedByDefaultIn", [])
+            records.append({"interface": owner, "member": member, "signatures": found,
+                            "declaration_kind": type(entry.get("declarations")).__name__,
+                            "unsupported_by_default_in": [x for x in unsupported if isinstance(x, str) and IDENT.fullmatch(x)] if isinstance(unsupported, list) else []})
+    type_records = []
+    for name, entry in types.items():
+        if not IDENT.fullmatch(name) or not isinstance(entry, dict):
+            continue
+        text = entry.get("text", "")
+        fields = []
+        if isinstance(text, str):
+            text = re.sub(r"/\*.*?\*/|//[^\n]*", "", text, flags=re.S)
+            for match in re.finditer(r"(?:^|[;{])\s*([A-Za-z_$][\w$]*)(\?)?\s*:\s*([^;\n}]+)", text):
+                field_type = clean_type(match.group(3))
+                if field_type is not None:
+                    fields.append({"name": match.group(1), "optional": bool(match.group(2)), "type": field_type})
+        refs = entry.get("references", [])
+        type_records.append({"name": name, "fields": fields, "references": [x for x in refs if isinstance(x, str) and IDENT.fullmatch(x)] if isinstance(refs, list) else []})
+    samples = {}
+    for owner, member in (("CUAAPI", "click"), ("Tab", "screenshot"), ("Browsers", "get")):
+        entry = interfaces.get(owner, {}).get(member, {})
+        samples[owner + "." + member] = shape(entry.get("declarations"))[:25] if isinstance(entry, dict) else []
+    return {"members": records, "types": type_records, "declaration_structure_samples": samples,
+            "limitations": "static declarations; regex extraction may omit complex TypeScript"}
+
+
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--package", required=True)
@@ -86,7 +149,7 @@ def main():
         api = {"path": path, "sha256": digest(data), "bytes": len(data)}
         try:
             root = json.loads(data.decode("utf-8-sig"))
-            api.update({"parse": "success", "root_kind": type(root).__name__, "structure": shape(root), "structure_record_limit": 300})
+            api.update({"parse": "success", "root_kind": type(root).__name__, "root_keys": list(root) if isinstance(root, dict) else None, "contract": api_contract(root) if isinstance(root, dict) else None})
         except UnicodeDecodeError as error:
             api.update({"parse": "decode_error", "encoding": error.encoding, "start": error.start, "end": error.end, "reason": error.reason})
         except json.JSONDecodeError as error:
