@@ -349,9 +349,7 @@ impl AgentGoalControlSnapshot {
             (None, None) => self.control_generation == 0,
             // A goal created by the executing turn is a legitimate update; external creation
             // starts at generation one and therefore cannot be mistaken for that case.
-            (None, Some(goal)) => {
-                self.control_generation == 0 && goal.control_generation == 0
-            }
+            (None, Some(goal)) => self.control_generation == 0 && goal.control_generation == 0,
             (Some(_), None) => false,
         }
     }

@@ -738,13 +738,7 @@ async fn stale_quiet_turn_cannot_settle_linked_continuations_after_a_newer_turn_
         .record_turn_started(agent, "turn-before-quiet")
         .await
         .unwrap();
-    admit(
-        &fixture.mailbox,
-        agent,
-        "turn-before-quiet",
-        &[first_input],
-    )
-    .await;
+    admit(&fixture.mailbox, agent, "turn-before-quiet", &[first_input]).await;
     finish(
         &fixture.mailbox,
         agent,
@@ -762,20 +756,20 @@ async fn stale_quiet_turn_cannot_settle_linked_continuations_after_a_newer_turn_
         .record_turn_started(agent, "stale-quiet-turn")
         .await
         .unwrap();
-    let (second_work, second_input) =
-        accept_work(&fixture.mailbox, issuer, agent, "second-goal-work", "second").await;
+    let (second_work, second_input) = accept_work(
+        &fixture.mailbox,
+        issuer,
+        agent,
+        "second-goal-work",
+        "second",
+    )
+    .await;
     fixture
         .mailbox
         .record_turn_started(agent, "newer-turn")
         .await
         .unwrap();
-    admit(
-        &fixture.mailbox,
-        agent,
-        "newer-turn",
-        &[second_input],
-    )
-    .await;
+    admit(&fixture.mailbox, agent, "newer-turn", &[second_input]).await;
     finish(
         &fixture.mailbox,
         agent,
@@ -833,9 +827,12 @@ async fn stale_quiet_turn_cannot_settle_linked_continuations_after_a_newer_turn_
     )
     .await;
     assert_eq!(current.outcomes.len(), 2);
-    assert!(current.outcomes.iter().all(|outcome| {
-        [&first_work, &second_work].contains(&&outcome.work_ref)
-    }));
+    assert!(
+        current
+            .outcomes
+            .iter()
+            .all(|outcome| { [&first_work, &second_work].contains(&&outcome.work_ref) })
+    );
 }
 
 #[tokio::test]

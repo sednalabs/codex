@@ -353,12 +353,8 @@ RETURNING
         thread_id: ThreadId,
         update: GoalUpdate,
     ) -> anyhow::Result<Option<crate::ThreadGoal>> {
-        self.update_thread_goal_inner(
-            thread_id,
-            update,
-            /*external_control*/ false,
-        )
-        .await
+        self.update_thread_goal_inner(thread_id, update, /*external_control*/ false)
+            .await
     }
 
     /// Update a goal through an external control surface. In-place updates retain `goal_id`, so
@@ -368,12 +364,8 @@ RETURNING
         thread_id: ThreadId,
         update: GoalUpdate,
     ) -> anyhow::Result<Option<crate::ThreadGoal>> {
-        self.update_thread_goal_inner(
-            thread_id,
-            update,
-            /*external_control*/ true,
-        )
-        .await
+        self.update_thread_goal_inner(thread_id, update, /*external_control*/ true)
+            .await
     }
 
     async fn update_thread_goal_inner(

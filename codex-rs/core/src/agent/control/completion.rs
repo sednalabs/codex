@@ -148,14 +148,14 @@ impl LocalAgentControl {
                     return;
                 }
             };
-            let goal_control_snapshot_at_start = match outcome.goal_control_snapshot_at_start.as_ref()
-            {
-                Ok(snapshot) => snapshot,
-                Err(error) => {
-                    debug!("failed to capture goal control snapshot at turn start: {error}");
-                    return;
-                }
-            };
+            let goal_control_snapshot_at_start =
+                match outcome.goal_control_snapshot_at_start.as_ref() {
+                    Ok(snapshot) => snapshot,
+                    Err(error) => {
+                        debug!("failed to capture goal control snapshot at turn start: {error}");
+                        return;
+                    }
+                };
             let (native_outcome, continuation) = goal_continuation_for_terminal(
                 &outcome.status,
                 goal_control_superseded,
@@ -297,12 +297,12 @@ fn goal_continuation_for_terminal(
         // has a different binding and cannot be settled by this terminal turn.
         return (
             Outcome::Cancelled,
-            start.goal_id.as_ref().map_or(Continuation::None, |goal_id| {
-                Continuation::Terminal(binding(
-                    goal_id.clone(),
-                    start.control_generation,
-                ))
-            }),
+            start
+                .goal_id
+                .as_ref()
+                .map_or(Continuation::None, |goal_id| {
+                    Continuation::Terminal(binding(goal_id.clone(), start.control_generation))
+                }),
         );
     }
 
@@ -355,9 +355,8 @@ mod tests {
 
     #[test]
     fn same_id_external_control_change_cancels_old_binding() {
-        let mut externally_updated = logical_goal(
-            codex_protocol::protocol::ThreadGoalStatus::Active,
-        );
+        let mut externally_updated =
+            logical_goal(codex_protocol::protocol::ThreadGoalStatus::Active);
         externally_updated.control_generation += 1;
         let start = start_goal();
         let goal_control_superseded = !start.matches(Some(&externally_updated));
