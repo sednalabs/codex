@@ -62,31 +62,58 @@ FEATURE_TERMS = [
 SAFE_KEYS = {
     "action",
     "actions",
+    "app",
+    "application",
     "url",
+    "id",
+    "name",
+    "title",
+    "kind",
+    "operation",
+    "method",
+    "command",
     "page_id",
     "pageId",
     "tab_id",
     "tabId",
+    "target_id",
+    "targetId",
     "target",
     "selector",
+    "role",
     "x",
     "y",
+    "coordinates",
     "button",
     "key",
+    "keys",
+    "modifiers",
+    "clickCount",
     "text",
     "direction",
     "deltaX",
     "deltaY",
+    "scrollX",
+    "scrollY",
     "wait_ms",
     "timeout_ms",
+    "timeout",
     "screenshot",
     "viewport",
     "include_dom",
+    "includeDom",
+    "includeScreenshot",
+    "includeSnapshot",
     "dom_snapshot",
     "accessibility_tree",
+    "accessibility",
     "application_id",
     "appId",
     "state",
+    "window",
+    "window_id",
+    "windowId",
+    "session",
     "width",
     "height",
     "scroll_y",
@@ -123,17 +150,29 @@ MAX_REFERENCE_RECORDS = 500
 MAX_REGISTRATION_RECORDS = 100
 MAX_RESULT_RECORDS = 100
 MAX_SURFACE_MODULE_RECORDS = 100
-MAX_TOOL_SITE_RECORDS = 200
+MAX_TOOL_SITE_RECORDS = 400
 
 SURFACE_PATH_MARKERS = (
     "browser-service.mjs",
+    "%40oai/browser-desktop/environment-docs/",
+    "%40oai/cua/dist/lib/js/oai_js_browser/dist/skill/",
+    "%40oai/cua/dist/lib/js/oai_js_cua/src/",
+    "%40oai/cua/dist/project/cua/sky_js/src/targets/windows/",
     ".vite/build/browser-page-preload",
     ".vite/build/browser-background-switches",
     ".vite/build/mcp-annotation-runtime",
-    "oai_js_cua/src/targets/windows/",
+    "plugins/openai-bundled/plugins/chrome/",
+    "plugins/openai-bundled/plugins/browser/",
     "playwright/lib/mcp/browser/tools/",
     "playwright/lib/mcp/browser/response.js",
-    "plugins/openai-bundled/plugins/browser/",
+)
+
+TOOL_SITE_PATH_MARKERS = (
+    "browser-service.mjs",
+    "%40oai/cua/dist/project/cua/sky_js/src/targets/windows/",
+    "playwright/lib/mcp/browser/tools/",
+    "plugins/openai-bundled/plugins/browser/scripts/browser-service.mjs",
+    "plugins/openai-bundled/plugins/chrome/scripts/browser-service.mjs",
 )
 
 SCHEMA_CUES = (
@@ -274,8 +313,61 @@ def is_surface_path(path: str) -> bool:
     return any(marker in lowered for marker in SURFACE_PATH_MARKERS)
 
 
-def analyze_tool_name_sites(path: str, data: bytes) -> list[dict[str, object]]:
+def is_tool_site_path(path: str) -> bool:
+    lowered = path.lower()
+    return any(marker in lowered for marker in TOOL_SITE_PATH_MARKERS)
+
+
+def analyze_api_declarations(path: str, data: bytes) -> dict[str, object] | None:
     if not is_surface_path(path):
+        return None
+    text = data.decode("utf-8-sig", errors="ignore")
+    exported: set[str] = set()
+    methods: set[str] = set()
+    declaration_pattern = re.compile(
+        r"\bexport\s+(?:declare\s+)?(?:async\s+)?(?:function|class|const|let|var|interface|type|enum)\s+([A-Za-z_$][\w$]*)"
+    )
+    exported.update(match.group(1) for match in declaration_pattern.finditer(text))
+    for match in re.finditer(r"\bexport\s*\{([^}]{1,1024})\}", text):
+        for item in match.group(1).split(","):
+            token = item.strip().split(" as ", 1)[0].strip()
+            if re.fullmatch(r"[A-Za-z_$][\w$]*", token):
+                exported.add(token)
+    if PurePosixPath(path).suffix.lower() == ".ts":
+        method_pattern = re.compile(r"\b([A-Za-z_$][\w$]*)\??\s*\([^)]{0,512}\)\s*:")
+        for match in method_pattern.finditer(text):
+            name = match.group(1)
+            if re.search(
+                r"browser|computer|screen|tab|session|click|mouse|keyboard|key|type|scroll|wait|navigate|page|access|focus|viewport|shot|window|tool|action",
+                name,
+                re.I,
+            ):
+                methods.add(name)
+    case_labels = sorted(
+        {
+            match.group(1)
+            for match in re.finditer(r"\bcase\s+['\"]([A-Za-z0-9_.-]{1,64})['\"]\s*:", text)
+            if re.search(
+                r"browser|computer|screen|tab|session|click|mouse|keyboard|key|type|scroll|wait|navigate|page|access|focus|viewport|shot|window|action",
+                match.group(1),
+                re.I,
+            )
+        }
+    )[:100]
+    if not exported and not methods and not case_labels:
+        return None
+    return {
+        "path": path,
+        "sha256": sha256(data),
+        "exported_declaration_name_candidates": sorted(exported)[:100],
+        "typed_agent_api_method_name_candidates": sorted(methods)[:100],
+        "dispatch_case_label_candidates": case_labels,
+        "evidence_class": "static_export_or_type_or_switch_candidate_not_runtime_proof",
+    }
+
+
+def analyze_tool_name_sites(path: str, data: bytes) -> list[dict[str, object]]:
+    if not is_tool_site_path(path):
         return []
     text = data.decode("utf-8-sig", errors="ignore")
     file_hash = sha256(data)
@@ -496,6 +588,7 @@ def main() -> int:
     surface_registrations: list[dict[str, object]] = []
     surface_results: list[dict[str, object]] = []
     surface_serialized: list[dict[str, object]] = []
+    surface_api_declarations: list[dict[str, object]] = []
 
     with zipfile.ZipFile(args.package, "r") as package:
         infos = [info for info in package.infolist() if not info.is_dir()]
@@ -528,7 +621,7 @@ def main() -> int:
                     entry_size = entry.get("size")
                     if not isinstance(entry_size, int) or entry_size < 0 or entry_size > MAX_TEXT_MEMBER:
                         continue
-                    if entry_suffix not in {".js", ".mjs", ".cjs", ".json", ".html", ".ts", ".map"}:
+                    if entry_suffix not in {".js", ".mjs", ".cjs", ".json", ".html", ".ts", ".md", ".map"}:
                         continue
                     offset_value = entry.get("offset")
                     try:
@@ -552,6 +645,9 @@ def main() -> int:
                             }
                         )
                         surface_tool_sites.extend(analyze_tool_name_sites(entry_path, member_data))
+                        api_summary = analyze_api_declarations(entry_path, member_data)
+                        if api_summary:
+                            surface_api_declarations.append({"archive": path, **api_summary})
                     if len(module_records) < MAX_MODULE_RECORDS and any(
                         token in entry_path.lower()
                         for token in ("browser", "computer", "mcp", "agent", "tool", "plugin")
@@ -582,7 +678,7 @@ def main() -> int:
                             surface_serialized.extend({"archive": path, **item} for item in serialized)
                 continue
 
-            if suffix not in {".js", ".mjs", ".cjs", ".json", ".html", ".ts", ".map"}:
+            if suffix not in {".js", ".mjs", ".cjs", ".json", ".html", ".ts", ".md", ".map"}:
                 continue
             if not relevant or info.file_size > MAX_TEXT_MEMBER:
                 continue
@@ -594,6 +690,9 @@ def main() -> int:
             if is_surface_path(path) and len(surface_modules) < MAX_SURFACE_MODULE_RECORDS:
                 surface_modules.append({"path": path, "bytes": info.file_size, "sha256": sha256(member_data)})
                 surface_tool_sites.extend(analyze_tool_name_sites(path, member_data))
+                api_summary = analyze_api_declarations(path, member_data)
+                if api_summary:
+                    surface_api_declarations.append(api_summary)
                 surface_references.extend(refs)
                 surface_registrations.extend(regs)
                 surface_results.extend(result_shapes)
@@ -621,6 +720,7 @@ def main() -> int:
         "selected_modules": module_records[:MAX_MODULE_RECORDS],
         "focused_agent_surface_modules": surface_modules[:MAX_SURFACE_MODULE_RECORDS],
         "focused_tool_name_sites": surface_tool_sites[:MAX_TOOL_SITE_RECORDS],
+        "focused_api_declarations": surface_api_declarations[:MAX_SURFACE_MODULE_RECORDS],
         "focused_registration_candidates": surface_registrations[:MAX_REGISTRATION_RECORDS],
         "focused_static_call_site_references": surface_references[:MAX_REFERENCE_RECORDS],
         "focused_result_shape_candidates": surface_results[:MAX_RESULT_RECORDS],

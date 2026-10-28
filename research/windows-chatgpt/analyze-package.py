@@ -105,11 +105,7 @@ TEXT_SUFFIXES = {
     ".yml",
 }
 PE_SUFFIXES = {".exe", ".dll", ".node"}
-NATIVE_SURFACE_BASENAMES = {
-    "codex-computer-use.exe",
-    "codex-windows-sandbox-service.exe",
-    "codex.exe",
-}
+NATIVE_SURFACE_PATH = "app/resources/cua_node/bin/node_modules/%40oai/cua/bin/windows/codex-computer-use.exe"
 MAX_ENTRY_BYTES_FOR_TEXT = 128 * 1024 * 1024
 MAX_SCHEMA_BYTES = 4 * 1024 * 1024
 MAX_MODULES_REPORTED = 40
@@ -363,7 +359,7 @@ def main() -> int:
                     managed_count += 1
             lower_path = info.filename.lower()
             basename = PurePosixPath(lower_path).name
-            if basename in NATIVE_SURFACE_BASENAMES:
+            if lower_path == NATIVE_SURFACE_PATH.lower():
                 native_interop_modules.append(
                     {
                         "path": info.filename,
