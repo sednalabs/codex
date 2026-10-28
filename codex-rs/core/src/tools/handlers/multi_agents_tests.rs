@@ -3121,7 +3121,8 @@ async fn multi_agent_v2_wait_agent_wakes_on_child_completion_without_mailbox() {
 
     timeout(Duration::from_secs(5), async {
         loop {
-            let event = session
+            let event = root
+                .thread
                 .next_event()
                 .await
                 .expect("parent event stream should stay open");
