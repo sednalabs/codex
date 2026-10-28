@@ -19,6 +19,7 @@ use crate::session::tests::update_selected_settings_for_test;
 use crate::session::tests::update_turn_settings_for_test;
 use crate::session::turn_context::TurnContext;
 use crate::session_prefix::format_inter_agent_completion_message;
+use crate::state::turn::TaskKind;
 use crate::thread_manager::thread_store_from_config;
 use crate::tools::context::ToolOutput;
 use crate::tools::handlers::multi_agents_v2::FollowupTaskHandler as FollowupTaskHandlerV2;
@@ -2189,6 +2190,222 @@ async fn multi_agent_v2_interrupted_turn_does_not_notify_parent() {
         .collect::<Vec<_>>();
 
     assert_eq!(notifications, Vec::<String>::new());
+}
+
+#[tokio::test]
+async fn multi_agent_v2_interrupted_native_work_settles_before_followup_all_join() {
+    let (mut session, mut turn) = make_session_and_context().await;
+    let manager = thread_manager();
+    let mut config = turn.config.as_ref().clone();
+    config
+        .features
+        .enable(Feature::MultiAgentV2)
+        .expect("test config should allow feature update");
+    config
+        .features
+        .enable(Feature::Sqlite)
+        .expect("test config should allow feature update");
+    config
+        .features
+        .enable(Feature::AgentMailbox)
+        .expect("test config should allow feature update");
+    set_turn_config(&mut turn, config.clone());
+    let root = manager
+        .start_thread(StartThreadOptions::new(config.clone()))
+        .await
+        .expect("root thread should start");
+    set_agent_control(&mut session, manager.agent_control());
+    session.thread_id = root.thread_id;
+    let session = Arc::new(session);
+    let turn = Arc::new(turn);
+
+    SpawnAgentHandlerV2::default()
+        .handle(invocation(
+            session.clone(),
+            turn.clone(),
+            "spawn_agent",
+            function_payload(json!({
+                "message": "boot worker",
+                "task_name": "worker"
+            })),
+        ))
+        .await
+        .expect("spawn worker");
+    let agent_id = session
+        .services
+        .local_agent_runtime
+        .resolve_agent_reference(session.thread_id, &turn.session_source, "worker")
+        .await
+        .expect("worker should resolve");
+    let worker = manager
+        .get_thread(agent_id)
+        .await
+        .expect("worker thread should exist");
+
+    let first_call_id = "initial-work-call";
+    let mut first_invocation = invocation(
+        session.clone(),
+        turn.clone(),
+        "followup_task",
+        function_payload(json!({
+            "target": agent_id.to_string(),
+            "message": "initial work"
+        })),
+    );
+    first_invocation.call_id = first_call_id.to_string();
+    FollowupTaskHandlerV2
+        .handle(first_invocation)
+        .await
+        .expect("initial follow-up should be accepted");
+
+    let root_control = root
+        .thread
+        .session
+        .services
+        .local_agent_runtime
+        .control(root.thread.session.session_id());
+    root_control
+        .mailbox_v2_initialize(&config)
+        .await
+        .expect("native mailbox should initialize");
+    let mailbox = root_control
+        .mailbox_v2()
+        .expect("native mailbox should be available");
+    let first_work = mailbox
+        .work_for_native_key(root.thread_id, first_call_id)
+        .await
+        .expect("initial work lookup should succeed")
+        .expect("initial work should be durable");
+    let first_input = mailbox
+        .accepted_input(&first_work)
+        .await
+        .expect("initial input should be captured");
+
+    let first_turn = worker.session.new_default_turn().await;
+    worker
+        .session
+        .emit_turn_started(first_turn.as_ref(), TaskKind::Regular)
+        .await;
+    let worker_control = worker
+        .session
+        .services
+        .local_agent_runtime
+        .control(worker.session.session_id());
+    worker_control
+        .mailbox_v2_record_admission(
+            agent_id,
+            &first_turn.sub_id,
+            &[first_input
+                .id
+                .expect("captured input should have an id")
+                .to_string()],
+        )
+        .await
+        .expect("initial work should be admitted to its source turn");
+    worker
+        .session
+        .send_event(
+            first_turn.as_ref(),
+            EventMsg::TurnAborted(TurnAbortedEvent {
+                root_turn_id: None,
+                turn_id: Some(first_turn.sub_id.clone()),
+                started_at: None,
+                reason: TurnAbortReason::Interrupted,
+                error: None,
+                completed_at: None,
+                duration_ms: None,
+            }),
+        )
+        .await;
+
+    let second_call_id = "followup-work-call";
+    let mut second_invocation = invocation(
+        session.clone(),
+        turn.clone(),
+        "followup_task",
+        function_payload(json!({
+            "target": agent_id.to_string(),
+            "message": "follow-up work"
+        })),
+    );
+    second_invocation.call_id = second_call_id.to_string();
+    FollowupTaskHandlerV2
+        .handle(second_invocation)
+        .await
+        .expect("follow-up work should be accepted");
+    let second_work = mailbox
+        .work_for_native_key(root.thread_id, second_call_id)
+        .await
+        .expect("follow-up work lookup should succeed")
+        .expect("follow-up work should be durable");
+    let second_input = mailbox
+        .accepted_input(&second_work)
+        .await
+        .expect("follow-up input should be captured");
+
+    let second_turn = worker.session.new_default_turn().await;
+    worker
+        .session
+        .emit_turn_started(second_turn.as_ref(), TaskKind::Regular)
+        .await;
+    worker_control
+        .mailbox_v2_record_admission(
+            agent_id,
+            &second_turn.sub_id,
+            &[second_input
+                .id
+                .expect("captured input should have an id")
+                .to_string()],
+        )
+        .await
+        .expect("follow-up work should be admitted to its source turn");
+    worker
+        .session
+        .send_event(
+            second_turn.as_ref(),
+            EventMsg::TurnComplete(TurnCompleteEvent {
+                root_turn_id: None,
+                turn_id: second_turn.sub_id.clone(),
+                started_at: None,
+                last_agent_message: Some("follow-up complete".to_string()),
+                error: None,
+                completed_at: None,
+                duration_ms: None,
+                time_to_first_token_ms: None,
+            }),
+        )
+        .await;
+
+    let output = WaitAgentHandlerV2::default()
+        .handle(invocation(
+            session,
+            turn,
+            "wait_agent",
+            function_payload(json!({
+                "timeout_ms": 1_000,
+                "targets": [agent_id.to_string()],
+                "return_when": "all"
+            })),
+        ))
+        .await
+        .expect("all-work join should succeed");
+    let (content, _) = expect_text_output(output);
+    let result: crate::tools::handlers::multi_agents_v2::wait::WaitAgentResult =
+        serde_json::from_str(&content).expect("wait_agent result should be json");
+    assert!(!result.timed_out, "all issued work should be settled");
+    let report = result
+        .mailbox_wait_report
+        .expect("native mailbox wait should include its report");
+    assert!(report.condition_satisfied);
+    assert!(report.pending.is_empty());
+    assert_eq!(report.completed.len(), 2);
+    let mut statuses = report
+        .completed
+        .iter()
+        .map(|item| item.status.as_str())
+        .collect::<Vec<_>>();
+    statuses.sort_unstable();
+    assert_eq!(statuses, vec!["cancelled", "completed"]);
 }
 
 #[tokio::test]

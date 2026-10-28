@@ -732,7 +732,7 @@ async fn input_interrupts_wait_agent_and_is_sent_in_follow_up_request(input: Wai
     ];
     let (server, _completions) =
         start_streaming_sse_server(vec![first_chunks, response_completed_chunks("resp-2")]).await;
-    let codex = test_codex()
+    let test = test_codex()
         .with_model("gpt-5.4")
         .with_config(|config| {
             config
@@ -742,8 +742,10 @@ async fn input_interrupts_wait_agent_and_is_sent_in_follow_up_request(input: Wai
         })
         .build_with_streaming_server(&server)
         .await
-        .expect("build Codex test session")
-        .codex;
+        .expect("build Codex test session");
+    // The session keeps a weak thread-manager reference. Retain the fixture so
+    // the manager remains alive while the active turn invokes collaboration tools.
+    let codex = test.codex.clone();
 
     submit_user_input(&codex, INITIAL_PROMPT).await;
     if tokio::time::timeout(

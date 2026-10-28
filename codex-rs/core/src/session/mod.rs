@@ -2696,7 +2696,10 @@ impl Session {
                 }
             }
         };
-        if !is_final(&status) {
+        let native_interrupted_turn = turn_context.config.features.enabled(Feature::AgentMailbox)
+            && matches!(msg, EventMsg::TurnAborted(_))
+            && matches!(&status, AgentStatus::Interrupted);
+        if !is_final(&status) && !native_interrupted_turn {
             return;
         }
 

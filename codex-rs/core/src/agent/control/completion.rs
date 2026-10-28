@@ -121,10 +121,13 @@ impl LocalAgentControl {
                 &status,
             ),
         };
-        let Some(message) = message else {
+        // An ordinary interrupted turn is not a user-facing completion message, but
+        // native work admitted to that turn still needs an exact terminal settlement.
+        let native_cancellation = matches!(&outcome.status, AgentStatus::Interrupted);
+        if message.is_none() && !native_cancellation {
             return;
-        };
-        let trace_message = trace.is_enabled().then(|| message.clone());
+        }
+        let trace_message = message.as_ref().filter(|_| trace.is_enabled()).cloned();
 
         let parent_config = match self.runtime.upgrade() {
             Ok(state) => match state.get_thread(parent_thread_id).await {
@@ -138,44 +141,59 @@ impl LocalAgentControl {
                 && config.features.enabled(Feature::AgentMailbox)
         });
 
+        // Preserve the legacy behavior: ordinary interruptions were never sent as
+        // completion messages to parents without native durable work tracking.
+        if native_cancellation && !parent_supports_native_mailbox {
+            return;
+        }
+
         if parent_supports_native_mailbox && let Some(mailbox) = self.mailbox_v2() {
-            let logical_goal = match outcome.logical_goal.as_ref() {
-                Ok(goal) => goal,
-                Err(error) => {
-                    debug!(
-                        "failed to capture native logical goal for terminal work outcome: {error}"
-                    );
-                    return;
-                }
-            };
-            let goal_control_snapshot_at_start =
-                match outcome.goal_control_snapshot_at_start.as_ref() {
+            let (native_outcome, continuation) = if native_cancellation {
+                (Outcome::Cancelled, Continuation::None)
+            } else {
+                let logical_goal = match outcome.logical_goal.as_ref() {
+                    Ok(goal) => goal,
+                    Err(error) => {
+                        debug!(
+                            "failed to capture native logical goal for terminal work outcome: {error}"
+                        );
+                        return;
+                    }
+                };
+                let goal_control_snapshot_at_start = match outcome
+                    .goal_control_snapshot_at_start
+                    .as_ref()
+                {
                     Ok(snapshot) => snapshot,
                     Err(error) => {
                         debug!("failed to capture goal control snapshot at turn start: {error}");
                         return;
                     }
                 };
-            let (native_outcome, continuation) = goal_continuation_for_terminal(
-                &outcome.status,
-                goal_control_superseded,
-                goal_control_snapshot_at_start,
-                logical_goal.as_ref(),
-                parent_thread_id,
-                outcome.thread_id,
-            );
+                goal_continuation_for_terminal(
+                    &outcome.status,
+                    goal_control_superseded,
+                    goal_control_snapshot_at_start,
+                    logical_goal.as_ref(),
+                    parent_thread_id,
+                    outcome.thread_id,
+                )
+            };
             let activate_if_idle = parent_config
                 .as_ref()
                 .is_some_and(|config| config.features.enabled(Feature::AgentMailboxIdleActivation));
-            let response = (message.len() <= 8_192).then(|| {
-                InterAgentCommunication::new(
-                    child_agent_path.clone(),
-                    parent_agent_path.clone(),
-                    Vec::new(),
-                    message.clone(),
-                    /*trigger_turn*/ false,
-                )
-            });
+            let response = message
+                .as_ref()
+                .filter(|message| message.len() <= 8_192)
+                .map(|message| {
+                    InterAgentCommunication::new(
+                        child_agent_path.clone(),
+                        parent_agent_path.clone(),
+                        Vec::new(),
+                        message.clone(),
+                        /*trigger_turn*/ false,
+                    )
+                });
             let receipt = match mailbox
                 .record_turn_outcome(
                     outcome.thread_id,
@@ -222,7 +240,15 @@ impl LocalAgentControl {
                 }
                 return;
             }
+            if native_cancellation {
+                return;
+            }
+        } else if native_cancellation {
+            // Do not turn cancellation into a legacy notification if the durable
+            // mailbox store is unexpectedly unavailable.
+            return;
         }
+        let Some(message) = message else { return };
         // `communication` owns the message. Keep a second copy only when the
         // recorder will actually need it after parent delivery succeeds.
         let communication = InterAgentCommunication::new(
