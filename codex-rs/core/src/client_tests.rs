@@ -71,6 +71,8 @@ use codex_protocol::openai_models::ModelInfo;
 use codex_protocol::openai_models::ModelsResponse;
 use codex_protocol::openai_models::ReasoningEffort;
 use codex_protocol::openai_models::ReasoningEffortPreset;
+use codex_protocol::protocol::COLLABORATION_MODE_CLOSE_TAG;
+use codex_protocol::protocol::COLLABORATION_MODE_OPEN_TAG;
 use codex_protocol::protocol::InternalSessionSource;
 use codex_protocol::protocol::MULTI_AGENT_MODE_CLOSE_TAG;
 use codex_protocol::protocol::MULTI_AGENT_MODE_OPEN_TAG;
@@ -918,25 +920,50 @@ fn optional_model_baseline_removals_apply_to_root_and_child_for_any_model() -> a
 
 #[test]
 fn classified_overlays_reach_serialized_root_and_child_requests() -> anyhow::Result<()> {
-    const TARGET: &str = "Avoid performing blocking sleep or wait calls longer than 60 seconds, as they may prevent you from communicating with the user for their duration.";
+    // The last two values are harmless representatives, not copied profile text.
+    const REMOVALS: [&str; 3] = [
+        "Avoid performing blocking sleep or wait calls longer than 60 seconds, as they may prevent you from communicating with the user for their duration.",
+        "Do not poll a running task repeatedly; wait for a completion signal instead.",
+        "Send a concise progress update when a long-running task continues.",
+    ];
 
     let component_plan = || InstructionOverlayComponentToml {
         on_absent: InstructionOverlayOnAbsent::Skip,
         selection: InstructionOverlaySelection::AllClassified,
-        edits: vec![InstructionOverlayEdit::RemoveExactIfPresent {
-            text: TARGET.to_string(),
-            expected_matches: 1,
-        }],
+        edits: REMOVALS
+            .iter()
+            .map(|text| InstructionOverlayEdit::RemoveExactIfPresent {
+                text: (*text).to_string(),
+                expected_matches: 1,
+            })
+            .collect(),
         ..Default::default()
     };
     let overlays = InstructionOverlaysToml {
         model_baseline: Some(component_plan()),
+        review_baseline: Some(component_plan()),
         developer_guidance: Some(component_plan()),
         multi_agent_mode: Some(component_plan()),
         multi_agent_role: Some(component_plan()),
+        multi_agent_usage_hint: Some(component_plan()),
         model_switch_guidance: Some(component_plan()),
+        collaboration_guidance: Some(component_plan()),
+        persistent_guidance: Some(component_plan()),
         ..Default::default()
     };
+    for component in [
+        overlays.model_baseline.as_ref(),
+        overlays.review_baseline.as_ref(),
+        overlays.developer_guidance.as_ref(),
+        overlays.multi_agent_mode.as_ref(),
+        overlays.multi_agent_role.as_ref(),
+        overlays.multi_agent_usage_hint.as_ref(),
+        overlays.model_switch_guidance.as_ref(),
+        overlays.collaboration_guidance.as_ref(),
+        overlays.persistent_guidance.as_ref(),
+    ] {
+        assert!(component.is_some_and(|component| component.models.is_none()));
+    }
     let message = |role: &str, text: String, kind: Option<&str>| ResponseItem::Message {
         encrypted_content: None,
         status: None,
@@ -950,6 +977,177 @@ fn classified_overlays_reach_serialized_root_and_child_requests() -> anyhow::Res
                 ..Default::default()
             }
         }),
+    };
+    let append_contextual_message = |input: &mut Vec<ResponseItem>,
+                                     retained_context: &mut Vec<String>,
+                                     kind: &str,
+                                     label: &str,
+                                     open: &str,
+                                     close: &str,
+                                     copies: usize| {
+        for copy in 0..copies {
+            let label = if copies == 1 {
+                label.to_string()
+            } else {
+                format!("{label} {copy}")
+            };
+            retained_context.push(format!("{label} before"));
+            retained_context.push(format!("{label} after"));
+            input.push(message(
+                "developer",
+                format!(
+                    "{open}{label} before\n{}\n{label} after{close}",
+                    REMOVALS.join("\n")
+                ),
+                Some(kind),
+            ));
+        }
+    };
+    let build_input = |include_model_baseline: bool, omit_persistent: bool| {
+        let mut input = Vec::new();
+        let mut retained_context = Vec::new();
+        let managed = format!(
+            "Managed baseline before\n{}\nManaged baseline after",
+            REMOVALS.join("\n")
+        );
+        retained_context.extend([
+            "Managed baseline before".to_string(),
+            "Managed baseline after".to_string(),
+        ]);
+        input.push(message(
+            "developer",
+            managed,
+            Some("model.base_instructions"),
+        ));
+
+        if include_model_baseline {
+            append_contextual_message(
+                &mut input,
+                &mut retained_context,
+                "client.base_instructions",
+                "Client-owned history baseline",
+                "",
+                "",
+                1,
+            );
+        }
+
+        let normal_fragments = [
+            (
+                "client.developer_instructions",
+                "Developer guidance",
+                "",
+                "",
+                2,
+            ),
+            (
+                "client.multi_agent.mode_instructions",
+                "Multi-agent mode",
+                MULTI_AGENT_MODE_OPEN_TAG,
+                MULTI_AGENT_MODE_CLOSE_TAG,
+                1,
+            ),
+            (
+                "client.multi_agent.role_instructions",
+                "Multi-agent role",
+                "<multi_agent_role>",
+                "</multi_agent_role>",
+                1,
+            ),
+            (
+                "client.multi_agent.usage_hint",
+                "Multi-agent usage hint",
+                "",
+                "",
+                1,
+            ),
+            (
+                "model_switch.instructions",
+                "Model-switch guidance",
+                "<model_switch>",
+                "</model_switch>",
+                1,
+            ),
+            (
+                "collaboration_mode.instructions",
+                "Collaboration guidance",
+                COLLABORATION_MODE_OPEN_TAG,
+                COLLABORATION_MODE_CLOSE_TAG,
+                1,
+            ),
+            (
+                "persistent_mode.instructions",
+                "Persistent guidance",
+                "<persistent_mode>",
+                "</persistent_mode>",
+                1,
+            ),
+        ];
+        for (kind, label, open, close, copies) in normal_fragments {
+            if omit_persistent && kind == "persistent_mode.instructions" {
+                continue;
+            }
+            append_contextual_message(
+                &mut input,
+                &mut retained_context,
+                kind,
+                label,
+                open,
+                close,
+                copies,
+            );
+        }
+
+        for (role, text, kind) in [
+            (
+                "developer",
+                format!(
+                    "Unclassified developer before\n{}\nUnclassified developer after",
+                    REMOVALS.join("\n")
+                ),
+                Some("generic.developer_instructions"),
+            ),
+            (
+                "system",
+                format!(
+                    "System text before\n{}\nSystem text after",
+                    REMOVALS.join("\n")
+                ),
+                None,
+            ),
+        ] {
+            let label = if role == "system" {
+                "System text"
+            } else {
+                "Unclassified developer"
+            };
+            retained_context.push(format!("{label} before"));
+            retained_context.push(format!("{label} after"));
+            input.push(message(role, text, kind));
+        }
+
+        (input, retained_context)
+    };
+    let assert_serialized_request = |request: &codex_api::ResponsesApiRequest,
+                                     retained_context: &[String],
+                                     expected_matches_per_removal: usize,
+                                     label: &str|
+     -> anyhow::Result<()> {
+        let serialized_request = serde_json::to_string(request)?;
+        for removal in REMOVALS {
+            assert_eq!(
+                serialized_request.matches(removal).count(),
+                expected_matches_per_removal,
+                "unexpected retained count for {removal:?} in {label}"
+            );
+        }
+        for context in retained_context {
+            assert!(
+                serialized_request.contains(context),
+                "serialized request omitted {context:?} in {label}"
+            );
+        }
+        Ok(())
     };
 
     let parent_thread_id = ThreadId::new();
@@ -968,11 +1166,31 @@ fn classified_overlays_reach_serialized_root_and_child_requests() -> anyhow::Res
         ),
     ];
 
-    for model_slug in ["gpt-6.1-sol", "gpt-6-luna", "gpt-6-astra"] {
+    for (model_slug, baseline_has_targets, omit_persistent) in [
+        ("gpt-6.1-sol", true, false),
+        ("gpt-6-luna", true, false),
+        ("gpt-6-astra", true, false),
+        ("gpt-6.1-terra", true, false),
+        ("gpt-5.5", false, true),
+    ] {
         for (thread_kind, source, metadata_parent_id) in &sources {
             for fresh_model_baseline in [true, false] {
-                let baseline =
-                    format!("Client-owned baseline before. {TARGET} Client-owned baseline after.");
+                let baseline = if baseline_has_targets {
+                    format!(
+                        "Client-owned baseline before\n{}\nClient-owned baseline after",
+                        REMOVALS.join("\n")
+                    )
+                } else {
+                    String::new()
+                };
+                let (input, mut retained_context) =
+                    build_input(baseline_has_targets, omit_persistent);
+                if baseline_has_targets {
+                    retained_context.extend([
+                        "Client-owned baseline before".to_string(),
+                        "Client-owned baseline after".to_string(),
+                    ]);
+                }
                 let client = test_model_client(source.clone())
                     .with_instruction_overlays(overlays.clone())
                     .with_client_owned_base_instructions(
@@ -982,67 +1200,7 @@ fn classified_overlays_reach_serialized_root_and_child_requests() -> anyhow::Res
                 let mut model_info = test_model_info();
                 model_info.slug = model_slug.to_string();
                 let prompt = Prompt {
-                    input: vec![
-                        message(
-                            "developer",
-                            format!("Managed baseline before: {TARGET} Managed baseline after."),
-                            Some("model.base_instructions"),
-                        ),
-                        message(
-                            "developer",
-                            format!(
-                                "Client-owned history baseline before: {TARGET} Client-owned history baseline after."
-                            ),
-                            Some("client.base_instructions"),
-                        ),
-                        message(
-                            "developer",
-                            format!(
-                                "Developer guidance before: {TARGET} Developer guidance after."
-                            ),
-                            Some("client.developer_instructions"),
-                        ),
-                        message(
-                            "developer",
-                            format!(
-                                "Additional developer guidance before: {TARGET} Additional developer guidance after."
-                            ),
-                            Some("client.developer_instructions"),
-                        ),
-                        message(
-                            "developer",
-                            format!(
-                                "{MULTI_AGENT_MODE_OPEN_TAG}Mode guidance before: {TARGET} Mode guidance after.{MULTI_AGENT_MODE_CLOSE_TAG}"
-                            ),
-                            Some("client.multi_agent.mode_instructions"),
-                        ),
-                        message(
-                            "developer",
-                            format!(
-                                "<multi_agent_role>Role guidance before: {TARGET} Role guidance after.</multi_agent_role>"
-                            ),
-                            Some("client.multi_agent.role_instructions"),
-                        ),
-                        message(
-                            "developer",
-                            format!(
-                                "<model_switch>Model-switch guidance before: {TARGET} Model-switch guidance after.</model_switch>"
-                            ),
-                            Some("model_switch.instructions"),
-                        ),
-                        message(
-                            "developer",
-                            format!(
-                                "Unclassified developer before: {TARGET} Unclassified developer after."
-                            ),
-                            Some("generic.developer_instructions"),
-                        ),
-                        message(
-                            "system",
-                            format!("System text before: {TARGET} System text after."),
-                            None,
-                        ),
-                    ],
+                    input,
                     base_instructions: BaseInstructions {
                         text: baseline.clone(),
                         provenance: fresh_model_baseline.then(|| {
@@ -1069,37 +1227,12 @@ fn classified_overlays_reach_serialized_root_and_child_requests() -> anyhow::Res
                     ),
                     /*include_internal*/ true,
                 )?;
-                let serialized_request = serde_json::to_string(&request)?;
-
-                assert_eq!(
-                    serialized_request.matches(TARGET).count(),
-                    3,
-                    "only managed, unclassified, and system text retain the target for {model_slug} / {thread_kind} / fresh={fresh_model_baseline}"
-                );
-                let retained_fragments = [
-                    "Client-owned baseline before.  Client-owned baseline after.".to_string(),
-                    "Client-owned history baseline before:  Client-owned history baseline after."
-                        .to_string(),
-                    "Developer guidance before:  Developer guidance after.".to_string(),
-                    "Additional developer guidance before:  Additional developer guidance after."
-                        .to_string(),
-                    format!(
-                        "{MULTI_AGENT_MODE_OPEN_TAG}Mode guidance before:  Mode guidance after.{MULTI_AGENT_MODE_CLOSE_TAG}"
-                    ),
-                    "<multi_agent_role>Role guidance before:  Role guidance after.</multi_agent_role>".to_string(),
-                    "<model_switch>Model-switch guidance before:  Model-switch guidance after.</model_switch>".to_string(),
-                    format!("Managed baseline before: {TARGET} Managed baseline after."),
-                    format!(
-                        "Unclassified developer before: {TARGET} Unclassified developer after."
-                    ),
-                    format!("System text before: {TARGET} System text after."),
-                ];
-                for retained in retained_fragments {
-                    assert!(
-                        serialized_request.contains(&retained),
-                        "serialized request omitted {retained:?} for {model_slug} / {thread_kind} / fresh={fresh_model_baseline}"
-                    );
-                }
+                assert_serialized_request(
+                    &request,
+                    &retained_context,
+                    /*expected_matches_per_removal*/ 3,
+                    &format!("normal {model_slug} / {thread_kind} / fresh={fresh_model_baseline}"),
+                )?;
                 assert_eq!(
                     prompt.input, original_input,
                     "request construction must preserve stored history"
@@ -1107,6 +1240,60 @@ fn classified_overlays_reach_serialized_root_and_child_requests() -> anyhow::Res
                 assert_eq!(prompt.base_instructions.text, baseline);
             }
         }
+    }
+
+    for fresh_model_baseline in [true, false] {
+        let model_slug = "gpt-6.1-terra";
+        let baseline = format!(
+            "Review baseline before\n{}\nReview baseline after",
+            REMOVALS.join("\n")
+        );
+        let (input, mut retained_context) = build_input(
+            /*include_model_baseline*/ true, /*omit_persistent*/ false,
+        );
+        retained_context.extend([
+            "Review baseline before".to_string(),
+            "Review baseline after".to_string(),
+        ]);
+        let client = test_model_client(SessionSource::SubAgent(SubAgentSource::Review))
+            .with_instruction_overlays(overlays.clone())
+            .with_client_owned_base_instructions(
+                (!fresh_model_baseline).then(|| baseline.clone()),
+                fresh_model_baseline,
+            );
+        let mut model_info = test_model_info();
+        model_info.slug = model_slug.to_string();
+        let prompt = Prompt {
+            input,
+            base_instructions: BaseInstructions {
+                text: baseline.clone(),
+                provenance: fresh_model_baseline.then(|| BaseInstructionsProvenance::Model {
+                    model: model_slug.to_string(),
+                }),
+            },
+            ..Default::default()
+        };
+        let request = client.build_responses_request(
+            &prompt,
+            &model_info,
+            /*effort*/ None,
+            codex_protocol::config_types::ReasoningSummary::None,
+            /*service_tier*/ None,
+            &test_responses_metadata_for_client(
+                &client,
+                /*turn_id*/ None,
+                format!("{}:0", client.state.thread_id),
+                /*parent_thread_id*/ None,
+                TestCodexResponsesRequestKind::Turn,
+            ),
+            /*include_internal*/ true,
+        )?;
+        assert_serialized_request(
+            &request,
+            &retained_context,
+            /*expected_matches_per_removal*/ 11,
+            &format!("review-only {model_slug} / fresh={fresh_model_baseline}"),
+        )?;
     }
 
     Ok(())
