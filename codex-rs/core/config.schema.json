@@ -792,6 +792,12 @@
           "default": null,
           "description": "Optional feature toggles scoped to this profile.",
           "properties": {
+            "agent_mailbox": {
+              "type": "boolean"
+            },
+            "agent_mailbox_idle_activation": {
+              "type": "boolean"
+            },
             "agent_message_board": {
               "type": "boolean"
             },
@@ -2485,6 +2491,237 @@
             "$ref": "#/definitions/HookStateToml"
           },
           "type": "object"
+        }
+      },
+      "type": "object"
+    },
+    "InstructionOverlayComponentToml": {
+      "additionalProperties": false,
+      "properties": {
+        "edits": {
+          "default": [],
+          "items": {
+            "$ref": "#/definitions/InstructionOverlayEdit"
+          },
+          "type": "array"
+        },
+        "models": {
+          "default": null,
+          "description": "Exact model slugs for this target; omitted means the target applies to every model.",
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "on_absent": {
+          "allOf": [
+            {
+              "$ref": "#/definitions/InstructionOverlayOnAbsent"
+            }
+          ],
+          "default": "error"
+        },
+        "selection": {
+          "allOf": [
+            {
+              "$ref": "#/definitions/InstructionOverlaySelection"
+            }
+          ],
+          "default": "unique"
+        }
+      },
+      "type": "object"
+    },
+    "InstructionOverlayEdit": {
+      "oneOf": [
+        {
+          "additionalProperties": false,
+          "properties": {
+            "Prepend": {
+              "properties": {
+                "text": {
+                  "type": "string"
+                }
+              },
+              "required": [
+                "text"
+              ],
+              "type": "object"
+            }
+          },
+          "required": [
+            "Prepend"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "properties": {
+            "Append": {
+              "properties": {
+                "text": {
+                  "type": "string"
+                }
+              },
+              "required": [
+                "text"
+              ],
+              "type": "object"
+            }
+          },
+          "required": [
+            "Append"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "properties": {
+            "Replace": {
+              "properties": {
+                "text": {
+                  "type": "string"
+                }
+              },
+              "required": [
+                "text"
+              ],
+              "type": "object"
+            }
+          },
+          "required": [
+            "Replace"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "properties": {
+            "ReplaceExact": {
+              "properties": {
+                "expected_matches": {
+                  "format": "uint",
+                  "minimum": 1.0,
+                  "type": "integer"
+                },
+                "from": {
+                  "type": "string"
+                },
+                "to": {
+                  "type": "string"
+                }
+              },
+              "required": [
+                "expected_matches",
+                "from",
+                "to"
+              ],
+              "type": "object"
+            }
+          },
+          "required": [
+            "ReplaceExact"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "properties": {
+            "RemoveExact": {
+              "properties": {
+                "expected_matches": {
+                  "format": "uint",
+                  "minimum": 1.0,
+                  "type": "integer"
+                },
+                "text": {
+                  "type": "string"
+                }
+              },
+              "required": [
+                "expected_matches",
+                "text"
+              ],
+              "type": "object"
+            }
+          },
+          "required": [
+            "RemoveExact"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "description": "Removes the literal if present; a nonzero occurrence count must match the expectation.",
+          "properties": {
+            "RemoveExactIfPresent": {
+              "properties": {
+                "expected_matches": {
+                  "format": "uint",
+                  "minimum": 1.0,
+                  "type": "integer"
+                },
+                "text": {
+                  "type": "string"
+                }
+              },
+              "required": [
+                "expected_matches",
+                "text"
+              ],
+              "type": "object"
+            }
+          },
+          "required": [
+            "RemoveExactIfPresent"
+          ],
+          "type": "object"
+        }
+      ]
+    },
+    "InstructionOverlayOnAbsent": {
+      "enum": [
+        "error",
+        "skip"
+      ],
+      "type": "string"
+    },
+    "InstructionOverlaySelection": {
+      "enum": [
+        "unique",
+        "all_classified"
+      ],
+      "type": "string"
+    },
+    "InstructionOverlaysToml": {
+      "additionalProperties": false,
+      "properties": {
+        "collaboration_guidance": {
+          "$ref": "#/definitions/InstructionOverlayComponentToml"
+        },
+        "developer_guidance": {
+          "$ref": "#/definitions/InstructionOverlayComponentToml"
+        },
+        "model_baseline": {
+          "$ref": "#/definitions/InstructionOverlayComponentToml"
+        },
+        "model_switch_guidance": {
+          "$ref": "#/definitions/InstructionOverlayComponentToml"
+        },
+        "multi_agent_mode": {
+          "$ref": "#/definitions/InstructionOverlayComponentToml"
+        },
+        "multi_agent_role": {
+          "$ref": "#/definitions/InstructionOverlayComponentToml"
+        },
+        "multi_agent_usage_hint": {
+          "$ref": "#/definitions/InstructionOverlayComponentToml"
+        },
+        "persistent_guidance": {
+          "$ref": "#/definitions/InstructionOverlayComponentToml"
+        },
+        "review_baseline": {
+          "$ref": "#/definitions/InstructionOverlayComponentToml"
         }
       },
       "type": "object"
@@ -5362,6 +5599,15 @@
           "default": false,
           "description": "Start the composer in Vim mode (`Normal`) by default. Defaults to `false`.",
           "type": "boolean"
+        },
+        "weekly_limit_pacing_style": {
+          "allOf": [
+            {
+              "$ref": "#/definitions/WeeklyLimitPacingStyle"
+            }
+          ],
+          "default": "qualitative",
+          "description": "How the weekly rate-limit status-line item describes pacing. Defaults to `qualitative`; `ratio` is an explicit opt-in."
         }
       },
       "type": "object"
@@ -7161,6 +7407,25 @@
       },
       "type": "object"
     },
+    "WeeklyLimitPacingStyle": {
+      "description": "Presentation used for weekly rate-limit pacing in the status line.",
+      "oneOf": [
+        {
+          "description": "Describe usage as on, over, or under pace.",
+          "enum": [
+            "qualitative"
+          ],
+          "type": "string"
+        },
+        {
+          "description": "Show remaining usage as a percentage of remaining time.",
+          "enum": [
+            "ratio"
+          ],
+          "type": "string"
+        }
+      ]
+    },
     "WindowsSandboxModeToml": {
       "enum": [
         "elevated",
@@ -7378,6 +7643,12 @@
       "default": null,
       "description": "Centralized feature flags (new). Prefer this over individual toggles.",
       "properties": {
+        "agent_mailbox": {
+          "type": "boolean"
+        },
+        "agent_mailbox_idle_activation": {
+          "type": "boolean"
+        },
         "agent_message_board": {
           "type": "boolean"
         },
@@ -8074,6 +8345,15 @@
     "include_permissions_instructions": {
       "description": "Whether to inject the `<permissions instructions>` developer block.",
       "type": "boolean"
+    },
+    "instruction_overlays": {
+      "allOf": [
+        {
+          "$ref": "#/definitions/InstructionOverlaysToml"
+        }
+      ],
+      "default": null,
+      "description": "Bounded edits for explicitly selected client-owned instruction components."
     },
     "instructions": {
       "description": "System instructions.",
