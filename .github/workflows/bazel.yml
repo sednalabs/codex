@@ -43,7 +43,24 @@ jobs:
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
         with:
+          fetch-depth: 2
           persist-credentials: false
+
+      - name: Verify exact product source for focused validation
+        if: ${{ github.event_name == 'workflow_dispatch' && inputs.w14939_focused_tests }}
+        env:
+          EXPECTED_PRODUCT_SHA: e199d31380116b77b74fbd4bea024afbeca1b7ee
+        shell: bash
+        run: |
+          if ! git merge-base --is-ancestor "${EXPECTED_PRODUCT_SHA}" HEAD; then
+            echo "Expected product source ${EXPECTED_PRODUCT_SHA} is not an ancestor of HEAD" >&2
+            exit 1
+          fi
+          changed_paths="$(git diff --name-only "${EXPECTED_PRODUCT_SHA}" HEAD)"
+          if [[ "${changed_paths}" != ".github/workflows/bazel.yml" ]]; then
+            echo "Expected only the focused workflow to differ from product source; got: ${changed_paths}" >&2
+            exit 1
+          fi
 
       - name: Prepare Bazel CI
         id: prepare_bazel
@@ -136,6 +153,18 @@ jobs:
               --build_metadata="COMMIT_SHA=${GITHUB_SHA}" \
               --test_arg=--exact \
               --test_arg=session::tests::isolated_guardian_sessions_skip_agent_mailbox_hooks \
+              -- \
+              //codex-rs/core:core-unit-tests || focused_status=$?
+            ./.github/scripts/run-bazel-ci.sh \
+              --print-failed-test-logs \
+              --print-failed-action-summary \
+              -- \
+              test \
+              --test_tag_filters=-argument-comment-lint \
+              --test_verbose_timeout_warnings \
+              --test_output=all \
+              --build_metadata="COMMIT_SHA=${GITHUB_SHA}" \
+              --test_arg=classified_overlay \
               -- \
               //codex-rs/core:core-unit-tests || focused_status=$?
             ./.github/scripts/run-bazel-ci.sh \
