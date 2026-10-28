@@ -20,6 +20,73 @@ IDENT = re.compile(r"[A-Za-z_$][A-Za-z0-9_$./:-]{0,100}\Z")
 TYPE = re.compile(r"[\w\s.$<>{}\[\]|&?:,'\"(),=;\-]+\Z")
 
 
+def matching_end(text, start):
+    pairs = {"(": ")", "[": "]", "{": "}", "<": ">"}
+    stack = []
+    quote = None
+    escaped = False
+    for i in range(start, len(text)):
+        char = text[i]
+        if quote:
+            if escaped:
+                escaped = False
+            elif char == "\\":
+                escaped = True
+            elif char == quote:
+                quote = None
+        elif char in "'\"`":
+            quote = char
+        elif char in pairs:
+            stack.append(pairs[char])
+        elif stack and char == stack[-1]:
+            stack.pop()
+            if not stack:
+                return i
+    return None
+
+
+def top_level_statements(text):
+    statements = []
+    start = 0
+    i = 0
+    while i < len(text):
+        if text[i] in "([{<":
+            end = matching_end(text, i)
+            if end is None:
+                return statements, False
+            i = end
+        elif text[i] in ";\n":
+            if text[start:i].strip():
+                statements.append(text[start:i].strip())
+            start = i + 1
+        i += 1
+    if text[start:].strip():
+        statements.append(text[start:].strip())
+    return statements, True
+
+
+def object_fields(text):
+    start = text.find("{")
+    if start < 0:
+        return [], False
+    end = matching_end(text, start)
+    if end is None:
+        return [], False
+    statements, complete = top_level_statements(text[start + 1:end])
+    fields = []
+    for statement in statements:
+        match = re.fullmatch(r"\s*([A-Za-z_$][\w$]*)(\?)?\s*:\s*(.+)", statement, re.S)
+        if match:
+            field_type = clean_type(match.group(3))
+            if field_type is not None:
+                fields.append({"name": match.group(1), "optional": bool(match.group(2)), "type": field_type})
+            else:
+                complete = False
+        else:
+            complete = False
+    return fields, complete
+
+
 def digest(data):
     return hashlib.sha256(data).hexdigest()
 
@@ -51,7 +118,7 @@ def declarations(data):
     text = data.decode("utf-8-sig")
     text = re.sub(r"/\*.*?\*/|//[^\n]*", "", text, flags=re.S)
     owners = list(re.finditer(r"\b(?:class|interface)\s+([A-Za-z_$][\w$]*)", text))
-    matches = re.finditer(r"(?m)^\s*(?:(?:public|protected|private|abstract|static|readonly|async)\s+)*([A-Za-z_$][\w$]*)\s*\(([^;]*?)\)\s*(?::\s*([^;]+))?;", text)
+    matches = re.finditer(r"(?m)^\s*(?:(?:public|protected|private|abstract|static|readonly|async)\s+)*([A-Za-z_$][\w$]*)(?:\s*<[^;\n]+?>)?\s*\(([^;]*?)\)\s*(?::\s*([^;]+))?;", text)
     methods = []
     for match in matches:
         preceding = [owner for owner in owners if owner.start() < match.start()]
@@ -59,7 +126,17 @@ def declarations(data):
         result = " ".join((match.group(3) or "").split())
         if len(params) <= 1000 and len(result) <= 500 and (not params or TYPE.fullmatch(params)) and (not result or TYPE.fullmatch(result)):
             methods.append({"owner_candidate": preceding[-1].group(1) if preceding else None, "method": match.group(1), "parameters": params, "return_type": result or None})
-    return {"declared_types": [m.group(1) for m in owners], "method_signatures": methods}
+    for match in re.finditer(r"(?m)^\s*(?:(?:public|protected|private|abstract|static|readonly)\s+)*([A-Za-z_$][\w$]*)\??\s*:\s*\(([^;]*?)\)\s*=>\s*([^;]+);", text):
+        preceding = [owner for owner in owners if owner.start() < match.start()]
+        params, result = clean_type(match.group(2)), clean_type(match.group(3))
+        if params is not None and result is not None:
+            methods.append({"owner_candidate": preceding[-1].group(1) if preceding else None, "method": match.group(1), "parameters": params, "return_type": result, "style": "function_property"})
+    aliases = []
+    for alias in re.finditer(r"\b(?:export\s+)?type\s+([A-Za-z_$][\w$]*)\s*=\s*\{", text):
+        fields, complete = object_fields(text[alias.start():])
+        aliases.append({"name": alias.group(1), "fields": fields, "complete": complete})
+    return {"declared_types": [m.group(1) for m in owners], "method_signatures": methods, "object_type_aliases": aliases,
+            "limitations": "method regex may omit generic or property-style methods"}
 
 
 def strings(value):
@@ -76,7 +153,17 @@ def strings(value):
 
 def clean_type(value):
     value = " ".join(value.split())
-    return value if len(value) <= 800 and (not value or TYPE.fullmatch(value)) else None
+    if len(value) > 800 or (value and not TYPE.fullmatch(value)):
+        return None
+    index = 0
+    while index < len(value):
+        if value[index] in "([{<":
+            end = matching_end(value, index)
+            if end is None:
+                return None
+            index = end
+        index += 1
+    return value
 
 
 def api_contract(root):
@@ -108,15 +195,12 @@ def api_contract(root):
         if not IDENT.fullmatch(name) or not isinstance(entry, dict):
             continue
         text = entry.get("text", "")
-        fields = []
+        fields, complete = [], False
         if isinstance(text, str):
             text = re.sub(r"/\*.*?\*/|//[^\n]*", "", text, flags=re.S)
-            for match in re.finditer(r"(?:^|[;{])\s*([A-Za-z_$][\w$]*)(\?)?\s*:\s*([^;\n}]+)", text):
-                field_type = clean_type(match.group(3))
-                if field_type is not None:
-                    fields.append({"name": match.group(1), "optional": bool(match.group(2)), "type": field_type})
+            fields, complete = object_fields(text)
         refs = entry.get("references", [])
-        type_records.append({"name": name, "fields": fields, "references": [x for x in refs if isinstance(x, str) and IDENT.fullmatch(x)] if isinstance(refs, list) else []})
+        type_records.append({"name": name, "fields": fields, "object_field_parse_complete": complete, "references": [x for x in refs if isinstance(x, str) and IDENT.fullmatch(x)] if isinstance(refs, list) else []})
     samples = {}
     for owner, member in (("CUAAPI", "click"), ("Tab", "screenshot"), ("Browsers", "get")):
         entry = interfaces.get(owner, {}).get(member, {})
