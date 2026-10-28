@@ -26,6 +26,7 @@ use codex_api::TransportError;
 use codex_config::InstructionOverlayComponentToml;
 use codex_config::InstructionOverlayEdit;
 use codex_config::InstructionOverlayOnAbsent;
+use codex_config::InstructionOverlaySelection;
 use codex_config::InstructionOverlaysToml;
 use codex_history::HistoryInitialization;
 use codex_http_client::HttpClientFactory;
@@ -71,6 +72,8 @@ use codex_protocol::openai_models::ModelsResponse;
 use codex_protocol::openai_models::ReasoningEffort;
 use codex_protocol::openai_models::ReasoningEffortPreset;
 use codex_protocol::protocol::InternalSessionSource;
+use codex_protocol::protocol::MULTI_AGENT_MODE_CLOSE_TAG;
+use codex_protocol::protocol::MULTI_AGENT_MODE_OPEN_TAG;
 use codex_protocol::protocol::SessionSource;
 use codex_protocol::protocol::SubAgentSource;
 use codex_rollout_trace::ExecutionStatus;
@@ -906,6 +909,202 @@ fn optional_model_baseline_removals_apply_to_root_and_child_for_any_model() -> a
                 assert!(visible_text.contains(baseline));
                 assert!(!visible_text.contains(BLOCKING_WAIT_TARGET));
                 assert!(!visible_text.contains(COMMENTARY_CADENCE_TARGET));
+            }
+        }
+    }
+
+    Ok(())
+}
+
+#[test]
+fn classified_overlays_reach_serialized_root_and_child_requests() -> anyhow::Result<()> {
+    const TARGET: &str = "Avoid performing blocking sleep or wait calls longer than 60 seconds, as they may prevent you from communicating with the user for their duration.";
+
+    let component_plan = || InstructionOverlayComponentToml {
+        on_absent: InstructionOverlayOnAbsent::Skip,
+        selection: InstructionOverlaySelection::AllClassified,
+        edits: vec![InstructionOverlayEdit::RemoveExactIfPresent {
+            text: TARGET.to_string(),
+            expected_matches: 1,
+        }],
+        ..Default::default()
+    };
+    let overlays = InstructionOverlaysToml {
+        model_baseline: Some(component_plan()),
+        developer_guidance: Some(component_plan()),
+        multi_agent_mode: Some(component_plan()),
+        multi_agent_role: Some(component_plan()),
+        model_switch_guidance: Some(component_plan()),
+        ..Default::default()
+    };
+    let message = |role: &str, text: String, kind: Option<&str>| ResponseItem::Message {
+        encrypted_content: None,
+        status: None,
+        id: None,
+        role: role.to_string(),
+        content: vec![ContentItem::InputText { text }],
+        phase: None,
+        internal_chat_message_metadata_passthrough: kind.map(|kind| {
+            InternalChatMessageMetadataPassthrough {
+                content_item_kinds: Some(vec![ContentItemKind(kind.to_string())]),
+                ..Default::default()
+            }
+        }),
+    };
+
+    let parent_thread_id = ThreadId::new();
+    let sources = [
+        ("root", SessionSource::Cli, None),
+        (
+            "ThreadSpawn child",
+            SessionSource::SubAgent(SubAgentSource::ThreadSpawn {
+                parent_thread_id,
+                depth: 1,
+                agent_path: None,
+                agent_nickname: None,
+                agent_role: None,
+            }),
+            Some(parent_thread_id),
+        ),
+    ];
+
+    for model_slug in ["gpt-6.1-sol", "gpt-6-luna", "gpt-6-astra"] {
+        for (thread_kind, source, metadata_parent_id) in &sources {
+            for fresh_model_baseline in [true, false] {
+                let baseline =
+                    format!("Client-owned baseline before. {TARGET} Client-owned baseline after.");
+                let client = test_model_client(source.clone())
+                    .with_instruction_overlays(overlays.clone())
+                    .with_client_owned_base_instructions(
+                        (!fresh_model_baseline).then(|| baseline.clone()),
+                        fresh_model_baseline,
+                    );
+                let mut model_info = test_model_info();
+                model_info.slug = model_slug.to_string();
+                let prompt = Prompt {
+                    input: vec![
+                        message(
+                            "developer",
+                            format!("Managed baseline before: {TARGET} Managed baseline after."),
+                            Some("model.base_instructions"),
+                        ),
+                        message(
+                            "developer",
+                            format!(
+                                "Client-owned history baseline before: {TARGET} Client-owned history baseline after."
+                            ),
+                            Some("client.base_instructions"),
+                        ),
+                        message(
+                            "developer",
+                            format!(
+                                "Developer guidance before: {TARGET} Developer guidance after."
+                            ),
+                            Some("client.developer_instructions"),
+                        ),
+                        message(
+                            "developer",
+                            format!(
+                                "Additional developer guidance before: {TARGET} Additional developer guidance after."
+                            ),
+                            Some("client.developer_instructions"),
+                        ),
+                        message(
+                            "developer",
+                            format!(
+                                "{MULTI_AGENT_MODE_OPEN_TAG}Mode guidance before: {TARGET} Mode guidance after.{MULTI_AGENT_MODE_CLOSE_TAG}"
+                            ),
+                            Some("client.multi_agent.mode_instructions"),
+                        ),
+                        message(
+                            "developer",
+                            format!(
+                                "<multi_agent_role>Role guidance before: {TARGET} Role guidance after.</multi_agent_role>"
+                            ),
+                            Some("client.multi_agent.role_instructions"),
+                        ),
+                        message(
+                            "developer",
+                            format!(
+                                "<model_switch>Model-switch guidance before: {TARGET} Model-switch guidance after.</model_switch>"
+                            ),
+                            Some("model_switch.instructions"),
+                        ),
+                        message(
+                            "developer",
+                            format!(
+                                "Unclassified developer before: {TARGET} Unclassified developer after."
+                            ),
+                            Some("generic.developer_instructions"),
+                        ),
+                        message(
+                            "system",
+                            format!("System text before: {TARGET} System text after."),
+                            None,
+                        ),
+                    ],
+                    base_instructions: BaseInstructions {
+                        text: baseline.clone(),
+                        provenance: fresh_model_baseline.then(|| {
+                            BaseInstructionsProvenance::Model {
+                                model: model_slug.to_string(),
+                            }
+                        }),
+                    },
+                    ..Default::default()
+                };
+                let original_input = prompt.input.clone();
+                let request = client.build_responses_request(
+                    &prompt,
+                    &model_info,
+                    /*effort*/ None,
+                    codex_protocol::config_types::ReasoningSummary::None,
+                    /*service_tier*/ None,
+                    &test_responses_metadata_for_client(
+                        &client,
+                        /*turn_id*/ None,
+                        format!("{}:0", client.state.thread_id),
+                        metadata_parent_id.clone(),
+                        TestCodexResponsesRequestKind::Turn,
+                    ),
+                    /*include_internal*/ true,
+                )?;
+                let serialized_request = serde_json::to_string(&request)?;
+
+                assert_eq!(
+                    serialized_request.matches(TARGET).count(),
+                    3,
+                    "only managed, unclassified, and system text retain the target for {model_slug} / {thread_kind} / fresh={fresh_model_baseline}"
+                );
+                let retained_fragments = [
+                    "Client-owned baseline before.  Client-owned baseline after.".to_string(),
+                    "Client-owned history baseline before:  Client-owned history baseline after."
+                        .to_string(),
+                    "Developer guidance before:  Developer guidance after.".to_string(),
+                    "Additional developer guidance before:  Additional developer guidance after."
+                        .to_string(),
+                    format!(
+                        "{MULTI_AGENT_MODE_OPEN_TAG}Mode guidance before:  Mode guidance after.{MULTI_AGENT_MODE_CLOSE_TAG}"
+                    ),
+                    "<multi_agent_role>Role guidance before:  Role guidance after.</multi_agent_role>".to_string(),
+                    "<model_switch>Model-switch guidance before:  Model-switch guidance after.</model_switch>".to_string(),
+                    format!("Managed baseline before: {TARGET} Managed baseline after."),
+                    format!(
+                        "Unclassified developer before: {TARGET} Unclassified developer after."
+                    ),
+                    format!("System text before: {TARGET} System text after."),
+                ];
+                for retained in retained_fragments {
+                    assert!(
+                        serialized_request.contains(&retained),
+                        "serialized request omitted {retained:?} for {model_slug} / {thread_kind} / fresh={fresh_model_baseline}"
+                    );
+                }
+                assert_eq!(
+                    prompt.input, original_input,
+                    "request construction must preserve stored history"
+                );
+                assert_eq!(prompt.base_instructions.text, baseline);
             }
         }
     }
