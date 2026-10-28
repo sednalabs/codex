@@ -874,6 +874,7 @@ impl TurnContext {
             extension_data: Arc::clone(&self.extension_data),
             turn_timing_state: Arc::clone(&self.turn_timing_state),
             terminal_error: Arc::clone(&self.terminal_error),
+            agent_goal_control_snapshot: Arc::clone(&self.agent_goal_control_snapshot),
             session_grants: Arc::clone(&self.session_grants),
             turn_grants: Arc::clone(&self.turn_grants),
             server_model_warning_emitted: AtomicBool::new(
