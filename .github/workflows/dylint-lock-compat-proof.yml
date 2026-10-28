@@ -26,14 +26,22 @@ jobs:
             --component rustc-dev \
             --component rust-src \
             --no-self-update
+          rustup default nightly-2026-08-20
 
       - name: Update the package lock for Dylint 6.3.0
         working-directory: tools/argument-comment-lint
         run: |
+          grep -Fx 'dylint_linting = "6.3.0"' Cargo.toml
           grep -Fx 'dylint_testing = "6.3.0"' Cargo.toml
+          cargo update -p dylint_linting --precise 6.3.0
           cargo update -p dylint_testing --precise 6.3.0
           test "$(git -C "$GITHUB_WORKSPACE" diff --name-only)" = 'tools/argument-comment-lint/Cargo.lock'
           git -C "$GITHUB_WORKSPACE" diff --check
+
+      - name: Install matching Dylint tools
+        run: |
+          cargo install --locked cargo-dylint --version 6.3.0
+          cargo install --locked dylint-link --version 6.3.0
 
       - name: Test argument-comment-lint package
         working-directory: tools/argument-comment-lint
