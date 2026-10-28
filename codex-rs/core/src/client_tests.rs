@@ -674,17 +674,17 @@ fn classified_overlay_handles_long_history_and_bounds_output() -> anyhow::Result
         client.build_responses_request(
             prompt,
             &test_model_info(),
-            None,
+            /*effort*/ None,
             codex_protocol::config_types::ReasoningSummary::None,
-            None,
+            /*service_tier*/ None,
             &test_responses_metadata_for_client(
                 &client,
-                None,
+                /*turn_id*/ None,
                 format!("{}:0", client.state.thread_id),
-                None,
+                /*parent_thread_id*/ None,
                 TestCodexResponsesRequestKind::Turn,
             ),
-            true,
+            /*include_internal*/ true,
         )
     };
     let request = build(&prompt)?;
