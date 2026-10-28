@@ -329,14 +329,16 @@ class UsageTreeTests(unittest.TestCase):
         )
         self.assertEqual(
             sum(
-                group["tokenTotals"]["output"]["knownSubtotal"]
-                for group in tree_groups
+                group["tokenTotals"]["output"]["knownSubtotal"] for group in tree_groups
             ),
             50,
         )
         self.assertEqual(
             sum(
-                (Decimal(group["calculatedCredits"]["credits"]) for group in tree_groups),
+                (
+                    Decimal(group["calculatedCredits"]["credits"])
+                    for group in tree_groups
+                ),
                 start=Decimal(0),
             ),
             Decimal("0.0012525"),
@@ -403,16 +405,21 @@ class UsageTreeTests(unittest.TestCase):
                 [("root-turn", "root-turn", "root-r1", 20, 8, 0, 3)],
             )
             output = io.StringIO()
-            with patch(
-                "codex_usage_tree.AppServer", side_effect=AssertionError
-            ), contextlib.redirect_stdout(output):
+            with (
+                patch("codex_usage_tree.AppServer", side_effect=AssertionError),
+                contextlib.redirect_stdout(output),
+            ):
                 exit_code = main(
                     ["--thread-id", "root", "--rollout-file", str(root_path)]
                 )
 
-        self.assertEqual(exit_code, 2)  # Observed TokenUsageRecord rows are best effort.
+        self.assertEqual(
+            exit_code, 2
+        )  # Observed TokenUsageRecord rows are best effort.
         report = json.loads(output.getvalue())
-        self.assertEqual(report["usage"]["source"], "local TokenUsageRecord rollout items")
+        self.assertEqual(
+            report["usage"]["source"], "local TokenUsageRecord rollout items"
+        )
         self.assertFalse(report["completeness"]["usageComplete"])
 
 

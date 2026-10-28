@@ -314,13 +314,15 @@ def aggregate(rows: list[dict[str, Any]], rates: dict[str, Any]) -> dict[str, An
                 "missingValues": missing,
             }
         if any("cacheWriteInputTokens" in group for group in groups):
-            cache_write_values = [group.get("cacheWriteInputTokens") for group in groups]
+            cache_write_values = [
+                group.get("cacheWriteInputTokens") for group in groups
+            ]
             cache_write_subtotal = sum(
                 value for value in cache_write_values if value is not None
             )
-            cache_write_missing = (
-                sum(value is None for value in cache_write_values) + len(missing_ids)
-            )
+            cache_write_missing = sum(
+                value is None for value in cache_write_values
+            ) + len(missing_ids)
             tokens["cacheWriteInput"] = {
                 "value": cache_write_subtotal if not cache_write_missing else None,
                 "knownSubtotal": cache_write_subtotal,
@@ -405,7 +407,11 @@ def _read_local_rollout(path: str) -> dict[str, Any]:
                 if not isinstance(item, dict):
                     continue
                 item_type = item.get("type")
-                if item_type not in {"session_meta", "turn_context", "token_usage_record"}:
+                if item_type not in {
+                    "session_meta",
+                    "turn_context",
+                    "token_usage_record",
+                }:
                     continue
                 payload = item.get("payload")
                 if not isinstance(payload, dict):
@@ -417,7 +423,9 @@ def _read_local_rollout(path: str) -> dict[str, Any]:
                     parent_thread_id = payload.get("parent_thread_id")
                     if not isinstance(thread_id, str) or not thread_id:
                         raise UsageError("local rollout has no thread identity")
-                    if parent_thread_id is not None and not isinstance(parent_thread_id, str):
+                    if parent_thread_id is not None and not isinstance(
+                        parent_thread_id, str
+                    ):
                         raise UsageError("local rollout has malformed parent identity")
                     session_meta = {
                         "threadId": thread_id,
@@ -428,7 +436,9 @@ def _read_local_rollout(path: str) -> dict[str, Any]:
                     if not isinstance(turn_id, str) or not turn_id:
                         raise UsageError("local rollout has malformed turn context")
                     model = _optional_text(payload.get("model"), "turn_context.model")
-                    effort = _optional_text(payload.get("effort"), "turn_context.effort")
+                    effort = _optional_text(
+                        payload.get("effort"), "turn_context.effort"
+                    )
                     contexts.setdefault(turn_id, []).append(
                         {"model": model, "reasoningEffort": effort}
                     )
@@ -447,7 +457,9 @@ def _read_local_rollout(path: str) -> dict[str, Any]:
                     ):
                         raise UsageError("local rollout has malformed response usage")
                     if response_id in response_ids:
-                        raise UsageError("local rollout repeats a response usage record")
+                        raise UsageError(
+                            "local rollout repeats a response usage record"
+                        )
                     response_ids.add(response_id)
                     records.append(
                         {
@@ -488,7 +500,9 @@ def _local_groups(rollout: dict[str, Any]) -> tuple[list[dict[str, Any]], bool]:
         context_pairs = {
             (context["model"], context["reasoningEffort"]) for context in contexts
         }
-        model, effort = next(iter(context_pairs)) if len(context_pairs) == 1 else (None, None)
+        model, effort = (
+            next(iter(context_pairs)) if len(context_pairs) == 1 else (None, None)
+        )
         if model is None:
             model_context_complete = False
         values = record["usage"]
@@ -513,9 +527,7 @@ def _local_groups(rollout: dict[str, Any]) -> tuple[list[dict[str, Any]], bool]:
                 "outputTokens": values["output"],
                 "cacheWriteInputTokens": cache_write_tokens,
                 "unpricedTokenDimensions": (
-                    ["cacheWriteInputTokens"]
-                    if cache_write_tokens != 0
-                    else []
+                    ["cacheWriteInputTokens"] if cache_write_tokens != 0 else []
                 ),
             }
         )
@@ -524,11 +536,14 @@ def _local_groups(rollout: dict[str, Any]) -> tuple[list[dict[str, Any]], bool]:
     for (model, effort), items in sorted(
         grouped.items(), key=lambda item: tuple(value or "" for value in item[0])
     ):
+
         def total(field: str) -> int | None:
             values = [item[field] for item in items]
-            return sum(value for value in values if value is not None) if all(
-                value is not None for value in values
-            ) else None
+            return (
+                sum(value for value in values if value is not None)
+                if all(value is not None for value in values)
+                else None
+            )
 
         groups.append(
             {
@@ -570,8 +585,13 @@ def collect_local_tree(
         for thread_id in expected_child_ids
     ):
         raise UsageError("expected child thread IDs must be non-empty")
-    if len(set(expected_child_ids)) != len(expected_child_ids) or root_id in expected_child_ids:
-        raise UsageError("expected local thread IDs must be distinct descendants, excluding root")
+    if (
+        len(set(expected_child_ids)) != len(expected_child_ids)
+        or root_id in expected_child_ids
+    ):
+        raise UsageError(
+            "expected local thread IDs must be distinct descendants, excluding root"
+        )
 
     rollouts = [_read_local_rollout(path) for path in rollout_paths]
     by_id = {row["threadId"]: row for row in rollouts}
@@ -584,7 +604,9 @@ def collect_local_tree(
         if any(
             record["rootTurnId"] not in root_turn_ids for record in rollout["records"]
         ):
-            raise UsageError("usage references a turn outside the supplied root rollout")
+            raise UsageError(
+                "usage references a turn outside the supplied root rollout"
+            )
     unexpected = set(by_id) - {root_id, *expected_child_ids}
     if unexpected:
         raise UsageError("local rollout files include an unexpected thread")
@@ -614,7 +636,9 @@ def collect_local_tree(
                 "parentThreadId": rollout["parentThreadId"],
                 "role": "root" if thread_id == root_id else "child",
                 "usageStatus": (
-                    "observed_local_records" if rollout["records"] else "no_usage_records"
+                    "observed_local_records"
+                    if rollout["records"]
+                    else "no_usage_records"
                 ),
                 "usage": {"groups": groups} if groups else None,
                 "responseUsageRecordCount": len(rollout["records"]),
