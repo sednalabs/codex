@@ -455,17 +455,19 @@ def _read_local_rollout(path: str) -> dict[str, Any]:
                             "turnId": turn_id,
                             "rootTurnId": root_turn_id,
                             "usage": {
-                                name: _optional_int(usage.get(field), field)
-                                for name, field in (
-                                    ("input", "input_tokens"),
-                                    ("cachedInput", "cached_input_tokens"),
-                                    ("output", "output_tokens"),
-                                )
+                                **{
+                                    name: _optional_int(usage.get(field), field)
+                                    for name, field in (
+                                        ("input", "input_tokens"),
+                                        ("cachedInput", "cached_input_tokens"),
+                                        ("output", "output_tokens"),
+                                    )
+                                },
+                                "cacheWriteInput": _optional_int(
+                                    usage.get("cache_write_input_tokens", 0),
+                                    "cache_write_input_tokens",
+                                ),
                             },
-                            "cacheWriteInput": _optional_int(
-                                usage.get("cache_write_input_tokens", 0),
-                                "cache_write_input_tokens",
-                            ),
                         }
                     )
     except OSError as exc:
