@@ -3,11 +3,9 @@
 
 import argparse
 import hashlib
-import importlib.util
 import json
 import re
 import zipfile
-from pathlib import Path
 
 
 API_SUFFIX = "environment-docs/codex-app/api.json"
@@ -75,19 +73,14 @@ def main():
             package_hash.update(chunk)
     if package_hash.hexdigest() != args.expected_sha256:
         raise ValueError("package hash mismatch")
-    spec = importlib.util.spec_from_file_location("asar_reader", Path(__file__).with_name("analyze-bundled-js.py"))
-    module = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(module)
     report = {"package_sha256": package_hash.hexdigest(), "api": None, "declarations": []}
     with zipfile.ZipFile(args.package) as package:
-        asar = package.read("app/resources/app.asar")
-        header, offset = module.parse_asar(asar)
-        api_entries = [(path, entry) for path, entry in module.walk_asar(header) if path.endswith(API_SUFFIX)]
+        paths = package.namelist()
+        api_entries = [path for path in paths if path.endswith(API_SUFFIX)]
         if len(api_entries) != 1:
             raise ValueError(f"expected one API asset, found {len(api_entries)}")
-        path, entry = api_entries[0]
-        start = offset + int(entry["offset"])
-        data = asar[start:start + entry["size"]]
+        path = api_entries[0]
+        data = package.read(path)
         if digest(data) != API_HASH:
             raise ValueError("API asset hash mismatch")
         api = {"path": path, "sha256": digest(data), "bytes": len(data)}
@@ -99,7 +92,6 @@ def main():
         except json.JSONDecodeError as error:
             api.update({"parse": "json_error", "message": error.msg, "line": error.lineno, "column": error.colno, "position": error.pos})
         report["api"] = api
-        paths = package.namelist()
         for name, expected in DECLARATIONS.items():
             matches = [p for p in paths if TARGET_DIR in p and p.endswith("/" + name)]
             if len(matches) != 1:
