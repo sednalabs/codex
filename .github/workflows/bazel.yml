@@ -43,7 +43,7 @@ jobs:
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
         with:
-          fetch-depth: 2
+          fetch-depth: 4
           persist-credentials: false
 
       - name: Verify exact product source for focused validation
@@ -52,9 +52,13 @@ jobs:
           EXPECTED_PRODUCT_SHA: 402dd8af5d14ade96c3fa8bb011b883d7eb418cb
         shell: bash
         run: |
-          actual_parent="$(git show -s --format=%P HEAD)"
-          if [[ "${actual_parent}" != "${EXPECTED_PRODUCT_SHA}" ]]; then
-            echo "Expected product source ${EXPECTED_PRODUCT_SHA} as the exact parent, got ${actual_parent}" >&2
+          if ! git merge-base --is-ancestor "${EXPECTED_PRODUCT_SHA}" HEAD; then
+            echo "Expected product source ${EXPECTED_PRODUCT_SHA} is not an ancestor of HEAD" >&2
+            exit 1
+          fi
+          changed_paths="$(git diff --name-only "${EXPECTED_PRODUCT_SHA}" HEAD)"
+          if [[ "${changed_paths}" != ".github/workflows/bazel.yml" ]]; then
+            echo "Expected only the focused workflow to differ from product source; got: ${changed_paths}" >&2
             exit 1
           fi
 
