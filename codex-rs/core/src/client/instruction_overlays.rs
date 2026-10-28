@@ -2,7 +2,6 @@ use anyhow::Result;
 use codex_config::InstructionOverlayComponent;
 use codex_config::InstructionOverlaySelection;
 use codex_config::InstructionOverlaysToml;
-use codex_config::MAX_INSTRUCTION_OVERLAY_INSTANCES;
 use codex_config::MAX_INSTRUCTION_OVERLAY_REQUEST_BYTES;
 use codex_protocol::models::ContentItem;
 use codex_protocol::models::ResponseItem;
@@ -56,7 +55,6 @@ pub(super) fn transform_request(
     }
 
     let mut transformed_input = input;
-    let mut selected_instances = 0usize;
     let mut selected_bytes = 0usize;
     let baseline_component = if matches!(source, SessionSource::SubAgent(SubAgentSource::Review)) {
         InstructionOverlayComponent::ReviewBaseline
@@ -74,7 +72,6 @@ pub(super) fn transform_request(
                 plan,
                 baseline_component,
                 &mut transformed_input,
-                &mut selected_instances,
                 &mut selected_bytes,
             )?;
         } else {
@@ -90,13 +87,7 @@ pub(super) fn transform_request(
                     | InstructionOverlayComponent::ReviewBaseline
             )
     }) {
-        apply_tagged_component(
-            plan,
-            component,
-            &mut transformed_input,
-            &mut selected_instances,
-            &mut selected_bytes,
-        )?;
+        apply_tagged_component(plan, component, &mut transformed_input, &mut selected_bytes)?;
     }
     Ok(transformed_input)
 }
@@ -139,7 +130,6 @@ fn apply_tagged_component(
     plan: &InstructionOverlaysToml,
     component: InstructionOverlayComponent,
     input: &mut Vec<ResponseItem>,
-    selected_instances: &mut usize,
     selected_bytes: &mut usize,
 ) -> Result<()> {
     if plan
@@ -148,21 +138,8 @@ fn apply_tagged_component(
     {
         return Ok(());
     }
-    let selected = find_candidate(
-        plan,
-        input,
-        component,
-        target_kind(component),
-        *selected_instances,
-    )?;
-    apply_candidates(
-        plan,
-        component,
-        input,
-        selected,
-        selected_instances,
-        selected_bytes,
-    )
+    let selected = find_candidate(plan, input, component, target_kind(component))?;
+    apply_candidates(plan, component, input, selected, selected_bytes)
 }
 
 struct Candidate {
@@ -175,7 +152,6 @@ fn find_candidate(
     input: &[ResponseItem],
     component: InstructionOverlayComponent,
     target_kind: &str,
-    already_selected_instances: usize,
 ) -> Result<Vec<Candidate>> {
     let mut selected = Vec::new();
     let unique_selection = plan
@@ -217,11 +193,6 @@ fn find_candidate(
                         component.as_str()
                     );
                 }
-                if already_selected_instances.saturating_add(selected.len())
-                    >= MAX_INSTRUCTION_OVERLAY_INSTANCES
-                {
-                    anyhow::bail!("instruction overlay selected-instance limit exceeded");
-                }
                 let ContentItem::InputText { .. } = &content[content_index] else {
                     anyhow::bail!(
                         "instruction overlay target for {} is not text at request item {item_index}",
@@ -243,23 +214,15 @@ fn apply_candidates(
     component: InstructionOverlayComponent,
     input: &mut Vec<ResponseItem>,
     mut selected: Vec<Candidate>,
-    selected_instances: &mut usize,
     selected_bytes: &mut usize,
 ) -> Result<()> {
     if selected.is_empty() {
         let _ = apply_component(plan, component, /*body*/ None)?;
         return Ok(());
     }
-    *selected_instances = selected_instances.saturating_add(selected.len());
-    if *selected_instances > MAX_INSTRUCTION_OVERLAY_INSTANCES {
-        anyhow::bail!("instruction overlay selected-instance limit exceeded");
-    }
-    selected.sort_by_key(|candidate| {
-        (
-            std::cmp::Reverse(candidate.item_index),
-            std::cmp::Reverse(candidate.content_index),
-        )
-    });
+    // Discovery is in request order. Reverse it so removals cannot invalidate
+    // the indices of later replacements, without sorting a long history.
+    selected.reverse();
     let mut replacements = Vec::with_capacity(selected.len());
     for Candidate {
         item_index,
@@ -283,6 +246,9 @@ fn apply_candidates(
         *selected_bytes = selected_bytes.saturating_add(final_text_len);
         if *selected_bytes > MAX_INSTRUCTION_OVERLAY_REQUEST_BYTES {
             anyhow::bail!("instruction overlay request output limit exceeded");
+        }
+        if updated_body == body {
+            continue;
         }
         replacements.push((
             item_index,

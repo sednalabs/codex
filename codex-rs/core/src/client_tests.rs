@@ -591,6 +591,145 @@ fn developer_overlay_reaches_fresh_root_and_child_request_payloads() -> anyhow::
 }
 
 #[test]
+fn classified_overlay_handles_long_history_and_bounds_output() -> anyhow::Result<()> {
+    let component = || InstructionOverlayComponentToml {
+        on_absent: InstructionOverlayOnAbsent::Skip,
+        selection: InstructionOverlaySelection::AllClassified,
+        edits: vec![InstructionOverlayEdit::RemoveExactIfPresent {
+            text: "remove me".to_string(),
+            expected_matches: 1,
+        }],
+        ..Default::default()
+    };
+    let overlays = InstructionOverlaysToml {
+        multi_agent_role: Some(component()),
+        multi_agent_mode: Some(component()),
+        collaboration_guidance: Some(component()),
+        ..Default::default()
+    };
+    let message = |role: &str, text: String, kind: Option<&str>, id: &str| ResponseItem::Message {
+        encrypted_content: None,
+        status: None,
+        id: Some(id.to_string()),
+        role: role.to_string(),
+        content: vec![ContentItem::InputText { text }],
+        phase: None,
+        internal_chat_message_metadata_passthrough: kind.map(|kind| {
+            InternalChatMessageMetadataPassthrough {
+                content_item_kinds: Some(vec![ContentItemKind(kind.to_string())]),
+                ..Default::default()
+            }
+        }),
+    };
+    let client = test_model_client(SessionSource::Cli).with_instruction_overlays(overlays);
+    let mut input = Vec::new();
+    for i in 0..90 {
+        let (kind, open, close) = match i % 3 {
+            0 => (
+                "client.multi_agent.role_instructions",
+                "<multi_agent_role>",
+                "</multi_agent_role>",
+            ),
+            1 => (
+                "client.multi_agent.mode_instructions",
+                "<multi_agent_mode>",
+                "</multi_agent_mode>",
+            ),
+            _ => (
+                "collaboration_mode.instructions",
+                "<collaboration_mode>",
+                "</collaboration_mode>",
+            ),
+        };
+        let body = if i % 2 == 0 {
+            "before remove me after"
+        } else {
+            "unchanged"
+        };
+        input.push(message(
+            "developer",
+            format!("{open}{body}{close}"),
+            Some(kind),
+            &format!("id-{i}"),
+        ));
+    }
+    input.push(message(
+        "system",
+        "remove me".to_string(),
+        None,
+        "system-id",
+    ));
+    input.push(message(
+        "developer",
+        "remove me".to_string(),
+        None,
+        "unclassified-id",
+    ));
+    let prompt = Prompt {
+        input,
+        ..Default::default()
+    };
+    let original = prompt.input.clone();
+    let build = |prompt: &Prompt| {
+        client.build_responses_request(
+            prompt,
+            &test_model_info(),
+            None,
+            codex_protocol::config_types::ReasoningSummary::None,
+            None,
+            &test_responses_metadata_for_client(
+                &client,
+                None,
+                format!("{}:0", client.state.thread_id),
+                None,
+                TestCodexResponsesRequestKind::Turn,
+            ),
+            true,
+        )
+    };
+    let request = build(&prompt)?;
+    assert_eq!(prompt.input, original);
+    assert_eq!(request.input.len(), original.len());
+    for (i, item) in request.input[..90].iter().enumerate() {
+        let ResponseItem::Message { id, content, .. } = item else {
+            panic!("expected message")
+        };
+        let ContentItem::InputText { text } = &content[0] else {
+            panic!("expected text")
+        };
+        if i % 2 == 0 {
+            assert_eq!(id, &None);
+            assert!(text.contains("before  after"));
+        } else {
+            assert_eq!(id.as_deref(), Some(format!("id-{i}").as_str()));
+            assert!(text.contains("unchanged"));
+        }
+    }
+    assert_eq!(&request.input[90..], &original[90..]);
+
+    let oversized = Prompt {
+        input: (0..17)
+            .map(|i| {
+                message(
+                    "developer",
+                    "x".repeat(256 * 1024),
+                    Some("client.multi_agent.role_instructions"),
+                    &format!("large-{i}"),
+                )
+            })
+            .collect(),
+        ..Default::default()
+    };
+    let error = build(&oversized).expect_err("request output budget must remain enforced");
+    assert!(
+        error
+            .to_string()
+            .contains("instruction overlay request output limit exceeded")
+    );
+    Ok(())
+}
+
+#[test]
 fn incremental_model_baseline_overlay_preserves_notice_and_history() -> anyhow::Result<()> {
     const PREVIOUS_BASELINE: &str = "Previous generated baseline.";
     const CURRENT_BASELINE: &str = "Current generated baseline.";
