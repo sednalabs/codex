@@ -746,7 +746,12 @@ async fn input_interrupts_wait_agent_and_is_sent_in_follow_up_request(input: Wai
         .codex;
 
     submit_user_input(&codex, INITIAL_PROMPT).await;
-    server.wait_for_request_count(/*count*/ 1).await;
+    tokio::time::timeout(
+        std::time::Duration::from_secs(30),
+        server.wait_for_request_count(/*count*/ 1),
+    )
+    .await
+    .expect("first model request did not reach the streaming SSE server");
     if matches!(input, WaitInput::PendingInjection) {
         // Hold the tool call until the injection and its activity signal are queued.
         codex

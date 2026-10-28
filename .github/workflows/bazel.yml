@@ -147,6 +147,18 @@ jobs:
               --test_verbose_timeout_warnings \
               --test_output=all \
               --build_metadata="COMMIT_SHA=${GITHUB_SHA}" \
+              --test_arg=suite::pending_input::input_interrupts_wait_agent_and_is_sent_in_follow_up_request \
+              -- \
+              //codex-rs/core:core-all-test || focused_status=$?
+            ./.github/scripts/run-bazel-ci.sh \
+              --print-failed-test-logs \
+              --print-failed-action-summary \
+              -- \
+              test \
+              --test_tag_filters=-argument-comment-lint \
+              --test_verbose_timeout_warnings \
+              --test_output=all \
+              --build_metadata="COMMIT_SHA=${GITHUB_SHA}" \
               -- \
               //codex-rs/ext/mcp:mcp-unit-tests || focused_status=$?
             ./.github/scripts/run-bazel-ci.sh \
