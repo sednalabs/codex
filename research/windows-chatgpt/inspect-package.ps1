@@ -26,16 +26,7 @@ $signatureSummary = [ordered]@{
 }
 
 $python = Get-Command python.exe -ErrorAction Stop
-& $python.Source (Join-Path $PSScriptRoot 'analyze-package.py') `
-    --package $packagePath `
-    --headers $headersPath `
-    --source-url $packageUrl `
-    --signature-json ($signatureSummary | ConvertTo-Json -Compress)
-if ($LASTEXITCODE -ne 0) {
-    throw "Package inspection failed with Python exit code $LASTEXITCODE"
-}
-
-& $python.Source (Join-Path $PSScriptRoot 'analyze-bundled-js.py') `
+& $python.Source (Join-Path $PSScriptRoot 'extract-local-contracts.py') `
     --package $packagePath `
     --expected-sha256 $expectedPackageSha256
 if ($LASTEXITCODE -ne 0) {
