@@ -198,7 +198,10 @@ async fn review_start_runs_review_turn_and_emits_code_review_item(
     }
 
     let review = review_body.expect("did not observe a code review item");
-    assert!(review.contains("Prefer Stylize helpers"));
+    assert!(
+        review.contains("Prefer Stylize helpers"),
+        "review body omitted the expected finding: {review:?}"
+    );
     assert!(review.contains("/tmp/file.rs:10-20"));
     assert!(
         !mcp.pending_notification_methods()

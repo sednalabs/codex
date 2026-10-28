@@ -54,9 +54,13 @@ Settings:
     <ENVIRONMENT_CONTEXT>
 05:message/user:
     List my calendar events.
-06:configuration_update:reasoning={"effort":"low"}
+06:message/developer:
+    <MULTI_AGENT_MODE>
+07:configuration_update:reasoning={"effort":"low"}
 -- request 2 (turn) --
-07:function_call/mcp__ordinary.calendar_list_events:{}
-08:function_call_output:Wall time: <DURATION> seconds
+08:function_call/mcp__ordinary.calendar_list_events:{}
+09:function_call_output:Wall time: <DURATION> seconds
     Output:
     {"_codex_apps":null}
+10:message/developer:
+    <MULTI_AGENT_MODE>

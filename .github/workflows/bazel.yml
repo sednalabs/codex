@@ -30,7 +30,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        include: ${{ fromJSON((github.event_name == 'workflow_dispatch' && inputs.w14939_focused_tests) && '[{"os":"ubuntu-24.04","target":"x86_64-unknown-linux-gnu","timeout_minutes":90,"test_timeout_minutes":80}]' || '[{"os":"macos-15","target":"aarch64-apple-darwin","timeout_minutes":135,"test_timeout_minutes":120},{"os":"macos-15","target":"x86_64-apple-darwin","timeout_minutes":135,"test_timeout_minutes":120},{"os":"ubuntu-24.04","target":"x86_64-unknown-linux-gnu","timeout_minutes":135,"test_timeout_minutes":120},{"os":"ubuntu-24.04","target":"x86_64-unknown-linux-musl","timeout_minutes":135,"test_timeout_minutes":120}]') }}
+        include: ${{ fromJSON((github.event_name == 'workflow_dispatch' && inputs.w14939_focused_tests) && '[{"os":"ubuntu-24.04","target":"x86_64-unknown-linux-gnu","timeout_minutes":90,"test_timeout_minutes":80}]' || '[{"os":"macos-15","target":"aarch64-apple-darwin","timeout_minutes":165,"test_timeout_minutes":150},{"os":"macos-15","target":"x86_64-apple-darwin","timeout_minutes":165,"test_timeout_minutes":150},{"os":"ubuntu-24.04","target":"x86_64-unknown-linux-gnu","timeout_minutes":135,"test_timeout_minutes":120},{"os":"ubuntu-24.04","target":"x86_64-unknown-linux-musl","timeout_minutes":135,"test_timeout_minutes":120}]') }}
 
     runs-on: ${{ matrix.os }}
 

@@ -3213,8 +3213,8 @@ async fn guardian_review_retries_transient_session_failure_then_approves() -> an
         vec![
             sse_failed(
                 "resp-session-failure",
-                "server_is_overloaded",
-                "temporary reviewer overload",
+                "flex_unavailable",
+                "temporary reviewer capacity unavailable",
             ),
             sse(vec![
                 ev_response_created("resp-approved"),
