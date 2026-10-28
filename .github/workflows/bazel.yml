@@ -45,6 +45,18 @@ jobs:
         with:
           persist-credentials: false
 
+      - name: Verify exact product source for focused validation
+        if: ${{ github.event_name == 'workflow_dispatch' && inputs.w14939_focused_tests }}
+        env:
+          EXPECTED_PRODUCT_SHA: 402dd8af5d14ade96c3fa8bb011b883d7eb418cb
+        shell: bash
+        run: |
+          actual_parent="$(git show -s --format=%P HEAD)"
+          if [[ "${actual_parent}" != "${EXPECTED_PRODUCT_SHA}" ]]; then
+            echo "Expected product source ${EXPECTED_PRODUCT_SHA} as the exact parent, got ${actual_parent}" >&2
+            exit 1
+          fi
+
       - name: Prepare Bazel CI
         id: prepare_bazel
         uses: ./.github/actions/prepare-bazel-ci
@@ -136,6 +148,18 @@ jobs:
               --build_metadata="COMMIT_SHA=${GITHUB_SHA}" \
               --test_arg=--exact \
               --test_arg=session::tests::isolated_guardian_sessions_skip_agent_mailbox_hooks \
+              -- \
+              //codex-rs/core:core-unit-tests || focused_status=$?
+            ./.github/scripts/run-bazel-ci.sh \
+              --print-failed-test-logs \
+              --print-failed-action-summary \
+              -- \
+              test \
+              --test_tag_filters=-argument-comment-lint \
+              --test_verbose_timeout_warnings \
+              --test_output=all \
+              --build_metadata="COMMIT_SHA=${GITHUB_SHA}" \
+              --test_arg=classified_overlay \
               -- \
               //codex-rs/core:core-unit-tests || focused_status=$?
             ./.github/scripts/run-bazel-ci.sh \
