@@ -770,7 +770,9 @@ async fn session_info_availability_nux_tooltip_snapshot() {
         Some(PlanType::Free),
     );
 
-    let rendered = render_transcript(&cell).join("\n");
+    let rendered = render_transcript(&cell)
+        .join("\n")
+        .replace(crate::version::display_version(), "0.0.0");
     insta::assert_snapshot!(rendered);
 }
 
@@ -1374,7 +1376,9 @@ fn web_search_history_cell_snapshot() {
 fn standalone_unix_update_available_history_cell_snapshot() {
     let cell =
         UpdateAvailableHistoryCell::new("9.9.9".to_string(), Some(UpdateAction::StandaloneUnix));
-    let rendered = render_lines(&cell.display_lines(/*width*/ 110)).join("\n");
+    let rendered = render_lines(&cell.display_lines(/*width*/ 110))
+        .join("\n")
+        .replace(crate::version::display_version(), "0.0.0");
 
     insta::assert_snapshot!(rendered);
 }
@@ -1383,7 +1387,9 @@ fn standalone_unix_update_available_history_cell_snapshot() {
 fn standalone_windows_update_available_history_cell_snapshot() {
     let cell =
         UpdateAvailableHistoryCell::new("9.9.9".to_string(), Some(UpdateAction::StandaloneWindows));
-    let rendered = render_lines(&cell.display_lines(/*width*/ 110)).join("\n");
+    let rendered = render_lines(&cell.display_lines(/*width*/ 110))
+        .join("\n")
+        .replace(crate::version::display_version(), "0.0.0");
 
     insta::assert_snapshot!(rendered);
 }

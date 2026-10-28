@@ -157,6 +157,15 @@ impl App {
     }
 
     pub(super) fn confirm_daemon_update(&mut self, source: DaemonUpdateSource) {
+        let version = current_cli_package_version();
+        self.confirm_daemon_update_with_version(source, &version);
+    }
+
+    fn confirm_daemon_update_with_version(
+        &mut self,
+        source: DaemonUpdateSource,
+        cli_package_version: &str,
+    ) {
         let Some(executable) = &self.daemon_cli_executable else {
             return;
         };
@@ -166,10 +175,7 @@ impl App {
         let mut explanation = match source {
             DaemonUpdateSource::PublicStable => "Install the latest public stable release. Restore production updates; keep your automatic-update setting.".to_string(),
             DaemonUpdateSource::ThisCli => {
-                let version = codex_install_context::InstallContext::current()
-                    .package_manifest()
-                    .map_or_else(|| CODEX_CLI_VERSION.to_string(), |manifest| manifest.version.to_string());
-                format!("Use this CLI package v{version} from {}. Copy the complete package and pin it against automatic updates.", executable.display())
+                format!("Use this CLI package v{cli_package_version} from {}. Copy the complete package and pin it against automatic updates.", executable.display())
             }
         };
         explanation.push_str("\nThis may restart the daemon and interrupt active or queued work.\nCodex exits to update in this terminal. Relaunch it afterward.");
@@ -196,6 +202,15 @@ impl App {
             ..SelectionViewParams::confirmation()
         });
     }
+}
+
+fn current_cli_package_version() -> String {
+    codex_install_context::InstallContext::current()
+        .package_manifest()
+        .map_or_else(
+            || CODEX_CLI_VERSION.to_string(),
+            |manifest| manifest.version.to_string(),
+        )
 }
 
 #[cfg(test)]

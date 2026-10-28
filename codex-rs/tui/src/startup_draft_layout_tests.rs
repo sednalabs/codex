@@ -26,11 +26,21 @@ fn owned_startup_keeps_the_live_bottom_geometry() {
         })
         .collect::<Vec<_>>()
         .join("\n");
-    insta::assert_snapshot!(
-        "owned_startup_layout",
-        format!("cursor={:?}\n{frame}", layout.cursor_pos(area))
-            .replace(crate::version::CODEX_CLI_VERSION, "<VERSION>")
-    );
+    let normalized = format!("cursor={:?}\n{frame}", layout.cursor_pos(area))
+        .replace(crate::version::CODEX_CLI_VERSION, "<VERSION>");
+    let snapshot_header_width = usize::from(area.width) + "<VERSION>".len() - "0.0.0".len();
+    let normalized = normalized
+        .lines()
+        .map(|line| {
+            if line.contains("<VERSION>") {
+                format!("{:<snapshot_header_width$}", line.trim_end())
+            } else {
+                line.to_string()
+            }
+        })
+        .collect::<Vec<_>>()
+        .join("\n");
+    insta::assert_snapshot!("owned_startup_layout", normalized);
 }
 
 #[test]

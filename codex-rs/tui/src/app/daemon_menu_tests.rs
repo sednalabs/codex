@@ -123,6 +123,12 @@ async fn daemon_menu_is_read_only_and_confirmation_can_cancel_or_handoff() {
             .unwrap(),
         );
         app.confirm_daemon_update(source);
+        if source == DaemonUpdateSource::ThisCli {
+            let actual_version = super::current_cli_package_version();
+            let actual_confirmation = render_bottom_popup(&app.chat_widget, width);
+            assert!(actual_confirmation.contains(&actual_version));
+            app.confirm_daemon_update_with_version(source, "0.0.0");
+        }
         insta::assert_snapshot!(
             snapshot,
             render_bottom_popup(&app.chat_widget, width)
