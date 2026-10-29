@@ -99,17 +99,6 @@ predicate jobIsForkUnreachableCanonicalPythonPublisher(Job job) {
   )
 }
 
-predicate actionArgumentMatches(Uses step, string argumentName, string pattern) {
-  exists(Expression argument |
-    argument = step.getArgumentExpr(argumentName) and
-    argument.getExpression().regexpMatch(pattern)
-  )
-}
-
-predicate actionArgumentAbsent(Uses step, string argumentName) {
-  not exists(Expression argument | argument = step.getArgumentExpr(argumentName))
-}
-
 predicate jobUsesTrustedPypiPublisher(Job job) {
   jobUsesActionMatching(job, "(?i)^pypa/gh-action-pypi-publish@.*", _)
 }
