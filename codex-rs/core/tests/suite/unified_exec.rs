@@ -3686,7 +3686,22 @@ async fn unified_exec_runs_under_sandbox() -> Result<()> {
     let outputs = collect_tool_outputs(&bodies)?;
     let output = outputs.get(call_id).expect("missing output");
 
-    assert_regex_match("hello[\r\n]+", &output.output);
+    let expected_output = Regex::new(r"hello[\r\n]+").expect("valid echo output regex");
+    let contains_newline = output.output.contains('\r') || output.output.contains('\n');
+    assert_eq!(
+        output.exit_code,
+        Some(0),
+        "sandboxed echo command should exit successfully (output bytes={}, contains_hello={}, contains_newline={contains_newline})",
+        output.output.len(),
+        output.output.contains("hello")
+    );
+    assert!(
+        expected_output.is_match(&output.output),
+        "sandboxed echo output should contain hello followed by a newline (exit_code={:?}, output bytes={}, contains_hello={}, contains_newline={contains_newline})",
+        output.exit_code,
+        output.output.len(),
+        output.output.contains("hello")
+    );
 
     Ok(())
 }

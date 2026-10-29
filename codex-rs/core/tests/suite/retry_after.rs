@@ -49,6 +49,21 @@ const FIRST_RETRY_MIN_DELAY: Duration = Duration::from_millis(180);
 const FIRST_RETRY_MAX_DELAY: Duration = Duration::from_millis(220);
 const SECOND_RETRY_MIN_DELAY: Duration = Duration::from_millis(360);
 const SECOND_RETRY_MAX_DELAY: Duration = Duration::from_millis(440);
+const CAPACITY_RETRY_BASE_DELAY: Duration = Duration::from_secs(1);
+const CAPACITY_RETRY_MAX_DELAY: Duration = Duration::from_secs(60);
+const CAPACITY_RETRY_CAP_ATTEMPT: u64 = 10;
+
+fn assert_jittered_capacity_retry_delay(delay: Duration, attempt: u64) {
+    let capped_attempt = attempt.min(CAPACITY_RETRY_CAP_ATTEMPT).max(1);
+    let multiplier = 1_u64 << (capped_attempt - 1);
+    let base_millis = CAPACITY_RETRY_BASE_DELAY.as_millis() as u64 * multiplier;
+    let minimum = Duration::from_millis(base_millis * 9 / 10).min(CAPACITY_RETRY_MAX_DELAY);
+    let maximum = Duration::from_millis(base_millis * 11 / 10).min(CAPACITY_RETRY_MAX_DELAY);
+    assert!(
+        (minimum..=maximum).contains(&delay),
+        "capacity backoff should match the configured exponential delay with 10% jitter: attempt={attempt}, delay={delay:?}, expected={minimum:?}..={maximum:?}"
+    );
+}
 
 #[derive(Debug, PartialEq, Eq)]
 pub(super) struct RetryTelemetryEvent {
@@ -536,10 +551,7 @@ async fn responses_http_overload_retries_past_attempt_limits_until_recovery() ->
         assert_eq!(retry.layer, "stream");
         assert_eq!(retry.operation, "sampling");
         if attempt == 2 {
-            assert!(
-                (Duration::from_secs(1)..=Duration::from_secs(60)).contains(&retry.delay),
-                "no-advice capacity backoff should remain bounded: {retry:?}"
-            );
+            assert_jittered_capacity_retry_delay(retry.delay, attempt);
         }
         let elapsed = wait_for_retry(&mut telemetry, &retry).await;
         if attempt == 1 {
@@ -975,10 +987,7 @@ async fn compact_v2_overload_retries_past_attempt_limits_until_recovery() -> Res
         assert_eq!(retry.attempt, attempt);
         assert_eq!(retry.layer, "stream");
         assert_eq!(retry.operation, "remote_compaction_v2");
-        assert!(
-            (Duration::from_secs(1)..=Duration::from_secs(60)).contains(&retry.delay),
-            "no-advice capacity backoff should remain bounded: {retry:?}"
-        );
+        assert_jittered_capacity_retry_delay(retry.delay, attempt);
         wait_for_retry(&mut telemetry, &retry).await;
     }
     wait_for_turn_completion(&test).await;
@@ -1328,10 +1337,7 @@ async fn sse_overload_without_retry_after_retries_until_recovery() -> Result<()>
     assert_eq!(retry.attempt, 1);
     assert_eq!(retry.layer, "stream");
     assert_eq!(retry.operation, "sampling");
-    assert!(
-        (Duration::from_secs(1)..=Duration::from_secs(60)).contains(&retry.delay),
-        "no-advice capacity backoff should remain bounded: {retry:?}"
-    );
+    assert_jittered_capacity_retry_delay(retry.delay, retry.attempt);
     wait_for_retry(&mut telemetry, &retry).await;
     wait_for_turn_completion(&test).await;
 
@@ -2092,10 +2098,7 @@ async fn websocket_overload_without_retry_after_retries_until_recovery() -> Resu
     assert_eq!(retry.attempt, 1);
     assert_eq!(retry.layer, "stream");
     assert_eq!(retry.operation, "sampling");
-    assert!(
-        (Duration::from_secs(1)..=Duration::from_secs(60)).contains(&retry.delay),
-        "no-advice capacity backoff should remain bounded: {retry:?}"
-    );
+    assert_jittered_capacity_retry_delay(retry.delay, retry.attempt);
     wait_for_retry(&mut telemetry, &retry).await;
 
     let mut fallback_warning_events = 0;
