@@ -19,7 +19,7 @@ fn fixed_policy() -> McpOAuthPolicy {
         expected_issuer: "https://issuer.example/".to_string(),
         client_id: "codex-work-claim".to_string(),
         audience: "https://mcp.example/".to_string(),
-        requested_scope: "ops:write".to_string(),
+        requested_scope: "ops:read ops:write".to_string(),
     }
 }
 
@@ -40,7 +40,7 @@ fn claims() -> Value {
         "azp": "codex-work-claim",
         "aud": ["https://mcp.example/"],
         "exp": NOW + 600,
-        "scope": "ops:write",
+        "scope": "ops:read ops:write",
         "project_id": PROJECT_ID
     })
 }
@@ -50,7 +50,7 @@ fn response(claims: Value) -> TokenEndpointResponse {
         access_token: crate::provider_auth::SecretString(access_token(claims)),
         token_type: "Bearer".to_string(),
         expires_in: Some(120),
-        scope: Some("ops:write".to_string()),
+        scope: Some("ops:read ops:write".to_string()),
     }
 }
 
@@ -81,7 +81,7 @@ fn request_uses_fixed_client_credentials_scope_and_audience_without_secret_in_bo
         vec![
             ("grant_type".to_string(), "client_credentials".to_string()),
             ("audience".to_string(), "https://mcp.example/".to_string()),
-            ("scope".to_string(), "ops:write".to_string()),
+            ("scope".to_string(), "ops:read ops:write".to_string()),
         ]
     );
     assert!(!request.body.contains(&secret.0));
@@ -118,6 +118,64 @@ fn policy_rejects_non_https_or_dynamic_scope_inputs() {
     let mut policy = fixed_policy();
     policy.requested_scope = "ops:write ops:admin".to_string();
     assert!(policy.validate().is_err());
+
+    for scope in ["", "ops:read", "ops:write", "ops:read ops:write ops:write"] {
+        let mut policy = fixed_policy();
+        policy.requested_scope = scope.to_string();
+        assert!(policy.validate().is_err());
+    }
+    let mut reordered = fixed_policy();
+    reordered.requested_scope = "ops:write ops:read".to_string();
+    assert!(reordered.validate().is_ok());
+}
+
+#[test]
+fn exact_read_write_scope_is_required_across_all_present_claims_and_response() {
+    let policy = fixed_policy();
+    let principal = Uuid::parse_str(PRINCIPAL).unwrap();
+    let validate = |value| validate_token_response(value, &policy, principal, PROJECT_ID, NOW);
+
+    let mut valid = claims();
+    valid["scp"] = serde_json::json!(["ops:write", "ops:read"]);
+    valid["scopes"] = serde_json::json!("ops:read ops:write");
+    let mut reordered = response(valid);
+    reordered.scope = Some("ops:write ops:read".to_string());
+    assert!(validate(reordered).is_ok());
+
+    let mut missing = claims();
+    missing.as_object_mut().unwrap().remove("scope");
+    assert!(validate(response(missing)).is_err());
+
+    for invalid in [
+        serde_json::json!("ops:read"),
+        serde_json::json!("ops:write"),
+        serde_json::json!("ops:read ops:write ops:admin"),
+        serde_json::json!("ops:read ops:write ops:read"),
+        serde_json::json!(["ops:read", 17]),
+    ] {
+        let mut conflicting = claims();
+        conflicting["scp"] = invalid;
+        assert!(validate(response(conflicting)).is_err());
+    }
+    for invalid in [
+        "",
+        "ops:read",
+        "ops:write",
+        "ops:read ops:write ops:admin",
+        "ops:read ops:read ops:write",
+    ] {
+        let mut value = response(claims());
+        value.scope = Some(invalid.to_string());
+        assert!(validate(value).is_err());
+    }
+
+    let mut missing_client = claims();
+    missing_client.as_object_mut().unwrap().remove("azp");
+    assert!(validate(response(missing_client)).is_err());
+    let mut alternative_client = claims();
+    alternative_client.as_object_mut().unwrap().remove("azp");
+    alternative_client["client_id"] = serde_json::json!("codex-work-claim");
+    assert!(validate(response(alternative_client)).is_ok());
 }
 
 #[test]
@@ -262,7 +320,7 @@ fn endpoint_response_ignores_unused_keycloak_metadata_but_validates_access_token
         "access_token": access_token(claims()),
         "token_type": "Bearer",
         "expires_in": 120,
-        "scope": "ops:write",
+        "scope": "ops:read ops:write",
         "refresh_expires_in": 0,
         "not-before-policy": 0,
         "session_state": "synthetic-session",

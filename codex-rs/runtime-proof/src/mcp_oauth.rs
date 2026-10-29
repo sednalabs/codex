@@ -26,7 +26,7 @@ const MAX_ACCESS_TOKEN_BYTES: usize = 12 * 1024;
 const MAX_TOKEN_CLAIMS_BYTES: usize = 8 * 1024;
 const TOKEN_CONNECT_TIMEOUT: Duration = Duration::from_secs(3);
 const TOKEN_REQUEST_TIMEOUT: Duration = Duration::from_secs(10);
-const REQUIRED_SCOPE: &str = "ops:write";
+const REQUIRED_SCOPES: [&str; 2] = ["ops:read", "ops:write"];
 
 struct PreparedClientCredentialsRequest {
     endpoint: String,
@@ -77,7 +77,7 @@ impl McpOAuthPolicy {
             || self.audience.is_empty()
             || self.audience.len() > 1024
             || self.audience.chars().any(char::is_control)
-            || self.requested_scope != REQUIRED_SCOPE
+            || !exact_scope_set(self.requested_scope.split_whitespace())
         {
             bail!("fixed MCP OAuth policy is outside the admitted token contract");
         }
@@ -251,7 +251,7 @@ fn validate_token_response(
         || response
             .scope
             .as_deref()
-            .is_some_and(|scope| scope.split_whitespace().collect::<Vec<_>>() != [REQUIRED_SCOPE])
+            .is_some_and(|scope| !exact_scope_set(scope.split_whitespace()))
         || response.access_token.0.is_empty()
         || response.access_token.0.len() > MAX_ACCESS_TOKEN_BYTES
         || response.access_token.0.chars().any(char::is_control)
@@ -272,17 +272,19 @@ fn validate_token_response(
     let subject = claims.get("sub").and_then(Value::as_str);
     let token_principal = subject.and_then(|value| Uuid::parse_str(value).ok());
     let expected_subject = principal.to_string();
-    let client_identity_matches = ["azp", "client_id"].into_iter().all(|claim_name| {
-        claims.get(claim_name).is_none_or(|value| {
-            value
-                .as_str()
-                .is_some_and(|value| value.trim() == policy.client_id.as_str())
-        })
-    });
+    let client_identity_matches = ["azp", "client_id"]
+        .into_iter()
+        .any(|claim_name| claims.get(claim_name).is_some())
+        && ["azp", "client_id"].into_iter().all(|claim_name| {
+            claims.get(claim_name).is_none_or(|value| {
+                value
+                    .as_str()
+                    .is_some_and(|value| value.trim() == policy.client_id.as_str())
+            })
+        });
     let audience_matches = claim_audiences(&claims)
         .is_some_and(|audiences| audiences.contains(&policy.audience.as_str()));
-    let scopes_match =
-        claim_scopes(&claims).is_some_and(|scopes| scopes.as_slice() == [REQUIRED_SCOPE]);
+    let scopes_match = claim_scopes_match(&claims);
     let token_project = claim_project_id(&claims);
     let expires_at = claims.get("exp").and_then(Value::as_i64);
     let response_expires_at = response
@@ -301,10 +303,6 @@ fn validate_token_response(
         || !client_identity_matches
         || !audience_matches
         || !scopes_match
-        || response
-            .scope
-            .as_deref()
-            .is_some_and(|scope| scope != REQUIRED_SCOPE)
         || token_project != Some(project_id)
         || expires_at.is_none_or(|expires| expires <= now)
     {
@@ -363,16 +361,44 @@ fn claim_audiences(claims: &Value) -> Option<Vec<&str>> {
     }
 }
 
-fn claim_scopes(claims: &Value) -> Option<Vec<&str>> {
-    let value = claims
-        .get("scope")
-        .or_else(|| claims.get("scp"))
-        .or_else(|| claims.get("scopes"));
-    match value {
-        Some(Value::String(scopes)) => Some(scopes.split_whitespace().collect()),
-        Some(Value::Array(scopes)) => scopes.iter().map(Value::as_str).collect::<Option<Vec<_>>>(),
-        _ => None,
+fn exact_scope_set<'a>(scopes: impl IntoIterator<Item = &'a str>) -> bool {
+    let mut seen = [false; 2];
+    for scope in scopes {
+        let Some(index) = REQUIRED_SCOPES
+            .iter()
+            .position(|expected| *expected == scope)
+        else {
+            return false;
+        };
+        if seen[index] {
+            return false;
+        }
+        seen[index] = true;
     }
+    seen.into_iter().all(|present| present)
+}
+
+fn claim_scopes_match(claims: &Value) -> bool {
+    let mut present = false;
+    for name in ["scope", "scp", "scopes"] {
+        let Some(value) = claims.get(name) else {
+            continue;
+        };
+        present = true;
+        let matches = match value {
+            Value::String(scopes) => exact_scope_set(scopes.split_whitespace()),
+            Value::Array(scopes) => scopes
+                .iter()
+                .map(Value::as_str)
+                .collect::<Option<Vec<_>>>()
+                .is_some_and(exact_scope_set),
+            _ => false,
+        };
+        if !matches {
+            return false;
+        }
+    }
+    present
 }
 
 fn claim_project_id(claims: &Value) -> Option<u64> {

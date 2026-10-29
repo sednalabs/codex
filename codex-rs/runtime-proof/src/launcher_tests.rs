@@ -360,7 +360,7 @@ fn fixed_policy(seed: &[u8; RUNTIME_SEED_BYTES]) -> LauncherPolicy {
                 expected_issuer: "https://issuer.example/".to_string(),
                 client_id: "codex-work-claim".to_string(),
                 audience: "https://mcp.example/".to_string(),
-                requested_scope: "ops:write".to_string(),
+                requested_scope: "ops:read ops:write".to_string(),
             },
             task_prompt: "Claim the fixed Work item after checking its current state.".to_string(),
         }),
