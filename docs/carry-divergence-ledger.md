@@ -4022,8 +4022,9 @@ or live execution authority.
 
 The optional native supervised path additionally supports issuer-signed lifecycle
 events. The same pinned launcher reports start only after a matching receipt and
-before bootstrap; it preserves a reaped exit, signal, or timeout and reports end
-only after selected-UID absence. A fixed stop mode can reconcile the protected
+before bootstrap; it preserves a reaped exit, signal, or timeout. Only the
+fixed stop observer can report an end, after the required absence proof. It can
+reconcile the protected
 per-invocation public context after teardown without inventing a child outcome.
 The original certificate remains a historical reference; a new lifecycle
 witness and independently authorized current API bearer are required. Unknown
@@ -4032,7 +4033,7 @@ back to lease recovery. The API claim and ordinary unconfigured paths are not
 made dependent on lifecycle. Consumer admission, deployment, and live proof
 remain separate from this source change.
 
-Until a trusted PID-namespace and UID-admission binding is implemented, the
+Until a trusted manager and epoch-containment binding is implemented, the
 optional lifecycle path fails closed at its absence checks, including before
 startup; it cannot assert an end or release a claim. A matching process view or
 cooperative launcher lock alone is not that binding.

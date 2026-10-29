@@ -63,9 +63,9 @@ The optional native launcher lifecycle path requires a separately issuer-signed
 event and matching start receipt before bootstrap. Its focused tests cover the
 event/witness binding, closed causes, exact receipt comparison, immutable
 potentially-sent proof timing, and a single read after an uncertain POST. A
-stop event requires an independently established selected-UID absence; a
+stop event requires independently established epoch absence; a
 missing current bearer or unresolved effect leaves lease recovery intact.
-Without a trusted namespace and UID-admission binding, the optional lifecycle
+Without a trusted manager and epoch-containment binding, the optional lifecycle
 path currently fails closed at its absence checks, including before startup.
 These source checks do not establish service admission or live activation.
 
