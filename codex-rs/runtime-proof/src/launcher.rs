@@ -1000,6 +1000,78 @@ fn render_codex_config(mcp_recipient: &str) -> String {
     )
 }
 
+#[repr(C)]
+struct ChildCapabilityHeader {
+    version: u32,
+    pid: i32,
+}
+
+#[repr(C)]
+#[derive(Clone, Copy, Default)]
+struct ChildCapabilityData {
+    effective: u32,
+    permitted: u32,
+    inheritable: u32,
+}
+
+// Called only in the post-fork child: no allocation or external code.
+fn prepare_child_setuid_capability() -> std::io::Result<()> {
+    let mut header = ChildCapabilityHeader {
+        version: 0x2008_0522,
+        pid: 0,
+    };
+    let mut data = [ChildCapabilityData::default(); 2];
+    if unsafe { libc::syscall(libc::SYS_capget, &mut header, data.as_mut_ptr()) } != 0 {
+        return Err(std::io::Error::last_os_error());
+    }
+    const SETUID: u32 = 1 << 7;
+    if data[0].permitted & SETUID == 0 {
+        return Err(std::io::Error::from_raw_os_error(libc::EPERM));
+    }
+    if data[0].effective & SETUID == 0 {
+        data[0].effective |= SETUID;
+        if unsafe { libc::syscall(libc::SYS_capset, &mut header, data.as_ptr()) } != 0 {
+            return Err(std::io::Error::last_os_error());
+        }
+    }
+    if unsafe {
+        libc::prctl(
+            libc::PR_CAP_AMBIENT,
+            libc::PR_CAP_AMBIENT_CLEAR_ALL,
+            0,
+            0,
+            0,
+        )
+    } != 0
+    {
+        return Err(std::io::Error::last_os_error());
+    }
+    Ok(())
+}
+
+// Drop inherited as well as effective/permitted capabilities before exec.
+fn clear_child_capabilities() -> std::io::Result<()> {
+    let mut header = ChildCapabilityHeader {
+        version: 0x2008_0522,
+        pid: 0,
+    };
+    let empty = [ChildCapabilityData::default(); 2];
+    if unsafe { libc::syscall(libc::SYS_capset, &mut header, empty.as_ptr()) } != 0 {
+        return Err(std::io::Error::last_os_error());
+    }
+    let mut actual = [ChildCapabilityData::default(); 2];
+    if unsafe { libc::syscall(libc::SYS_capget, &mut header, actual.as_mut_ptr()) } != 0 {
+        return Err(std::io::Error::last_os_error());
+    }
+    if actual
+        .iter()
+        .any(|set| set.effective != 0 || set.permitted != 0 || set.inheritable != 0)
+    {
+        return Err(std::io::Error::from_raw_os_error(libc::EPERM));
+    }
+    Ok(())
+}
+
 fn spawn_verified_child(
     executable_source: &File,
     bootstrap_source: &File,
@@ -1078,10 +1150,15 @@ fn spawn_verified_child(
                     return Err(std::io::Error::last_os_error());
                 }
             }
+            prepare_child_setuid_capability()?;
             if libc::setgroups(0, std::ptr::null()) != 0
                 || libc::setresgid(runtime_gid, runtime_gid, runtime_gid) != 0
                 || libc::setresuid(runtime_uid, runtime_uid, runtime_uid) != 0
-                || libc::prctl(libc::PR_SET_NO_NEW_PRIVS, 1, 0, 0, 0) != 0
+            {
+                return Err(std::io::Error::last_os_error());
+            }
+            clear_child_capabilities()?;
+            if libc::prctl(libc::PR_SET_NO_NEW_PRIVS, 1, 0, 0, 0) != 0
                 || libc::prctl(libc::PR_SET_DUMPABLE, 0, 0, 0, 0) != 0
             {
                 return Err(std::io::Error::last_os_error());
