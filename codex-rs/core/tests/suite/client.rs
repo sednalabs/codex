@@ -85,6 +85,7 @@ use core_test_support::test_codex::TestCodex;
 use core_test_support::test_codex::local_requests;
 use core_test_support::test_codex::test_codex;
 use core_test_support::wait_for_event;
+use core_test_support::wait_for_successful_turn;
 use futures::StreamExt;
 use pretty_assertions::assert_eq;
 use serde_json::json;
@@ -516,14 +517,17 @@ async fn sends_audio_urls_to_responses() {
         sse(vec![ev_response_created("resp1"), ev_completed("resp1")]),
     )
     .await;
-    let codex = test_codex()
+    let TestCodex {
+        codex,
+        thread_manager: _thread_manager,
+        ..
+    } = test_codex()
         .with_model_info_override("gpt-5.5", |model_info| {
             model_info.input_modalities.push(InputModality::Audio);
         })
         .build(&server)
         .await
-        .unwrap()
-        .codex;
+        .unwrap();
     let audio_url = "data:audio/wav;base64,AAAA";
 
     codex
@@ -532,7 +536,7 @@ async fn sends_audio_urls_to_responses() {
         }]))
         .await
         .unwrap();
-    wait_for_event(&codex, |event| matches!(event, EventMsg::TurnComplete(_))).await;
+    wait_for_successful_turn(&codex).await;
 
     let request = response_mock.single_request();
     assert!(request.has_content_kinds(&["user.audio"]));
@@ -2627,7 +2631,11 @@ async fn configured_reasoning_summary_is_sent() -> anyhow::Result<()> {
         sse(vec![ev_response_created("resp1"), ev_completed("resp1")]),
     )
     .await;
-    let TestCodex { codex, .. } = test_codex()
+    let TestCodex {
+        codex,
+        thread_manager: _thread_manager,
+        ..
+    } = test_codex()
         .with_config(|config| {
             config.model_reasoning_summary = Some(ReasoningSummary::Concise);
             let _ = config
@@ -2645,7 +2653,7 @@ async fn configured_reasoning_summary_is_sent() -> anyhow::Result<()> {
         .await
         .unwrap();
 
-    wait_for_event(&codex, |ev| matches!(ev, EventMsg::TurnComplete(_))).await;
+    wait_for_successful_turn(&codex).await;
 
     let request = resp_mock.single_request();
     let request_body = request.body_json();
@@ -4262,11 +4270,14 @@ async fn history_dedupes_streamed_and_final_messages_across_turns() {
     let request_log = mount_sse_sequence(&server, vec![sse1.clone(), sse1.clone(), sse1]).await;
 
     let mut builder = test_codex().with_auth(CodexAuth::from_api_key("Test API Key"));
-    let codex = builder
+    let TestCodex {
+        codex,
+        thread_manager: _thread_manager,
+        ..
+    } = builder
         .build(&server)
         .await
-        .expect("create new conversation")
-        .codex;
+        .expect("create new conversation");
 
     // Turn 1: user sends U1; wait for completion.
     codex
@@ -4276,7 +4287,7 @@ async fn history_dedupes_streamed_and_final_messages_across_turns() {
         }]))
         .await
         .unwrap();
-    wait_for_event(&codex, |ev| matches!(ev, EventMsg::TurnComplete(_))).await;
+    wait_for_successful_turn(&codex).await;
 
     // Turn 2: user sends U2; wait for completion.
     codex
@@ -4286,7 +4297,7 @@ async fn history_dedupes_streamed_and_final_messages_across_turns() {
         }]))
         .await
         .unwrap();
-    wait_for_event(&codex, |ev| matches!(ev, EventMsg::TurnComplete(_))).await;
+    wait_for_successful_turn(&codex).await;
 
     // Turn 3: user sends U3; wait for completion.
     codex
@@ -4296,7 +4307,7 @@ async fn history_dedupes_streamed_and_final_messages_across_turns() {
         }]))
         .await
         .unwrap();
-    wait_for_event(&codex, |ev| matches!(ev, EventMsg::TurnComplete(_))).await;
+    wait_for_successful_turn(&codex).await;
 
     // Inspect the three captured requests.
     let requests = request_log.requests();

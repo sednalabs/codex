@@ -39,6 +39,7 @@ use core_test_support::test_codex::TestCodex;
 use core_test_support::test_codex::test_codex;
 use core_test_support::test_codex::turn_permission_fields;
 use core_test_support::wait_for_event;
+use core_test_support::wait_for_successful_turn;
 use pretty_assertions::assert_eq;
 use tempfile::TempDir;
 use test_case::test_case;
@@ -396,6 +397,7 @@ async fn prefixes_context_and_instructions_once_and_consistently_across_requests
         home: _home,
         codex,
         config,
+        thread_manager: _thread_manager,
         ..
     } = test_codex()
         .with_pre_build_hook(write_global_instructions)
@@ -414,7 +416,7 @@ async fn prefixes_context_and_instructions_once_and_consistently_across_requests
             text_elements: Vec::new(),
         }]))
         .await?;
-    wait_for_event(&codex, |ev| matches!(ev, EventMsg::TurnComplete(_))).await;
+    wait_for_successful_turn(&codex).await;
 
     codex
         .start_or_steer_turn(TurnInputRequest::user_input(vec![UserInput::Text {
@@ -422,7 +424,7 @@ async fn prefixes_context_and_instructions_once_and_consistently_across_requests
             text_elements: Vec::new(),
         }]))
         .await?;
-    wait_for_event(&codex, |ev| matches!(ev, EventMsg::TurnComplete(_))).await;
+    wait_for_successful_turn(&codex).await;
 
     let body1 = req1.single_request().body_json();
     let input1 = body1["input"].as_array().expect("input array");
