@@ -3,6 +3,7 @@ use super::*;
 use crate::context::MultiAgentRoleInstructions;
 use crate::context::world_state::WorldState;
 use crate::context::world_state::test_support::FragmentSectionTestExt as _;
+use codex_protocol::models::ContentItemKind;
 use codex_protocol::models::ResponseItem;
 use codex_protocol_test_support::ContentItemTestExt;
 use codex_utils_output_truncation::approx_token_count;
@@ -10,6 +11,47 @@ use pretty_assertions::assert_eq;
 
 fn state(mode: Option<MultiAgentMode>) -> MultiAgentModeState {
     MultiAgentModeState::new(mode)
+}
+
+fn client_owned_world_state(client_owned: bool) -> WorldState {
+    let mut world_state = WorldState::default();
+    world_state
+        .add_section(state(Some(MultiAgentMode::Proactive)).with_client_ownership(client_owned));
+    world_state
+}
+
+fn persisted_mode_snapshot_and_history(
+    client_owned: bool,
+) -> (
+    crate::context::world_state::WorldStateSnapshot,
+    Vec<ResponseItem>,
+) {
+    let world_state = client_owned_world_state(client_owned);
+    let (snapshot, fragments) = world_state.render_full_fragments();
+    let snapshot = serde_json::from_value(serde_json::to_value(snapshot).unwrap()).unwrap();
+    let history = fragments
+        .into_iter()
+        .map(ContextualUserFragment::into_boxed_response_item)
+        .collect();
+    (snapshot, history)
+}
+
+fn assert_single_mode_fragment_ownership(
+    fragments: &[Box<dyn ContextualUserFragment>],
+    client_owned: bool,
+) {
+    assert_eq!(fragments.len(), 1);
+    assert_eq!(
+        fragments[0].content_kind(),
+        ContentItemKind(
+            if client_owned {
+                "client.multi_agent.mode_instructions"
+            } else {
+                "multi_agent.mode_instructions"
+            }
+            .to_string()
+        )
+    );
 }
 
 #[test]
@@ -72,6 +114,57 @@ fn persisted_mode_is_restored_only_when_missing_from_history() {
             .1
             .is_empty()
     );
+}
+
+#[test]
+fn client_owned_mode_does_not_reemit_after_snapshot_roundtrip() {
+    let (previous_snapshot, history) = persisted_mode_snapshot_and_history(true);
+    let serialized = serde_json::to_value(&previous_snapshot).unwrap();
+    assert_eq!(
+        serialized["multi_agent_mode"]["client_owned"],
+        serde_json::Value::Bool(true)
+    );
+
+    let (next_snapshot, updates) = client_owned_world_state(true)
+        .render_history_fragment_diff(Some(&previous_snapshot), &history);
+
+    assert!(updates.is_empty());
+    assert_eq!(next_snapshot, previous_snapshot);
+}
+
+#[test]
+fn mode_fragment_provenance_tracks_current_ownership_after_snapshot_roundtrip() {
+    for (previous_owned, current_owned) in [(false, true), (true, false)] {
+        let (previous_snapshot, history) = persisted_mode_snapshot_and_history(previous_owned);
+        let (_, updates) = client_owned_world_state(current_owned)
+            .render_history_fragment_diff(Some(&previous_snapshot), &history);
+        assert_single_mode_fragment_ownership(&updates, current_owned);
+    }
+}
+
+#[test]
+fn client_owned_mode_renders_when_retained_fragment_is_missing() {
+    let (previous_snapshot, _) = persisted_mode_snapshot_and_history(true);
+    let (_, updates) =
+        client_owned_world_state(true).render_history_fragment_diff(Some(&previous_snapshot), &[]);
+
+    assert_single_mode_fragment_ownership(&updates, true);
+}
+
+#[test]
+fn old_mode_snapshot_without_ownership_defaults_and_rerenders_once() {
+    let (previous_snapshot, history) = persisted_mode_snapshot_and_history(true);
+    let mut serialized = serde_json::to_value(previous_snapshot).unwrap();
+    serialized["multi_agent_mode"]
+        .as_object_mut()
+        .expect("mode snapshot should be an object")
+        .remove("client_owned");
+    let previous_snapshot = serde_json::from_value(serialized).unwrap();
+
+    let (_, updates) = client_owned_world_state(true)
+        .render_history_fragment_diff(Some(&previous_snapshot), &history);
+
+    assert_single_mode_fragment_ownership(&updates, true);
 }
 
 /// Active mode instructions must follow a newly migrated multi-agent usage hint.

@@ -16,13 +16,17 @@ use serde::Serialize;
 
 const MULTI_AGENT_MODE_MAX_TOKENS: usize = 400;
 
+fn is_false(value: &bool) -> bool {
+    !value
+}
+
 /// Effective multi-agent mode currently visible to the model.
 #[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
 pub(crate) struct MultiAgentModeState {
     mode: Option<MultiAgentMode>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     usage_hint_hash: Option<WorldStateHash>,
-    #[serde(skip)]
+    #[serde(default, skip_serializing_if = "is_false")]
     client_owned: bool,
     #[serde(skip)]
     namespace: Option<ContentItemNamespace>,
