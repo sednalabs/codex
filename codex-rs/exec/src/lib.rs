@@ -325,25 +325,31 @@ fn validate_protected_claim_server(
     server: &McpServerConfig,
     recipient: &str,
 ) -> anyhow::Result<()> {
+    const TOOLS: [&str; 4] = [
+        "work_item_claim",
+        "work_item_current_work",
+        "work_item_execution_receipt_read",
+        "work_item_release",
+    ];
     if !server.enabled
         || !server.required
         || server.environment_id != DEFAULT_MCP_SERVER_ENVIRONMENT_ID
         || server.auth != McpServerAuth::OAuth
         || server.oauth.is_some()
         || server.scopes.is_some()
-        || server.enabled_tools.as_ref().is_none_or(|tools| {
-            tools.len() != 1 || tools.first().is_none_or(|tool| tool != "work_item_claim")
-        })
+        || server
+            .enabled_tools
+            .as_ref()
+            .is_none_or(|tools| tools.iter().map(String::as_str).ne(TOOLS))
         || server.disabled_tools.is_some()
         || server.default_tools_approval_mode.is_some()
-        || server.tools.len() != 1
-        || server
-            .tools
-            .get("work_item_claim")
-            .and_then(|tool| tool.approval_mode)
-            != Some(AppToolApproval::Approve)
+        || server.tools.len() != TOOLS.len()
+        || TOOLS.iter().any(|name| {
+            server.tools.get(*name).and_then(|tool| tool.approval_mode)
+                != Some(AppToolApproval::Approve)
+        })
     {
-        anyhow::bail!("protected MCP server config is outside the fixed claim-only profile");
+        anyhow::bail!("protected MCP server config is outside the fixed runtime profile");
     }
     match &server.transport {
         McpServerTransportConfig::StreamableHttp {

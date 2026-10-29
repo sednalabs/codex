@@ -19,30 +19,72 @@ use tempfile::tempdir;
 use tracing_opentelemetry::OpenTelemetrySpanExt;
 
 #[test]
-fn protected_runtime_accepts_only_the_fixed_claim_tool_profile() {
+fn protected_runtime_accepts_only_the_fixed_four_tool_profile() {
     let recipient = "https://ops.example/mcp";
     let valid = || {
         serde_json::from_value::<McpServerConfig>(json!({
             "url": recipient,
             "required": true,
-            "enabled_tools": ["work_item_claim"],
-            "tools": { "work_item_claim": { "approval_mode": "approve" } },
+            "enabled_tools": ["work_item_claim", "work_item_current_work", "work_item_execution_receipt_read", "work_item_release"],
+            "tools": {
+                "work_item_claim": { "approval_mode": "approve" },
+                "work_item_current_work": { "approval_mode": "approve" },
+                "work_item_execution_receipt_read": { "approval_mode": "approve" },
+                "work_item_release": { "approval_mode": "approve" }
+            },
         }))
         .expect("valid protected MCP profile")
     };
 
     assert!(validate_protected_claim_server(&valid(), recipient).is_ok());
 
-    for config in [
-        json!({ "url": recipient, "enabled": false, "required": true, "enabled_tools": ["work_item_claim"], "tools": { "work_item_claim": { "approval_mode": "approve" } } }),
-        json!({ "url": recipient, "required": false, "enabled_tools": ["work_item_claim"], "tools": { "work_item_claim": { "approval_mode": "approve" } } }),
-        json!({ "url": recipient, "enabled_tools": ["work_item_claim", "other"], "tools": { "work_item_claim": { "approval_mode": "approve" } } }),
-        json!({ "url": recipient, "enabled_tools": ["work_item_claim"], "tools": { "work_item_claim": { "approval_mode": "prompt" } } }),
-        json!({ "url": recipient, "enabled_tools": ["work_item_claim"], "tools": { "work_item_claim": { "approval_mode": "approve" }, "other": { "approval_mode": "approve" } } }),
-        json!({ "url": recipient, "enabled_tools": ["work_item_claim"], "default_tools_approval_mode": "approve", "tools": { "work_item_claim": { "approval_mode": "approve" } } }),
-        json!({ "url": recipient, "enabled_tools": ["work_item_claim"], "environment_id": "remote", "tools": { "work_item_claim": { "approval_mode": "approve" } } }),
-        json!({ "url": recipient, "enabled_tools": ["work_item_claim"], "bearer_token_env_var": "OPS_TOKEN", "tools": { "work_item_claim": { "approval_mode": "approve" } } }),
+    let mut changed = valid();
+    changed.enabled_tools.as_mut().unwrap().pop();
+    assert!(validate_protected_claim_server(&changed, recipient).is_err());
+    let mut changed = valid();
+    changed.enabled_tools.as_mut().unwrap()[0] = "work_item_release".to_string();
+    assert!(validate_protected_claim_server(&changed, recipient).is_err());
+    let mut changed = valid();
+    changed
+        .enabled_tools
+        .as_mut()
+        .unwrap()
+        .push("other".to_string());
+    assert!(validate_protected_claim_server(&changed, recipient).is_err());
+    let mut changed = valid();
+    changed.tools.remove("work_item_release");
+    assert!(validate_protected_claim_server(&changed, recipient).is_err());
+    let mut changed = valid();
+    let extra = changed.tools["work_item_claim"].clone();
+    changed.tools.insert("other".to_string(), extra);
+    assert!(validate_protected_claim_server(&changed, recipient).is_err());
+    let mut changed = valid();
+    changed
+        .tools
+        .get_mut("work_item_current_work")
+        .unwrap()
+        .approval_mode = Some(AppToolApproval::Prompt);
+    assert!(validate_protected_claim_server(&changed, recipient).is_err());
+    assert!(validate_protected_claim_server(&valid(), "https://other.example/mcp").is_err());
+
+    for (key, value) in [
+        ("enabled", json!(false)),
+        ("required", json!(false)),
+        ("default_tools_approval_mode", json!("approve")),
+        ("environment_id", json!("remote")),
+        ("bearer_token_env_var", json!("OPS_TOKEN")),
     ] {
+        let mut config = json!({
+            "url": recipient, "required": true,
+            "enabled_tools": ["work_item_claim", "work_item_current_work", "work_item_execution_receipt_read", "work_item_release"],
+            "tools": {
+                "work_item_claim": { "approval_mode": "approve" },
+                "work_item_current_work": { "approval_mode": "approve" },
+                "work_item_execution_receipt_read": { "approval_mode": "approve" },
+                "work_item_release": { "approval_mode": "approve" }
+            }
+        });
+        config[key] = value;
         let server = serde_json::from_value::<McpServerConfig>(config)
             .expect("fixture MCP configuration shape parses");
         assert!(validate_protected_claim_server(&server, recipient).is_err());
