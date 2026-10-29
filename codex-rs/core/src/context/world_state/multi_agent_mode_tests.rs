@@ -117,7 +117,7 @@ fn persisted_mode_is_restored_only_when_missing_from_history() {
 }
 
 #[test]
-fn client_owned_mode_does_not_reemit_after_snapshot_roundtrip() {
+fn client_owned_mode_snapshot_roundtrip_does_not_duplicate_fragment() {
     let (previous_snapshot, history) = persisted_mode_snapshot_and_history(true);
     let serialized = serde_json::to_value(&previous_snapshot).unwrap();
     assert_eq!(
@@ -133,7 +133,7 @@ fn client_owned_mode_does_not_reemit_after_snapshot_roundtrip() {
 }
 
 #[test]
-fn mode_fragment_provenance_tracks_current_ownership_after_snapshot_roundtrip() {
+fn client_owned_mode_snapshot_transition_tracks_current_provenance() {
     for (previous_owned, current_owned) in [(false, true), (true, false)] {
         let (previous_snapshot, history) = persisted_mode_snapshot_and_history(previous_owned);
         let (_, updates) = client_owned_world_state(current_owned)
@@ -143,7 +143,7 @@ fn mode_fragment_provenance_tracks_current_ownership_after_snapshot_roundtrip() 
 }
 
 #[test]
-fn client_owned_mode_renders_when_retained_fragment_is_missing() {
+fn client_owned_mode_snapshot_renders_when_retained_fragment_is_missing() {
     let (previous_snapshot, _) = persisted_mode_snapshot_and_history(true);
     let (_, updates) =
         client_owned_world_state(true).render_history_fragment_diff(Some(&previous_snapshot), &[]);
@@ -152,7 +152,7 @@ fn client_owned_mode_renders_when_retained_fragment_is_missing() {
 }
 
 #[test]
-fn old_mode_snapshot_without_ownership_defaults_and_rerenders_once() {
+fn client_owned_mode_snapshot_without_field_defaults_and_rerenders() {
     let (previous_snapshot, history) = persisted_mode_snapshot_and_history(true);
     let mut serialized = serde_json::to_value(previous_snapshot).unwrap();
     serialized["multi_agent_mode"]
