@@ -93,5 +93,5 @@ jobs:
         run: |
           set -euo pipefail
           "${{ steps.setup-codeql.outputs.codeql-path }}" test run \
-            --search-path .github/codeql \
+            --additional-packs .github/codeql \
             .github/codeql/actions-workflow-security-tests/test
