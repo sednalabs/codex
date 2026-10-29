@@ -94,7 +94,7 @@ fn synthetic_interop_packet() {
             tool: (*tool).to_string(),
             purpose: purpose.to_string(),
         }).collect()),
-        iat: input.now.checked_sub(5).expect("timestamp underflow"),
+        iat: input.now,
         exp: input.now.checked_add(300).expect("timestamp overflow"),
     };
     let certificate = super::super::issue_certificate(&claims, &issuer_seed, &policy)
@@ -134,7 +134,6 @@ fn synthetic_interop_packet() {
     let start = packet(event.clone());
     event.event_id = input.end_event_id;
     event.phase = Phase::End;
-    event.source = Source::Systemd;
     event.cause = Cause::Exited;
     event.exit_code = Some(0);
     event.absence_proven = true;
