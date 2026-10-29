@@ -1,0 +1,19 @@
+name: python-sdk-cli-release
+on:
+  workflow_run:
+    workflows: [rust-release]
+    types: [completed]
+jobs:
+  publish-python-runtime:
+    if: >-
+      ${{
+        needs.resolve-cli-release.outputs.publish == 'true' &&
+        needs.prepare-python-runtime.result == 'success' &&
+        needs.build-python-sdk.result == 'success'
+      }}
+    needs: [resolve-cli-release, prepare-python-runtime, build-python-sdk]
+    runs-on: ubuntu-24.04
+    environment: pypi
+    permissions:
+      contents: read
+      id-token: write

@@ -1,0 +1,10 @@
+| test/WriteTokenOnUntrustedTrigger/cla-disjunction.yml:6:3:6:6 | The job runs on 'issue_comment' with write-capable 'actions' token permissions. Split untrusted input handling from write operations. |
+| test/WriteTokenOnUntrustedTrigger/cla-disjunction.yml:6:3:6:6 | The job runs on 'issue_comment' with write-capable 'contents' token permissions. Split untrusted input handling from write operations. |
+| test/WriteTokenOnUntrustedTrigger/cla-disjunction.yml:6:3:6:6 | The job runs on 'issue_comment' with write-capable 'issues' token permissions. Split untrusted input handling from write operations. |
+| test/WriteTokenOnUntrustedTrigger/cla-negated.yml:6:3:6:6 | The job runs on 'issue_comment' with write-capable 'actions' token permissions. Split untrusted input handling from write operations. |
+| test/WriteTokenOnUntrustedTrigger/cla-negated.yml:6:3:6:6 | The job runs on 'issue_comment' with write-capable 'contents' token permissions. Split untrusted input handling from write operations. |
+| test/WriteTokenOnUntrustedTrigger/cla-negated.yml:6:3:6:6 | The job runs on 'issue_comment' with write-capable 'issues' token permissions. Split untrusted input handling from write operations. |
+| test/WriteTokenOnUntrustedTrigger/pypi-disjunction.yml:35:3:35:25 | The job runs on 'workflow_run' with write-capable 'id-token' token permissions. Split untrusted input handling from write operations. |
+| test/WriteTokenOnUntrustedTrigger/pypi-missing-repository-gate.yml:7:3:7:25 | The job runs on 'workflow_run' with write-capable 'id-token' token permissions. Split untrusted input handling from write operations. |
+| test/WriteTokenOnUntrustedTrigger/pypi-negated.yml:35:3:35:25 | The job runs on 'workflow_run' with write-capable 'id-token' token permissions. Split untrusted input handling from write operations. |
+| test/WriteTokenOnUntrustedTrigger/pypi-sednalabs-repository-gate.yml:7:3:7:25 | The job runs on 'workflow_run' with write-capable 'id-token' token permissions. Split untrusted input handling from write operations. |

@@ -74,7 +74,14 @@ predicate jobUsesPinnedClaAssistant(Job job) {
   )
 }
 
-predicate jobUsesValidatedPythonReleasePublisher(Job job) {
+/**
+ * This fork carries upstream-only Python publication workflows. The exact
+ * canonical repository condition makes these jobs unreachable in
+ * sednalabs/codex. This is a fork-local unreachable-job exception only; it
+ * does not assess or attest the canonical OpenAI publisher or its reusable
+ * build workflows.
+ */
+predicate jobIsForkUnreachableCanonicalPythonPublisher(Job job) {
   workflowName(job.getWorkflow(), "python-sdk-cli-release") and
   job.getEnvironment().getName() = "pypi" and
   (
@@ -82,222 +89,12 @@ predicate jobUsesValidatedPythonReleasePublisher(Job job) {
     jobConditionMatchesExactly(
       job,
       "github\\.repository\\s*==\\s*'openai/codex'\\s*&&\\s*needs\\.resolve-cli-release\\.outputs\\.publish\\s*==\\s*'true'\\s*&&\\s*needs\\.prepare-python-runtime\\.result\\s*==\\s*'success'\\s*&&\\s*needs\\.build-python-sdk\\.result\\s*==\\s*'success'"
-    ) and
-    jobUsesExpectedPythonReleaseActions(job) and
-    jobUsesValidatedPythonReleaseBuilds(job) and
-    jobUsesSameRunPythonArtifact(job, "python-runtime-wheels", "dist/python-runtime") and
-    jobUsesPinnedPythonPublisher(job, "dist/python-runtime") and
-    jobHasOnlyPythonReleaseVerification(
-      job,
-      "openai-codex-cli-bin",
-      "\\$PYTHON_RUNTIME_VERSION"
-    ) and
-    jobChecksOutOnlyResolvedPythonReleaseSource(job) and
-    jobUsesValidatedPythonReleaseResolver(job)
+    )
     or
     job.getId() = "publish-python-sdk" and
     jobConditionMatchesExactly(
       job,
       "github\\.repository\\s*==\\s*'openai/codex'\\s*&&\\s*needs\\.resolve-cli-release\\.outputs\\.publish\\s*==\\s*'true'\\s*&&\\s*needs\\.build-python-sdk\\.result\\s*==\\s*'success'\\s*&&\\s*needs\\.publish-python-runtime\\.result\\s*==\\s*'success'"
-    ) and
-    jobUsesExpectedPythonReleaseActions(job) and
-    jobUsesValidatedPythonReleaseBuilds(job) and
-    jobUsesSameRunPythonArtifact(job, "python-sdk-package", "dist/python-sdk") and
-    jobUsesPinnedPythonPublisher(job, "dist/python-sdk") and
-    jobHasOnlyPythonReleaseVerification(
-      job,
-      "openai-codex",
-      "\\$SDK_VERSION"
-    ) and
-    jobChecksOutOnlyResolvedPythonReleaseSource(job) and
-    jobUsesValidatedPythonReleaseResolver(job)
-  )
-}
-
-predicate jobUsesValidatedPythonReleaseResolver(Job publisher) {
-  exists(Job resolver |
-    resolver.getWorkflow() = publisher.getWorkflow() and
-    resolver.getId() = "resolve-cli-release" and
-    publisher.getANeededJob() = resolver and
-    jobConditionMatchesExactly(resolver, "github\\.repository\\s*==\\s*'openai/codex'") and
-    jobUsesExactlyOneAction(
-      resolver,
-      "actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd"
-    ) and
-    jobUsesOnlyAction(
-      resolver,
-      "actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd"
-    ) and
-    exists(UsesStep checkout |
-      checkout.getEnclosingJob() = resolver and
-      checkout.getCallee() = "actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd" and
-      actionArgumentMatches(checkout, "persist-credentials", "(?i)^\\s*false\\s*$") and
-      actionArgumentAbsent(checkout, "ref") and
-      actionArgumentAbsent(checkout, "repository") and
-      actionArgumentAbsent(checkout, "path") and
-      actionArgumentAbsent(checkout, "token") and
-      actionArgumentAbsent(checkout, "submodules") and
-      actionArgumentAbsent(checkout, "sparse-checkout")
-    ) and
-    jobHasOnlyResolverScript(resolver)
-  )
-}
-
-predicate jobUsesValidatedPythonReleaseBuilds(Job publisher) {
-  exists(ExternalJob runtimeBuilder, ExternalJob sdkBuilder |
-    publisher.getANeededJob() = runtimeBuilder and
-    runtimeBuilder.getId() = "prepare-python-runtime" and
-    runtimeBuilder.getCallee() = "./.github/workflows/python-runtime-build.yml" and
-    jobConditionMatchesExactly(
-      runtimeBuilder,
-      "needs\\.resolve-cli-release\\.outputs\\.publish\\s*==\\s*'true'"
-    ) and
-    actionArgumentMatches(
-      runtimeBuilder,
-      "runtime_version",
-      "(?s)^\\s*['\"]?\\$\\{\\{\\s*needs\\.resolve-cli-release\\.outputs\\.version\\s*\\}\\}['\"]?\\s*$"
-    ) and
-    actionArgumentMatches(
-      runtimeBuilder,
-      "source_ref",
-      "(?s)^\\s*['\"]?\\$\\{\\{\\s*needs\\.resolve-cli-release\\.outputs\\.source_sha\\s*\\}\\}['\"]?\\s*$"
-    ) and
-    publisher.getANeededJob() = sdkBuilder and
-    sdkBuilder.getId() = "build-python-sdk" and
-    sdkBuilder.getCallee() = "./.github/workflows/python-sdk-build.yml" and
-    jobConditionMatchesExactly(
-      sdkBuilder,
-      "needs\\.resolve-cli-release\\.outputs\\.publish\\s*==\\s*'true'"
-    ) and
-    actionArgumentMatches(
-      sdkBuilder,
-      "sdk_version",
-      "(?s)^\\s*['\"]?\\$\\{\\{\\s*needs\\.resolve-cli-release\\.outputs\\.version\\s*\\}\\}['\"]?\\s*$"
-    ) and
-    actionArgumentMatches(
-      sdkBuilder,
-      "runtime_version",
-      "(?s)^\\s*['\"]?\\$\\{\\{\\s*needs\\.resolve-cli-release\\.outputs\\.version\\s*\\}\\}['\"]?\\s*$"
-    ) and
-    actionArgumentMatches(
-      sdkBuilder,
-      "source_ref",
-      "(?s)^\\s*['\"]?\\$\\{\\{\\s*needs\\.resolve-cli-release\\.outputs\\.source_sha\\s*\\}\\}['\"]?\\s*$"
-    ) and
-    exists(Job resolver |
-      resolver.getWorkflow() = publisher.getWorkflow() and
-      resolver.getId() = "resolve-cli-release" and
-      runtimeBuilder.getANeededJob() = resolver and
-      sdkBuilder.getANeededJob() = resolver
-    )
-  )
-}
-
-predicate jobHasOnlyResolverScript(Job job) {
-  exists(Run resolverScript |
-    resolverScript.getEnclosingJob() = job and
-    resolverScript.getScript().getRawScript().regexpMatch(
-      "(?s)^\\s*python3\\s+\\.github/scripts/resolve_python_cli_release\\.py\\s+\"\\$CLI_RUN_ID\"\\s*\\\\?\\s*--repository\\s+\"\\$GITHUB_REPOSITORY\"\\s*\\\\?\\s*--event-path\\s+\"\\$GITHUB_EVENT_PATH\"\\s*\\\\?\\s*--github-output\\s+\"\\$GITHUB_OUTPUT\"\\s*$"
-    ) and
-    not exists(Run otherRun |
-      otherRun.getEnclosingJob() = job and
-      otherRun != resolverScript
-    )
-  )
-}
-
-predicate jobUsesExpectedPythonReleaseActions(Job job) {
-  jobUsesExactlyOneAction(
-    job,
-    "actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd"
-  ) and
-  jobUsesExactlyOneAction(
-    job,
-    "actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c"
-  ) and
-  jobUsesExactlyOneAction(
-    job,
-    "pypa/gh-action-pypi-publish@dc37677b2e1c63e2034f94d8a5b11f265b73ba33"
-  ) and
-  jobUsesExactlyOneAction(
-    job,
-    "astral-sh/setup-uv@07a047e608db84b3d8c06cd9a7c7dcc9c355c18e"
-  ) and
-  jobUsesOnlyActions(
-    job,
-    "actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd",
-    "actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c",
-    "pypa/gh-action-pypi-publish@dc37677b2e1c63e2034f94d8a5b11f265b73ba33",
-    "astral-sh/setup-uv@07a047e608db84b3d8c06cd9a7c7dcc9c355c18e"
-  ) and
-  exists(UsesStep checkout, UsesStep uv |
-    checkout.getEnclosingJob() = job and
-    checkout.getCallee() = "actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd" and
-    actionArgumentMatches(
-      checkout,
-      "ref",
-      "(?s)^\\s*['\"]?\\$\\{\\{\\s*needs\\.resolve-cli-release\\.outputs\\.source_sha\\s*\\}\\}['\"]?\\s*$"
-    ) and
-    actionArgumentMatches(checkout, "persist-credentials", "(?i)^\\s*false\\s*$") and
-    actionArgumentAbsent(checkout, "repository") and
-    actionArgumentAbsent(checkout, "path") and
-    actionArgumentAbsent(checkout, "token") and
-    actionArgumentAbsent(checkout, "submodules") and
-    actionArgumentAbsent(checkout, "sparse-checkout") and
-    uv.getEnclosingJob() = job and
-    uv.getCallee() = "astral-sh/setup-uv@07a047e608db84b3d8c06cd9a7c7dcc9c355c18e" and
-    actionArgumentMatches(uv, "version", "(?i)^\\s*['\"]?0\\.13\\.5['\"]?\\s*$")
-  )
-}
-
-predicate jobUsesSameRunPythonArtifact(Job job, string artifactName, string artifactPath) {
-  exists(UsesStep download |
-    download.getEnclosingJob() = job and
-    download.getCallee() = "actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c" and
-    actionArgumentMatches(
-      download,
-      "name",
-      "(?i)^\\s*['\"]?" + artifactName + "['\"]?\\s*$"
-    ) and
-    actionArgumentMatches(
-      download,
-      "path",
-      "(?i)^\\s*['\"]?" + artifactPath + "['\"]?\\s*$"
-    ) and
-    actionArgumentAbsent(download, "run-id") and
-    actionArgumentAbsent(download, "repository") and
-    actionArgumentAbsent(download, "github-token") and
-    actionArgumentAbsent(download, "pattern") and
-    actionArgumentAbsent(download, "artifact-ids") and
-    actionArgumentAbsent(download, "merge-multiple")
-  )
-}
-
-predicate jobUsesPinnedPythonPublisher(Job job, string packagesDirectory) {
-  exists(UsesStep publisher |
-    publisher.getEnclosingJob() = job and
-    publisher.getCallee() = "pypa/gh-action-pypi-publish@dc37677b2e1c63e2034f94d8a5b11f265b73ba33" and
-    actionArgumentMatches(
-      publisher,
-      "packages-dir",
-      "(?i)^\\s*['\"]?" + packagesDirectory + "['\"]?\\s*$"
-    ) and
-    actionArgumentMatches(publisher, "skip-existing", "(?i)^\\s*true\\s*$") and
-    actionArgumentAbsent(publisher, "password") and
-    actionArgumentAbsent(publisher, "repository-url")
-  )
-}
-
-predicate jobHasOnlyPythonReleaseVerification(Job job, string packageName, string versionVariablePattern) {
-  exists(Run verification |
-    verification.getEnclosingJob() = job and
-    verification.getScript().getRawScript().regexpMatch(
-      "(?s)^\\s*uv\\s+run\\s+--no-project\\s+--with\\s+packaging==26\\.2\\s+python\\s+\\.github/scripts/verify_pypi_release\\.py\\s*\\\\?\\s*" +
-        packageName + "\\s+\"" + versionVariablePattern + "\"\\s*$"
-    ) and
-    not exists(Run otherRun |
-      otherRun.getEnclosingJob() = job and
-      otherRun != verification
     )
   )
 }
@@ -311,61 +108,6 @@ predicate actionArgumentMatches(Uses step, string argumentName, string pattern) 
 
 predicate actionArgumentAbsent(Uses step, string argumentName) {
   not exists(Expression argument | argument = step.getArgumentExpr(argumentName))
-}
-
-predicate jobUsesExactlyOneAction(Job job, string callee) {
-  exists(UsesStep matching |
-    matching.getEnclosingJob() = job and
-    matching.getCallee() = callee and
-    not exists(UsesStep duplicate |
-      duplicate.getEnclosingJob() = job and
-      duplicate.getCallee() = callee and
-      duplicate != matching
-    )
-  )
-}
-
-predicate jobUsesOnlyActions(Job job, string actionOne, string actionTwo, string actionThree, string actionFour) {
-  not exists(UsesStep step |
-    step.getEnclosingJob() = job and
-    step.getCallee() != actionOne and
-    step.getCallee() != actionTwo and
-    step.getCallee() != actionThree and
-    step.getCallee() != actionFour
-  )
-}
-
-predicate jobUsesOnlyAction(Job job, string callee) {
-  not exists(UsesStep step |
-    step.getEnclosingJob() = job and
-    step.getCallee() != callee
-  )
-}
-
-predicate jobChecksOutResolvedPythonReleaseSource(Job job) {
-  jobUsesExactlyOneAction(
-    job,
-    "actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd"
-  ) and
-  exists(UsesStep checkout |
-    checkout.getEnclosingJob() = job and
-    checkout.getCallee() = "actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd" and
-    actionArgumentMatches(
-      checkout,
-      "ref",
-      "(?s)^\\s*['\"]?\\$\\{\\{\\s*needs\\.resolve-cli-release\\.outputs\\.source_sha\\s*\\}\\}['\"]?\\s*$"
-    ) and
-    actionArgumentMatches(checkout, "persist-credentials", "(?i)^\\s*false\\s*$")
-  )
-}
-
-predicate jobChecksOutOnlyResolvedPythonReleaseSource(Job job) {
-  jobChecksOutResolvedPythonReleaseSource(job) and
-  not exists(UsesStep checkout |
-    checkout.getEnclosingJob() = job and
-    checkout.getCallee().regexpMatch("(?i)^actions/checkout@") and
-    checkout.getCallee() != "actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd"
-  )
 }
 
 predicate jobUsesTrustedPypiPublisher(Job job) {

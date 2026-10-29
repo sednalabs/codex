@@ -38,7 +38,7 @@ jobs:
         github.repository == 'openai/codex' &&
         needs.resolve-cli-release.outputs.publish == 'true' &&
         needs.prepare-python-runtime.result == 'success' &&
-        needs.build-python-sdk.result == 'success' || true
+        needs.build-python-sdk.result == 'success' || github.repository == 'sednalabs/codex'
       }}
     needs: [resolve-cli-release, prepare-python-runtime, build-python-sdk]
     environment: pypi

@@ -19,7 +19,7 @@ where
   jobHasUntrustedTrigger(job, eventName) and
   jobEffectiveWritePermission(job, permissionName) and
   not (
-    jobUsesValidatedPythonReleasePublisher(job) and
+    jobIsForkUnreachableCanonicalPythonPublisher(job) and
     permissionName = "id-token"
   ) and
   not (
