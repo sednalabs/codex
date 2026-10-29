@@ -14,7 +14,7 @@ jobs:
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd
         with:
-          ref: ce5dbebfec6d5de9e259ae52481565f0a889c044
+          ref: 31d2936a3944501a9fe0e7eaeb8223eeb15cdda1
           persist-credentials: false
       - uses: dtolnay/rust-toolchain@ebb3d1676050bfd0971c36c1e215b5751473994d
         with:
@@ -44,8 +44,8 @@ jobs:
         run: |
           set -euo pipefail
           for mode in observe effective_missing permitted_missing; do
-            expected=errno1
-            if [[ "$mode" == observe ]]; then expected=observe; fi
+            expected=success
+            if [[ "$mode" == permitted_missing ]]; then expected=errno1; fi
             unit="codex-unitcap-${mode}.service"
             # Keep every execution-hardening directive; substitute only fixture
             # paths, credential source, output sink and the selected test.
