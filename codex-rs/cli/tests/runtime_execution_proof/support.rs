@@ -39,9 +39,9 @@ use wiremock::ResponseTemplate;
 use wiremock::matchers::method;
 use wiremock::matchers::path;
 
-const RUN_UID: u32 = 65_534;
-const RUN_GID: u32 = 65_534;
-const BOOTSTRAP_FD: i32 = 200;
+const RUN_UID: u32 = 992;
+const RUN_GID: u32 = 981;
+const BOOTSTRAP_FD: i32 = 3;
 const AUTH_FD: i32 = 4;
 const WORK_ITEM_REF: &str = "w900001";
 pub const OPS_BEARER_TOKEN: &str = "runtime-proof-fixture-mcp-token-v1";
@@ -566,7 +566,9 @@ pub struct ProtectedRuntimeFixture {
     _temp: TempDir,
     executable_path: PathBuf,
     home: PathBuf,
+    child_home: PathBuf,
     state: PathBuf,
+    launcher_layout: bool,
     work: PathBuf,
     output_path: PathBuf,
     errors_path: PathBuf,
@@ -598,7 +600,7 @@ impl ProtectedRuntimeFixture {
     pub async fn start() -> Result<Self> {
         Self::start_config(
             /*redirect_claims*/ false, /*delay_first_claim*/ false,
-            /*error_claims*/ false, /*spawn_child*/ true,
+            /*error_claims*/ false, /*spawn_child*/ true, /*launcher_layout*/ false,
         )
         .await
     }
@@ -609,6 +611,7 @@ impl ProtectedRuntimeFixture {
             /*delay_first_claim*/ false,
             /*error_claims*/ false,
             /*spawn_child*/ true,
+            /*launcher_layout*/ false,
         )
         .await
     }
@@ -617,6 +620,7 @@ impl ProtectedRuntimeFixture {
         Self::start_config(
             /*redirect_claims*/ false, /*delay_first_claim*/ true,
             /*error_claims*/ false, /*spawn_child*/ false,
+            /*launcher_layout*/ false,
         )
         .await
     }
@@ -624,9 +628,13 @@ impl ProtectedRuntimeFixture {
     pub async fn start_with_mcp_error() -> Result<Self> {
         Self::start_config(
             /*redirect_claims*/ false, /*delay_first_claim*/ false,
-            /*error_claims*/ true, /*spawn_child*/ true,
+            /*error_claims*/ true, /*spawn_child*/ true, /*launcher_layout*/ false,
         )
         .await
+    }
+
+    pub async fn start_launcher_layout() -> Result<Self> {
+        Self::start_config(false, false, false, false, true).await
     }
 
     async fn start_config(
@@ -634,18 +642,31 @@ impl ProtectedRuntimeFixture {
         delay_first_claim: bool,
         error_claims: bool,
         spawn_child: bool,
+        launcher_layout: bool,
     ) -> Result<Self> {
         let temp = tempfile::tempdir()?;
         let root = temp.path();
         let home = root.join("immutable-home");
-        let state = root.join("state");
+        let child_home = root.join("child-home");
+        let state = child_home.join("state");
         let work = root.join("work");
-        fs::create_dir_all(home.join("sessions"))?;
-        fs::create_dir_all(home.join("tmp/arg0"))?;
-        fs::create_dir_all(home.join("agents"))?;
-        fs::create_dir_all(&state)?;
+        fs::create_dir_all(&home)?;
+        if !launcher_layout {
+            fs::create_dir_all(home.join("sessions"))?;
+            fs::create_dir_all(home.join("tmp/arg0"))?;
+            fs::set_permissions(home.join("sessions"), fs::Permissions::from_mode(0o700))?;
+        }
+        if !launcher_layout {
+            fs::create_dir_all(home.join("agents"))?;
+        }
+        for name in ["tmp", "config", "cache", "data", "state", "runtime"] {
+            fs::create_dir_all(child_home.join(name))?;
+            fs::set_permissions(child_home.join(name), fs::Permissions::from_mode(0o700))?;
+            chown_to_runner(&child_home.join(name))?;
+        }
+        fs::set_permissions(&child_home, fs::Permissions::from_mode(0o700))?;
+        chown_to_runner(&child_home)?;
         fs::create_dir_all(&work)?;
-        fs::set_permissions(home.join("sessions"), fs::Permissions::from_mode(0o700))?;
         fs::set_permissions(&state, fs::Permissions::from_mode(0o700))?;
         fs::set_permissions(&work, fs::Permissions::from_mode(0o700))?;
         let output_path = root.join("stdout.jsonl");
@@ -735,18 +756,25 @@ impl ProtectedRuntimeFixture {
         let provider_expires_at =
             SystemTime::now().duration_since(UNIX_EPOCH)?.as_secs() as i64 + 800;
         let provider_token = synthetic_access_token(provider_expires_at)?;
-        fs::write(
-            home.join("agents/proof-child.toml"),
-            format!("model_provider = \"openai\"\nopenai_base_url = {overridden_provider:?}\n"),
-        )?;
+        if !launcher_layout {
+            fs::write(
+                home.join("agents/proof-child.toml"),
+                format!("model_provider = \"openai\"\nopenai_base_url = {overridden_provider:?}\n"),
+            )?;
+        }
+        let test_settings = if launcher_layout {
+            String::new()
+        } else {
+            format!(
+                "log_dir = {:?}\n\n[features]\ncollab = true\n\n[agents.\"proof-child\"]\ndescription = \"synthetic provider guard fixture\"\nconfig_file = {:?}\n",
+                root.join("logs").display().to_string(),
+                home.join("agents/proof-child.toml").display().to_string(),
+            )
+        };
         fs::write(
             home.join("config.toml"),
             format!(
-                "model = \"gpt-5.2\"\nmodel_provider = \"openai\"\nopenai_base_url = {:?}\ncli_auth_credentials_store = \"ephemeral\"\napproval_policy = \"never\"\nlog_dir = {:?}\n\n[features]\ncollab = true\n\n[agents.\"proof-child\"]\ndescription = \"synthetic provider guard fixture\"\nconfig_file = {:?}\n\n[mcp_servers.ops]\nurl = {:?}\nrequired = true\nenabled_tools = [\"work_item_claim\"]\n\n[mcp_servers.ops.tools.work_item_claim]\napproval_mode = \"approve\"\n",
-                provider_recipient,
-                root.join("logs").display().to_string(),
-                home.join("agents/proof-child.toml").display().to_string(),
-                recipient,
+                "model = \"gpt-5.2\"\nmodel_provider = \"openai\"\nopenai_base_url = {provider_recipient:?}\ncli_auth_credentials_store = \"ephemeral\"\napproval_policy = \"never\"\n{test_settings}\n[mcp_servers.ops]\nurl = {recipient:?}\nrequired = true\nenabled_tools = [\"work_item_claim\", \"work_item_current_work\", \"work_item_execution_receipt_read\", \"work_item_release\"]\n\n[mcp_servers.ops.tools.work_item_claim]\napproval_mode = \"approve\"\n\n[mcp_servers.ops.tools.work_item_current_work]\napproval_mode = \"approve\"\n\n[mcp_servers.ops.tools.work_item_execution_receipt_read]\napproval_mode = \"approve\"\n\n[mcp_servers.ops.tools.work_item_release]\napproval_mode = \"approve\"\n"
             ),
         )?;
         // The child app server updates this state while the configuration home stays immutable.
@@ -756,15 +784,38 @@ impl ProtectedRuntimeFixture {
             "11111111-1111-4111-8111-111111111111",
         )?;
         chown_to_runner(&installation_id_path)?;
-        fs::set_permissions(&installation_id_path, fs::Permissions::from_mode(0o644))?;
-        fs::set_permissions(home.join("config.toml"), fs::Permissions::from_mode(0o444))?;
-        fs::set_permissions(home.join("agents"), fs::Permissions::from_mode(0o555))?;
-        fs::set_permissions(&home, fs::Permissions::from_mode(0o555))?;
+        fs::set_permissions(
+            &installation_id_path,
+            fs::Permissions::from_mode(if launcher_layout { 0o600 } else { 0o644 }),
+        )?;
+        if launcher_layout {
+            chown_group_to_runner(&home.join("config.toml"))?;
+        }
+        fs::set_permissions(
+            home.join("config.toml"),
+            fs::Permissions::from_mode(if launcher_layout { 0o440 } else { 0o444 }),
+        )?;
+        if !launcher_layout {
+            fs::set_permissions(home.join("agents"), fs::Permissions::from_mode(0o555))?;
+        }
+        fs::set_permissions(
+            &home,
+            fs::Permissions::from_mode(if launcher_layout { 0o550 } else { 0o555 }),
+        )?;
         fs::create_dir_all(root.join("logs"))?;
         fs::set_permissions(root.join("logs"), fs::Permissions::from_mode(0o700))?;
-        fs::set_permissions(root, fs::Permissions::from_mode(0o711))?;
-        chown_to_runner(&home.join("sessions"))?;
-        chown_to_runner(&home.join("tmp/arg0"))?;
+        if launcher_layout {
+            chown_group_to_runner(&home)?;
+            chown_group_to_runner(root)?;
+        }
+        fs::set_permissions(
+            root,
+            fs::Permissions::from_mode(if launcher_layout { 0o710 } else { 0o711 }),
+        )?;
+        if !launcher_layout {
+            chown_to_runner(&home.join("sessions"))?;
+            chown_to_runner(&home.join("tmp/arg0"))?;
+        }
         chown_to_runner(&state)?;
         chown_to_runner(&work)?;
         chown_to_runner(&root.join("logs"))?;
@@ -773,7 +824,9 @@ impl ProtectedRuntimeFixture {
             _temp: temp,
             executable_path,
             home,
+            child_home,
             state,
+            launcher_layout,
             work,
             output_path,
             errors_path,
@@ -875,17 +928,35 @@ impl ProtectedRuntimeFixture {
         let mut command = Command::new(&self.executable_path);
         command
             .env_clear()
-            .env("HOME", self.work.as_path())
+            .env("HOME", self.child_home.as_path())
             .env("CODEX_HOME", &self.home)
-            .env("CODEX_SQLITE_HOME", &self.state)
             .env("OPS_RUNTIME_BOOTSTRAP_FD", BOOTSTRAP_FD.to_string())
             .env("OPS_RUNTIME_AUTH_FD", AUTH_FD.to_string())
             .env("PATH", "/usr/bin:/bin")
             .current_dir(&self.work)
-            .args(["exec", "--json", "--skip-git-repo-check", "-"])
+            .args(["exec", "--json", "--skip-git-repo-check"])
             .stdin(Stdio::piped())
             .stdout(Stdio::from(stdout))
             .stderr(Stdio::from(stderr));
+        if self.launcher_layout {
+            command
+                .env("TMPDIR", self.child_home.join("tmp"))
+                .env("XDG_CONFIG_HOME", self.child_home.join("config"))
+                .env("XDG_CACHE_HOME", self.child_home.join("cache"))
+                .env("XDG_DATA_HOME", self.child_home.join("data"))
+                .env("XDG_STATE_HOME", self.child_home.join("state"))
+                .env("XDG_RUNTIME_DIR", self.child_home.join("runtime"))
+                .args([
+                    "--ephemeral",
+                    "--strict-config",
+                    "--ignore-rules",
+                    "--sandbox",
+                    "read-only",
+                ]);
+        } else {
+            command.env("CODEX_SQLITE_HOME", &self.state);
+        }
+        command.arg("-");
         if let Some(log_filter) = log_filter {
             command.env("RUST_LOG", log_filter);
         }
@@ -895,6 +966,14 @@ impl ProtectedRuntimeFixture {
                 if libc::setgroups(0, std::ptr::null()) != 0
                     || libc::setresgid(RUN_GID, RUN_GID, RUN_GID) != 0
                     || libc::setresuid(RUN_UID, RUN_UID, RUN_UID) != 0
+                    || libc::prctl(
+                        libc::PR_CAP_AMBIENT,
+                        libc::PR_CAP_AMBIENT_CLEAR_ALL,
+                        0,
+                        0,
+                        0,
+                    ) != 0
+                    || !clear_fixture_capabilities()
                     || libc::prctl(libc::PR_SET_NO_NEW_PRIVS, 1, 0, 0, 0) != 0
                 {
                     return Err(std::io::Error::last_os_error());
@@ -1505,7 +1584,7 @@ fn create_certificate(
     let now = SystemTime::now().duration_since(UNIX_EPOCH)?.as_secs() as i64;
     let header = serde_json::json!({"alg":"EdDSA","typ":"runtime-certificate+jwt","kid":"test-issuer-key-1"});
     let claims = serde_json::json!({
-        "version":1,
+        "version":2,
         "runtime_public_key":URL_SAFE_NO_PAD.encode(runtime_key.verifying_key().as_bytes()),
         "runtime_incarnation":"11111111-1111-4111-8111-111111111111",
         "provider":"codex-native-runtime",
@@ -1517,8 +1596,7 @@ fn create_certificate(
         "recipient":recipient,
         "mcp_server":"ops",
         "method":"tools/call",
-        "tool":"work_item_claim",
-        "purpose":"work-claim",
+        "operations":[{"tool":"work_item_claim","purpose":"work-claim"},{"tool":"work_item_release","purpose":"work-release"}],
         "iat":now-1,
         "exp":now+900,
     });
@@ -1586,6 +1664,48 @@ fn chown_to_runner(path: &std::path::Path) -> Result<()> {
         std::io::Error::last_os_error()
     );
     Ok(())
+}
+
+fn chown_group_to_runner(path: &std::path::Path) -> Result<()> {
+    use std::os::unix::ffi::OsStrExt;
+    let path = std::ffi::CString::new(path.as_os_str().as_bytes())?;
+    anyhow::ensure!(
+        unsafe { libc::chown(path.as_ptr(), 0, RUN_GID) } == 0,
+        "assign fixture group: {}",
+        std::io::Error::last_os_error()
+    );
+    Ok(())
+}
+
+fn clear_fixture_capabilities() -> bool {
+    #[repr(C)]
+    struct Header {
+        version: u32,
+        pid: i32,
+    }
+    #[repr(C)]
+    struct Data {
+        effective: u32,
+        permitted: u32,
+        inheritable: u32,
+    }
+    let mut header = Header {
+        version: 0x2008_0522,
+        pid: 0,
+    };
+    let data = [
+        Data {
+            effective: 0,
+            permitted: 0,
+            inheritable: 0,
+        },
+        Data {
+            effective: 0,
+            permitted: 0,
+            inheritable: 0,
+        },
+    ];
+    unsafe { libc::syscall(libc::SYS_capset, &mut header, data.as_ptr()) == 0 }
 }
 
 use std::os::fd::FromRawFd;

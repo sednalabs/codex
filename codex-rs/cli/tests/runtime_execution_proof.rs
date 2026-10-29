@@ -21,6 +21,40 @@ use uuid::Uuid;
 
 use runtime_execution_proof_support::ProtectedRuntimeFixture;
 
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[ignore = "requires an explicitly invoked disposable Linux root fixture"]
+async fn protected_cli_starts_with_launcher_home_and_four_tool_profile() -> Result<()> {
+    let fixture = ProtectedRuntimeFixture::start_launcher_layout().await?;
+    let result = fixture
+        .run_cli_with_prompt("Reply with a short acknowledgement.")
+        .await?;
+    let [initialize, _, tools_list, _, _] = fixture.mcp_phase_counts();
+    eprintln!(
+        "launcher-layout-result:exit={};mcp_initialize={initialize};mcp_tools_list={tools_list};model_requests={}",
+        result.status.code().map_or(-1, |code| code),
+        fixture.model_requests().len()
+    );
+    let (first, last, family) = cli_failure_path(&result.stdout, &result.stderr);
+    eprintln!("launcher-layout-events:first={first};last={last};family={family}");
+    let stderr = String::from_utf8_lossy(&result.stderr);
+    let errno = [1, 2, 13]
+        .into_iter()
+        .find(|number| stderr.contains(&format!("(os error {number})")));
+    eprintln!(
+        "launcher-layout-errno:{}",
+        errno.map_or_else(|| "unknown".to_string(), |number| number.to_string())
+    );
+    anyhow::ensure!(
+        initialize > 0 && tools_list > 0,
+        "protected consumer did not initialize its synthetic MCP server"
+    );
+    anyhow::ensure!(
+        !fixture.model_requests().is_empty(),
+        "protected consumer did not reach the synthetic model endpoint"
+    );
+    Ok(())
+}
+
 fn cli_event_category(value: &Value) -> &'static str {
     match value.get("type").and_then(Value::as_str) {
         Some("thread.started") => "thread_started",

@@ -1,0 +1,57 @@
+name: Runtime consumer qualification
+
+on:
+  push:
+    branches: [validation/runtime-consumer-20261030]
+
+permissions:
+  contents: read
+
+jobs:
+  targeted:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd
+        with:
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@ebb3d1676050bfd0971c36c1e215b5751473994d
+        with:
+          toolchain: 1.96.0
+      - name: Build and run targeted consumer checks
+        working-directory: codex-rs
+        shell: bash
+        run: |
+          set -euo pipefail
+          git rev-parse HEAD
+          cargo test --locked --release -p codex-exec --lib protected_runtime_accepts_only_the_fixed_four_tool_profile
+          cargo test --locked --release -p codex-cli --test runtime_execution_proof --no-run --message-format=json > "$RUNNER_TEMP/consumer-build.jsonl"
+          test_binary="$(jq -r 'select(.reason == "compiler-artifact" and .target.name == "runtime_execution_proof" and .profile.test == true and .executable != null) | .executable' "$RUNNER_TEMP/consumer-build.jsonl")"
+          test -n "$test_binary"
+          test -f target/release/codex
+          sudo install -d -m 0755 /usr/local/libexec/codex-consumer-fixture
+          sudo install -m 0755 "$test_binary" /usr/local/libexec/codex-consumer-fixture/test
+          sudo install -m 0755 target/release/codex /usr/local/libexec/codex-consumer-fixture/codex
+          sha256sum target/release/codex
+          printf '%s' synthetic | sudo tee /usr/local/libexec/codex-consumer-fixture/credential >/dev/null
+          printf '%s' '{}' | sudo tee /usr/local/libexec/codex-consumer-fixture/policy.json >/dev/null
+          if getent group codex-runtime-proof >/dev/null; then exit 1; fi
+          sudo groupadd --non-unique --gid 981 codex-runtime-proof
+      - name: Exercise consumer under fixed unit profile
+        working-directory: codex-rs
+        shell: bash
+        run: |
+          set -euo pipefail
+          unit=codex-consumer-fixture.service
+          sed -E \
+            -e 's|^ConditionPathExists=.*|ConditionPathExists=/usr/local/libexec/codex-consumer-fixture/policy.json|' \
+            -e 's|^(LoadCredential=[^:]+)(:.*)?$|\1:/usr/local/libexec/codex-consumer-fixture/credential|' \
+            -e 's|^StandardOutput=null$|StandardOutput=journal|' \
+            -e 's|^ExecStart=.*|Environment=CARGO_BIN_EXE_codex=/usr/local/libexec/codex-consumer-fixture/codex\nExecStart=/usr/local/libexec/codex-consumer-fixture/test --exact protected_cli_starts_with_launcher_home_and_four_tool_profile --ignored --nocapture --test-threads=1|' \
+            runtime-proof/systemd/codex-runtime-proof-claim.service > "$RUNNER_TEMP/$unit"
+          sudo install -m 0644 "$RUNNER_TEMP/$unit" "/etc/systemd/system/$unit"
+          sudo systemctl daemon-reload
+          rc=0
+          sudo systemctl start "$unit" || rc=$?
+          sudo journalctl -u "$unit" --no-pager -o cat | grep -E 'runtime-proof-root-stage:|runtime-proof-root-cli-failure:|runtime-proof-root-startup-failure:|runtime-proof-root-ack-failure:|launcher-layout-|test result:' || true
+          exit "$rc"
