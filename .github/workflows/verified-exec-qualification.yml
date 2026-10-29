@@ -1,0 +1,32 @@
+name: Verified executable focused qualification
+
+on:
+  push:
+    branches: [validation/runtime-proof-fdexec-20261030]
+
+permissions:
+  contents: read
+
+jobs:
+  targeted:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd
+        with:
+          ref: 464ac83474df4b4b7f6708a025289808c933bb06
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@ebb3d1676050bfd0971c36c1e215b5751473994d
+        with:
+          toolchain: 1.96.0
+      - name: Build and run isolated verified-inode regression
+        working-directory: codex-rs
+        shell: bash
+        run: |
+          set -euo pipefail
+          git rev-parse HEAD
+          cc -O2 -Wall -Wextra -Werror runtime-proof/tests/verified-exec-fixture.c -o "$RUNNER_TEMP/verified-exec-fixture"
+          cargo test --locked -p codex-runtime-proof --lib --no-run --message-format=json > "$RUNNER_TEMP/verified-exec-build.jsonl"
+          test_binary="$(jq -r 'select(.reason == "compiler-artifact" and .target.name == "codex_runtime_proof" and .profile.test == true and .executable != null) | .executable' "$RUNNER_TEMP/verified-exec-build.jsonl")"
+          test -n "$test_binary"
+          sudo env CODEX_VERIFIED_EXEC_FIXTURE="$RUNNER_TEMP/verified-exec-fixture" "$test_binary" --exact launcher::tests::verified_executable_survives_privilege_drop --ignored --nocapture
