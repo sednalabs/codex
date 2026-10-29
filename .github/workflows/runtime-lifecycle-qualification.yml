@@ -14,32 +14,17 @@ jobs:
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd
         with:
-          ref: cb18a2753dd141f9405bdf23af8f7dbf5e98cfa5
+          ref: 5a6035f2223c4cedfbb6863c4386ffac06cda0e0
           persist-credentials: false
       - uses: dtolnay/rust-toolchain@ebb3d1676050bfd0971c36c1e215b5751473994d
         with:
           toolchain: 1.96.0
           components: rustfmt
-      - name: Capture formatter delta and restore the exact candidate
+      - name: Generate synthetic producer packet
+        working-directory: codex-rs
         shell: bash
         run: |
           set -euo pipefail
-          cd codex-rs
-          cargo fmt -p codex-runtime-proof
-          cd ..
-          git diff --binary -- codex-rs/runtime-proof > "$RUNNER_TEMP/lifecycle-format.patch"
-          if [[ -s "$RUNNER_TEMP/lifecycle-format.patch" ]]; then
-            git apply --reverse "$RUNNER_TEMP/lifecycle-format.patch"
-          fi
-          git diff --exit-code
+          export CODEX_LIFECYCLE_VECTOR_INPUT="$(jq -nc --argjson now "$(date +%s)" '{now:$now,principal_id:"00000000-0000-4000-8000-000000000001",project_id:17,work_item_ref:"w12345",issuer_kid:"synthetic-issuer",runtime_incarnation:"00000000-0000-4000-8000-000000000002",start_event_id:"00000000-0000-4000-8000-000000000003",end_event_id:"00000000-0000-4000-8000-000000000004",manager_invocation:"00000000-0000-4000-8000-000000000005",artifact_sha256:("a"*64),observer_artifact_sha256:("b"*64),mcp_recipient:"https://example.invalid/mcp",lifecycle_recipient:"https://example.invalid"}')"
           git rev-parse HEAD
-      - name: Test exact runtime-proof candidate
-        working-directory: codex-rs
-        run: cargo test --locked -p codex-runtime-proof
-      - name: Preserve formatter delta
-        if: always()
-        uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f
-        with:
-          name: runtime-lifecycle-formatter
-          path: ${{ runner.temp }}/lifecycle-format.patch
-          if-no-files-found: ignore
+          cargo test --locked -p codex-runtime-proof synthetic_interop_packet -- --ignored --nocapture
