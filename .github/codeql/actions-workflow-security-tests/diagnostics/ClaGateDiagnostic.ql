@@ -4,80 +4,87 @@
 import actions
 import WorkflowSecurity
 
-bindingset[value, pattern]
-predicate regexStatus(string value, string pattern, string label) {
-  value.regexpMatch(pattern) and label = "yes"
-  or
-  not value.regexpMatch(pattern) and label = "no"
-}
-
-predicate gateStatus(Job job, string label) {
-  jobConditionMatchesExactly(job, "github\\.repository\\s*==\\s*'openai/codex'") and label = "yes"
-  or
-  not jobConditionMatchesExactly(job, "github\\.repository\\s*==\\s*'openai/codex'") and label = "no"
-}
-
-predicate checkoutStatus(Job job, string label) {
-  jobChecksOutCode(job) and label = "yes"
-  or
-  not jobChecksOutCode(job) and label = "no"
-}
-
-predicate runStatus(Job job, string label) {
-  exists(Run run | run.getEnclosingJob() = job) and label = "yes"
-  or
-  not exists(Run run | run.getEnclosingJob() = job) and label = "no"
-}
-
-predicate otherUsesStatus(Job job, string label) {
-  exists(UsesStep other |
-    other.getEnclosingJob() = job and
-    not (
-      other.getCallee().regexpMatch("(?i)^contributor-assistant/github-action$") and
-      other.getVersion().regexpMatch("(?i)^ca4a40a7d1004f18d9960b404b97e5f30a505a08$")
-    )
-  ) and label = "yes"
-  or
-  not exists(UsesStep other |
-    other.getEnclosingJob() = job and
-    not (
-      other.getCallee().regexpMatch("(?i)^contributor-assistant/github-action$") and
-      other.getVersion().regexpMatch("(?i)^ca4a40a7d1004f18d9960b404b97e5f30a505a08$")
-    )
-  ) and label = "no"
-}
-
-predicate pinnedStatus(Job job, string label) {
-  jobUsesPinnedClaAssistant(job) and label = "yes"
-  or
-  not jobUsesPinnedClaAssistant(job) and label = "no"
-}
-
-from Job job, UsesStep step, string gate, string action, string pin,
-  string signatures, string branch, string document, string allowlist,
-  string checksOut, string hasRun, string otherUses, string pinned
+from Job job, string label, string value
 where
-  workflowName(job.getWorkflow(), "CLA Assistant") and
-  step.getEnclosingJob() = job and
-  gateStatus(job, gate) and
-  regexStatus(step.getCallee(), "(?i)^contributor-assistant/github-action$", action) and
-  regexStatus(step.getVersion(), "(?i)^ca4a40a7d1004f18d9960b404b97e5f30a505a08$", pin) and
-  regexStatus(step.getArgumentExpr("path-to-signatures").getExpression(), "(?i)^['\"]?signatures/cla\\.json['\"]?$", signatures) and
-  regexStatus(step.getArgumentExpr("branch").getExpression(), "(?i)^['\"]?cla-signatures['\"]?$", branch) and
-  regexStatus(step.getArgumentExpr("path-to-document").getExpression(), "(?i)^['\"]?https://github\\.com/openai/codex/blob/main/docs/CLA\\.md['\"]?$", document) and
-  regexStatus(step.getArgumentExpr("allowlist").getExpression(), "(?i)^['\"]?codex,dependabot,dependabot\\[bot\\],github-actions\\[bot\\]['\"]?$", allowlist) and
-  checkoutStatus(job, checksOut) and
-  runStatus(job, hasRun) and
-  otherUsesStatus(job, otherUses) and
-  pinnedStatus(job, pinned)
-select job,
-  "id=" + job.getId() +
-    "; condition=" + job.getIf().getCondition() +
-    "; statuses=" + gate + "/" + action + "/" + pin + "/" + signatures + "/" + branch + "/" + document + "/" + allowlist + "/" + checksOut + "/" + hasRun + "/" + otherUses + "/" + pinned +
-    "; callee=" + step.getCallee() +
-    "; version=" + step.getVersion() +
-    "; signatures=" + step.getArgumentExpr("path-to-signatures").getExpression() +
-    "; branch=" + step.getArgumentExpr("branch").getExpression() +
-    "; document=" + step.getArgumentExpr("path-to-document").getExpression() +
-    "; allowlist=" + step.getArgumentExpr("allowlist").getExpression() +
-    "; pinnedPredicate=" + pinned
+  job.getId() = "cla" and
+  (
+    label = "workflow" and value = job.getWorkflow().getName()
+    or
+    label = "condition" and value = job.getIf().getCondition()
+    or
+    label = "gate-match" and value = "yes" and
+      jobConditionMatchesExactly(job, "github\\.repository\\s*==\\s*'openai/codex'")
+    or
+    label = "gate-match" and value = "no" and
+      not jobConditionMatchesExactly(job, "github\\.repository\\s*==\\s*'openai/codex'")
+    or
+    label = "uses-step" and value = "yes" and exists(UsesStep step | step.getEnclosingJob() = job)
+    or
+    label = "uses-step" and value = "no" and not exists(UsesStep step | step.getEnclosingJob() = job)
+    or
+    exists(UsesStep step |
+      step.getEnclosingJob() = job and
+      (
+        label = "callee" and value = step.getCallee()
+        or
+        label = "callee-match" and value = "yes" and
+          step.getCallee().regexpMatch("(?i)^contributor-assistant/github-action$")
+        or
+        label = "callee-match" and value = "no" and
+          not step.getCallee().regexpMatch("(?i)^contributor-assistant/github-action$")
+        or
+        label = "version" and value = step.getVersion()
+        or
+        label = "version-match" and value = "yes" and
+          step.getVersion().regexpMatch("(?i)^ca4a40a7d1004f18d9960b404b97e5f30a505a08$")
+        or
+        label = "version-match" and value = "no" and
+          not step.getVersion().regexpMatch("(?i)^ca4a40a7d1004f18d9960b404b97e5f30a505a08$")
+        or
+        label = "signatures" and value = step.getArgumentExpr("path-to-signatures").getExpression()
+        or
+        label = "signatures-match" and value = "yes" and
+          step.getArgumentExpr("path-to-signatures").getExpression().regexpMatch("(?i)^['\"]?signatures/cla\\.json['\"]?$")
+        or
+        label = "signatures-match" and value = "no" and
+          not step.getArgumentExpr("path-to-signatures").getExpression().regexpMatch("(?i)^['\"]?signatures/cla\\.json['\"]?$")
+        or
+        label = "branch" and value = step.getArgumentExpr("branch").getExpression()
+        or
+        label = "branch-match" and value = "yes" and
+          step.getArgumentExpr("branch").getExpression().regexpMatch("(?i)^['\"]?cla-signatures['\"]?$")
+        or
+        label = "branch-match" and value = "no" and
+          not step.getArgumentExpr("branch").getExpression().regexpMatch("(?i)^['\"]?cla-signatures['\"]?$")
+        or
+        label = "document" and value = step.getArgumentExpr("path-to-document").getExpression()
+        or
+        label = "document-match" and value = "yes" and
+          step.getArgumentExpr("path-to-document").getExpression().regexpMatch("(?i)^['\"]?https://github\\.com/openai/codex/blob/main/docs/CLA\\.md['\"]?$")
+        or
+        label = "document-match" and value = "no" and
+          not step.getArgumentExpr("path-to-document").getExpression().regexpMatch("(?i)^['\"]?https://github\\.com/openai/codex/blob/main/docs/CLA\\.md['\"]?$")
+        or
+        label = "allowlist" and value = step.getArgumentExpr("allowlist").getExpression()
+        or
+        label = "allowlist-match" and value = "yes" and
+          step.getArgumentExpr("allowlist").getExpression().regexpMatch("(?i)^['\"]?codex,dependabot,dependabot\\[bot\\],github-actions\\[bot\\]['\"]?$")
+        or
+        label = "allowlist-match" and value = "no" and
+          not step.getArgumentExpr("allowlist").getExpression().regexpMatch("(?i)^['\"]?codex,dependabot,dependabot\\[bot\\],github-actions\\[bot\\]['\"]?$")
+      )
+    )
+    or
+    label = "checkout" and value = "yes" and jobChecksOutCode(job)
+    or
+    label = "checkout" and value = "no" and not jobChecksOutCode(job)
+    or
+    label = "has-run" and value = "yes" and exists(Run run | run.getEnclosingJob() = job)
+    or
+    label = "has-run" and value = "no" and not exists(Run run | run.getEnclosingJob() = job)
+    or
+    label = "pinned-predicate" and value = "yes" and jobUsesPinnedClaAssistant(job)
+    or
+    label = "pinned-predicate" and value = "no" and not jobUsesPinnedClaAssistant(job)
+  )
+select job, label + "=" + value
