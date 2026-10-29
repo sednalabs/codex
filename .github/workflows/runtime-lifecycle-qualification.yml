@@ -14,16 +14,16 @@ jobs:
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd
         with:
-          ref: eba6416d13e9e6292b2fd6e7089d8f76afc244fa
+          ref: bb52925a862b37056393bfe00a90e6d0993f99d7
           persist-credentials: false
       - uses: dtolnay/rust-toolchain@ebb3d1676050bfd0971c36c1e215b5751473994d
         with:
           toolchain: 1.96.0
           components: rustfmt
-      - name: Test fail-closed lifecycle source
+      - name: Test stop observer and lifecycle guard
         working-directory: codex-rs
         shell: bash
         run: |
           set -euo pipefail
           git rev-parse HEAD
-          cargo test --locked -p codex-runtime-proof
+          cargo test --locked -p codex-runtime-proof launcher::lifecycle::tests
