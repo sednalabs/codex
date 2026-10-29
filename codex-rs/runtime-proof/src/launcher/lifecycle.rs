@@ -5,20 +5,17 @@ use anyhow::Result;
 use anyhow::bail;
 use base64::Engine as _;
 use base64::engine::general_purpose::URL_SAFE_NO_PAD;
-use codex_http_client::HttpClient;
 use chrono::DateTime;
 use chrono::SecondsFormat;
 use chrono::Utc;
-use ed25519_dalek::Signer as _;
+use codex_http_client::HttpClient;
 use ed25519_dalek::Signature;
+use ed25519_dalek::Signer as _;
 use ed25519_dalek::SigningKey;
 use ed25519_dalek::VerifyingKey;
 use serde::Deserialize;
 use serde::Deserializer;
 use serde::Serialize;
-use uuid::Uuid;
-use zeroize::Zeroizing;
-use std::time::Duration;
 use std::fs;
 use std::fs::File;
 use std::fs::OpenOptions;
@@ -29,6 +26,9 @@ use std::os::unix::fs::MetadataExt as _;
 use std::os::unix::fs::OpenOptionsExt as _;
 use std::path::Path;
 use std::path::PathBuf;
+use std::time::Duration;
+use uuid::Uuid;
+use zeroize::Zeroizing;
 
 const WITNESS_SECONDS: i64 = 45;
 const ROUTE: &str = "/v0/work-items/lifecycle";
@@ -127,7 +127,8 @@ fn state_directory() -> Result<File> {
     if path.canonicalize()? != path {
         bail!("lifecycle state directory is not canonical");
     }
-    let directory = OpenOptions::new().read(true)
+    let directory = OpenOptions::new()
+        .read(true)
         .custom_flags(libc::O_DIRECTORY | libc::O_NOFOLLOW | libc::O_CLOEXEC)
         .open(path)?;
     let metadata = directory.metadata()?;
@@ -140,11 +141,17 @@ fn state_directory() -> Result<File> {
 /// Serialize selected-UID admission and stop across cooperating launchers.
 pub(super) fn lock_cohort() -> Result<File> {
     let _directory = state_directory()?;
-    let lock = OpenOptions::new().read(true).write(true).create(true).mode(0o600)
+    let lock = OpenOptions::new()
+        .read(true)
+        .write(true)
+        .create(true)
+        .mode(0o600)
         .custom_flags(libc::O_NOFOLLOW | libc::O_CLOEXEC)
         .open(Path::new(STATE_DIRECTORY).join("cohort.lock"))?;
     let metadata = lock.metadata()?;
-    if !metadata.is_file() || metadata.uid() != 0 || metadata.mode() & 0o077 != 0
+    if !metadata.is_file()
+        || metadata.uid() != 0
+        || metadata.mode() & 0o077 != 0
         || unsafe { libc::flock(lock.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) } != 0
     {
         bail!("lifecycle cohort lock is unavailable");
@@ -158,7 +165,8 @@ fn context_path(invocation: Uuid) -> PathBuf {
 
 pub(super) fn load_context(invocation: Uuid) -> Result<Option<Context>> {
     let _directory = state_directory()?;
-    let file = match OpenOptions::new().read(true)
+    let file = match OpenOptions::new()
+        .read(true)
         .custom_flags(libc::O_NOFOLLOW | libc::O_CLOEXEC | libc::O_NONBLOCK)
         .open(context_path(invocation))
     {
@@ -167,13 +175,16 @@ pub(super) fn load_context(invocation: Uuid) -> Result<Option<Context>> {
         Err(error) => return Err(error.into()),
     };
     let metadata = file.metadata()?;
-    if !metadata.is_file() || metadata.uid() != 0 || metadata.mode() & 0o077 != 0
+    if !metadata.is_file()
+        || metadata.uid() != 0
+        || metadata.mode() & 0o077 != 0
         || metadata.len() > MAX_CONTEXT_BYTES as u64
     {
         bail!("invalid lifecycle context file");
     }
     let mut bytes = Vec::new();
-    file.take((MAX_CONTEXT_BYTES + 1) as u64).read_to_end(&mut bytes)?;
+    file.take((MAX_CONTEXT_BYTES + 1) as u64)
+        .read_to_end(&mut bytes)?;
     if bytes.len() > MAX_CONTEXT_BYTES {
         bail!("lifecycle context exceeds its limit");
     }
@@ -189,8 +200,12 @@ fn persist_context(context: &Context, create: bool) -> Result<()> {
     let invocation = context.pending_start.event.manager_invocation;
     let target = context_path(invocation);
     let temporary = Path::new(STATE_DIRECTORY).join(format!(".{}.tmp", Uuid::new_v4()));
-    let mut file = OpenOptions::new().write(true).create_new(true).mode(0o600)
-        .custom_flags(libc::O_NOFOLLOW | libc::O_CLOEXEC).open(&temporary)?;
+    let mut file = OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .mode(0o600)
+        .custom_flags(libc::O_NOFOLLOW | libc::O_CLOEXEC)
+        .open(&temporary)?;
     file.write_all(&bytes)?;
     file.sync_all()?;
     if create {
@@ -231,7 +246,9 @@ pub(super) fn require_uid_absent(uid: u32) -> Result<()> {
     }
     let mut stat: libc::statfs = unsafe { std::mem::zeroed() };
     let proc_path = std::ffi::CString::new("/proc")?;
-    if unsafe { libc::statfs(proc_path.as_ptr(), &mut stat) } != 0 || stat.f_type != libc::PROC_SUPER_MAGIC as _ {
+    if unsafe { libc::statfs(proc_path.as_ptr(), &mut stat) } != 0
+        || stat.f_type != libc::PROC_SUPER_MAGIC as libc::c_long
+    {
         bail!("lifecycle process view is unavailable");
     }
     let mounts = fs::read_to_string("/proc/self/mountinfo")?;
@@ -249,8 +266,16 @@ pub(super) fn require_uid_absent(uid: u32) -> Result<()> {
             continue;
         }
         proc_mounts += 1;
-        if filesystem[0] != "proc" || fields[5].split(',').chain(filesystem[2].split(','))
-            .any(|option| option == "subset=pid" || (option.starts_with("hidepid=") && option != "hidepid=0" && option != "hidepid=off"))
+        if filesystem[0] != "proc"
+            || fields[5]
+                .split(',')
+                .chain(filesystem[2].split(','))
+                .any(|option| {
+                    option == "subset=pid"
+                        || (option.starts_with("hidepid=")
+                            && option != "hidepid=0"
+                            && option != "hidepid=off")
+                })
         {
             bail!("lifecycle process view is restricted");
         }
@@ -265,7 +290,12 @@ pub(super) fn require_uid_absent(uid: u32) -> Result<()> {
     }
     for entry in fs::read_dir("/proc")? {
         let entry = entry?;
-        if !entry.file_name().as_encoded_bytes().iter().all(u8::is_ascii_digit) {
+        if !entry
+            .file_name()
+            .as_encoded_bytes()
+            .iter()
+            .all(u8::is_ascii_digit)
+        {
             continue;
         }
         let status = match fs::read_to_string(entry.path().join("status")) {
@@ -281,10 +311,15 @@ pub(super) fn require_uid_absent(uid: u32) -> Result<()> {
 }
 
 fn status_has_uid(status: &str, uid: u32) -> Result<bool> {
-    let uid_line = status.lines().find(|line| line.starts_with("Uid:"))
+    let uid_line = status
+        .lines()
+        .find(|line| line.starts_with("Uid:"))
         .ok_or_else(|| anyhow::anyhow!("process identity is unavailable"))?;
-    let ids = uid_line.split_whitespace().skip(1)
-        .map(str::parse::<u32>).collect::<std::result::Result<Vec<_>, _>>()?;
+    let ids = uid_line
+        .split_whitespace()
+        .skip(1)
+        .map(str::parse::<u32>)
+        .collect::<std::result::Result<Vec<_>, _>>()?;
     if ids.len() != 4 {
         bail!("process identity is incomplete");
     }
@@ -378,13 +413,19 @@ fn canonical_uuid(value: &str) -> bool {
 
 async fn bounded_body(mut response: codex_http_client::HttpResponse) -> Result<Zeroizing<Vec<u8>>> {
     if response.status().as_u16() != 200
-        || response.content_length().is_some_and(|length| length > MAX_RESPONSE_BYTES as u64)
+        || response
+            .content_length()
+            .is_some_and(|length| length > MAX_RESPONSE_BYTES as u64)
     {
         bail!("lifecycle response unavailable");
     }
     let mut body = Zeroizing::new(Vec::new());
     while let Some(chunk) = response.chunk().await? {
-        if body.len().checked_add(chunk.len()).is_none_or(|length| length > MAX_RESPONSE_BYTES) {
+        if body
+            .len()
+            .checked_add(chunk.len())
+            .is_none_or(|length| length > MAX_RESPONSE_BYTES)
+        {
             bail!("lifecycle response exceeds its limit");
         }
         body.extend_from_slice(&chunk);
@@ -400,13 +441,17 @@ async fn read_receipt(
 ) -> Result<bool> {
     let authorization = Zeroizing::new(format!("Bearer {bearer}"));
     let event = &pending.event;
-    let url = format!("{recipient}/v0/work-items/{}/lifecycle-events/{}?project_id={}",
-        event.work_item_ref, event.event_id, event.project_id);
-    let response = client.get(url)
+    let url = format!(
+        "{recipient}/v0/work-items/{}/lifecycle-events/{}?project_id={}",
+        event.work_item_ref, event.event_id, event.project_id
+    );
+    let response = client
+        .get(url)
         .header("authorization", authorization.as_str())
         .header("x-ops-project-id", event.project_id.to_string())
         .timeout(REQUEST_TIMEOUT)
-        .send().await?;
+        .send()
+        .await?;
     let body = bounded_body(response).await?;
     let result: ReadResponse = serde_json::from_slice(&body)?;
     if result.status != "ok" || !valid_request_id(&result.request_id) {
@@ -431,7 +476,9 @@ pub(super) fn deliver_once(
     send: bool,
 ) -> Result<bool> {
     let client = super::api_claim::api_http_client()?;
-    let runtime = tokio::runtime::Builder::new_current_thread().enable_all().build()?;
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()?;
     runtime.block_on(async {
         if send {
             let now = super::api_claim::unix_seconds()?;
@@ -444,18 +491,21 @@ pub(super) fn deliver_once(
                 bail!("lifecycle request exceeds its limit");
             }
             let authorization = Zeroizing::new(format!("Bearer {bearer}"));
-            let response = client.post(format!("{recipient}{ROUTE}"))
+            let response = client
+                .post(format!("{recipient}{ROUTE}"))
                 .header("authorization", authorization.as_str())
                 .header("x-ops-project-id", pending.event.project_id.to_string())
                 .header("x-ops-runtime-lifecycle", proof.as_str())
                 .header("content-type", "application/json")
                 .body(body.as_slice().to_vec())
                 .timeout(REQUEST_TIMEOUT)
-                .send().await;
+                .send()
+                .await;
             if let Ok(response) = response
                 && let Ok(body) = bounded_body(response).await
                 && let Ok(result) = serde_json::from_slice::<PostResponse>(&body)
-                && result.status == "ok" && valid_request_id(&result.request_id)
+                && result.status == "ok"
+                && valid_request_id(&result.request_id)
                 && pending.validate_receipt(&result.lifecycle_receipt).is_ok()
             {
                 let _historical = result.historical;
@@ -490,19 +540,28 @@ fn same_timestamp(first: &str, second: &str) -> Result<bool> {
 
 fn validate_event(event: &Event) -> Result<()> {
     let valid_digest = |value: &str| {
-        value.len() == 64 && value.bytes().all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
+        value.len() == 64
+            && value
+                .bytes()
+                .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
     };
     let valid_cause = match (event.phase, event.source, event.cause) {
         (Phase::Start, Source::Launcher, Cause::LaunchRegistered) => {
             event.exit_code.is_none() && event.signal.is_none() && !event.absence_proven
         }
         (Phase::End, Source::Launcher, Cause::Exited) => {
-            event.exit_code.is_some_and(|code| (0..=255).contains(&code))
-                && event.signal.is_none() && event.absence_proven
+            event
+                .exit_code
+                .is_some_and(|code| (0..=255).contains(&code))
+                && event.signal.is_none()
+                && event.absence_proven
         }
         (Phase::End, Source::Launcher, Cause::Signalled) => {
-            event.signal.is_some_and(|signal| (1..=64).contains(&signal))
-                && event.exit_code.is_none() && event.absence_proven
+            event
+                .signal
+                .is_some_and(|signal| (1..=64).contains(&signal))
+                && event.exit_code.is_none()
+                && event.absence_proven
         }
         (Phase::End, Source::Launcher, Cause::Timeout)
         | (Phase::End, Source::Launcher | Source::Systemd, Cause::Unobserved) => {
@@ -521,10 +580,18 @@ fn validate_event(event: &Event) -> Result<()> {
         || !valid_digest(&event.observer_artifact_sha256)
         || event.issuer_kid.is_empty()
         || event.issuer_kid.len() > 128
-        || !event.issuer_kid.bytes().all(|byte| byte.is_ascii_alphanumeric() || b"._-".contains(&byte))
+        || !event
+            .issuer_kid
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || b"._-".contains(&byte))
         || event.work_item_ref.strip_prefix('w').is_none_or(|digits| {
-            digits.is_empty() || digits.starts_with('0') || !digits.bytes().all(|byte| byte.is_ascii_digit())
-                || digits.parse::<u64>().ok().is_none_or(|value| value > ((1_u64 << 53) - 1))
+            digits.is_empty()
+                || digits.starts_with('0')
+                || !digits.bytes().all(|byte| byte.is_ascii_digit())
+                || digits
+                    .parse::<u64>()
+                    .ok()
+                    .is_none_or(|value| value > ((1_u64 << 53) - 1))
         })
         || !valid_cause
     {
@@ -545,58 +612,114 @@ impl PendingEvent {
             event,
             operation_sha256: wire::digest(&operation),
             proof_issued_at: now,
-            proof_expires_at: now.checked_add(WITNESS_SECONDS).ok_or_else(|| anyhow::anyhow!("lifecycle witness expiry overflow"))?,
+            proof_expires_at: now
+                .checked_add(WITNESS_SECONDS)
+                .ok_or_else(|| anyhow::anyhow!("lifecycle witness expiry overflow"))?,
             may_have_been_sent: false,
         })
     }
 
-    pub(super) fn header(&self, certificate: &str, seed: &[u8; 32], recipient: &str) -> Result<Zeroizing<String>> {
+    pub(super) fn header(
+        &self,
+        certificate: &str,
+        seed: &[u8; 32],
+        recipient: &str,
+    ) -> Result<Zeroizing<String>> {
         validate_event(&self.event)?;
         if wire::certificate_digest(certificate.as_bytes()) != self.event.certificate_sha256
             || self.proof_expires_at.checked_sub(self.proof_issued_at) != Some(WITNESS_SECONDS)
-            || wire::digest(&wire::canonical_lifecycle_operation(&serde_json::to_value(&self.event)?)?) != self.operation_sha256
+            || wire::digest(&wire::canonical_lifecycle_operation(
+                &serde_json::to_value(&self.event)?,
+            )?) != self.operation_sha256
         {
             bail!("lifecycle witness bindings changed");
         }
-        let header = wire::RequestHeader { alg: "EdDSA", typ: "runtime-lifecycle+jwt", kid: &self.event.issuer_kid };
+        let header = wire::RequestHeader {
+            alg: "EdDSA",
+            typ: "runtime-lifecycle+jwt",
+            kid: &self.event.issuer_kid,
+        };
         let claims = WitnessClaims {
-            version: 1, recipient, method: "POST", route: ROUTE, purpose: "work-lifecycle",
-            operation_sha256: &self.operation_sha256, iat: self.proof_issued_at, exp: self.proof_expires_at,
-            event_id: self.event.event_id, certificate_sha256: &self.event.certificate_sha256,
+            version: 1,
+            recipient,
+            method: "POST",
+            route: ROUTE,
+            purpose: "work-lifecycle",
+            operation_sha256: &self.operation_sha256,
+            iat: self.proof_issued_at,
+            exp: self.proof_expires_at,
+            event_id: self.event.event_id,
+            certificate_sha256: &self.event.certificate_sha256,
             runtime_incarnation: self.event.runtime_incarnation,
         };
         let encoded_header = URL_SAFE_NO_PAD.encode(serde_json::to_vec(&header)?);
         let encoded_claims = URL_SAFE_NO_PAD.encode(serde_json::to_vec(&claims)?);
         let input = Zeroizing::new(format!("{encoded_header}.{encoded_claims}"));
         let signature = SigningKey::from_bytes(seed).sign(input.as_bytes());
-        let witness = Zeroizing::new(format!("{}.{}", input.as_str(), URL_SAFE_NO_PAD.encode(signature.to_bytes())));
-        Ok(Zeroizing::new(URL_SAFE_NO_PAD.encode(serde_json::to_vec(&Envelope { certificate, witness: witness.as_str() })?)))
+        let witness = Zeroizing::new(format!(
+            "{}.{}",
+            input.as_str(),
+            URL_SAFE_NO_PAD.encode(signature.to_bytes())
+        ));
+        Ok(Zeroizing::new(URL_SAFE_NO_PAD.encode(serde_json::to_vec(
+            &Envelope {
+                certificate,
+                witness: witness.as_str(),
+            },
+        )?)))
     }
 
     pub(super) fn validate_receipt(&self, receipt: &Receipt) -> Result<()> {
         let event = &self.event;
-        let work_id = event.work_item_ref.strip_prefix('w').and_then(|id| id.parse::<u64>().ok());
-        if receipt.event_id != event.event_id.to_string() || receipt.issuer_kid != event.issuer_kid
+        let work_id = event
+            .work_item_ref
+            .strip_prefix('w')
+            .and_then(|id| id.parse::<u64>().ok());
+        if receipt.event_id != event.event_id.to_string()
+            || receipt.issuer_kid != event.issuer_kid
             || receipt.certificate_sha256 != event.certificate_sha256
             || receipt.runtime_incarnation != event.runtime_incarnation.to_string()
-            || Some(receipt.work_item_id) != work_id || receipt.project_id != event.project_id
-            || receipt.principal_id != event.principal_id.to_string() || receipt.phase != event.phase
+            || Some(receipt.work_item_id) != work_id
+            || receipt.project_id != event.project_id
+            || receipt.principal_id != event.principal_id.to_string()
+            || receipt.phase != event.phase
             || receipt.manager_invocation != event.manager_invocation.to_string()
             || receipt.observer_artifact_sha256 != event.observer_artifact_sha256
-            || receipt.operation_sha256 != self.operation_sha256 || receipt.source != event.source
-            || receipt.cause != event.cause || receipt.exit_code != event.exit_code
-            || receipt.signal != event.signal || receipt.absence_proven != event.absence_proven
+            || receipt.operation_sha256 != self.operation_sha256
+            || receipt.source != event.source
+            || receipt.cause != event.cause
+            || receipt.exit_code != event.exit_code
+            || receipt.signal != event.signal
+            || receipt.absence_proven != event.absence_proven
             || !same_timestamp(&receipt.observed_at, &event.observed_at)?
             || !same_timestamp(&receipt.proof_issued_at, &timestamp(self.proof_issued_at)?)?
-            || !same_timestamp(&receipt.proof_expires_at, &timestamp(self.proof_expires_at)?)?
-            || !receipt.runtime_epoch_recorded || receipt.ended != (event.phase == Phase::End)
-            || (event.phase == Phase::Start && (!receipt.terminalized_execution_instances.is_empty() || receipt.released_current_claim.is_some()))
-            || !receipt.terminalized_execution_instances.iter().all(|id| canonical_uuid(id))
-            || !receipt.terminalized_execution_instances.windows(2).all(|pair| pair[0] < pair[1])
-            || receipt.released_current_claim.as_ref().is_some_and(|claim| {
-                !canonical_uuid(&claim.execution_instance_id) || claim.generation == 0
-                    || !receipt.terminalized_execution_instances.contains(&claim.execution_instance_id)
-            })
+            || !same_timestamp(
+                &receipt.proof_expires_at,
+                &timestamp(self.proof_expires_at)?,
+            )?
+            || !receipt.runtime_epoch_recorded
+            || receipt.ended != (event.phase == Phase::End)
+            || (event.phase == Phase::Start
+                && (!receipt.terminalized_execution_instances.is_empty()
+                    || receipt.released_current_claim.is_some()))
+            || !receipt
+                .terminalized_execution_instances
+                .iter()
+                .all(|id| canonical_uuid(id))
+            || !receipt
+                .terminalized_execution_instances
+                .windows(2)
+                .all(|pair| pair[0] < pair[1])
+            || receipt
+                .released_current_claim
+                .as_ref()
+                .is_some_and(|claim| {
+                    !canonical_uuid(&claim.execution_instance_id)
+                        || claim.generation == 0
+                        || !receipt
+                            .terminalized_execution_instances
+                            .contains(&claim.execution_instance_id)
+                })
         {
             bail!("lifecycle receipt does not bind the event");
         }
@@ -612,7 +735,8 @@ fn verified_certificate(
     policy_sha256: &str,
     invocation: Uuid,
 ) -> Result<wire::CertificateClaims> {
-    if context.version != 1 || context.policy_sha256 != policy_sha256
+    if context.version != 1
+        || context.policy_sha256 != policy_sha256
         || context.selected_uid != target.runtime_uid
         || context.pending_start.event.manager_invocation != invocation
         || context.pending_start.event.observer_artifact_sha256 != observer_sha256
@@ -630,31 +754,53 @@ fn verified_certificate(
     else {
         bail!("invalid original lifecycle certificate");
     };
-    let public_key: [u8; 32] = URL_SAFE_NO_PAD.decode(&policy.issuer_public_key)?
-        .try_into().map_err(|_| anyhow::anyhow!("invalid lifecycle issuer key"))?;
+    let public_key: [u8; 32] = URL_SAFE_NO_PAD
+        .decode(&policy.issuer_public_key)?
+        .try_into()
+        .map_err(|_| anyhow::anyhow!("invalid lifecycle issuer key"))?;
     let signature = Signature::from_slice(&URL_SAFE_NO_PAD.decode(encoded_signature)?)?;
     VerifyingKey::from_bytes(&public_key)?.verify_strict(
-        format!("{encoded_header}.{encoded_claims}").as_bytes(), &signature,
+        format!("{encoded_header}.{encoded_claims}").as_bytes(),
+        &signature,
     )?;
     let event = &context.pending_start.event;
     let expected_operations = vec![
-        wire::ProtectedOperation { tool: "work_item_claim".to_string(), purpose: "work-claim".to_string() },
-        wire::ProtectedOperation { tool: "work_item_release".to_string(), purpose: "work-release".to_string() },
+        wire::ProtectedOperation {
+            tool: "work_item_claim".to_string(),
+            purpose: "work-claim".to_string(),
+        },
+        wire::ProtectedOperation {
+            tool: "work_item_release".to_string(),
+            purpose: "work-release".to_string(),
+        },
     ];
-    if header.alg != "EdDSA" || header.typ != "runtime-certificate+jwt" || header.kid != policy.issuer_kid
-        || claims.version != 2 || claims.provider != "codex-native-runtime"
-        || claims.principal != policy.principal || claims.project_id != policy.project_id
-        || claims.work_item_ref != policy.work_item_ref || claims.recipient != target.mcp_recipient
+    if header.alg != "EdDSA"
+        || header.typ != "runtime-certificate+jwt"
+        || header.kid != policy.issuer_kid
+        || claims.version != 2
+        || claims.provider != "codex-native-runtime"
+        || claims.principal != policy.principal
+        || claims.project_id != policy.project_id
+        || claims.work_item_ref != policy.work_item_ref
+        || claims.recipient != target.mcp_recipient
         || claims.artifact_sha256 != target.codex_dev_sha256
         || claims.mcp_server.as_deref() != Some(super::MCP_SERVER)
-        || claims.method != "tools/call" || claims.tool.is_some() || claims.purpose.is_some()
+        || claims.method != "tools/call"
+        || claims.tool.is_some()
+        || claims.purpose.is_some()
         || claims.operations.as_ref() != Some(&expected_operations)
-        || claims.iat < 0 || claims.exp <= claims.iat
-        || claims.exp.checked_sub(claims.iat).is_none_or(|duration| duration > wire::MAX_CERTIFICATE_SECONDS)
+        || claims.iat < 0
+        || claims.exp <= claims.iat
+        || claims
+            .exp
+            .checked_sub(claims.iat)
+            .is_none_or(|duration| duration > wire::MAX_CERTIFICATE_SECONDS)
         || claims.execution_lease_seconds == 0
         || i64::from(claims.execution_lease_seconds) > wire::MAX_CERTIFICATE_SECONDS
-        || event.principal_id != policy.principal || event.project_id != policy.project_id
-        || event.work_item_ref != policy.work_item_ref || event.issuer_kid != policy.issuer_kid
+        || event.principal_id != policy.principal
+        || event.project_id != policy.project_id
+        || event.work_item_ref != policy.work_item_ref
+        || event.issuer_kid != policy.issuer_kid
         || event.certificate_sha256 != wire::certificate_digest(context.certificate.as_bytes())
         || event.runtime_incarnation != claims.runtime_incarnation
     {
@@ -682,7 +828,8 @@ fn verified_certificate(
         if let Some(pending) = &context.pending_end {
             candidate.observed_at = pending.event.observed_at.clone();
             if pending.event != candidate
-                || timestamp_seconds(&pending.event.observed_at)? < timestamp_seconds(&observed.observed_at)?
+                || timestamp_seconds(&pending.event.observed_at)?
+                    < timestamp_seconds(&observed.observed_at)?
             {
                 bail!("lifecycle observation is not bound to its end");
             }
@@ -711,9 +858,15 @@ fn verified_certificate(
 
 fn validate_pending(pending: &PendingEvent, event: &Event) -> Result<()> {
     validate_event(event)?;
-    if pending.proof_expires_at.checked_sub(pending.proof_issued_at) != Some(WITNESS_SECONDS)
+    if pending
+        .proof_expires_at
+        .checked_sub(pending.proof_issued_at)
+        != Some(WITNESS_SECONDS)
         || timestamp_seconds(&event.observed_at)? > pending.proof_issued_at
-        || pending.operation_sha256 != wire::digest(&wire::canonical_lifecycle_operation(&serde_json::to_value(event)?)?)
+        || pending.operation_sha256
+            != wire::digest(&wire::canonical_lifecycle_operation(
+                &serde_json::to_value(event)?,
+            )?)
     {
         bail!("lifecycle pending event is invalid");
     }
@@ -730,14 +883,23 @@ fn arm_end(pending: &mut PendingEvent, now: i64) -> Result<bool> {
         bail!("lifecycle observation is outside the witness interval");
     }
     pending.proof_issued_at = now;
-    pending.proof_expires_at = now.checked_add(WITNESS_SECONDS)
+    pending.proof_expires_at = now
+        .checked_add(WITNESS_SECONDS)
         .ok_or_else(|| anyhow::anyhow!("lifecycle witness expiry overflow"))?;
     pending.may_have_been_sent = true;
     Ok(true)
 }
 
-fn read_bearer(credentials: &Path, policy: &super::LauncherPolicy, now: i64) -> Result<super::api_claim::ApiBearer> {
-    let bytes = super::read_credential(credentials, super::api_claim::API_BEARER_CREDENTIAL, super::api_claim::API_BEARER_CREDENTIAL_MAX_BYTES)?;
+fn read_bearer(
+    credentials: &Path,
+    policy: &super::LauncherPolicy,
+    now: i64,
+) -> Result<super::api_claim::ApiBearer> {
+    let bytes = super::read_credential(
+        credentials,
+        super::api_claim::API_BEARER_CREDENTIAL,
+        super::api_claim::API_BEARER_CREDENTIAL_MAX_BYTES,
+    )?;
     let mut secret = super::api_claim::decode_bearer_credential(&bytes)?;
     super::api_claim::validate_bearer(std::mem::take(&mut secret.0), policy.principal, now)
 }
@@ -757,25 +919,56 @@ pub(super) fn start(
     let bearer = read_bearer(credentials, policy, now)?;
     let invocation = manager_invocation()?;
     let event = Event {
-        version: 1, principal_id: policy.principal, project_id: policy.project_id,
-        work_item_ref: policy.work_item_ref.clone(), issuer_kid: policy.issuer_kid.clone(),
+        version: 1,
+        principal_id: policy.principal,
+        project_id: policy.project_id,
+        work_item_ref: policy.work_item_ref.clone(),
+        issuer_kid: policy.issuer_kid.clone(),
         certificate_sha256: wire::certificate_digest(certificate.as_bytes()),
-        runtime_incarnation: claims.runtime_incarnation, event_id: Uuid::new_v4(),
-        phase: Phase::Start, source: Source::Launcher, manager_invocation: invocation,
-        observer_artifact_sha256: observer_sha256.to_string(), observed_at: timestamp(now)?,
-        cause: Cause::LaunchRegistered, exit_code: None, signal: None, absence_proven: false,
+        runtime_incarnation: claims.runtime_incarnation,
+        event_id: Uuid::new_v4(),
+        phase: Phase::Start,
+        source: Source::Launcher,
+        manager_invocation: invocation,
+        observer_artifact_sha256: observer_sha256.to_string(),
+        observed_at: timestamp(now)?,
+        cause: Cause::LaunchRegistered,
+        exit_code: None,
+        signal: None,
+        absence_proven: false,
     };
     let mut pending_start = PendingEvent::new(event, now)?;
     // Persist the potentially-sent tuple before the HTTP request can begin.
     pending_start.may_have_been_sent = true;
     let mut context = Context {
-        version: 1, certificate: certificate.to_string(), policy_sha256: policy_sha256.to_string(),
-        selected_uid: target.runtime_uid, pending_start, start_acknowledged: false,
-        end_event_id: Uuid::new_v4(), observed_end: None, pending_end: None, end_acknowledged: false,
+        version: 1,
+        certificate: certificate.to_string(),
+        policy_sha256: policy_sha256.to_string(),
+        selected_uid: target.runtime_uid,
+        pending_start,
+        start_acknowledged: false,
+        end_event_id: Uuid::new_v4(),
+        observed_end: None,
+        pending_end: None,
+        end_acknowledged: false,
     };
-    verified_certificate(&context, policy, target, observer_sha256, policy_sha256, invocation)?;
+    verified_certificate(
+        &context,
+        policy,
+        target,
+        observer_sha256,
+        policy_sha256,
+        invocation,
+    )?;
     persist_context(&context, /*create*/ true)?;
-    if !deliver_once(super::api_claim::API_RECIPIENT, &bearer.value.0, certificate, seed, &context.pending_start, /*send*/ true)? {
+    if !deliver_once(
+        super::api_claim::API_RECIPIENT,
+        &bearer.value.0,
+        certificate,
+        seed,
+        &context.pending_start,
+        /*send*/ true,
+    )? {
         bail!("lifecycle start remains unresolved");
     }
     context.start_acknowledged = true;
@@ -797,11 +990,19 @@ pub(super) fn finish(
     signal: Option<i32>,
 ) -> Result<()> {
     let invocation = manager_invocation()?;
-    verified_certificate(context, policy, target, observer_sha256, policy_sha256, invocation)?;
+    verified_certificate(
+        context,
+        policy,
+        target,
+        observer_sha256,
+        policy_sha256,
+        invocation,
+    )?;
     if context.end_acknowledged {
         return Ok(());
     }
-    if source == Source::Launcher && context.observed_end.is_none() && context.pending_end.is_none() {
+    if source == Source::Launcher && context.observed_end.is_none() && context.pending_end.is_none()
+    {
         let observed = super::api_claim::unix_seconds()?;
         let mut candidate = context.pending_start.event.clone();
         candidate.event_id = context.end_event_id;
@@ -815,7 +1016,10 @@ pub(super) fn finish(
         candidate.absence_proven = true;
         validate_event(&candidate)?;
         context.observed_end = Some(EndObservation {
-            observed_at: candidate.observed_at, cause, exit_code, signal,
+            observed_at: candidate.observed_at,
+            cause,
+            exit_code,
+            signal,
         });
         persist_context(context, /*create*/ false)?;
     }
@@ -846,18 +1050,31 @@ pub(super) fn finish(
     // Refresh proof times only before the event can possibly have been sent.
     let bearer = read_bearer(credentials, policy, now)?;
     let seed = super::read_issuer_seed(credentials, policy)?;
-    let pending = context.pending_end.as_mut().ok_or_else(|| anyhow::anyhow!("missing lifecycle end"))?;
+    let pending = context
+        .pending_end
+        .as_mut()
+        .ok_or_else(|| anyhow::anyhow!("missing lifecycle end"))?;
     let send = arm_end(pending, super::api_claim::unix_seconds()?)?;
     if send {
         persist_context(context, /*create*/ false)?;
     }
-    let pending = context.pending_end.as_ref().ok_or_else(|| anyhow::anyhow!("missing lifecycle end"))?;
+    let pending = context
+        .pending_end
+        .as_ref()
+        .ok_or_else(|| anyhow::anyhow!("missing lifecycle end"))?;
     if send {
         // Recheck after credential loading and durable preparation, immediately
         // before the request that can assert the absence observation.
         require_uid_absent(context.selected_uid)?;
     }
-    if !deliver_once(super::api_claim::API_RECIPIENT, &bearer.value.0, &context.certificate, &seed, pending, send)? {
+    if !deliver_once(
+        super::api_claim::API_RECIPIENT,
+        &bearer.value.0,
+        &context.certificate,
+        &seed,
+        pending,
+        send,
+    )? {
         bail!("lifecycle end remains unresolved");
     }
     context.end_acknowledged = true;

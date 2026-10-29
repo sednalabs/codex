@@ -264,10 +264,12 @@ fn lifecycle_policy_is_opt_in_and_closed() {
         },
         "task_prompt": "test"
     });
-    let original: McpLaunchConfig = serde_json::from_value(value.clone()).expect("ordinary MCP profile");
+    let original: McpLaunchConfig =
+        serde_json::from_value(value.clone()).expect("ordinary MCP profile");
     assert!(original.lifecycle.is_none());
     value["lifecycle"] = serde_json::json!({"observer_sha256": "b".repeat(64)});
-    let enabled: McpLaunchConfig = serde_json::from_value(value.clone()).expect("lifecycle profile");
+    let enabled: McpLaunchConfig =
+        serde_json::from_value(value.clone()).expect("lifecycle profile");
     assert!(enabled.lifecycle.is_some());
     value["lifecycle"]["unexpected"] = serde_json::json!(true);
     assert!(serde_json::from_value::<McpLaunchConfig>(value).is_err());

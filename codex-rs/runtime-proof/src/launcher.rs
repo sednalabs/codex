@@ -202,9 +202,16 @@ pub fn lifecycle_stop() -> Result<i32> {
     };
     let credentials = credential_directory()?;
     lifecycle::finish(
-        &mut context, &policy, target, &credentials,
-        &wire::certificate_digest(&policy_bytes), &config.observer_sha256,
-        lifecycle::Source::Systemd, lifecycle::Cause::Unobserved, None, None,
+        &mut context,
+        &policy,
+        target,
+        &credentials,
+        &wire::certificate_digest(&policy_bytes),
+        &config.observer_sha256,
+        lifecycle::Source::Systemd,
+        lifecycle::Cause::Unobserved,
+        None,
+        None,
     )?;
     Ok(0)
 }
@@ -1253,8 +1260,16 @@ fn supervise_child(
             ChildWait::TimedOut => (lifecycle::Cause::Timeout, None, None),
         };
         let _end_result = lifecycle::finish(
-            context, policy, target, credential_directory, policy_sha256,
-            &config.observer_sha256, lifecycle::Source::Launcher, cause, code, signal,
+            context,
+            policy,
+            target,
+            credential_directory,
+            policy_sha256,
+            &config.observer_sha256,
+            lifecycle::Source::Launcher,
+            cause,
+            code,
+            signal,
         );
         // An unresolved end is not evidence of a terminal epoch. The stop
         // hook and fixed lease retain recovery without changing child status.
@@ -1701,7 +1716,11 @@ enum ChildWait {
     TimedOut,
 }
 
-fn wait_for_child(child: &mut Child, deadline: Instant, observe_timeout: bool) -> Result<ChildWait> {
+fn wait_for_child(
+    child: &mut Child,
+    deadline: Instant,
+    observe_timeout: bool,
+) -> Result<ChildWait> {
     loop {
         if !observe_timeout && Instant::now() >= deadline {
             bail!("fixed task exceeded its certificate execution lease");
@@ -1724,7 +1743,10 @@ fn wait_for_child(child: &mut Child, deadline: Instant, observe_timeout: bool) -
             continue;
         } else if unsafe { info.si_pid() } == pid {
             terminate_child_group_before_reap(pid);
-            return child.wait().map(ChildWait::Exited).context("reap fixed task");
+            return child
+                .wait()
+                .map(ChildWait::Exited)
+                .context("reap fixed task");
         }
         if observe_timeout && Instant::now() >= deadline {
             terminate_child_group_before_reap(pid);
