@@ -1567,6 +1567,14 @@
       },
       "type": "object"
     },
+    "ConfiguredMcpProtocolMode": {
+      "description": "Protocol preference for one explicitly configured Streamable HTTP MCP server.",
+      "enum": [
+        "legacy",
+        "2026-07-28"
+      ],
+      "type": "string"
+    },
     "ContextManagementConfigToml": {
       "additionalProperties": false,
       "properties": {
@@ -8280,6 +8288,13 @@
       "format": "uint64",
       "minimum": 0.0,
       "type": "integer"
+    },
+    "mcp_server_protocol_modes": {
+      "additionalProperties": {
+        "$ref": "#/definitions/ConfiguredMcpProtocolMode"
+      },
+      "description": "Protocol overrides keyed by user-configured MCP server name. Omission preserves the global feature preference for ordinary HTTP servers. Entries for stdio or unknown servers are rejected during config load.",
+      "type": "object"
     },
     "mcp_servers": {
       "additionalProperties": {

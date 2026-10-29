@@ -14105,3 +14105,106 @@ fn sqlite_home_env_conflict_reports_an_override() -> std::io::Result<()> {
 
     Ok(())
 }
+
+#[tokio::test]
+async fn configured_http_protocol_modes_preserve_global_default_and_auth_scope()
+-> anyhow::Result<()> {
+    let codex_home = tempdir()?;
+    let cfg: ConfigToml = toml::from_str(
+        r#"
+[mcp_servers.modern]
+url = "https://modern.example/mcp"
+
+[mcp_servers.legacy_http]
+url = "https://legacy.example/mcp"
+
+[mcp_servers.inherited]
+url = "https://other.example/mcp"
+
+[mcp_servers.local]
+command = "test-stdio-mcp"
+
+[mcp_server_protocol_modes]
+modern = "2026-07-28"
+legacy_http = "legacy"
+"#,
+    )?;
+    let mut config = Config::load_from_base_config_with_overrides(
+        cfg,
+        ConfigOverrides::default(),
+        codex_home.abs(),
+    )
+    .await?;
+
+    let mcp = config.to_mcp_config_with_loaded_plugins(&Default::default(), []);
+    assert_eq!(mcp.protocol_mode, codex_mcp::McpProtocolMode::Legacy);
+    let mode = |name| {
+        mcp.mcp_server_catalog
+            .server(name)
+            .and_then(codex_mcp::ResolvedMcpServer::protocol_mode)
+    };
+    assert_eq!(mode("modern"), Some(codex_mcp::McpProtocolMode::V20260728));
+    assert_eq!(
+        mode("legacy_http"),
+        Some(codex_mcp::McpProtocolMode::Legacy)
+    );
+    assert_eq!(mode("inherited"), None);
+    assert_eq!(mode("local"), None);
+
+    let _ = config.features.enable(Feature::Mcp20260728);
+    let mcp = config.to_mcp_config_with_loaded_plugins(&Default::default(), []);
+    assert_eq!(mcp.protocol_mode, codex_mcp::McpProtocolMode::V20260728);
+    assert_eq!(
+        mcp.mcp_server_catalog
+            .server("legacy_http")
+            .and_then(codex_mcp::ResolvedMcpServer::protocol_mode),
+        Some(codex_mcp::McpProtocolMode::Legacy),
+    );
+    assert_eq!(
+        mcp.mcp_server_catalog
+            .server("inherited")
+            .and_then(codex_mcp::ResolvedMcpServer::protocol_mode),
+        None,
+    );
+
+    Ok(())
+}
+
+#[tokio::test]
+async fn configured_mcp_protocol_rejects_unknown_and_stdio_servers() -> anyhow::Result<()> {
+    for (toml_source, diagnostic) in [
+        (
+            r#"
+[mcp_server_protocol_modes]
+absent = "2026-07-28"
+"#,
+            "has no configured MCP server",
+        ),
+        (
+            r#"
+[mcp_servers.local]
+command = "test-stdio-mcp"
+[mcp_server_protocol_modes]
+local = "2026-07-28"
+"#,
+            "requires a Streamable HTTP server",
+        ),
+    ] {
+        let codex_home = tempdir()?;
+        let cfg: ConfigToml = toml::from_str(toml_source)?;
+        let error = Config::load_from_base_config_with_overrides(
+            cfg,
+            ConfigOverrides::default(),
+            codex_home.abs(),
+        )
+        .await
+        .expect_err("invalid protocol override must fail closed");
+        assert_eq!(error.kind(), std::io::ErrorKind::InvalidInput);
+        assert!(error.to_string().contains(diagnostic));
+    }
+    assert!(
+        toml::from_str::<ConfigToml>("[mcp_server_protocol_modes]\nmodern = 'unknown-protocol'")
+            .is_err()
+    );
+    Ok(())
+}

@@ -162,6 +162,15 @@ pub struct FeatureToggleToml {
     pub enabled: Option<bool>,
 }
 
+/// Protocol preference for one explicitly configured Streamable HTTP MCP server.
+#[derive(Serialize, Deserialize, Debug, Clone, Copy, PartialEq, Eq, JsonSchema)]
+pub enum ConfiguredMcpProtocolMode {
+    #[serde(rename = "legacy")]
+    Legacy,
+    #[serde(rename = "2026-07-28")]
+    V20260728,
+}
+
 /// Base config deserialized from ~/.codex/config.toml.
 #[derive(Serialize, Deserialize, Debug, Clone, Default, PartialEq, JsonSchema)]
 #[schemars(deny_unknown_fields)]
@@ -299,6 +308,12 @@ pub struct ConfigToml {
     // Uses the raw MCP input shape (custom deserialization) rather than `McpServerConfig`.
     #[schemars(schema_with = "crate::schema::mcp_servers_schema")]
     pub mcp_servers: HashMap<String, McpServerConfig>,
+
+    /// Protocol overrides keyed by user-configured MCP server name. Omission
+    /// preserves the global feature preference for ordinary HTTP servers.
+    /// Entries for stdio or unknown servers are rejected during config load.
+    #[serde(default, skip_serializing_if = "HashMap::is_empty")]
+    pub mcp_server_protocol_modes: HashMap<String, ConfiguredMcpProtocolMode>,
 
     /// Trusted enterprise IdP shared by EMA-enabled MCP servers and plugins.
     #[serde(default)]

@@ -320,6 +320,7 @@ async fn new_config(
         workspace_roots_explicit: false,
         cli_auth_credentials_store_mode: auth_config.auth_credentials_store_mode,
         mcp_servers: Constrained::allow_any(HashMap::new()),
+        mcp_server_protocol_modes: HashMap::new(),
         mcp_enterprise_managed_auth: None,
         non_prefixed_mcp_tool_servers: None,
         mcp_oauth_credentials_store_mode,
