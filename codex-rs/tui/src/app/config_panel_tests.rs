@@ -352,6 +352,7 @@ async fn notification_test_delay_rejects_cancelled_and_rescheduled_timers() -> R
     ));
 
     app.schedule_config_notification_test();
+    tokio::task::yield_now().await;
     app.save_config_preference(
         &mut tui,
         ConfigPreference::Toggle {

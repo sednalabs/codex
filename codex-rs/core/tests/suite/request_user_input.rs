@@ -83,6 +83,7 @@ async fn request_user_input_round_trip_for_mode(mode: ModeKind) -> anyhow::Resul
         codex,
         cwd,
         session_configured,
+        thread_manager: _thread_manager,
         ..
     } = builder
         .with_config(move |config| {
@@ -342,6 +343,7 @@ where
         codex,
         cwd,
         session_configured,
+        thread_manager: _thread_manager,
         ..
     } = builder.build(&server).await?;
 

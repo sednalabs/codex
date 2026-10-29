@@ -2261,11 +2261,14 @@ async fn omits_apps_guidance_when_configured_off() {
             config.chatgpt_base_url = apps_base_url;
             config.include_apps_instructions = false;
         });
-    let codex = builder
+    let TestCodex {
+        codex,
+        thread_manager: _thread_manager,
+        ..
+    } = builder
         .build(&server)
         .await
-        .expect("create new conversation")
-        .codex;
+        .expect("create new conversation");
 
     codex
         .start_or_steer_turn(TurnInputRequest::user_input(vec![UserInput::Text {
@@ -2733,7 +2736,11 @@ async fn sequential_cutoff_is_omitted_for_non_openai_provider() -> anyhow::Resul
         sse(vec![ev_response_created("resp1"), ev_completed("resp1")]),
     )
     .await;
-    let TestCodex { codex, .. } = test_codex()
+    let TestCodex {
+        codex,
+        thread_manager: _thread_manager,
+        ..
+    } = test_codex()
         .with_auth(CodexAuth::create_dummy_chatgpt_auth_for_testing())
         .with_config(|config| {
             config.model_provider.name = "mock".to_string();
@@ -4103,11 +4110,14 @@ async fn azure_overrides_assign_properties_used_for_responses_url() {
         .with_config(move |config| {
             config.model_provider = provider;
         });
-    let codex = builder
+    let TestCodex {
+        codex,
+        thread_manager: _thread_manager,
+        ..
+    } = builder
         .build(&server)
         .await
-        .expect("create new conversation")
-        .codex;
+        .expect("create new conversation");
 
     codex
         .start_or_steer_turn(TurnInputRequest::user_input(vec![UserInput::Text {

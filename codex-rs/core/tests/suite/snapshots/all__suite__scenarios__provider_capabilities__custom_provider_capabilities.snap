@@ -57,5 +57,7 @@ Settings:
     <ENVIRONMENT_CONTEXT>
 05:message/user:
     Check the configuration.
+06:message/developer:
+    <MULTI_AGENT_MODE>
 -- request 2 (compaction) --
-06:compaction_trigger
+07:compaction_trigger

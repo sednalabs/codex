@@ -50,7 +50,7 @@ enabled:
 ---
 disabled:
 
-  >_ OpenAI Codex (v0.0.0)
+  >_ OpenAI Codex (v0.164.0-dev)
      /tmp/project
 
 

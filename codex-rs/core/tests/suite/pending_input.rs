@@ -327,14 +327,13 @@ fn response_completed_chunks(response_id: &str) -> Vec<StreamingSseChunk> {
     ]
 }
 
-async fn build_codex(server: &StreamingSseServer) -> Arc<CodexThread> {
+async fn build_codex(server: &StreamingSseServer) -> TestCodex {
     test_codex()
         .with_config(|config| config.update_plan_enabled = true)
         .with_model("gpt-5.4")
         .build_with_streaming_server(server)
         .await
         .expect("build streaming Codex test session")
-        .codex
 }
 
 async fn submit_user_input(codex: &CodexThread, text: &str) {
@@ -1122,7 +1121,8 @@ async fn queued_inter_agent_mail_triggers_follow_up_after_reasoning_item() {
     let (server, _completions) =
         start_streaming_sse_server(vec![first_chunks, response_completed_chunks("resp-2")]).await;
 
-    let codex = build_codex(&server).await;
+    let test = build_codex(&server).await;
+    let codex = test.codex.clone();
 
     submit_user_input(&codex, "first prompt").await;
 
@@ -1177,7 +1177,8 @@ async fn queued_inter_agent_mail_triggers_follow_up_after_commentary_message_ite
     let (server, _completions) =
         start_streaming_sse_server(vec![first_chunks, response_completed_chunks("resp-2")]).await;
 
-    let codex = build_codex(&server).await;
+    let test = build_codex(&server).await;
+    let codex = test.codex.clone();
 
     submit_user_input(&codex, "first prompt").await;
 
@@ -1231,7 +1232,8 @@ async fn queued_inter_agent_mail_does_not_restart_after_final_answer(final_answe
         response_completed_chunks("unexpected-resp-2"),
     ])
     .await;
-    let codex = build_codex(&server).await;
+    let test = build_codex(&server).await;
+    let codex = test.codex.clone();
 
     submit_queue_only_agent_mail(&codex, "queued child update").await;
     submit_user_input(&codex, "first prompt").await;
@@ -1306,7 +1308,8 @@ async fn injected_response_item_reopens_turn_after_final_answer() {
     ];
     let (server, _completions) =
         start_streaming_sse_server(vec![first_chunks, response_completed_chunks("resp-2")]).await;
-    let codex = build_codex(&server).await;
+    let test = build_codex(&server).await;
+    let codex = test.codex.clone();
 
     submit_user_input(&codex, INITIAL_PROMPT).await;
     wait_for_reasoning_item_started(&codex).await;

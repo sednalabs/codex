@@ -490,6 +490,7 @@ async fn overrides_turn_context_but_keeps_cached_prefix_and_key_constant() -> an
         home: _home,
         codex,
         config,
+        thread_manager: _thread_manager,
         ..
     } = test_codex()
         .with_pre_build_hook(write_global_instructions)
@@ -1030,6 +1031,7 @@ async fn send_user_turn_with_changes_sends_environment_context() -> anyhow::Resu
         codex,
         config,
         session_configured,
+        thread_manager: _thread_manager,
         ..
     } = test_codex()
         .with_pre_build_hook(write_global_instructions)
