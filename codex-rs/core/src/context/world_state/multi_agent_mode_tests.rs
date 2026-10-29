@@ -118,14 +118,15 @@ fn persisted_mode_is_restored_only_when_missing_from_history() {
 
 #[test]
 fn client_owned_mode_snapshot_roundtrip_does_not_duplicate_fragment() {
-    let (previous_snapshot, history) = persisted_mode_snapshot_and_history(true);
+    let (previous_snapshot, history) =
+        persisted_mode_snapshot_and_history(/*client_owned*/ true);
     let serialized = serde_json::to_value(&previous_snapshot).unwrap();
     assert_eq!(
         serialized["multi_agent_mode"]["client_owned"],
         serde_json::Value::Bool(true)
     );
 
-    let (next_snapshot, updates) = client_owned_world_state(true)
+    let (next_snapshot, updates) = client_owned_world_state(/*client_owned*/ true)
         .render_history_fragment_diff(Some(&previous_snapshot), &history);
 
     assert!(updates.is_empty());
@@ -144,16 +145,17 @@ fn client_owned_mode_snapshot_transition_tracks_current_provenance() {
 
 #[test]
 fn client_owned_mode_snapshot_renders_when_retained_fragment_is_missing() {
-    let (previous_snapshot, _) = persisted_mode_snapshot_and_history(true);
-    let (_, updates) =
-        client_owned_world_state(true).render_history_fragment_diff(Some(&previous_snapshot), &[]);
+    let (previous_snapshot, _) = persisted_mode_snapshot_and_history(/*client_owned*/ true);
+    let (_, updates) = client_owned_world_state(/*client_owned*/ true)
+        .render_history_fragment_diff(Some(&previous_snapshot), &[]);
 
-    assert_single_mode_fragment_ownership(&updates, true);
+    assert_single_mode_fragment_ownership(&updates, /*client_owned*/ true);
 }
 
 #[test]
 fn client_owned_mode_snapshot_without_field_defaults_and_rerenders() {
-    let (previous_snapshot, history) = persisted_mode_snapshot_and_history(true);
+    let (previous_snapshot, history) =
+        persisted_mode_snapshot_and_history(/*client_owned*/ true);
     let mut serialized = serde_json::to_value(previous_snapshot).unwrap();
     serialized["multi_agent_mode"]
         .as_object_mut()
@@ -161,10 +163,10 @@ fn client_owned_mode_snapshot_without_field_defaults_and_rerenders() {
         .remove("client_owned");
     let previous_snapshot = serde_json::from_value(serialized).unwrap();
 
-    let (_, updates) = client_owned_world_state(true)
+    let (_, updates) = client_owned_world_state(/*client_owned*/ true)
         .render_history_fragment_diff(Some(&previous_snapshot), &history);
 
-    assert_single_mode_fragment_ownership(&updates, true);
+    assert_single_mode_fragment_ownership(&updates, /*client_owned*/ true);
 }
 
 /// Active mode instructions must follow a newly migrated multi-agent usage hint.

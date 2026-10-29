@@ -16,6 +16,8 @@ use serde::Serialize;
 
 const MULTI_AGENT_MODE_MAX_TOKENS: usize = 400;
 
+// Serde's `skip_serializing_if` callback contract takes a reference.
+#[allow(clippy::trivially_copy_pass_by_ref)]
 fn is_false(value: &bool) -> bool {
     !value
 }
