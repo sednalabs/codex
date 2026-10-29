@@ -171,7 +171,7 @@ fn inner_namespace_view_without_external_binding_cannot_prove_absence() {
     let error = require_uid_absent(65_534).expect_err("unbound view must fail closed");
     assert_eq!(
         error.to_string(),
-        "lifecycle trusted namespace and UID admission binding unavailable"
+        "lifecycle trusted manager and epoch containment binding unavailable"
     );
 }
 
@@ -181,8 +181,16 @@ fn cooperative_lock_without_admission_fence_cannot_prove_absence() {
     let error = require_trusted_absence_binding().expect_err("cooperative lock is insufficient");
     assert_eq!(
         error.to_string(),
-        "lifecycle trusted namespace and UID admission binding unavailable"
+        "lifecycle trusted manager and epoch containment binding unavailable"
     );
+}
+
+#[test]
+fn launcher_observation_is_not_an_end_publisher() {
+    assert!(!is_stop_observer(Source::Launcher));
+    assert!(is_stop_observer(Source::Systemd));
+    // Eligibility alone does not establish the manager or cgroup boundary.
+    assert!(require_trusted_absence_binding().is_err());
 }
 
 #[test]

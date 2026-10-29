@@ -316,7 +316,7 @@ pub(super) fn require_uid_absent(uid: u32) -> Result<()> {
 }
 
 fn require_trusted_absence_binding() -> Result<()> {
-    bail!("lifecycle trusted namespace and UID admission binding unavailable")
+    bail!("lifecycle trusted manager and epoch containment binding unavailable")
 }
 
 fn status_has_uid(status: &str, uid: u32) -> Result<bool> {
@@ -1032,6 +1032,12 @@ pub(super) fn finish(
         });
         persist_context(context, /*create*/ false)?;
     }
+    // A launcher-observed outcome is only retained here. The synchronous
+    // stop observer is solely responsible for proving the epoch boundary and
+    // publishing an end; source selection alone is not observer authentication.
+    if !is_stop_observer(source) {
+        return Ok(());
+    }
     require_uid_absent(context.selected_uid)?;
     let now = super::api_claim::unix_seconds()?;
     if context.pending_end.is_none() {
@@ -1089,6 +1095,10 @@ pub(super) fn finish(
     context.end_acknowledged = true;
     persist_context(context, /*create*/ false)?;
     Ok(())
+}
+
+fn is_stop_observer(source: Source) -> bool {
+    source == Source::Systemd
 }
 
 #[cfg(test)]
