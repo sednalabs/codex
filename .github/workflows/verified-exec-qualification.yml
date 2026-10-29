@@ -14,7 +14,7 @@ jobs:
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd
         with:
-          ref: 464ac83474df4b4b7f6708a025289808c933bb06
+          ref: ea07f24dfeaed74b420c4e2e017d6be83e772d6f
           persist-credentials: false
       - uses: dtolnay/rust-toolchain@ebb3d1676050bfd0971c36c1e215b5751473994d
         with:
@@ -26,7 +26,9 @@ jobs:
           set -euo pipefail
           git rev-parse HEAD
           cc -O2 -Wall -Wextra -Werror runtime-proof/tests/verified-exec-fixture.c -o "$RUNNER_TEMP/verified-exec-fixture"
-          cargo test --locked -p codex-runtime-proof --lib --no-run --message-format=json > "$RUNNER_TEMP/verified-exec-build.jsonl"
+          cargo test --locked -p codex-runtime-proof --no-run --message-format=json > "$RUNNER_TEMP/verified-exec-build.jsonl"
           test_binary="$(jq -r 'select(.reason == "compiler-artifact" and .target.name == "codex_runtime_proof" and .profile.test == true and .executable != null) | .executable' "$RUNNER_TEMP/verified-exec-build.jsonl")"
           test -n "$test_binary"
           sudo env CODEX_VERIFIED_EXEC_FIXTURE="$RUNNER_TEMP/verified-exec-fixture" "$test_binary" --exact launcher::tests::verified_executable_survives_privilege_drop --ignored --nocapture
+          "$test_binary" --exact launcher::tests::mcp_failure_details_and_errno_are_closed_and_numeric --nocapture
+          "$test_binary" --exact launcher::tests::mcp_failure_stage_exposes_only_a_closed_phase --nocapture
