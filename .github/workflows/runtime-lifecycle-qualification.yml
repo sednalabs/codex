@@ -1,0 +1,45 @@
+name: Runtime lifecycle targeted qualification
+
+on:
+  push:
+    branches: [validation/runtime-lifecycle-20261030]
+
+permissions:
+  contents: read
+
+jobs:
+  targeted:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd
+        with:
+          ref: 37785f82be01a4a8163dd5602b863de8008d2e34
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@ebb3d1676050bfd0971c36c1e215b5751473994d
+        with:
+          toolchain: 1.96.0
+          components: rustfmt
+      - name: Capture formatter delta and restore the exact candidate
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd codex-rs
+          cargo fmt -p codex-runtime-proof
+          cd ..
+          git diff --binary -- codex-rs/runtime-proof > "$RUNNER_TEMP/lifecycle-format.patch"
+          if [[ -s "$RUNNER_TEMP/lifecycle-format.patch" ]]; then
+            git apply --reverse "$RUNNER_TEMP/lifecycle-format.patch"
+          fi
+          git diff --exit-code
+          git rev-parse HEAD
+      - name: Test exact runtime-proof candidate
+        working-directory: codex-rs
+        run: cargo test --locked -p codex-runtime-proof
+      - name: Preserve formatter delta
+        if: always()
+        uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f
+        with:
+          name: runtime-lifecycle-formatter
+          path: ${{ runner.temp }}/lifecycle-format.patch
+          if-no-files-found: ignore
