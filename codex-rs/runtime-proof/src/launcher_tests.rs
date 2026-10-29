@@ -8,13 +8,109 @@ use std::process::Command;
 use std::time::Duration;
 use std::time::Instant;
 
+#[repr(C)]
+struct TestCapHeader {
+    version: u32,
+    pid: i32,
+}
+
+#[repr(C)]
+#[derive(Clone, Copy, Default)]
+struct TestCapData {
+    effective: u32,
+    permitted: u32,
+    inheritable: u32,
+}
+
+fn prepare_test_capability_state(mode: &str) {
+    assert_eq!(unsafe { libc::getuid() }, 0);
+    assert_eq!(unsafe { libc::getegid() }, 981);
+    assert_eq!(
+        unsafe { libc::prctl(libc::PR_GET_NO_NEW_PRIVS, 0, 0, 0, 0) },
+        1
+    );
+    let mut header = TestCapHeader {
+        version: 0x2008_0522,
+        pid: 0,
+    };
+    let mut caps = [TestCapData::default(); 2];
+    assert_eq!(
+        unsafe { libc::syscall(libc::SYS_capget, &mut header, caps.as_mut_ptr()) },
+        0
+    );
+    for (name, number) in [("setuid", 7_u32), ("setgid", 6_u32)] {
+        let mask = 1_u32 << number;
+        let ambient = unsafe {
+            libc::prctl(
+                libc::PR_CAP_AMBIENT,
+                libc::PR_CAP_AMBIENT_IS_SET,
+                number,
+                0,
+                0,
+            )
+        };
+        let bounding = unsafe { libc::prctl(libc::PR_CAPBSET_READ, number, 0, 0, 0) };
+        assert!(ambient >= 0 && bounding >= 0);
+        println!(
+            "fixture_cap_{name}=effective:{} permitted:{} inheritable:{} ambient:{} bounding:{}",
+            (caps[0].effective & mask != 0) as u8,
+            (caps[0].permitted & mask != 0) as u8,
+            (caps[0].inheritable & mask != 0) as u8,
+            ambient,
+            bounding
+        );
+    }
+    let setuid = 1_u32 << 7;
+    assert_ne!(
+        caps[0].effective & (1_u32 << 6),
+        0,
+        "fixture requires effective SETGID"
+    );
+    match mode {
+        "observe" => return,
+        "effective_missing" => {
+            assert_ne!(
+                caps[0].permitted & setuid,
+                0,
+                "fixture requires permitted SETUID"
+            );
+            caps[0].effective &= !setuid;
+        }
+        "permitted_missing" => {
+            caps[0].effective &= !setuid;
+            caps[0].permitted &= !setuid;
+            caps[0].inheritable &= !setuid;
+        }
+        _ => panic!("unknown synthetic capability mode"),
+    }
+    assert_eq!(
+        unsafe { libc::syscall(libc::SYS_capset, &mut header, caps.as_ptr()) },
+        0
+    );
+    let mut after = [TestCapData::default(); 2];
+    assert_eq!(
+        unsafe { libc::syscall(libc::SYS_capget, &mut header, after.as_mut_ptr()) },
+        0
+    );
+    assert_eq!(after[0].effective & setuid, 0);
+    assert_eq!(
+        after[0].permitted & setuid != 0,
+        mode == "effective_missing"
+    );
+    println!(
+        "fixture_cap_mode={mode} effective_setuid:0 permitted_setuid:{}",
+        (after[0].permitted & setuid != 0) as u8
+    );
+}
+
 /// Run only on an isolated root-capable Linux test runner with a compiled ELF fixture.
 #[test]
 #[ignore]
 fn verified_executable_survives_privilege_drop() {
     assert_eq!(unsafe { libc::geteuid() }, 0, "root test runner required");
     let fixture = std::env::var_os("CODEX_VERIFIED_EXEC_FIXTURE").expect("ELF fixture path");
-    let base = PathBuf::from("/root").join(format!("codex-verified-exec-{}", Uuid::new_v4()));
+    let base_dir = std::env::var_os("CODEX_VERIFIED_EXEC_BASE").expect("fixture base path");
+    let base = PathBuf::from(base_dir).join(format!("codex-verified-exec-{}", Uuid::new_v4()));
     fs::create_dir(&base).expect("create private fixture directory");
     fs::set_permissions(&base, fs::Permissions::from_mode(0o700)).unwrap();
     let path = base.join("child");
@@ -39,19 +135,24 @@ fn verified_executable_survives_privilege_drop() {
     let LauncherTarget::Mcp(target) = &mut policy.target else {
         unreachable!()
     };
-    target.runtime_uid = 65534;
-    target.runtime_gid = 65534;
+    target.runtime_uid = 992;
+    target.runtime_gid = 981;
     let run = RunDirectory {
         codex_home: PathBuf::from("/"),
         child_home: PathBuf::from("/"),
         working_directory: PathBuf::from("/"),
         config_sha256: String::new(),
     };
+    let mode = std::env::var("CODEX_VERIFIED_CAP_MODE").expect("fixture capability mode");
+    let expected = std::env::var("CODEX_VERIFIED_EXPECT").expect("fixture expected result");
+    prepare_test_capability_state(&mode);
     let result = spawn_verified_child(&executable, &bootstrap, &auth, &run, target);
     match result {
         Ok(child) => {
             let output = child.wait_with_output().expect("wait for ELF fixture");
             fs::remove_dir_all(&base).unwrap();
+            println!("fixture_spawn=success");
+            assert!(expected == "success" || expected == "observe");
             assert_eq!(
                 output.status.code(),
                 Some(0),
@@ -66,7 +167,9 @@ fn verified_executable_survives_privilege_drop() {
                     .and_then(std::io::Error::raw_os_error)
             });
             fs::remove_dir_all(&base).unwrap();
-            panic!("verified child spawn failed; numeric errno: {errno:?}");
+            println!("fixture_spawn_errno={errno:?}");
+            assert!(expected == "errno1" || expected == "observe");
+            assert_eq!(errno, Some(libc::EPERM));
         }
     }
 }
