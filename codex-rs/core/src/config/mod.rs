@@ -1926,8 +1926,7 @@ impl Config {
             catalog.register(registration);
         }
         for (name, server) in self.mcp_servers.get() {
-            let mut registration =
-                McpServerRegistration::from_config(name.clone(), server.clone());
+            let mut registration = McpServerRegistration::from_config(name.clone(), server.clone());
             if let Some(mode) = self.mcp_server_protocol_modes.get(name) {
                 let protocol_mode = match mode {
                     ConfiguredMcpProtocolMode::Legacy => McpProtocolMode::Legacy,

@@ -14107,7 +14107,8 @@ fn sqlite_home_env_conflict_reports_an_override() -> std::io::Result<()> {
 }
 
 #[tokio::test]
-async fn configured_http_protocol_modes_preserve_global_default_and_auth_scope() -> anyhow::Result<()> {
+async fn configured_http_protocol_modes_preserve_global_default_and_auth_scope()
+-> anyhow::Result<()> {
     let codex_home = tempdir()?;
     let cfg: ConfigToml = toml::from_str(
         r#"
@@ -14143,7 +14144,10 @@ legacy_http = "legacy"
             .and_then(codex_mcp::ResolvedMcpServer::protocol_mode)
     };
     assert_eq!(mode("modern"), Some(codex_mcp::McpProtocolMode::V20260728));
-    assert_eq!(mode("legacy_http"), Some(codex_mcp::McpProtocolMode::Legacy));
+    assert_eq!(
+        mode("legacy_http"),
+        Some(codex_mcp::McpProtocolMode::Legacy)
+    );
     assert_eq!(mode("inherited"), None);
     assert_eq!(mode("local"), None);
 
@@ -14198,8 +14202,9 @@ local = "2026-07-28"
         assert_eq!(error.kind(), std::io::ErrorKind::InvalidInput);
         assert!(error.to_string().contains(diagnostic));
     }
-    assert!(toml::from_str::<ConfigToml>(
-        "[mcp_server_protocol_modes]\nmodern = 'unknown-protocol'"
-    ).is_err());
+    assert!(
+        toml::from_str::<ConfigToml>("[mcp_server_protocol_modes]\nmodern = 'unknown-protocol'")
+            .is_err()
+    );
     Ok(())
 }
