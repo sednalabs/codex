@@ -266,21 +266,33 @@ async fn catalog_proactive_mode_is_ultra_only(
 
     let input = response.single_request().input();
     let texts = developer_texts(&input);
-    let mode_fragments = texts
-        .iter()
-        .filter(|text| text.contains(MULTI_AGENT_MODE_OPEN_TAG))
-        .map(|text| {
-            (
-                text.len(),
-                text.contains(CATALOG_PROACTIVE_TEXT),
-                text.contains(PROACTIVE_TEXT),
-            )
-        })
-        .collect::<Vec<_>>();
+    let mut mode_fragments = Vec::new();
+    for (message_index, item) in input.iter().enumerate() {
+        if item.get("role").and_then(Value::as_str) != Some("developer") {
+            continue;
+        }
+        let Some(contents) = item.get("content").and_then(Value::as_array) else {
+            continue;
+        };
+        for (content_index, content) in contents.iter().enumerate() {
+            let Some(text) = content.get("text").and_then(Value::as_str) else {
+                continue;
+            };
+            if text.contains(MULTI_AGENT_MODE_OPEN_TAG) {
+                mode_fragments.push((
+                    message_index,
+                    content_index,
+                    text.len(),
+                    text.contains(CATALOG_PROACTIVE_TEXT),
+                    text.contains(PROACTIVE_TEXT),
+                ));
+            }
+        }
+    }
     assert_eq!(
-        count_containing(&texts, MULTI_AGENT_MODE_OPEN_TAG),
+        mode_fragments.len(),
         usize::from(expected_hint.is_some()),
-        "mode fragment metadata (length, catalog proactive, bundled proactive): {mode_fragments:?}"
+        "mode fragment locations and metadata (message, content, length, catalog proactive, bundled proactive): {mode_fragments:?}"
     );
     if let Some(expected_hint) = expected_hint {
         assert_eq!(count_containing(&texts, expected_hint), 1);
