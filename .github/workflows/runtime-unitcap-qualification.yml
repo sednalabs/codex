@@ -61,5 +61,5 @@ jobs:
               sudo journalctl -u "$unit" --no-pager -o cat | tail -40
               exit 1
             fi
-            sudo journalctl -u "$unit" --no-pager -o cat | rg 'fixture_cap_|fixture_spawn|test result:'
+            sudo journalctl -u "$unit" --no-pager -o cat | grep -E 'fixture_cap_|fixture_spawn|test result:'
           done
