@@ -4,7 +4,7 @@ on:
     types: [created]
 jobs:
   cla:
-    if: github.repository == 'openai/codex'
+    if: ${{ github.repository == 'openai/codex' }}
     permissions:
       contents: write
       issues: write
