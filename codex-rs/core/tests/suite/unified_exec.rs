@@ -1483,12 +1483,12 @@ async fn wait_for_unified_exec_end(
             .unwrap_or_default();
         if remaining.is_zero() {
             panic!(
-                "timed out waiting for network denial end event; observed {observed_events:?}; response requests: {}",
+                "timed out waiting for unified exec end event; observed {observed_events:?}; response requests: {}",
                 response_mock.requests().len()
             );
         }
         let timeout_message = format!(
-            "timed out waiting for network denial end event; observed {observed_events:?}; response requests: {}",
+            "timed out waiting for unified exec end event; observed {observed_events:?}; response requests: {}",
             response_mock.requests().len()
         );
         let event = tokio::time::timeout(remaining, test.codex.next_event())
@@ -3618,13 +3618,7 @@ async fn unified_exec_runs_under_sandbox() -> Result<()> {
     let server = start_mock_server().await;
 
     let mut builder = test_codex();
-    let TestCodex {
-        codex,
-        cwd,
-        session_configured,
-        thread_manager: _thread_manager,
-        ..
-    } = builder.build(&server).await?;
+    let test = builder.build(&server).await?;
 
     let call_id = "uexec";
     let args = serde_json::json!({
@@ -3645,12 +3639,12 @@ async fn unified_exec_runs_under_sandbox() -> Result<()> {
     ];
     let request_log = mount_sse_sequence(&server, responses).await;
 
-    let session_model = session_configured.model.clone();
-    let turn_cwd = cwd.abs();
+    let session_model = test.session_configured.model.clone();
+    let turn_cwd = test.cwd.abs();
     let (sandbox_policy, permission_profile) =
         turn_permission_fields(PermissionProfile::read_only(), turn_cwd.as_path());
 
-    codex
+    test.codex
         .start_or_steer_turn(
             TurnInputRequest::user_input(vec![UserInput::Text {
                 text: "summarize large output".into(),
@@ -3674,7 +3668,13 @@ async fn unified_exec_runs_under_sandbox() -> Result<()> {
         )
         .await?;
 
-    wait_for_event(&codex, |event| matches!(event, EventMsg::TurnComplete(_))).await;
+    let (end_event, turn_completed) = wait_for_unified_exec_end(&test, call_id, &request_log).await;
+    if !turn_completed {
+        wait_for_event(&test.codex, |event| {
+            matches!(event, EventMsg::TurnComplete(_))
+        })
+        .await;
+    }
 
     let requests = request_log.requests();
     assert!(!requests.is_empty(), "expected at least one POST request");
@@ -3687,20 +3687,24 @@ async fn unified_exec_runs_under_sandbox() -> Result<()> {
     let output = outputs.get(call_id).expect("missing output");
 
     let expected_output = Regex::new(r"hello[\r\n]+").expect("valid echo output regex");
-    let contains_newline = output.output.contains('\r') || output.output.contains('\n');
+    // The initial yield may return a live session; the end event proves its final result.
+    match (output.exit_code, output.process_id.is_some()) {
+        (Some(0), false) => assert!(
+            expected_output.is_match(&output.output),
+            "completed sandboxed echo output should contain hello followed by a newline"
+        ),
+        (None, true) => {}
+        (exit_code, process_running) => anyhow::bail!(
+            "initial sandboxed echo response must be complete or expose its running session (exit_code={exit_code:?}, process_running={process_running})"
+        ),
+    }
     assert_eq!(
-        output.exit_code,
-        Some(0),
-        "sandboxed echo command should exit successfully (output bytes={}, contains_hello={}, contains_newline={contains_newline})",
-        output.output.len(),
-        output.output.contains("hello")
+        end_event.exit_code, 0,
+        "sandboxed echo command should exit successfully"
     );
     assert!(
-        expected_output.is_match(&output.output),
-        "sandboxed echo output should contain hello followed by a newline (exit_code={:?}, output bytes={}, contains_hello={}, contains_newline={contains_newline})",
-        output.exit_code,
-        output.output.len(),
-        output.output.contains("hello")
+        expected_output.is_match(&end_event.aggregated_output),
+        "completed sandboxed echo output should contain hello followed by a newline"
     );
 
     Ok(())
