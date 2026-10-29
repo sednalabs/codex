@@ -8,11 +8,11 @@ predicate workflowName(Workflow workflow, string name) {
   name = workflow.getName()
 }
 
+bindingset[pattern]
 predicate jobConditionMatches(Job job, string pattern) {
-  exists(If condition, Expression expression |
+  exists(If condition |
     condition = job.getIf() and
-    expression = condition.getCondition() and
-    expression.getExpression().regexpMatch(pattern)
+    condition.getCondition().regexpMatch(pattern)
   )
 }
 
@@ -131,6 +131,7 @@ predicate jobUsesTrustedPypiPublisher(Job job) {
   jobUsesActionMatching(job, "(?i)^pypa/gh-action-pypi-publish@.*", _)
 }
 
+bindingset[apiCall]
 predicate jobGithubScriptCalls(Job job, string apiCall) {
   exists(UsesStep step, Expression script |
     step.getEnclosingJob() = job and
