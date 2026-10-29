@@ -18,3 +18,5 @@ jobs:
     permissions:
       contents: read
       id-token: write
+    steps:
+      - run: echo fixture

@@ -48,9 +48,8 @@ predicate jobUsesPinnedClaAssistant(Job job) {
   jobConditionMatchesExactly(job, "github\\.repository\\s*==\\s*'openai/codex'") and
   exists(UsesStep claStep, Expression signaturesPath, Expression signaturesBranch, Expression claDocument, Expression allowlist |
     claStep.getEnclosingJob() = job and
-    claStep.getCallee().regexpMatch(
-      "(?i)^contributor-assistant/github-action@ca4a40a7d1004f18d9960b404b97e5f30a505a08$"
-    ) and
+    claStep.getCallee().regexpMatch("(?i)^contributor-assistant/github-action$") and
+    claStep.getVersion().regexpMatch("(?i)^ca4a40a7d1004f18d9960b404b97e5f30a505a08$") and
     signaturesPath = claStep.getArgumentExpr("path-to-signatures") and
     signaturesPath.getExpression().regexpMatch("(?i)^['\"]?signatures/cla\\.json['\"]?$") and
     signaturesBranch = claStep.getArgumentExpr("branch") and
@@ -68,8 +67,9 @@ predicate jobUsesPinnedClaAssistant(Job job) {
   not exists(Run run | run.getEnclosingJob() = job) and
   not exists(UsesStep step |
     step.getEnclosingJob() = job and
-    not step.getCallee().regexpMatch(
-      "(?i)^contributor-assistant/github-action@ca4a40a7d1004f18d9960b404b97e5f30a505a08$"
+    not (
+      step.getCallee().regexpMatch("(?i)^contributor-assistant/github-action$") and
+      step.getVersion().regexpMatch("(?i)^ca4a40a7d1004f18d9960b404b97e5f30a505a08$")
     )
   )
 }
@@ -107,7 +107,7 @@ bindingset[apiCall]
 predicate jobGithubScriptCalls(Job job, string apiCall) {
   exists(UsesStep step, Expression script |
     step.getEnclosingJob() = job and
-    step.getCallee().regexpMatch("(?i)^actions/github-script@.*") and
+    step.getCallee().regexpMatch("(?i)^actions/github-script$") and
     script = step.getArgumentExpr("script") and
     script.getExpression().regexpMatch("(?is).*github\\.rest\\." + apiCall + "\\s*\\(.*")
   )
@@ -131,17 +131,17 @@ predicate jobHasUntrustedTrigger(Job job, string eventName) {
   )
 }
 
-predicate jobUsesAction(Job job, string callee) {
+predicate jobUsesAction(Job job, string actionReference) {
   exists(UsesStep step |
     step.getEnclosingJob() = job and
-    callee = step.getCallee()
+    actionReference = step.getCallee() + "@" + step.getVersion()
   )
 }
 
 bindingset[pattern]
-predicate jobUsesActionMatching(Job job, string pattern, string callee) {
-  jobUsesAction(job, callee) and
-  callee.regexpMatch(pattern)
+predicate jobUsesActionMatching(Job job, string pattern, string actionReference) {
+  jobUsesAction(job, actionReference) and
+  actionReference.regexpMatch(pattern)
 }
 
 predicate jobRunCommand(Job job, string command) {
@@ -165,7 +165,7 @@ predicate jobChecksOutCode(Job job) {
 predicate jobChecksOutInputRef(Job job) {
   exists(UsesStep step, Expression expr |
     step.getEnclosingJob() = job and
-    step.getCallee().regexpMatch("(?i)^actions/checkout@") and
+    step.getCallee().regexpMatch("(?i)^actions/checkout$") and
     expr = step.getArgumentExpr("ref") and
     expr.getExpression().regexpMatch("(?i).*(inputs\\.|github\\.event\\.).*")
   )
@@ -192,23 +192,23 @@ predicate releasePublishingCommand(string command, string sinkKind) {
   sinkKind = "container image publication"
 }
 
-bindingset[callee]
-predicate releasePublishingAction(string callee, string sinkKind) {
+bindingset[actionReference]
+predicate releasePublishingAction(string actionReference, string sinkKind) {
   (
-    callee.regexpMatch("(?i)^(softprops/action-gh-release|ncipollo/release-action)@.*") and
+    actionReference.regexpMatch("(?i)^(softprops/action-gh-release|ncipollo/release-action)@.*") and
     sinkKind = "GitHub Release publication"
   )
   or
   (
-    callee.regexpMatch("(?i)^docker/build-push-action@.*") and
+    actionReference.regexpMatch("(?i)^docker/build-push-action@.*") and
     sinkKind = "container image publication"
   )
 }
 
 predicate jobUsesReleasePublishingAction(Job job, string sinkKind) {
-  exists(string callee |
-    jobUsesAction(job, callee) and
-    releasePublishingAction(callee, sinkKind)
+  exists(string actionReference |
+    jobUsesAction(job, actionReference) and
+    releasePublishingAction(actionReference, sinkKind)
   )
 }
 
@@ -228,9 +228,9 @@ predicate jobHasOfficialReleaseSink(Job job, string sinkKind) {
     sinkKind = "GitHub Release publication"
   )
   or
-  exists(string callee |
-    jobUsesAction(job, callee) and
-    callee.regexpMatch("(?i)^(softprops/action-gh-release|ncipollo/release-action)@.*") and
+  exists(string actionReference |
+    jobUsesAction(job, actionReference) and
+    actionReference.regexpMatch("(?i)^(softprops/action-gh-release|ncipollo/release-action)@.*") and
     sinkKind = "GitHub Release publication"
   )
 }
@@ -347,7 +347,7 @@ predicate jobNeedsWritePermission(Job job, string permissionName) {
   jobHasNativeAttestationMarker(job)
   or
   permissionName = "security-events" and
-  jobUsesActionMatching(job, "(?i)^github/codeql-action/", _)
+  jobUsesActionMatching(job, "(?i)^github/codeql-action@.*", _)
   or
     permissionName = "actions" and
     exists(string command |
