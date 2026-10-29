@@ -8,6 +8,9 @@ on:
       - "**full-ci**"
   workflow_dispatch:
 
+permissions:
+  contents: read
+
 jobs:
   # --- CI that doesn't need specific targets ---------------------------------
   general:

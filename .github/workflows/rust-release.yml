@@ -14,6 +14,9 @@ on:
     tags:
       - "rust-v*.*.*"
 
+permissions:
+  contents: read
+
 env:
   CODEX_REPO_ROOT: ${{ github.workspace }}
 
@@ -1637,6 +1640,8 @@ jobs:
     runs-on: ubuntu-latest
     permissions:
       contents: write
+      id-token: write
+      attestations: write
     outputs:
       version: ${{ steps.release_name.outputs.name }}
       tag: ${{ github.ref_name }}
@@ -1778,6 +1783,11 @@ jobs:
         if: github.repository != 'sednalabs/codex'
         run: |
           mv dist/x86_64-pc-windows-msvc/install.ps1 dist/install.ps1
+
+      - name: Attest release assets
+        uses: actions/attest@1e69f48acb82d1966a394da916b4c1698aa569d6 # v4.2.2
+        with:
+          subject-path: dist/**
 
       - name: Create GitHub Release
         env:

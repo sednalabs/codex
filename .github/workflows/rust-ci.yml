@@ -3,6 +3,9 @@ on:
   workflow_call:
   workflow_dispatch:
 
+permissions:
+  contents: read
+
 jobs:
   # --- Detect changed paths so the fast PR workflow only runs relevant jobs ---
   changed:

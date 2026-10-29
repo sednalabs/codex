@@ -14,5 +14,11 @@
       to a separate protected workflow or a narrowly scoped job that does not
       checkout or execute untrusted code.
     </p>
+    <p>
+      Repository-specific exceptions are limited to the pinned CLA assistant
+      with fixed signature storage and no checkout or run step, and the PyPI
+      publisher gated by the read-only validated release resolver. Do not
+      generalize either exception without preserving those conditions.
+    </p>
   </recommendation>
 </qhelp>

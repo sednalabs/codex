@@ -17,7 +17,15 @@ import WorkflowSecurity
 from Job job, string eventName, string permissionName
 where
   jobHasUntrustedTrigger(job, eventName) and
-  jobEffectiveWritePermission(job, permissionName)
+  jobEffectiveWritePermission(job, permissionName) and
+  not (
+    jobUsesValidatedPythonReleasePublisher(job) and
+    permissionName = "id-token"
+  ) and
+  not (
+    jobUsesPinnedClaAssistant(job) and
+    (permissionName = "contents" or permissionName = "issues" or permissionName = "actions")
+  )
 select job,
   "The job runs on '" + eventName + "' with write-capable '" + permissionName +
     "' token permissions. Split untrusted input handling from write operations."

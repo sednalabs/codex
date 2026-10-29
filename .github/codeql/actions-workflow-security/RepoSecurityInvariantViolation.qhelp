@@ -9,9 +9,9 @@
   </overview>
   <recommendation>
     <p>
-      Keep official release publication in the approved release job, keep public
-      workflows on GitHub-hosted runners, and use private deployment
-      infrastructure for host-local operations.
+      Keep official release publication downstream of the Rust or rusty-v8 tag
+      validation jobs, keep public workflows on GitHub-hosted runners, and use
+      private deployment infrastructure for host-local operations.
     </p>
   </recommendation>
 </qhelp>

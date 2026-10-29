@@ -71,7 +71,13 @@ jobs:
   # workflows as Trusted Publishers. The runtime must be available before
   # publishing the SDK that depends on it.
   publish-python-runtime:
-    if: github.repository == 'openai/codex'
+    if: >-
+      ${{
+        github.repository == 'openai/codex' &&
+        needs.resolve-cli-release.outputs.publish == 'true' &&
+        needs.prepare-python-runtime.result == 'success' &&
+        needs.build-python-sdk.result == 'success'
+      }}
     name: publish-python-runtime
     needs:
       - prepare-python-runtime
@@ -115,6 +121,13 @@ jobs:
             openai-codex-cli-bin "$PYTHON_RUNTIME_VERSION"
 
   publish-python-sdk:
+    if: >-
+      ${{
+        github.repository == 'openai/codex' &&
+        needs.resolve-cli-release.outputs.publish == 'true' &&
+        needs.build-python-sdk.result == 'success' &&
+        needs.publish-python-runtime.result == 'success'
+      }}
     name: publish-python-sdk
     needs:
       - build-python-sdk

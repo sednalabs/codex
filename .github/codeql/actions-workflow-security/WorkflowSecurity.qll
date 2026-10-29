@@ -8,13 +8,136 @@ predicate workflowName(Workflow workflow, string name) {
   name = workflow.getName()
 }
 
+predicate jobConditionMatches(Job job, string pattern) {
+  exists(If condition, Expression expression |
+    condition = job.getIf() and
+    expression = condition.getCondition() and
+    expression.getExpression().regexpMatch(pattern)
+  )
+}
+
 predicate repoReleaseWorkflow(Workflow workflow) {
-  workflowName(workflow, "sedna-release")
+  workflowName(workflow, "rust-release") or
+  workflowName(workflow, "rusty-v8-release")
 }
 
 predicate repoOfficialReleaseJob(Job job) {
   repoReleaseWorkflow(job.getWorkflow()) and
-  job.getId() = "publish-release"
+  (
+    workflowName(job.getWorkflow(), "rust-release") and
+    job.getId() = "release" and
+    jobConditionMatches(job, "(?is).*needs\\.tag-check\\.result\\s*==\\s*'success'.*") and
+    jobConditionMatches(job, "(?is).*needs\\.build\\.result\\s*==\\s*'success'.*")
+    or
+    workflowName(job.getWorkflow(), "rusty-v8-release") and
+    job.getId() = "publish-release" and
+    jobConditionMatches(job, "(?is).*needs\\.metadata\\.result\\s*==\\s*'success'.*") and
+    jobConditionMatches(job, "(?is).*needs\\.build\\.result\\s*==\\s*'success'.*")
+  )
+}
+
+predicate jobUsesPinnedClaAssistant(Job job) {
+  workflowName(job.getWorkflow(), "CLA Assistant") and
+  job.getId() = "cla" and
+  jobConditionMatches(job, "(?is).*github\\.repository\\s*==\\s*'openai/codex'.*") and
+  exists(UsesStep claStep, Expression signaturesPath, Expression signaturesBranch, Expression claDocument, Expression allowlist |
+    claStep.getEnclosingJob() = job and
+    claStep.getCallee().regexpMatch(
+      "(?i)^contributor-assistant/github-action@ca4a40a7d1004f18d9960b404b97e5f30a505a08$"
+    ) and
+    signaturesPath = claStep.getArgumentExpr("path-to-signatures") and
+    signaturesPath.getExpression().regexpMatch("(?i)^['\"]?signatures/cla\\.json['\"]?$") and
+    signaturesBranch = claStep.getArgumentExpr("branch") and
+    signaturesBranch.getExpression().regexpMatch("(?i)^['\"]?cla-signatures['\"]?$") and
+    claDocument = claStep.getArgumentExpr("path-to-document") and
+    claDocument.getExpression().regexpMatch(
+      "(?i)^['\"]?https://github\\.com/openai/codex/blob/main/docs/CLA\\.md['\"]?$"
+    ) and
+    allowlist = claStep.getArgumentExpr("allowlist") and
+    allowlist.getExpression().regexpMatch(
+      "(?i)^['\"]?codex,dependabot,dependabot\\[bot\\],github-actions\\[bot\\]['\"]?$"
+    )
+  ) and
+  not jobChecksOutCode(job) and
+  not exists(Run run | run.getEnclosingJob() = job) and
+  not exists(UsesStep step |
+    step.getEnclosingJob() = job and
+    not step.getCallee().regexpMatch(
+      "(?i)^contributor-assistant/github-action@ca4a40a7d1004f18d9960b404b97e5f30a505a08$"
+    )
+  )
+}
+
+predicate jobUsesValidatedPythonReleasePublisher(Job job) {
+  workflowName(job.getWorkflow(), "python-sdk-cli-release") and
+  jobUsesActionMatching(
+    job,
+    "(?i)^pypa/gh-action-pypi-publish@dc37677b2e1c63e2034f94d8a5b11f265b73ba33$",
+    _
+  ) and
+  jobChecksOutOnlyResolvedPythonReleaseSource(job) and
+  (
+    job.getId() = "publish-python-runtime" and
+    jobConditionMatches(
+      job,
+      "(?is).*github\\.repository\\s*==\\s*'openai/codex'.*needs\\.resolve-cli-release\\.outputs\\.publish\\s*==\\s*'true'.*needs\\.prepare-python-runtime\\.result\\s*==\\s*'success'.*needs\\.build-python-sdk\\.result\\s*==\\s*'success'.*"
+    )
+    or
+    job.getId() = "publish-python-sdk" and
+    jobConditionMatches(
+      job,
+      "(?is).*github\\.repository\\s*==\\s*'openai/codex'.*needs\\.resolve-cli-release\\.outputs\\.publish\\s*==\\s*'true'.*needs\\.build-python-sdk\\.result\\s*==\\s*'success'.*needs\\.publish-python-runtime\\.result\\s*==\\s*'success'.*"
+    )
+  ) and
+  exists(Job resolver |
+    resolver.getWorkflow() = job.getWorkflow() and
+    resolver.getId() = "resolve-cli-release" and
+    job.getANeededJob() = resolver and
+    jobConditionMatches(resolver, "(?is).*github\\.repository\\s*==\\s*'openai/codex'.*") and
+    jobUsesActionMatching(
+      resolver,
+      "(?i)^actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd$",
+      _
+    ) and
+    exists(string command |
+      jobRunCommand(resolver, command) and
+      command.regexpMatch("(?is).*resolve_python_cli_release\\.py.*")
+    )
+  )
+}
+
+predicate jobChecksOutResolvedPythonReleaseSource(Job job) {
+  exists(UsesStep checkout, Expression ref |
+    checkout.getEnclosingJob() = job and
+    checkout.getCallee().regexpMatch("(?i)^actions/checkout@") and
+    ref = checkout.getArgumentExpr("ref") and
+    ref.getExpression().regexpMatch("(?is).*needs\\.resolve-cli-release\\.outputs\\.source_sha.*")
+  )
+}
+
+predicate jobChecksOutOnlyResolvedPythonReleaseSource(Job job) {
+  jobChecksOutResolvedPythonReleaseSource(job) and
+  not exists(UsesStep checkout |
+    checkout.getEnclosingJob() = job and
+    checkout.getCallee().regexpMatch("(?i)^actions/checkout@") and
+    not exists(Expression ref |
+      ref = checkout.getArgumentExpr("ref") and
+      ref.getExpression().regexpMatch("(?is).*needs\\.resolve-cli-release\\.outputs\\.source_sha.*")
+    )
+  )
+}
+
+predicate jobUsesTrustedPypiPublisher(Job job) {
+  jobUsesActionMatching(job, "(?i)^pypa/gh-action-pypi-publish@.*", _)
+}
+
+predicate jobGithubScriptCalls(Job job, string apiCall) {
+  exists(UsesStep step, Expression script |
+    step.getEnclosingJob() = job and
+    step.getCallee().regexpMatch("(?i)^actions/github-script@.*") and
+    script = step.getArgumentExpr("script") and
+    script.getExpression().regexpMatch("(?is).*github\\.rest\\." + apiCall + "\\s*\\(.*")
+  )
 }
 
 predicate untrustedTrigger(Event event) {
@@ -244,6 +367,9 @@ predicate jobNeedsWritePermission(Job job, string permissionName) {
   permissionName = "id-token" and
   jobHasSigningMarker(job)
   or
+  permissionName = "id-token" and
+  jobUsesTrustedPypiPublisher(job)
+  or
   permissionName = "attestations" and
   jobHasNativeAttestationMarker(job)
   or
@@ -256,6 +382,23 @@ predicate jobNeedsWritePermission(Job job, string permissionName) {
       command.regexpMatch("(?is).*\\bgh\\s+workflow\\s+run\\b.*")
     )
   or
+  permissionName = "contents" and
+  jobUsesPinnedClaAssistant(job)
+  or
   permissionName = "issues" and
-  jobUsesActionMatching(job, "(?i)^actions/github-script(@.*)?$", _)
+  jobUsesPinnedClaAssistant(job)
+  or
+  permissionName = "actions" and
+  jobUsesPinnedClaAssistant(job)
+  or
+  permissionName = "pull-requests" and
+  jobGithubScriptCalls(job, "pulls\\.update")
+  or
+  permissionName = "issues" and
+  (
+    jobGithubScriptCalls(job, "issues\\.createComment") or
+    jobGithubScriptCalls(job, "issues\\.update") or
+    jobGithubScriptCalls(job, "issues\\.lock") or
+    jobGithubScriptCalls(job, "issues\\.unlock")
+  )
 }
