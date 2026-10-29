@@ -43,8 +43,6 @@ jobs:
       PRODUCT_TARGET: x86_64-unknown-linux-gnu
       WORKFLOW_HOST_SHA: ${{ github.sha }}
       WORKFLOW_HOST_REF: ${{ github.ref }}
-      BUILD_RUNNER_OS: ${{ runner.os }}
-      BUILD_RUNNER_ARCH: ${{ runner.arch }}
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd
         with:
@@ -89,13 +87,11 @@ jobs:
             --arg launcher_sha256 "$launcher_sha256" \
             --arg workflow_host_sha "$WORKFLOW_HOST_SHA" \
             --arg workflow_host_ref "$WORKFLOW_HOST_REF" \
-            --arg runner_os "$BUILD_RUNNER_OS" \
-            --arg runner_arch "$BUILD_RUNNER_ARCH" \
             --arg rustc "$(rustc --version)" \
             --arg cargo "$(cargo --version)" \
             --argjson run_id "$GITHUB_RUN_ID" \
             --argjson run_attempt "$GITHUB_RUN_ATTEMPT" \
-            '{product_source_sha:$product_source_sha,product_tree_sha:$product_tree_sha,target:$target,launcher_sha256:$launcher_sha256,workflow_host_sha:$workflow_host_sha,workflow_host_ref:$workflow_host_ref,run_id:$run_id,run_attempt:$run_attempt,runner_os:$runner_os,runner_arch:$runner_arch,rustc:$rustc,cargo:$cargo}' \
+            '{product_source_sha:$product_source_sha,product_tree_sha:$product_tree_sha,target:$target,launcher_sha256:$launcher_sha256,workflow_host_sha:$workflow_host_sha,workflow_host_ref:$workflow_host_ref,run_id:$run_id,run_attempt:$run_attempt,rustc:$rustc,cargo:$cargo}' \
             > "$bundle_dir/manifest.json"
           (cd "$bundle_dir" && sha256sum --check codex-runtime-proof-launcher.sha256)
           archive_path="$RUNNER_TEMP/$archive_name"
