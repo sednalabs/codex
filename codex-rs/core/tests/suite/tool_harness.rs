@@ -72,6 +72,7 @@ async fn exec_command_tool_executes_command_and_streams_output() -> anyhow::Resu
         codex,
         cwd,
         session_configured,
+        thread_manager: _thread_manager,
         ..
     } = builder.build(&server).await?;
 
@@ -146,6 +147,7 @@ async fn update_plan_tool_emits_plan_update_event() -> anyhow::Result<()> {
         codex,
         cwd,
         session_configured,
+        thread_manager: _thread_manager,
         ..
     } = builder.build(&server).await?;
 
@@ -238,6 +240,7 @@ async fn update_plan_tool_rejects_malformed_payload() -> anyhow::Result<()> {
         codex,
         cwd,
         session_configured,
+        thread_manager: _thread_manager,
         ..
     } = builder.build(&server).await?;
 
@@ -332,6 +335,7 @@ async fn apply_patch_tool_executes_and_emits_patch_events() -> anyhow::Result<()
         codex,
         cwd,
         session_configured,
+        thread_manager: _thread_manager,
         ..
     } = builder.build(&server).await?;
 
@@ -472,6 +476,7 @@ async fn apply_patch_reports_parse_diagnostics() -> anyhow::Result<()> {
         codex,
         cwd,
         session_configured,
+        thread_manager: _thread_manager,
         ..
     } = builder.build(&server).await?;
 

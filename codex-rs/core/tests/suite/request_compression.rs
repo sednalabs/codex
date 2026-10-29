@@ -86,7 +86,11 @@ async fn request_body_is_not_compressed_for_api_key_auth_even_when_enabled() -> 
             .expect("test config should allow feature update");
         config.model_provider.base_url = Some(base_url);
     });
-    let codex = builder.build(&server).await?.codex;
+    let TestCodex {
+        codex,
+        thread_manager: _thread_manager,
+        ..
+    } = builder.build(&server).await?;
 
     codex
         .start_or_steer_turn(TurnInputRequest::user_input(vec![UserInput::Text {

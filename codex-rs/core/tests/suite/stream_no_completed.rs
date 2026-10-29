@@ -76,7 +76,11 @@ async fn retries_on_early_close() {
         include_internal_metadata: false,
     };
 
-    let TestCodex { codex, .. } = test_codex()
+    let TestCodex {
+        codex,
+        thread_manager: _thread_manager,
+        ..
+    } = test_codex()
         .with_config(move |config| {
             config.model_provider = model_provider;
         })
@@ -115,7 +119,11 @@ async fn connection_failure_pauses_retry_budget_until_provider_is_reachable() ->
     let unavailable_address = unavailable_listener.local_addr()?;
     drop(unavailable_listener);
 
-    let TestCodex { codex, .. } = test_codex()
+    let TestCodex {
+        codex,
+        thread_manager: _thread_manager,
+        ..
+    } = test_codex()
         .with_config(move |config| {
             config.model_provider.base_url = Some(format!("http://{unavailable_address}/v1"));
             config.model_provider.request_max_retries = Some(0);

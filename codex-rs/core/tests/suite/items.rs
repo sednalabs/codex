@@ -74,7 +74,11 @@ async fn user_message_item_is_emitted() -> anyhow::Result<()> {
 
     let server = start_mock_server().await;
 
-    let TestCodex { codex, .. } = test_codex().build(&server).await?;
+    let TestCodex {
+        codex,
+        thread_manager: _thread_manager,
+        ..
+    } = test_codex().build(&server).await?;
 
     let first_response = sse(vec![ev_response_created("resp-1"), ev_completed("resp-1")]);
     mount_sse_once(&server, first_response).await;
@@ -143,7 +147,11 @@ async fn assistant_message_item_is_emitted() -> anyhow::Result<()> {
 
     let server = start_mock_server().await;
 
-    let TestCodex { codex, .. } = test_codex().build(&server).await?;
+    let TestCodex {
+        codex,
+        thread_manager: _thread_manager,
+        ..
+    } = test_codex().build(&server).await?;
 
     let first_response = sse(vec![
         ev_response_created("resp-1"),
@@ -192,7 +200,11 @@ async fn reasoning_item_is_emitted() -> anyhow::Result<()> {
 
     let server = start_mock_server().await;
 
-    let TestCodex { codex, .. } = test_codex().build(&server).await?;
+    let TestCodex {
+        codex,
+        thread_manager: _thread_manager,
+        ..
+    } = test_codex().build(&server).await?;
 
     let reasoning_item = ev_reasoning_item(
         "reasoning-1",
@@ -402,6 +414,7 @@ async fn agent_message_content_delta_has_item_metadata() -> anyhow::Result<()> {
     let TestCodex {
         codex,
         session_configured,
+        thread_manager: _thread_manager,
         ..
     } = test_codex().build(&server).await?;
 
@@ -464,6 +477,7 @@ async fn plan_mode_emits_plan_item_from_proposed_plan_block() -> anyhow::Result<
     let TestCodex {
         codex,
         session_configured,
+        thread_manager: _thread_manager,
         ..
     } = test_codex().build(&server).await?;
 
@@ -625,6 +639,7 @@ async fn plan_mode_streaming_citations_are_stripped_across_added_deltas_and_done
     let TestCodex {
         codex,
         session_configured,
+        thread_manager: _thread_manager,
         ..
     } = test_codex().build(&server).await?;
 
@@ -805,6 +820,7 @@ async fn plan_mode_streaming_proposed_plan_tag_split_across_added_and_delta_is_p
     let TestCodex {
         codex,
         session_configured,
+        thread_manager: _thread_manager,
         ..
     } = test_codex().build(&server).await?;
 
@@ -1034,7 +1050,11 @@ async fn sequential_cutoff_renders_done_summaries_for_active_reasoning_item() ->
 
     let server = start_mock_server().await;
 
-    let TestCodex { codex, .. } = test_codex()
+    let TestCodex {
+        codex,
+        thread_manager: _thread_manager,
+        ..
+    } = test_codex()
         .with_config(|config| {
             config
                 .features
@@ -1119,7 +1139,11 @@ async fn reasoning_raw_content_delta_respects_flag() -> anyhow::Result<()> {
 
     let server = start_mock_server().await;
 
-    let TestCodex { codex, .. } = test_codex()
+    let TestCodex {
+        codex,
+        thread_manager: _thread_manager,
+        ..
+    } = test_codex()
         .with_config(|config| {
             config.show_raw_agent_reasoning = true;
         })

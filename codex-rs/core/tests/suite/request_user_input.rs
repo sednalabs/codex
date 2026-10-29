@@ -249,6 +249,7 @@ async fn request_user_input_interrupt_emits_deferred_token_count(
         codex,
         cwd,
         session_configured,
+        thread_manager: _thread_manager,
         ..
     } = test_codex().build(&server).await?;
 

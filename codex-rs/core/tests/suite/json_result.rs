@@ -70,7 +70,12 @@ async fn codex_returns_json_result(model: String) -> anyhow::Result<()> {
     };
     responses::mount_sse_once_match(&server, match_json_text_param, sse1).await;
 
-    let TestCodex { codex, config, .. } = test_codex().build(&server).await?;
+    let TestCodex {
+        codex,
+        config,
+        thread_manager: _thread_manager,
+        ..
+    } = test_codex().build(&server).await?;
     let cwd = config.cwd.clone();
     let (sandbox_policy, permission_profile) =
         turn_permission_fields(PermissionProfile::Disabled, cwd.as_path());

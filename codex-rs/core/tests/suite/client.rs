@@ -565,13 +565,16 @@ async fn sends_local_audio_to_responses() -> anyhow::Result<()> {
         sse(vec![ev_response_created("resp1"), ev_completed("resp1")]),
     )
     .await;
-    let codex = test_codex()
+    let TestCodex {
+        codex,
+        thread_manager: _thread_manager,
+        ..
+    } = test_codex()
         .with_model_info_override("gpt-5.5", |model_info| {
             model_info.input_modalities.push(InputModality::Audio);
         })
         .build(&server)
-        .await?
-        .codex;
+        .await?;
     let temp_dir = tempfile::tempdir()?;
     let audio_path = temp_dir.path().join("recording.wav");
     std::fs::write(&audio_path, b"audio")?;
@@ -1861,11 +1864,14 @@ async fn includes_base_instructions_override_in_request() {
         .with_config(|config| {
             config.base_instructions = Some("test instructions".to_string());
         });
-    let codex = builder
+    let TestCodex {
+        codex,
+        thread_manager: _thread_manager,
+        ..
+    } = builder
         .build(&server)
         .await
-        .expect("create new conversation")
-        .codex;
+        .expect("create new conversation");
 
     codex
         .start_or_steer_turn(TurnInputRequest::user_input(vec![UserInput::Text {
@@ -2212,11 +2218,14 @@ async fn omits_apps_guidance_for_api_key_auth_even_when_feature_enabled() {
                 .expect("test config should allow feature update");
             config.chatgpt_base_url = apps_base_url;
         });
-    let codex = builder
+    let TestCodex {
+        codex,
+        thread_manager: _thread_manager,
+        ..
+    } = builder
         .build(&server)
         .await
-        .expect("create new conversation")
-        .codex;
+        .expect("create new conversation");
 
     codex
         .start_or_steer_turn(TurnInputRequest::user_input(vec![UserInput::Text {
@@ -2574,7 +2583,12 @@ async fn user_turn_collaboration_mode_overrides_model_and_effort() -> anyhow::Re
         sse(vec![ev_response_created("resp1"), ev_completed("resp1")]),
     )
     .await;
-    let TestCodex { codex, config, .. } = test_codex().with_model("gpt-5.4").build(&server).await?;
+    let TestCodex {
+        codex,
+        config,
+        thread_manager: _thread_manager,
+        ..
+    } = test_codex().with_model("gpt-5.4").build(&server).await?;
 
     let collaboration_mode = CollaborationMode {
         mode: ModeKind::Default,
@@ -2700,7 +2714,11 @@ async fn model_without_summary_parameter_support_omits_configured_summary() -> a
         .expect("gpt-5.5 exists in bundled models.json");
     model.supports_reasoning_summary_parameter = false;
 
-    let TestCodex { codex, .. } = test_codex()
+    let TestCodex {
+        codex,
+        thread_manager: _thread_manager,
+        ..
+    } = test_codex()
         .with_model("gpt-5.5")
         .with_config(move |config| {
             config.model_catalog = Some(model_catalog);
@@ -2789,7 +2807,11 @@ async fn responses_lite_sets_all_turns_context_and_disables_parallel_tool_calls(
     )
     .await;
 
-    let TestCodex { codex, .. } = test_codex()
+    let TestCodex {
+        codex,
+        thread_manager: _thread_manager,
+        ..
+    } = test_codex()
         .with_model_info_override("gpt-5.4", |model_info| {
             model_info.use_responses_lite = true;
         })
@@ -2842,6 +2864,7 @@ async fn user_turn_explicit_reasoning_summary_overrides_model_catalog_default() 
         codex,
         config,
         session_configured,
+        thread_manager: _thread_manager,
         ..
     } = test_codex()
         .with_model("gpt-5.5")
@@ -2951,7 +2974,11 @@ async fn reasoning_summary_none_overrides_model_catalog_default() -> anyhow::Res
         .expect("gpt-5.5 exists in bundled models.json");
     model.default_reasoning_summary = ReasoningSummary::Detailed;
 
-    let TestCodex { codex, .. } = test_codex()
+    let TestCodex {
+        codex,
+        thread_manager: _thread_manager,
+        ..
+    } = test_codex()
         .with_model("gpt-5.5")
         .with_config(move |config| {
             config.model_reasoning_summary = Some(ReasoningSummary::None);
@@ -3068,7 +3095,11 @@ async fn configured_verbosity_is_sent() -> anyhow::Result<()> {
         sse(vec![ev_response_created("resp1"), ev_completed("resp1")]),
     )
     .await;
-    let TestCodex { codex, .. } = test_codex()
+    let TestCodex {
+        codex,
+        thread_manager: _thread_manager,
+        ..
+    } = test_codex()
         .with_model("gpt-5.5")
         .with_config(|config| {
             config.model_verbosity = Some(Verbosity::High);
@@ -3495,11 +3526,11 @@ async fn token_count_includes_rate_limits_snapshot() {
         .with_config(move |config| {
             config.model_provider = provider;
         });
-    let codex = builder
-        .build(&server)
-        .await
-        .expect("create conversation")
-        .codex;
+    let TestCodex {
+        codex,
+        thread_manager: _thread_manager,
+        ..
+    } = builder.build(&server).await.expect("create conversation");
 
     codex
         .start_or_steer_turn(TurnInputRequest::user_input(vec![UserInput::Text {
@@ -3714,7 +3745,11 @@ async fn context_window_error_sets_total_tokens_to_model_window() -> anyhow::Res
     )
     .await;
 
-    let TestCodex { codex, .. } = test_codex()
+    let TestCodex {
+        codex,
+        thread_manager: _thread_manager,
+        ..
+    } = test_codex()
         .with_config(|config| {
             config.model = Some("gpt-5.4".to_string());
             config.model_context_window = Some(272_000);

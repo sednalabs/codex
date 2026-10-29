@@ -5580,7 +5580,11 @@ async fn snapshot_request_shape_pre_turn_compaction_including_incoming_user_mess
     let request_log = mount_sse_sequence(&server, vec![sse1, sse2, sse3, sse4]).await;
 
     let model_provider = non_openai_model_provider(&server);
-    let codex = test_codex()
+    let TestCodex {
+        codex,
+        thread_manager: _thread_manager,
+        ..
+    } = test_codex()
         .with_config(move |config| {
             config.update_plan_enabled = true;
             config.model_provider = model_provider;
@@ -5589,8 +5593,7 @@ async fn snapshot_request_shape_pre_turn_compaction_including_incoming_user_mess
         })
         .build(&server)
         .await
-        .expect("build codex")
-        .codex;
+        .expect("build codex");
 
     for user in ["USER_ONE", "USER_TWO"] {
         codex

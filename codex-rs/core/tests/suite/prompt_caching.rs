@@ -330,7 +330,10 @@ async fn gpt_5_tools_without_apply_patch_append_apply_patch_instructions() -> an
     .await;
 
     let TestCodex {
-        home: _home, codex, ..
+        home: _home,
+        codex,
+        thread_manager: _thread_manager,
+        ..
     } = test_codex()
         .with_pre_build_hook(write_global_instructions)
         .with_config(|config| {
@@ -609,7 +612,11 @@ async fn override_before_first_turn_emits_environment_context() -> anyhow::Resul
     )
     .await;
 
-    let TestCodex { codex, .. } = test_codex().build(&server).await?;
+    let TestCodex {
+        codex,
+        thread_manager: _thread_manager,
+        ..
+    } = test_codex().build(&server).await?;
 
     let collaboration_mode = CollaborationMode {
         mode: ModeKind::Default,
@@ -763,7 +770,10 @@ async fn per_turn_overrides_keep_cached_prefix_and_key_constant() -> anyhow::Res
     .await;
 
     let TestCodex {
-        home: _home, codex, ..
+        home: _home,
+        codex,
+        thread_manager: _thread_manager,
+        ..
     } = test_codex()
         .with_pre_build_hook(write_global_instructions)
         .with_config(|config| {

@@ -2090,7 +2090,11 @@ async fn user_input_does_not_preempt_after_reasoning_item() {
     let (server, _completions) =
         start_streaming_sse_server(vec![first_chunks, response_completed_chunks("resp-2")]).await;
 
-    let codex = test_codex()
+    let TestCodex {
+        codex,
+        thread_manager: _thread_manager,
+        ..
+    } = test_codex()
         .with_config(|config| {
             config.update_plan_enabled = true;
             config.features.disable(Feature::InstantInterrupt).unwrap();
@@ -2098,8 +2102,7 @@ async fn user_input_does_not_preempt_after_reasoning_item() {
         .with_model("gpt-5.4")
         .build_with_streaming_server(&server)
         .await
-        .expect("build streaming Codex test session")
-        .codex;
+        .expect("build streaming Codex test session");
 
     submit_user_input(&codex, "first prompt").await;
 
@@ -2522,7 +2525,11 @@ async fn steered_user_input_waits_for_model_continuation_after_mid_turn_compact(
     ])
     .await;
 
-    let codex = test_codex()
+    let TestCodex {
+        codex,
+        thread_manager: _thread_manager,
+        ..
+    } = test_codex()
         .with_model("gpt-5.4")
         .with_config(|config| {
             config.features.disable(Feature::InstantInterrupt).unwrap();
@@ -2532,8 +2539,7 @@ async fn steered_user_input_waits_for_model_continuation_after_mid_turn_compact(
         })
         .build_with_streaming_server(&server)
         .await
-        .expect("build streaming Codex test session")
-        .codex;
+        .expect("build streaming Codex test session");
 
     submit_user_input(&codex, "first prompt").await;
     submit_user_input(&codex, "second prompt").await;
@@ -2608,7 +2614,11 @@ async fn steered_user_input_follows_compact_when_only_the_steer_needs_follow_up(
         start_streaming_sse_server(vec![first_chunks, compact_chunks, steered_follow_up_chunks])
             .await;
 
-    let codex = test_codex()
+    let TestCodex {
+        codex,
+        thread_manager: _thread_manager,
+        ..
+    } = test_codex()
         .with_model("gpt-5.4")
         .with_config(|config| {
             config.features.disable(Feature::InstantInterrupt).unwrap();
@@ -2618,8 +2628,7 @@ async fn steered_user_input_follows_compact_when_only_the_steer_needs_follow_up(
         })
         .build_with_streaming_server(&server)
         .await
-        .expect("build streaming Codex test session")
-        .codex;
+        .expect("build streaming Codex test session");
 
     submit_user_input(&codex, "first prompt").await;
     wait_for_agent_message(&codex, "first answer").await;

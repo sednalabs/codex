@@ -2919,6 +2919,7 @@ async fn unified_exec_keeps_long_running_session_after_turn_end() -> Result<()> 
         codex,
         cwd,
         session_configured,
+        thread_manager: _thread_manager,
         ..
     } = builder.build(&server).await?;
 
@@ -3020,6 +3021,7 @@ async fn unified_exec_interrupt_preserves_long_running_session() -> Result<()> {
         codex,
         cwd,
         session_configured,
+        thread_manager: _thread_manager,
         ..
     } = builder.build(&server).await?;
 
@@ -3620,6 +3622,7 @@ async fn unified_exec_runs_under_sandbox() -> Result<()> {
         codex,
         cwd,
         session_configured,
+        thread_manager: _thread_manager,
         ..
     } = builder.build(&server).await?;
 

@@ -152,6 +152,7 @@ async fn websocket_fallback_hides_first_websocket_retry_stream_error() -> Result
         codex,
         session_configured,
         cwd,
+        thread_manager: _thread_manager,
         ..
     } = builder.build(&server).await?;
     let (sandbox_policy, permission_profile) =
