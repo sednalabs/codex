@@ -47,6 +47,7 @@ use core_test_support::test_codex::test_codex;
 use core_test_support::test_codex::turn_permission_fields;
 use core_test_support::wait_for_event;
 use core_test_support::wait_for_event_match;
+use core_test_support::wait_for_successful_turn;
 use pretty_assertions::assert_eq;
 use serde_json::json;
 use tempfile::TempDir;
@@ -463,7 +464,7 @@ async fn remote_models_long_model_slug_is_sent_with_supported_reasoning(
         }]))
         .await?;
 
-    wait_for_event(&codex, |event| matches!(event, EventMsg::TurnComplete(_))).await;
+    wait_for_successful_turn(&codex).await;
 
     let request = response_mock.single_request();
     let body = request.body_json();

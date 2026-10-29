@@ -529,6 +529,7 @@ async fn plan_mode_strips_plan_from_agent_messages() -> anyhow::Result<()> {
     let TestCodex {
         codex,
         session_configured,
+        thread_manager: _thread_manager,
         ..
     } = test_codex().build(&server).await?;
 
@@ -568,6 +569,13 @@ async fn plan_mode_strips_plan_from_agent_messages() -> anyhow::Result<()> {
     while plan_delta.is_none() || agent_item.is_none() || plan_item.is_none() {
         let ev = wait_for_event(&codex, |_| true).await;
         match ev {
+            EventMsg::TurnComplete(event) => {
+                let detail = event
+                    .error
+                    .map(|error| error.message)
+                    .unwrap_or_else(|| "turn completed before the expected plan items".to_string());
+                panic!("plan-mode turn ended before expected items: {detail}");
+            }
             EventMsg::AgentMessageContentDelta(event) => {
                 agent_deltas.push(event.delta);
             }

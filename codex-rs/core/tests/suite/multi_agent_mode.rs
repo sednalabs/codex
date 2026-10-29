@@ -266,9 +266,21 @@ async fn catalog_proactive_mode_is_ultra_only(
 
     let input = response.single_request().input();
     let texts = developer_texts(&input);
+    let mode_fragments = texts
+        .iter()
+        .filter(|text| text.contains(MULTI_AGENT_MODE_OPEN_TAG))
+        .map(|text| {
+            (
+                text.len(),
+                text.contains(CATALOG_PROACTIVE_TEXT),
+                text.contains(PROACTIVE_TEXT),
+            )
+        })
+        .collect::<Vec<_>>();
     assert_eq!(
         count_containing(&texts, MULTI_AGENT_MODE_OPEN_TAG),
-        usize::from(expected_hint.is_some())
+        usize::from(expected_hint.is_some()),
+        "mode fragment metadata (length, catalog proactive, bundled proactive): {mode_fragments:?}"
     );
     if let Some(expected_hint) = expected_hint {
         assert_eq!(count_containing(&texts, expected_hint), 1);

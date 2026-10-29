@@ -144,7 +144,9 @@ async fn frozen_cloud_skills_with_named_executor_request_history() -> Result<()>
         context_snapshot::format_context_snapshot(
             "A cloud parent lists and reads a frozen skill alongside a named executor after the snapshot file has been removed.",
             &bodies.iter().map(SnapshotEntry::body).collect::<Vec<_>>(),
-            &ContextSnapshotOptions::default().include_request_settings(),
+            &ContextSnapshotOptions::default()
+                .rewrite_known_segments()
+                .include_request_settings(),
         )
     );
     Ok(())
