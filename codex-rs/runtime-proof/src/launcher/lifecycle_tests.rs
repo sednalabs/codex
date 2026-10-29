@@ -1,10 +1,8 @@
 use super::*;
-use ed25519_dalek::Verifier as _;
 use ed25519_dalek::Signature;
+use ed25519_dalek::Verifier as _;
 use serde_json::Value;
 use std::io::BufRead as _;
-use std::io::Read as _;
-use std::io::Write as _;
 use std::net::TcpListener;
 use std::time::Instant;
 
@@ -34,27 +32,49 @@ fn start_event() -> Event {
 fn lifecycle_witness_binds_final_operation_and_issuer() {
     let seed = [7_u8; 32];
     let pending = PendingEvent::new(start_event(), 1_791_158_405).expect("pending event");
-    let header = pending.header("synthetic-certificate", &seed, "https://example.invalid")
+    let header = pending
+        .header("synthetic-certificate", &seed, "https://example.invalid")
         .expect("lifecycle envelope");
-    let envelope: Value = serde_json::from_slice(&URL_SAFE_NO_PAD.decode(header.as_str()).expect("header base64"))
-        .expect("envelope JSON");
+    let envelope: Value = serde_json::from_slice(
+        &URL_SAFE_NO_PAD
+            .decode(header.as_str())
+            .expect("header base64"),
+    )
+    .expect("envelope JSON");
     let witness = envelope["witness"].as_str().expect("witness");
     let parts = witness.split('.').collect::<Vec<_>>();
     assert_eq!(parts.len(), 3);
-    let claims: Value = serde_json::from_slice(&URL_SAFE_NO_PAD.decode(parts[1]).expect("claims base64"))
-        .expect("claims JSON");
-    assert_eq!(claims["operation_sha256"].as_str(), Some(pending.operation_sha256.as_str()));
-    assert_eq!(claims["certificate_sha256"].as_str(), Some(pending.event.certificate_sha256.as_str()));
+    let claims: Value =
+        serde_json::from_slice(&URL_SAFE_NO_PAD.decode(parts[1]).expect("claims base64"))
+            .expect("claims JSON");
+    assert_eq!(
+        claims["operation_sha256"].as_str(),
+        Some(pending.operation_sha256.as_str())
+    );
+    assert_eq!(
+        claims["certificate_sha256"].as_str(),
+        Some(pending.event.certificate_sha256.as_str())
+    );
     assert_eq!(claims["route"], ROUTE);
-    let signature = Signature::from_slice(&URL_SAFE_NO_PAD.decode(parts[2]).expect("signature base64"))
-        .expect("signature");
-    SigningKey::from_bytes(&seed).verifying_key()
+    let signature =
+        Signature::from_slice(&URL_SAFE_NO_PAD.decode(parts[2]).expect("signature base64"))
+            .expect("signature");
+    SigningKey::from_bytes(&seed)
+        .verifying_key()
         .verify(format!("{}.{}", parts[0], parts[1]).as_bytes(), &signature)
         .expect("issuer signature");
-    assert!(pending.header("different-certificate", &seed, "https://example.invalid").is_err());
+    assert!(
+        pending
+            .header("different-certificate", &seed, "https://example.invalid")
+            .is_err()
+    );
     let mut changed = pending;
     changed.event.work_item_ref = "w54321".to_string();
-    assert!(changed.header("synthetic-certificate", &seed, "https://example.invalid").is_err());
+    assert!(
+        changed
+            .header("synthetic-certificate", &seed, "https://example.invalid")
+            .is_err()
+    );
 }
 
 #[test]
@@ -75,15 +95,29 @@ fn receipt_requires_exact_event_and_proof_interval() {
     let pending = PendingEvent::new(start_event(), 1_791_158_405).expect("pending event");
     let event = &pending.event;
     let mut receipt = Receipt {
-        event_id: event.event_id.to_string(), issuer_kid: event.issuer_kid.clone(),
-        certificate_sha256: event.certificate_sha256.clone(), runtime_incarnation: event.runtime_incarnation.to_string(),
-        work_item_id: 12345, project_id: event.project_id, principal_id: event.principal_id.to_string(),
-        phase: event.phase, manager_invocation: event.manager_invocation.to_string(),
-        observer_artifact_sha256: event.observer_artifact_sha256.clone(), operation_sha256: pending.operation_sha256.clone(),
-        source: event.source, cause: event.cause, exit_code: None, signal: None, absence_proven: false,
-        observed_at: event.observed_at.clone(), proof_issued_at: timestamp(pending.proof_issued_at).unwrap(),
-        proof_expires_at: timestamp(pending.proof_expires_at).unwrap(), runtime_epoch_recorded: true,
-        ended: false, terminalized_execution_instances: Vec::new(), released_current_claim: None,
+        event_id: event.event_id.to_string(),
+        issuer_kid: event.issuer_kid.clone(),
+        certificate_sha256: event.certificate_sha256.clone(),
+        runtime_incarnation: event.runtime_incarnation.to_string(),
+        work_item_id: 12345,
+        project_id: event.project_id,
+        principal_id: event.principal_id.to_string(),
+        phase: event.phase,
+        manager_invocation: event.manager_invocation.to_string(),
+        observer_artifact_sha256: event.observer_artifact_sha256.clone(),
+        operation_sha256: pending.operation_sha256.clone(),
+        source: event.source,
+        cause: event.cause,
+        exit_code: None,
+        signal: None,
+        absence_proven: false,
+        observed_at: event.observed_at.clone(),
+        proof_issued_at: timestamp(pending.proof_issued_at).unwrap(),
+        proof_expires_at: timestamp(pending.proof_expires_at).unwrap(),
+        runtime_epoch_recorded: true,
+        ended: false,
+        terminalized_execution_instances: Vec::new(),
+        released_current_claim: None,
     };
     assert!(pending.validate_receipt(&receipt).is_ok());
     receipt.proof_expires_at = timestamp(pending.proof_expires_at + 1).unwrap();
@@ -92,7 +126,9 @@ fn receipt_requires_exact_event_and_proof_interval() {
     receipt.observed_at = receipt.observed_at.replace('Z', ".5Z");
     assert!(pending.validate_receipt(&receipt).is_err());
     receipt.observed_at = event.observed_at.clone();
-    receipt.terminalized_execution_instances.push(Uuid::from_u128(9).to_string());
+    receipt
+        .terminalized_execution_instances
+        .push(Uuid::from_u128(9).to_string());
     assert!(pending.validate_receipt(&receipt).is_err());
 }
 
@@ -132,7 +168,9 @@ fn manager_and_uid_evidence_are_strict() {
 #[test]
 fn uncertain_post_reads_once_and_never_replays() {
     let listener = TcpListener::bind("127.0.0.1:0").expect("bind loopback");
-    listener.set_nonblocking(true).expect("nonblocking listener");
+    listener
+        .set_nonblocking(true)
+        .expect("nonblocking listener");
     let address = listener.local_addr().expect("local address");
     let server = std::thread::spawn(move || {
         let mut methods = Vec::new();
@@ -141,13 +179,18 @@ fn uncertain_post_reads_once_and_never_replays() {
             let mut stream = loop {
                 match listener.accept() {
                     Ok((stream, _)) => break stream,
-                    Err(error) if error.kind() == std::io::ErrorKind::WouldBlock && Instant::now() < deadline => {
+                    Err(error)
+                        if error.kind() == std::io::ErrorKind::WouldBlock
+                            && Instant::now() < deadline =>
+                    {
                         std::thread::sleep(Duration::from_millis(10));
                     }
                     Err(error) => panic!("accept synthetic lifecycle request: {error}"),
                 }
             };
-            stream.set_read_timeout(Some(Duration::from_secs(5))).unwrap();
+            stream
+                .set_read_timeout(Some(Duration::from_secs(5)))
+                .unwrap();
             let mut reader = std::io::BufReader::new(stream.try_clone().unwrap());
             let mut first = String::new();
             reader.read_line(&mut first).unwrap();
@@ -156,7 +199,9 @@ fn uncertain_post_reads_once_and_never_replays() {
             loop {
                 let mut line = String::new();
                 reader.read_line(&mut line).unwrap();
-                if line == "\r\n" || line.is_empty() { break; }
+                if line == "\r\n" || line.is_empty() {
+                    break;
+                }
                 if let Some((name, value)) = line.split_once(':')
                     && name.eq_ignore_ascii_case("content-length")
                 {
@@ -168,9 +213,17 @@ fn uncertain_post_reads_once_and_never_replays() {
             let (status, response) = if index == 0 {
                 ("503 Service Unavailable", "{}")
             } else {
-                ("200 OK", "{\"status\":\"ok\",\"request_id\":\"fixture-read\",\"lifecycle_receipt\":null}")
+                (
+                    "200 OK",
+                    "{\"status\":\"ok\",\"request_id\":\"fixture-read\",\"lifecycle_receipt\":null}",
+                )
             };
-            write!(stream, "HTTP/1.1 {status}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{response}", response.len()).unwrap();
+            write!(
+                stream,
+                "HTTP/1.1 {status}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{response}",
+                response.len()
+            )
+            .unwrap();
         }
         methods
     });
@@ -178,8 +231,18 @@ fn uncertain_post_reads_once_and_never_replays() {
     let mut event = start_event();
     event.observed_at = timestamp(now).expect("timestamp");
     let pending = PendingEvent::new(event, now).expect("pending event");
-    let result = deliver_once(&format!("http://{address}"), "synthetic-token", "synthetic-certificate", &[7; 32], &pending, true)
-        .expect("bounded readback");
+    let result = deliver_once(
+        &format!("http://{address}"),
+        "synthetic-token",
+        "synthetic-certificate",
+        &[7; 32],
+        &pending,
+        true,
+    )
+    .expect("bounded readback");
     assert!(!result);
-    assert_eq!(server.join().expect("server"), vec!["POST".to_string(), "GET".to_string()]);
+    assert_eq!(
+        server.join().expect("server"),
+        vec!["POST".to_string(), "GET".to_string()]
+    );
 }
