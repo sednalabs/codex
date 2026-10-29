@@ -102,7 +102,17 @@ jobs:
             --build_metadata=COMMIT_SHA=${GITHUB_SHA}
           )
           if [[ "${W14939_FOCUSED_TESTS}" == "true" ]]; then
+            unset BUILDBUDDY_API_KEY
+            echo "Focused validation uses the hosted runner only; remote execution is disabled."
             focused_status=0
+            expected_product_source="c1fe02fcd2568c507e0a9b263b5185ddb05cf96d"
+            workflow_host_sha="$(git rev-parse HEAD)"
+            product_source_sha="$(git cat-file commit HEAD | awk '$1 == "parent" { print $2; exit }')"
+            if [[ "${workflow_host_sha}" != "${GITHUB_SHA}" || "${product_source_sha}" != "${expected_product_source}" ]]; then
+              echo "Focused source identity mismatch: host=${workflow_host_sha}, source=${product_source_sha}" >&2
+              exit 1
+            fi
+            echo "Focused product source: ${product_source_sha} (workflow host: ${workflow_host_sha})"
             ./.github/scripts/run-bazel-ci.sh \
               --print-failed-test-logs \
               --print-failed-action-summary \
@@ -163,6 +173,36 @@ jobs:
               --test_arg=app::tests::session_lifecycle_requests::startup_defaults_tests::fresh_startup_falls_back_only_for_unsupported_config_read \
               -- \
               //codex-rs/tui:tui-unit-tests || focused_status=$?
+            snapshot_path=codex-rs/core/tests/suite/snapshots/all__suite__scenarios__frozen_cloud_skills__frozen_cloud_skills_with_named_executor_request_history.snap
+            ./.github/scripts/run-bazel-ci.sh \
+              -- \
+              test \
+              --test_tag_filters=-argument-comment-lint \
+              --test_verbose_timeout_warnings \
+              --test_output=summary \
+              --test_env=INSTA_UPDATE=always \
+              --build_metadata="COMMIT_SHA=${GITHUB_SHA}" \
+              --test_arg=--exact \
+              --test_arg=suite::scenarios::frozen_cloud_skills::frozen_cloud_skills_with_named_executor_request_history \
+              -- \
+              //codex-rs/core:core-all-test || focused_status=$?
+            if ! git diff --quiet -- "$snapshot_path"; then
+              snapshot_artifact_dir="${RUNNER_TEMP}/w14939-normalized-snapshots"
+              mkdir -p "$snapshot_artifact_dir"
+              cp "$snapshot_path" "$snapshot_artifact_dir/$(basename "$snapshot_path")"
+              ./.github/scripts/run-bazel-ci.sh \
+                -- \
+                test \
+                --test_tag_filters=-argument-comment-lint \
+                --test_verbose_timeout_warnings \
+                --test_output=summary \
+                --build_metadata="COMMIT_SHA=${GITHUB_SHA}" \
+                --test_arg=--exact \
+                --test_arg=suite::scenarios::frozen_cloud_skills::frozen_cloud_skills_with_named_executor_request_history \
+                -- \
+                //codex-rs/core:core-all-test || focused_status=$?
+              git restore -- "$snapshot_path"
+            fi
             for selector in \
               suite::client::configured_reasoning_summary_is_sent \
               suite::client::history_dedupes_streamed_and_final_messages_across_turns \
@@ -173,7 +213,6 @@ jobs:
               suite::prompt_caching::prefixes_context_and_instructions_once_and_consistently_across_requests \
               suite::remote_models::remote_models_long_model_slug_is_sent_with_supported_reasoning::custom \
               suite::request_compression::request_body_is_zstd_compressed_for_codex_backend_when_enabled \
-              suite::scenarios::frozen_cloud_skills::frozen_cloud_skills_with_named_executor_request_history \
               suite::scenarios::mcp_ema::enterprise_lifecycle_preserves_history_and_ordinary_tools::policy; do
               ./.github/scripts/run-bazel-ci.sh \
                 --print-failed-test-logs \
@@ -251,7 +290,9 @@ jobs:
         uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f # v7.0.0
         with:
           name: bazel-execution-logs-test-${{ matrix.target }}
-          path: ${{ runner.temp }}/bazel-execution-logs
+          path: |
+            ${{ runner.temp }}/bazel-execution-logs
+            ${{ runner.temp }}/w14939-normalized-snapshots
           if-no-files-found: ignore
 
       # Save the job-scoped Bazel repository cache after cache misses. Keep the
