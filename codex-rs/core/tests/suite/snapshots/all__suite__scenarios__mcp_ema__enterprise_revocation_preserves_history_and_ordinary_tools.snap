@@ -58,16 +58,12 @@ Settings:
     <ENVIRONMENT_CONTEXT>
 05:message/user:
     List my work events.
-06:message/developer:
-    <MULTI_AGENT_MODE>
-07:configuration_update:reasoning={"effort":"low"}
+06:configuration_update:reasoning={"effort":"low"}
 -- request 2 (turn) --
-08:function_call/mcp__enterprise.calendar_list_events:{}
-09:function_call_output:Wall time: <DURATION> seconds
+07:function_call/mcp__enterprise.calendar_list_events:{}
+08:function_call_output:Wall time: <DURATION> seconds
     Output:
     {"_codex_apps":null}
-10:message/developer:
-    <MULTI_AGENT_MODE>
 
 ## Window 2 (after request 2)
 Settings: relative to window 1
@@ -87,27 +83,17 @@ Settings: relative to window 1
     <ENVIRONMENT_CONTEXT>
 05:message/user:
     List my work events.
-06:message/developer:
-    <MULTI_AGENT_MODE>
-07:configuration_update:reasoning={"effort":"low"}
-08:function_call/mcp__enterprise.calendar_list_events:{}
-09:function_call_output:Wall time: <DURATION> seconds
+06:configuration_update:reasoning={"effort":"low"}
+07:function_call/mcp__enterprise.calendar_list_events:{}
+08:function_call_output:Wall time: <DURATION> seconds
     Output:
     {"_codex_apps":null}
-10:message/developer:
-    <MULTI_AGENT_MODE>
-11:message/assistant:
+09:message/assistant:
     Here are your work events.
-12:message/developer:
-    <MULTI_AGENT_MODE>
-13:message/user:
+10:message/user:
     List my other calendar events.
-14:message/developer:
-    <MULTI_AGENT_MODE>
 -- request 4 (turn) --
-15:function_call/mcp__ordinary.calendar_list_events:{}
-16:function_call_output:Wall time: <DURATION> seconds
+11:function_call/mcp__ordinary.calendar_list_events:{}
+12:function_call_output:Wall time: <DURATION> seconds
     Output:
     {"_codex_apps":null}
-17:message/developer:
-    <MULTI_AGENT_MODE>
