@@ -38,7 +38,17 @@ fn main() {
             } else if let Some(stage) =
                 codex_runtime_proof::launcher::safe_mcp_failure_stage(&error)
             {
-                eprintln!("runtime-proof launcher failed closed (stage: {stage})");
+                let detail = codex_runtime_proof::launcher::safe_mcp_failure_detail(&error);
+                let errno = codex_runtime_proof::launcher::safe_mcp_failure_errno(&error);
+                match (detail, errno) {
+                    (Some(detail), Some(errno)) => eprintln!(
+                        "runtime-proof launcher failed closed (stage: {stage}; detail: {detail}; errno: {errno})"
+                    ),
+                    (Some(detail), None) => eprintln!(
+                        "runtime-proof launcher failed closed (stage: {stage}; detail: {detail})"
+                    ),
+                    _ => eprintln!("runtime-proof launcher failed closed (stage: {stage})"),
+                }
             } else {
                 eprintln!("runtime-proof launcher failed closed");
             }
