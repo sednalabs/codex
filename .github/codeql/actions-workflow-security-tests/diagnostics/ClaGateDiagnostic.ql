@@ -4,6 +4,7 @@
 import actions
 import WorkflowSecurity
 
+bindingset[value, pattern]
 predicate regexStatus(string value, string pattern, string label) {
   value.regexpMatch(pattern) and label = "yes"
   or
