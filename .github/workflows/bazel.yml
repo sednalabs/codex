@@ -12,6 +12,11 @@ on:
         required: false
         type: boolean
         default: false
+      w14939_snapshot_capture:
+        description: Capture the normalized enterprise lifecycle snapshot only
+        required: false
+        type: boolean
+        default: false
 
 concurrency:
   # Cancel previous actions from the same PR or branch except 'main' branch.
@@ -80,6 +85,7 @@ jobs:
         env:
           BUILDBUDDY_API_KEY: ${{ secrets.BUILDBUDDY_API_KEY }}
           W14939_FOCUSED_TESTS: ${{ github.event_name == 'workflow_dispatch' && inputs.w14939_focused_tests }}
+          W14939_SNAPSHOT_CAPTURE: ${{ github.event_name == 'workflow_dispatch' && inputs.w14939_snapshot_capture }}
         shell: bash
         run: |
           bazel_targets=(
@@ -113,6 +119,50 @@ jobs:
               exit 1
             fi
             echo "Focused product source: ${product_source_sha} (workflow host: ${workflow_host_sha})"
+            if [[ "${W14939_SNAPSHOT_CAPTURE}" == "true" ]]; then
+              snapshot_path=codex-rs/core/tests/suite/snapshots/all__suite__scenarios__mcp_ema__enterprise_revocation_preserves_history_and_ordinary_tools.snap
+              snapshot_artifact_dir="${RUNNER_TEMP}/w14939-normalized-snapshots"
+              mkdir -p "${snapshot_artifact_dir}"
+              snapshot_status=0
+              ./.github/scripts/run-bazel-ci.sh \
+                --print-failed-test-logs \
+                --print-failed-action-summary \
+                -- \
+                test \
+                --test_tag_filters=-argument-comment-lint \
+                --test_verbose_timeout_warnings \
+                --test_output=summary \
+                --test_env=INSTA_UPDATE=always \
+                --build_metadata="COMMIT_SHA=${GITHUB_SHA}" \
+                --test_arg=--exact \
+                --test_arg=suite::scenarios::mcp_ema::enterprise_lifecycle_preserves_history_and_ordinary_tools::policy \
+                -- \
+                //codex-rs/core:core-all-test || snapshot_status=$?
+              if ! git diff --quiet -- "${snapshot_path}"; then
+                cp "${snapshot_path}" "${snapshot_artifact_dir}/$(basename "${snapshot_path}")"
+              else
+                echo "The enterprise policy snapshot did not change as expected." >&2
+                snapshot_status=1
+              fi
+              if [[ "${snapshot_status}" -eq 0 ]]; then
+                ./.github/scripts/run-bazel-ci.sh \
+                  --print-failed-test-logs \
+                  --print-failed-action-summary \
+                  -- \
+                  test \
+                  --test_tag_filters=-argument-comment-lint \
+                  --test_verbose_timeout_warnings \
+                  --test_output=summary \
+                  --build_metadata="COMMIT_SHA=${GITHUB_SHA}" \
+                  --test_arg=--exact \
+                  --test_arg=suite::scenarios::mcp_ema::enterprise_lifecycle_preserves_history_and_ordinary_tools::policy \
+                  -- \
+                  //codex-rs/core:core-all-test || snapshot_status=$?
+              fi
+              git restore -- "${snapshot_path}"
+              rm -f "${snapshot_path}.new"
+              exit "${snapshot_status}"
+            fi
             ./.github/scripts/run-bazel-ci.sh \
               --print-failed-test-logs \
               --print-failed-action-summary \
