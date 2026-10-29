@@ -705,7 +705,13 @@ async fn fresh_startup_falls_back_only_for_unsupported_config_read() -> Result<(
         )
         .await?;
         let bootstrap = server.bootstrap(&config).await?;
-        run_until_thread_start(server, config, bootstrap, &requests).await?;
+        run_until_thread_start(server, config, bootstrap, &requests)
+            .await
+            .map_err(|error| {
+                color_eyre::eyre::eyre!(
+                    "waiting for thread/start after unsupported config-read fallback: {error}"
+                )
+            })?;
         let starts = recorded_params(&requests, "thread/start");
         assert_eq!(starts.len(), 1);
         assert_eq!(
@@ -715,7 +721,14 @@ async fn fresh_startup_falls_back_only_for_unsupported_config_read() -> Result<(
             ),
             (&serde_json::Value::Null, &serde_json::Value::Null)
         );
-        tokio::time::timeout(Duration::from_secs(/*secs*/ 15), proxy).await???;
+        let proxy_result = tokio::time::timeout(Duration::from_secs(/*secs*/ 15), proxy)
+            .await
+            .map_err(|error| {
+                color_eyre::eyre::eyre!(
+                    "waiting for app-server proxy shutdown after unsupported config-read fallback: {error}"
+                )
+            })?;
+        proxy_result??;
     }
     Ok(())
 }

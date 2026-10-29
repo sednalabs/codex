@@ -102,6 +102,8 @@ Settings: relative to window 1
     <MULTI_AGENT_MODE>
 13:message/user:
     List my other calendar events.
+14:message/developer:
+    <MULTI_AGENT_MODE>
 -- request 4 (turn) --
 15:function_call/mcp__ordinary.calendar_list_events:{}
 16:function_call_output:Wall time: <DURATION> seconds
