@@ -32,6 +32,11 @@ on:
         required: false
         default: false
         type: boolean
+      resolve_libz_sys_advisory:
+        description: Generate the advisory fix in Cargo and Bazel lockfiles
+        required: false
+        default: false
+        type: boolean
 
 concurrency:
   group: validation-named-tests/${{ inputs.target_sha }}/${{ inputs.base_ref }}/${{ inputs.profile }}
@@ -50,4 +55,5 @@ jobs:
       profile: ${{ inputs.profile }}
       request_json: ${{ inputs.request_json }}
       resolve_sha2_lock_edge: ${{ inputs.resolve_sha2_lock_edge }}
+      resolve_libz_sys_advisory: ${{ inputs.resolve_libz_sys_advisory }}
       artifact_name: validation-named-tests-${{ github.run_id }}

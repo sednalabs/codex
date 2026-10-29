@@ -30,6 +30,10 @@ on:
         required: false
         type: boolean
         default: false
+      resolve_libz_sys_advisory:
+        required: false
+        type: boolean
+        default: false
 
 permissions:
   contents: read
@@ -140,6 +144,12 @@ jobs:
         with:
           targets: x86_64-unknown-linux-gnu
 
+      - name: Set up Bazel for the exact target lockfile
+        if: ${{ inputs.resolve_libz_sys_advisory }}
+        uses: bazel-contrib/setup-bazel@c5acdfb288317d0b5c0bbd7a396a3dc868bb0f86 # 0.19.0
+        with:
+          bazelisk-version: 1.28.1
+
       - name: Resolve and validate the focused sha2 lock edge
         if: ${{ inputs.resolve_sha2_lock_edge }}
         working-directory: validation-target
@@ -213,8 +223,148 @@ jobs:
           if-no-files-found: error
           retention-days: 3
 
+      - name: Resolve and validate the libz-sys advisory lock update
+        if: ${{ inputs.resolve_libz_sys_advisory }}
+        working-directory: validation-target
+        shell: bash
+        run: |
+          set -euo pipefail
+          cargo update --manifest-path codex-rs/Cargo.toml --package libz-sys --precise 1.1.31
+          bazel mod deps --lockfile_mode=update
+          python3 - <<'PY'
+          import copy
+          import json
+          import os
+          import subprocess
+          import tomllib
+          from pathlib import Path
+
+          def git_text(path):
+              return subprocess.run(
+                  ["git", "show", f"HEAD:{path}"],
+                  check=True,
+                  capture_output=True,
+                  text=True,
+              ).stdout
+
+          before_cargo = tomllib.loads(git_text("codex-rs/Cargo.lock"))
+          after_cargo = tomllib.loads(Path("codex-rs/Cargo.lock").read_text(encoding="utf-8"))
+
+          def package_map(lock):
+              return {
+                  (item["name"], item["version"], item.get("source")): item
+                  for item in lock.get("package", [])
+              }
+
+          old_packages = package_map(before_cargo)
+          new_packages = package_map(after_cargo)
+          old_libz = [item for item in old_packages.values() if item["name"] == "libz-sys"]
+          new_libz = [item for item in new_packages.values() if item["name"] == "libz-sys"]
+          if len(old_libz) != 1 or old_libz[0]["version"] != "1.1.29":
+              raise SystemExit("expected exactly one input libz-sys 1.1.29 package")
+          if len(new_libz) != 1 or new_libz[0]["version"] != "1.1.31":
+              raise SystemExit("Cargo did not resolve exactly one libz-sys 1.1.31 package")
+          if old_libz[0].get("source") != new_libz[0].get("source"):
+              raise SystemExit("libz-sys registry source changed unexpectedly")
+          if not new_libz[0].get("checksum"):
+              raise SystemExit("resolved libz-sys package has no registry checksum")
+
+          old_key = (old_libz[0]["name"], old_libz[0]["version"], old_libz[0].get("source"))
+          new_key = (new_libz[0]["name"], new_libz[0]["version"], new_libz[0].get("source"))
+          if set(old_packages) - {old_key} != set(new_packages) - {new_key}:
+              raise SystemExit("unexpected Cargo.lock package identity change")
+
+          def normalized_package(item):
+              value = copy.deepcopy(item)
+              value["dependencies"] = [
+                  dependency.replace("libz-sys 1.1.29", "libz-sys 1.1.31")
+                  for dependency in value.get("dependencies", [])
+              ]
+              return value
+
+          for key in set(old_packages) - {old_key}:
+              if normalized_package(old_packages[key]) != normalized_package(new_packages[key]):
+                  raise SystemExit(f"unexpected Cargo.lock change outside libz-sys: {key[0]}")
+          old_libz_metadata = {k: v for k, v in old_libz[0].items() if k not in {"version", "checksum"}}
+          new_libz_metadata = {k: v for k, v in new_libz[0].items() if k not in {"version", "checksum"}}
+          if old_libz_metadata != new_libz_metadata:
+              raise SystemExit("libz-sys package metadata changed beyond version/checksum")
+
+          before_bazel = json.loads(git_text("MODULE.bazel.lock"))
+          after_bazel = json.loads(Path("MODULE.bazel.lock").read_text(encoding="utf-8"))
+          crate_key = "@@rules_rs+//rs:extensions.bzl%crate"
+          old_crate = before_bazel["facts"][crate_key]
+          new_crate = after_bazel["facts"][crate_key]
+          old_libz_keys = {key for key in old_crate if key.startswith("libz-sys_")}
+          new_libz_keys = {key for key in new_crate if key.startswith("libz-sys_")}
+          if "libz-sys_1.1.29" not in old_libz_keys:
+              raise SystemExit("Bazel crate facts do not contain input libz-sys 1.1.29")
+          expected_new_keys = (old_libz_keys - {"libz-sys_1.1.29"}) | {"libz-sys_1.1.31"}
+          if new_libz_keys != expected_new_keys:
+              raise SystemExit(f"unexpected Bazel libz-sys crate identities: {old_libz_keys} -> {new_libz_keys}")
+
+          def normalize_crate_facts(facts):
+              result = {}
+              for key, value in facts.items():
+                  normalized_key = key.replace("libz-sys_1.1.29", "libz-sys_1.1.31")
+                  normalized_value = value.replace("libz-sys_1.1.29", "libz-sys_1.1.31")
+                  if normalized_key in result:
+                      raise SystemExit(f"duplicate normalized Bazel crate fact: {normalized_key}")
+                  result[normalized_key] = normalized_value
+              return result
+
+          if normalize_crate_facts(old_crate) != new_crate:
+              raise SystemExit("unexpected Bazel crate facts changed outside the libz-sys version reference")
+          old_other_facts = {key: value for key, value in before_bazel["facts"].items() if key != crate_key}
+          new_other_facts = {key: value for key, value in after_bazel["facts"].items() if key != crate_key}
+          if old_other_facts != new_other_facts:
+              raise SystemExit("unrelated Bazel extension facts changed")
+          before_bazel.pop("facts")
+          after_bazel.pop("facts")
+          if before_bazel != after_bazel:
+              raise SystemExit("Bazel lock state changed outside the Cargo crate facts")
+
+          changed_paths = subprocess.run(
+              ["git", "diff", "--name-only"], check=True, capture_output=True, text=True
+          ).stdout.splitlines()
+          if set(changed_paths) != {"codex-rs/Cargo.lock", "MODULE.bazel.lock"}:
+              raise SystemExit(f"unexpected lock-update paths: {changed_paths}")
+
+          output = Path(os.environ["RUNNER_TEMP"]) / "libz-sys-lock"
+          output.mkdir(parents=True, exist_ok=True)
+          patch_path = output / "libz-sys-advisory.lock.patch"
+          patch_path.write_bytes(subprocess.run(
+              ["git", "diff", "--no-ext-diff", "--binary", "--", "codex-rs/Cargo.lock", "MODULE.bazel.lock"],
+              check=True,
+              capture_output=True,
+          ).stdout)
+          if not patch_path.stat().st_size:
+              raise SystemExit("lock update produced an empty patch")
+          metadata = output / "metadata.txt"
+          metadata.write_text(
+              f"target_sha={os.environ['VALIDATION_TARGET_SHA']}\n"
+              "cargo_libz_sys=1.1.29->1.1.31\n"
+              "bazel_crate_libz_sys=1.1.29->1.1.31\n",
+              encoding="utf-8",
+          )
+          digest = subprocess.run(
+              ["sha256sum", str(patch_path)], check=True, capture_output=True, text=True
+          ).stdout
+          metadata.write_text(metadata.read_text(encoding="utf-8") + digest, encoding="utf-8")
+          print(f"validated two-lock advisory delta: {patch_path.stat().st_size} bytes")
+          PY
+
+      - name: Upload libz-sys advisory lock delta
+        if: ${{ inputs.resolve_libz_sys_advisory }}
+        uses: actions/upload-artifact@v7
+        with:
+          name: validation-libz-sys-lock-${{ github.run_id }}
+          path: ${{ runner.temp }}/libz-sys-lock
+          if-no-files-found: error
+          retention-days: 3
+
       - name: Inventory and run exact named tests
-        if: ${{ inputs.resolve_sha2_lock_edge != true }}
+        if: ${{ inputs.resolve_sha2_lock_edge != true && inputs.resolve_libz_sys_advisory != true }}
         id: named_tests
         continue-on-error: true
         working-directory: validation-target
@@ -224,7 +374,7 @@ jobs:
           python3 ../.workflow-src/.github/scripts/run_named_rust_tests.py
 
       - name: Append named-test evidence
-        if: ${{ always() && inputs.resolve_sha2_lock_edge != true }}
+        if: ${{ always() && inputs.resolve_sha2_lock_edge != true && inputs.resolve_libz_sys_advisory != true }}
         shell: bash
         env:
           RESULT_PATH: ${{ github.workspace }}/validation-target/rust-tests-v1-results.json
@@ -253,7 +403,7 @@ jobs:
           PY
 
       - name: Upload named-test evidence
-        if: ${{ always() && inputs.resolve_sha2_lock_edge != true }}
+        if: ${{ always() && inputs.resolve_sha2_lock_edge != true && inputs.resolve_libz_sys_advisory != true }}
         uses: actions/upload-artifact@v7
         with:
           name: ${{ inputs.artifact_name }}
@@ -262,6 +412,6 @@ jobs:
           retention-days: 3
 
       - name: Preserve failed exact-test result
-        if: ${{ inputs.resolve_sha2_lock_edge != true && steps.named_tests.outcome == 'failure' }}
+        if: ${{ inputs.resolve_sha2_lock_edge != true && inputs.resolve_libz_sys_advisory != true && steps.named_tests.outcome == 'failure' }}
         shell: bash
         run: exit 1
