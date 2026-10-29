@@ -28,6 +28,125 @@ fn start_event() -> Event {
     }
 }
 
+// Explicitly ignored during ordinary test runs. This is a synthetic interop
+// generator, not an issuer or a production credential interface.
+#[test]
+#[ignore]
+fn synthetic_interop_packet() {
+    #[derive(serde::Deserialize)]
+    #[serde(deny_unknown_fields)]
+    struct Input {
+        now: i64,
+        principal_id: Uuid,
+        project_id: u64,
+        work_item_ref: String,
+        issuer_kid: String,
+        runtime_incarnation: Uuid,
+        start_event_id: Uuid,
+        end_event_id: Uuid,
+        manager_invocation: Uuid,
+        artifact_sha256: String,
+        observer_artifact_sha256: String,
+        mcp_recipient: String,
+        lifecycle_recipient: String,
+    }
+    let input: Input = serde_json::from_str(
+        &std::env::var("CODEX_LIFECYCLE_VECTOR_INPUT").expect("synthetic vector JSON"),
+    )
+    .expect("valid synthetic vector input");
+    let issuer_seed = [23_u8; 32];
+    let runtime_seed = [7_u8; 32];
+    let issuer_public = URL_SAFE_NO_PAD.encode(
+        SigningKey::from_bytes(&issuer_seed).verifying_key().as_bytes(),
+    );
+    let policy = super::super::LauncherPolicy {
+        version: 1,
+        principal: input.principal_id,
+        project_id: input.project_id,
+        work_item_ref: input.work_item_ref.clone(),
+        issuer_kid: input.issuer_kid.clone(),
+        issuer_public_key: issuer_public.clone(),
+        execution_lease_seconds: 300,
+        target: super::super::LauncherTarget::Http(super::super::ApiClaimConfig {
+            launcher_sha256: input.observer_artifact_sha256.clone(),
+            expected_generation: 0,
+            expected_updated_at: String::new(),
+        }),
+    };
+    let claims = wire::CertificateClaims {
+        version: 2,
+        runtime_public_key: URL_SAFE_NO_PAD.encode(
+            SigningKey::from_bytes(&runtime_seed).verifying_key().as_bytes(),
+        ),
+        runtime_incarnation: input.runtime_incarnation,
+        provider: "codex-native-runtime".to_string(),
+        artifact_sha256: input.artifact_sha256,
+        principal: input.principal_id,
+        project_id: input.project_id,
+        execution_lease_seconds: 300,
+        work_item_ref: input.work_item_ref.clone(),
+        recipient: input.mcp_recipient,
+        mcp_server: Some(super::super::MCP_SERVER.to_string()),
+        method: "tools/call".to_string(),
+        tool: None,
+        purpose: None,
+        operations: Some(super::super::MCP_MUTATION_TOOLS.iter().zip(["work-claim", "work-release"]).map(|(tool, purpose)| wire::ProtectedOperation {
+            tool: (*tool).to_string(),
+            purpose: purpose.to_string(),
+        }).collect()),
+        iat: input.now.checked_sub(5).expect("timestamp underflow"),
+        exp: input.now.checked_add(300).expect("timestamp overflow"),
+    };
+    let certificate = super::super::issue_certificate(&claims, &issuer_seed, &policy)
+        .expect("issue synthetic native-v2 certificate");
+    let mut event = Event {
+        version: 1,
+        principal_id: input.principal_id,
+        project_id: input.project_id,
+        work_item_ref: input.work_item_ref,
+        issuer_kid: input.issuer_kid,
+        certificate_sha256: wire::certificate_digest(certificate.as_bytes()),
+        runtime_incarnation: input.runtime_incarnation,
+        event_id: input.start_event_id,
+        phase: Phase::Start,
+        source: Source::Launcher,
+        manager_invocation: input.manager_invocation,
+        observer_artifact_sha256: input.observer_artifact_sha256,
+        observed_at: timestamp(input.now).expect("timestamp"),
+        cause: Cause::LaunchRegistered,
+        exit_code: None,
+        signal: None,
+        absence_proven: false,
+    };
+    let packet = |event: Event| {
+        let pending = PendingEvent::new(event, input.now).expect("pending lifecycle event");
+        let body = serde_json::to_value(&pending.event).expect("event body");
+        let canonical = wire::canonical_lifecycle_operation(&body).expect("canonical operation");
+        let header = pending.header(&certificate, &issuer_seed, &input.lifecycle_recipient)
+            .expect("lifecycle header");
+        serde_json::json!({
+            "body": body,
+            "canonical_operation_utf8": String::from_utf8(canonical).expect("canonical utf8"),
+            "operation_sha256": pending.operation_sha256,
+            "x_ops_runtime_lifecycle": header.as_str(),
+        })
+    };
+    let start = packet(event.clone());
+    event.event_id = input.end_event_id;
+    event.phase = Phase::End;
+    event.source = Source::Systemd;
+    event.cause = Cause::Exited;
+    event.exit_code = Some(0);
+    event.absence_proven = true;
+    let end = packet(event);
+    println!("SYNTHETIC_LIFECYCLE_PACKET={}", serde_json::json!({
+        "issuer_public_key_base64url": issuer_public,
+        "certificate": certificate,
+        "start": start,
+        "end": end,
+    }));
+}
+
 #[test]
 fn lifecycle_witness_binds_final_operation_and_issuer() {
     let seed = [7_u8; 32];
