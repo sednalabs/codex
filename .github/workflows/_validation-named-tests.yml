@@ -143,6 +143,22 @@ jobs:
         with:
           targets: x86_64-unknown-linux-gnu
 
+      - name: Install Linux sandbox integration-test prerequisite
+        if: ${{ runner.os == 'Linux' && contains(inputs.request_json, '"package":"codex-core"') && contains(inputs.request_json, '"target_kind":"integration"') }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          sudo apt-get update -y
+          sudo DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends bubblewrap
+          bwrap_path="$(command -v bwrap)"
+          bwrap_realpath="$(readlink -f "${bwrap_path}")"
+          test -x "${bwrap_realpath}"
+          printf 'bubblewrap_path=%s\n' "${bwrap_path}"
+          printf 'bubblewrap_realpath=%s\n' "${bwrap_realpath}"
+          sha256sum "${bwrap_realpath}"
+          "${bwrap_path}" --version
+          "${bwrap_path}" --unshare-user --unshare-pid --unshare-ipc --ro-bind / / --proc /proc -- /bin/true
+
       - name: Build the stdio test server for core integration tests
         if: ${{ contains(inputs.request_json, '"package":"codex-core"') && contains(inputs.request_json, '"target_kind":"integration"') }}
         working-directory: validation-target/codex-rs
