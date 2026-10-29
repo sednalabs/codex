@@ -28,6 +28,7 @@ use codex_config::ThreadConfigLoader;
 use codex_config::apply_default_gcp_auth;
 use codex_config::config_toml::CircuitBreakAction;
 use codex_config::config_toml::ConfigToml;
+use codex_config::config_toml::ConfiguredMcpProtocolMode;
 use codex_config::config_toml::DEFAULT_PROJECT_DOC_MAX_BYTES;
 use codex_config::config_toml::ProjectConfig;
 use codex_config::config_toml::RealtimeAudioConfig;
@@ -44,6 +45,7 @@ use codex_config::types::AuthCredentialsStoreMode;
 use codex_config::types::AuthKeyringBackendKind;
 use codex_config::types::History;
 use codex_config::types::McpServerConfig;
+use codex_config::types::McpServerTransportConfig;
 use codex_config::types::MemoriesConfig;
 use codex_config::types::ModelAvailabilityNuxConfig;
 use codex_config::types::Notice;
@@ -925,6 +927,9 @@ pub struct Config {
 
     /// Definition for MCP servers that Codex can reach out to for tool calls.
     pub mcp_servers: Constrained<HashMap<String, McpServerConfig>>,
+
+    /// User-configured, HTTP-only protocol overrides (never applied to plugins).
+    pub mcp_server_protocol_modes: HashMap<String, ConfiguredMcpProtocolMode>,
 
     /// Trusted IdP shared by all permitted EMA MCP registrations.
     pub mcp_enterprise_managed_auth: Option<McpEnterpriseManagedAuthConfig>,
@@ -1921,10 +1926,16 @@ impl Config {
             catalog.register(registration);
         }
         for (name, server) in self.mcp_servers.get() {
-            catalog.register(McpServerRegistration::from_config(
-                name.clone(),
-                server.clone(),
-            ));
+            let mut registration =
+                McpServerRegistration::from_config(name.clone(), server.clone());
+            if let Some(mode) = self.mcp_server_protocol_modes.get(name) {
+                let protocol_mode = match mode {
+                    ConfiguredMcpProtocolMode::Legacy => McpProtocolMode::Legacy,
+                    ConfiguredMcpProtocolMode::V20260728 => McpProtocolMode::V20260728,
+                };
+                registration = registration.with_protocol_mode(protocol_mode);
+            }
+            catalog.register(registration);
         }
 
         McpConfig {
@@ -3367,6 +3378,27 @@ impl Config {
 
         validate_model_providers(&cfg.model_providers)
             .map_err(|message| std::io::Error::new(std::io::ErrorKind::InvalidInput, message))?;
+        for name in cfg.mcp_server_protocol_modes.keys() {
+            match cfg.mcp_servers.get(name) {
+                Some(server)
+                    if matches!(
+                        &server.transport,
+                        McpServerTransportConfig::StreamableHttp { .. }
+                    ) => {}
+                Some(_) => {
+                    return Err(std::io::Error::new(
+                        std::io::ErrorKind::InvalidInput,
+                        format!("mcp_server_protocol_modes.{name} requires a Streamable HTTP server"),
+                    ));
+                }
+                None => {
+                    return Err(std::io::Error::new(
+                        std::io::ErrorKind::InvalidInput,
+                        format!("mcp_server_protocol_modes.{name} has no configured MCP server"),
+                    ));
+                }
+            }
+        }
         for (slot, dial) in cfg.tui.iter().flat_map(|tui| &tui.quick_dials) {
             if !matches!(slot.as_bytes(), [b'0'..=b'9']) {
                 return Err(std::io::Error::new(
@@ -4587,6 +4619,7 @@ impl Config {
                 ),
             },
             mcp_servers,
+            mcp_server_protocol_modes: cfg.mcp_server_protocol_modes,
             non_prefixed_mcp_tool_servers,
             mcp_enterprise_managed_auth,
             // The config.toml omits "_mode" because it's a config file. However, "_mode"
