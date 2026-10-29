@@ -1,6 +1,7 @@
 //! Shared retry and transport fallback decisions for Responses requests.
 //! Content-filter guidance is recorded for sampling requests before retry decisions.
-//! Server advice controls timing without extending configured retry limits.
+//! Transient capacity and availability failures retry in the same request loop;
+//! server advice sets a minimum delay while local backoff remains bounded.
 
 use std::time::Duration;
 
@@ -58,8 +59,9 @@ pub(crate) struct ExhaustedResponseRetry {
     pub(crate) retry_at: Option<tokio::time::Instant>,
 }
 
-/// Returns `Ok(())` when the caller should retry the request loop, or the original error when
-/// it is terminal or the retry budget is exhausted.
+/// Returns `Ok(())` when the caller should retry the request loop. Capacity and availability
+/// errors remain retryable while the turn is active; other transient errors obey their retry
+/// budget and return the original error when it is exhausted.
 #[tracing::instrument(level = "trace", skip_all, fields(request = ?request))]
 pub(crate) async fn handle_response_stream_error(
     retry_state: &mut ResponsesStreamRetryState,
