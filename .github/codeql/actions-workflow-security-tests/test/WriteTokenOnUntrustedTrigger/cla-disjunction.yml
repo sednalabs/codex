@@ -1,0 +1,18 @@
+name: CLA Assistant
+on:
+  issue_comment:
+    types: [created]
+jobs:
+  cla:
+    if: github.repository == 'openai/codex' || true
+    permissions:
+      contents: write
+      issues: write
+      actions: write
+    steps:
+      - uses: contributor-assistant/github-action@ca4a40a7d1004f18d9960b404b97e5f30a505a08
+        with:
+          path-to-signatures: signatures/cla.json
+          branch: cla-signatures
+          path-to-document: https://github.com/openai/codex/blob/main/docs/CLA.md
+          allowlist: codex,dependabot,dependabot[bot],github-actions[bot]

@@ -1,0 +1,23 @@
+name: rust-release
+on:
+  push:
+    tags: ["rust-v*", "codex-v*"]
+jobs:
+  release:
+    if: >-
+      ${{
+        always() &&
+        !(needs.tag-check.result == 'success') &&
+        needs.build.result == 'success' &&
+        needs.finalize-macos.result == 'success' &&
+        (needs.build-windows.result == 'success' ||
+          (github.repository == 'sednalabs/codex' && needs.build-windows.result == 'skipped')) &&
+        needs.argument-comment-lint-release-assets.result == 'success' &&
+        (needs.stage-npm-packages.result == 'success' ||
+          (github.repository == 'sednalabs/codex' && needs.stage-npm-packages.result == 'skipped')) &&
+        (needs.provisioned-macos-candidate.result == 'success' ||
+          (vars.CODEX_PROVISIONED_MACOS_CANDIDATE != 'true' &&
+            needs.provisioned-macos-candidate.result == 'skipped'))
+      }}
+    steps:
+      - uses: softprops/action-gh-release@v1
