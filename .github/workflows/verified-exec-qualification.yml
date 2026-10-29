@@ -9,6 +9,7 @@ permissions:
 
 jobs:
   targeted:
+    if: ${{ !contains(github.event.head_commit.message, '[launcher-package-only]') }}
     runs-on: ubuntu-24.04
     timeout-minutes: 60
     steps:
@@ -32,3 +33,81 @@ jobs:
           sudo env CODEX_VERIFIED_EXEC_FIXTURE="$RUNNER_TEMP/verified-exec-fixture" "$test_binary" --exact launcher::tests::verified_executable_survives_privilege_drop --ignored --nocapture
           "$test_binary" --exact launcher::tests::mcp_failure_details_and_errno_are_closed_and_numeric --nocapture
           "$test_binary" --exact launcher::tests::mcp_failure_stage_exposes_only_a_closed_phase --nocapture
+
+  package-launcher:
+    if: ${{ contains(github.event.head_commit.message, '[launcher-package-only]') }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    env:
+      PRODUCT_SOURCE_SHA: ea07f24dfeaed74b420c4e2e017d6be83e772d6f
+      PRODUCT_TARGET: x86_64-unknown-linux-gnu
+      WORKFLOW_HOST_SHA: ${{ github.sha }}
+      WORKFLOW_HOST_REF: ${{ github.ref }}
+      BUILD_RUNNER_OS: ${{ runner.os }}
+      BUILD_RUNNER_ARCH: ${{ runner.arch }}
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd
+        with:
+          ref: ea07f24dfeaed74b420c4e2e017d6be83e772d6f
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@ebb3d1676050bfd0971c36c1e215b5751473994d
+        with:
+          toolchain: 1.96.0
+          target: x86_64-unknown-linux-gnu
+      - name: Verify exact product source and tree
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "$PRODUCT_SOURCE_SHA"
+          printf 'product_source_sha=%s\n' "$(git rev-parse HEAD)"
+          printf 'product_tree_sha=%s\n' "$(git rev-parse 'HEAD^{tree}')"
+          printf 'workflow_host_sha=%s\n' "$WORKFLOW_HOST_SHA"
+      - name: Build only the runtime-proof launcher
+        working-directory: codex-rs
+        shell: bash
+        run: cargo build --locked --package codex-runtime-proof --bin codex-runtime-proof-launcher --release --target "$PRODUCT_TARGET"
+      - name: Package launcher and exact provenance
+        working-directory: codex-rs
+        shell: bash
+        run: |
+          set -euo pipefail
+          launcher_path="target/${PRODUCT_TARGET}/release/codex-runtime-proof-launcher"
+          test -f "$launcher_path"
+          test ! -L "$launcher_path"
+          test -x "$launcher_path"
+
+          bundle_dir="$RUNNER_TEMP/runtime-proof-launcher-bundle"
+          archive_name="runtime-proof-launcher-linux-x86_64-ea07f24dfeaed74b.tar.gz"
+          mkdir -p "$bundle_dir"
+          install -m 0755 "$launcher_path" "$bundle_dir/codex-runtime-proof-launcher"
+          launcher_sha256="$(sha256sum "$bundle_dir/codex-runtime-proof-launcher" | cut -d' ' -f1)"
+          printf '%s  codex-runtime-proof-launcher\n' "$launcher_sha256" > "$bundle_dir/codex-runtime-proof-launcher.sha256"
+          jq -n \
+            --arg product_source_sha "$PRODUCT_SOURCE_SHA" \
+            --arg product_tree_sha "$(git rev-parse 'HEAD^{tree}')" \
+            --arg target "$PRODUCT_TARGET" \
+            --arg launcher_sha256 "$launcher_sha256" \
+            --arg workflow_host_sha "$WORKFLOW_HOST_SHA" \
+            --arg workflow_host_ref "$WORKFLOW_HOST_REF" \
+            --arg runner_os "$BUILD_RUNNER_OS" \
+            --arg runner_arch "$BUILD_RUNNER_ARCH" \
+            --arg rustc "$(rustc --version)" \
+            --arg cargo "$(cargo --version)" \
+            --argjson run_id "$GITHUB_RUN_ID" \
+            --argjson run_attempt "$GITHUB_RUN_ATTEMPT" \
+            '{product_source_sha:$product_source_sha,product_tree_sha:$product_tree_sha,target:$target,launcher_sha256:$launcher_sha256,workflow_host_sha:$workflow_host_sha,workflow_host_ref:$workflow_host_ref,run_id:$run_id,run_attempt:$run_attempt,runner_os:$runner_os,runner_arch:$runner_arch,rustc:$rustc,cargo:$cargo}' \
+            > "$bundle_dir/manifest.json"
+          (cd "$bundle_dir" && sha256sum --check codex-runtime-proof-launcher.sha256)
+          archive_path="$RUNNER_TEMP/$archive_name"
+          tar -C "$bundle_dir" -czf "$archive_path" .
+          (cd "$RUNNER_TEMP" && sha256sum "$archive_name" > "$archive_name.sha256")
+          printf 'launcher_sha256=%s\n' "$launcher_sha256"
+          printf 'package_archive=%s\n' "$archive_name"
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: runtime-proof-launcher-linux-x86_64-ea07f24dfeaed74b
+          path: |
+            ${{ runner.temp }}/runtime-proof-launcher-linux-x86_64-ea07f24dfeaed74b.tar.gz
+            ${{ runner.temp }}/runtime-proof-launcher-linux-x86_64-ea07f24dfeaed74b.tar.gz.sha256
+          if-no-files-found: error
+          retention-days: 7
