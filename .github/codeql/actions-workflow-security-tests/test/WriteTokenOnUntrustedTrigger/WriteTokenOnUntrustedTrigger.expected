@@ -1,3 +1,6 @@
+| cla-alternate-signature-path.yml:7:5:18:74 | Job: cla | The job runs on 'issue_comment' with write-capable 'actions' token permissions. Split untrusted input handling from write operations. |
+| cla-alternate-signature-path.yml:7:5:18:74 | Job: cla | The job runs on 'issue_comment' with write-capable 'contents' token permissions. Split untrusted input handling from write operations. |
+| cla-alternate-signature-path.yml:7:5:18:74 | Job: cla | The job runs on 'issue_comment' with write-capable 'issues' token permissions. Split untrusted input handling from write operations. |
 | cla-disjunction.yml:7:5:18:74 | Job: cla | The job runs on 'issue_comment' with write-capable 'actions' token permissions. Split untrusted input handling from write operations. |
 | cla-disjunction.yml:7:5:18:74 | Job: cla | The job runs on 'issue_comment' with write-capable 'contents' token permissions. Split untrusted input handling from write operations. |
 | cla-disjunction.yml:7:5:18:74 | Job: cla | The job runs on 'issue_comment' with write-capable 'issues' token permissions. Split untrusted input handling from write operations. |

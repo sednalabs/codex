@@ -46,22 +46,14 @@ predicate jobUsesPinnedClaAssistant(Job job) {
   workflowName(job.getWorkflow(), "CLA Assistant") and
   job.getId() = "cla" and
   jobConditionMatchesExactly(job, "github\\.repository\\s*==\\s*'openai/codex'") and
-  exists(UsesStep claStep, Expression signaturesPath, Expression signaturesBranch, Expression claDocument, Expression allowlist |
+  exists(UsesStep claStep |
     claStep.getEnclosingJob() = job and
     claStep.getCallee().regexpMatch("(?i)^contributor-assistant/github-action$") and
     claStep.getVersion().regexpMatch("(?i)^ca4a40a7d1004f18d9960b404b97e5f30a505a08$") and
-    signaturesPath = claStep.getArgumentExpr("path-to-signatures") and
-    signaturesPath.getExpression().regexpMatch("(?i)^['\"]?signatures/cla\\.json['\"]?$") and
-    signaturesBranch = claStep.getArgumentExpr("branch") and
-    signaturesBranch.getExpression().regexpMatch("(?i)^['\"]?cla-signatures['\"]?$") and
-    claDocument = claStep.getArgumentExpr("path-to-document") and
-    claDocument.getExpression().regexpMatch(
-      "(?i)^['\"]?https://github\\.com/openai/codex/blob/main/docs/CLA\\.md['\"]?$"
-    ) and
-    allowlist = claStep.getArgumentExpr("allowlist") and
-    allowlist.getExpression().regexpMatch(
-      "(?i)^['\"]?codex,dependabot,dependabot\\[bot\\],github-actions\\[bot\\]['\"]?$"
-    )
+    claStep.getArgument("path-to-signatures") = "signatures/cla.json" and
+    claStep.getArgument("branch") = "cla-signatures" and
+    claStep.getArgument("path-to-document") = "https://github.com/openai/codex/blob/main/docs/CLA.md" and
+    claStep.getArgument("allowlist") = "codex,dependabot,dependabot[bot],github-actions[bot]"
   ) and
   not jobChecksOutCode(job) and
   not exists(Run run | run.getEnclosingJob() = job) and
