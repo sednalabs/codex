@@ -3618,7 +3618,9 @@ async fn unified_exec_runs_under_sandbox() -> Result<()> {
     let server = start_mock_server().await;
 
     let mut builder = test_codex();
-    let test = builder.build(&server).await?;
+    // Preserve local execution by default while allowing CI's supported Docker
+    // executor to provide the user namespaces needed by this sandbox test.
+    let test = builder.build_with_auto_env(&server).await?;
 
     let call_id = "uexec";
     let args = serde_json::json!({
@@ -3651,7 +3653,6 @@ async fn unified_exec_runs_under_sandbox() -> Result<()> {
                 text_elements: Vec::new(),
             }])
             .with_thread_settings(ThreadSettingsOverrides {
-                environments: Some(local_requests(turn_cwd)),
                 approval_policy: Some(AskForApproval::Never),
                 sandbox_policy: Some(sandbox_policy),
                 permission_profile,
