@@ -3700,7 +3700,8 @@ async fn unified_exec_runs_under_sandbox() -> Result<()> {
     }
     assert_eq!(
         end_event.exit_code, 0,
-        "sandboxed echo command should exit successfully"
+        "sandboxed echo command should exit successfully; captured output: {:?}",
+        end_event.aggregated_output
     );
     assert!(
         expected_output.is_match(&end_event.aggregated_output),
