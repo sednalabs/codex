@@ -96,6 +96,7 @@ use codex_protocol::config_types::ReasoningSummary as ReasoningSummaryConfig;
 use codex_protocol::config_types::Verbosity as VerbosityConfig;
 use codex_protocol::models::BaseInstructions;
 use codex_protocol::models::BaseInstructionsProvenance;
+use codex_protocol::models::ContentItem;
 use codex_protocol::models::ResponseItem;
 use codex_protocol::openai_models::ModelInfo;
 use codex_protocol::openai_models::ReasoningEffort as ReasoningEffortConfig;
@@ -1043,6 +1044,31 @@ impl ModelClient {
         include_internal: bool,
     ) -> Result<ResponsesApiRequest> {
         let mut input = prompt.get_formatted_input_for_request(model_info);
+        if std::env::var_os("CODEX_DIAGNOSE_MODE_FRAGMENT_COUNT").is_some() {
+            let mode_fragments = input
+                .iter()
+                .map(|item| match item {
+                    ResponseItem::Message { role, content, .. } if role == "developer" => content
+                        .iter()
+                        .filter(|content| {
+                            matches!(
+                                content,
+                                ContentItem::InputText { text }
+                                    if text.contains(codex_protocol::protocol::MULTI_AGENT_MODE_OPEN_TAG)
+                            )
+                        })
+                        .count(),
+                    _ => 0,
+                })
+                .sum::<usize>();
+            eprintln!(
+                "mode fragment diagnostic stage=client_prompt_input count={mode_fragments} base_instructions_contains_mode={}",
+                prompt
+                    .base_instructions
+                    .text
+                    .contains(codex_protocol::protocol::MULTI_AGENT_MODE_OPEN_TAG)
+            );
+        }
         let base_instructions_are_client_owned =
             self.base_instructions_are_client_owned(&prompt.base_instructions);
         if base_instructions_are_client_owned && !prompt.base_instructions.text.is_empty() {
@@ -1125,6 +1151,25 @@ impl ModelClient {
             input,
         )
         .map_err(|error| CodexErr::InvalidRequest(error.to_string()))?;
+        if std::env::var_os("CODEX_DIAGNOSE_MODE_FRAGMENT_COUNT").is_some() {
+            let mode_fragments = input
+                .iter()
+                .map(|item| match item {
+                    ResponseItem::Message { role, content, .. } if role == "developer" => content
+                        .iter()
+                        .filter(|content| {
+                            matches!(
+                                content,
+                                ContentItem::InputText { text }
+                                    if text.contains(codex_protocol::protocol::MULTI_AGENT_MODE_OPEN_TAG)
+                            )
+                        })
+                        .count(),
+                    _ => 0,
+                })
+                .sum::<usize>();
+            eprintln!("mode fragment diagnostic stage=client_request_input count={mode_fragments}");
+        }
         if !model_info.use_responses_lite {
             // Only RLite accepts per-content attribution until the Responses API schema expands.
             for item in &mut input {

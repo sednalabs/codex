@@ -4007,12 +4007,42 @@ impl Session {
         let world_state = self
             .build_world_state_for_step(step_context, /*new_window*/ false)
             .await?;
-        let (world_state_snapshot, fragments, world_state_item) = self
-            .state
-            .lock()
-            .await
-            .history
-            .render_step_world_state(&world_state);
+        let (world_state_snapshot, fragments, world_state_item, retained_mode_fragments) = {
+            let state = self.state.lock().await;
+            let retained_mode_fragments = state
+                .history
+                .raw_items()
+                .filter(|item| match item {
+                    ResponseItem::Message { role, content, .. } if role == "developer" => {
+                        content.iter().any(|content| {
+                            matches!(
+                                content,
+                                ContentItem::InputText { text }
+                                    if text.contains(MULTI_AGENT_MODE_OPEN_TAG)
+                            )
+                        })
+                    }
+                    _ => false,
+                })
+                .count();
+            let (snapshot, fragments, item) = state.history.render_step_world_state(&world_state);
+            (snapshot, fragments, item, retained_mode_fragments)
+        };
+        if std::env::var_os("CODEX_DIAGNOSE_MODE_FRAGMENT_COUNT").is_some() {
+            let emitted_mode_fragments = fragments
+                .iter()
+                .filter(|update| match &update.content {
+                    WorldStateUpdateContent::Fragment(fragment) => {
+                        fragment.role() == "developer"
+                            && fragment.markers().0 == MULTI_AGENT_MODE_OPEN_TAG
+                    }
+                    WorldStateUpdateContent::Item(_) => false,
+                })
+                .count();
+            eprintln!(
+                "mode fragment diagnostic stage=step_world_state retained_messages={retained_mode_fragments} emitted_updates={emitted_mode_fragments}"
+            );
+        }
         let items = crate::context_manager::updates::merge_world_state_updates(fragments);
         if !items.is_empty() {
             self.record_conversation_items(turn_context, &step_context.settings.model_info, &items)
@@ -5457,6 +5487,25 @@ impl Session {
             };
             (world_state_items, world_state_item)
         };
+        if std::env::var_os("CODEX_DIAGNOSE_MODE_FRAGMENT_COUNT").is_some() {
+            let mode_fragments = context_items
+                .iter()
+                .map(|item| match item {
+                    ResponseItem::Message { role, content, .. } if role == "developer" => content
+                        .iter()
+                        .filter(|content| {
+                            matches!(
+                                content,
+                                ContentItem::InputText { text }
+                                    if text.contains(MULTI_AGENT_MODE_OPEN_TAG)
+                            )
+                        })
+                        .count(),
+                    _ => 0,
+                })
+                .sum::<usize>();
+            eprintln!("mode fragment diagnostic stage=initial_context count={mode_fragments}");
+        }
         if !should_inject_full_context && turn_context_changed {
             context_items.extend(
                 self.build_turn_context_contribution_items(step_context)
