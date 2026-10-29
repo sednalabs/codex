@@ -244,6 +244,11 @@ pub(super) fn require_uid_absent(uid: u32) -> Result<()> {
     if uid == 0 {
         bail!("lifecycle selected UID must not be root");
     }
+    // Matching /proc/self and /proc/1 only describes this PID namespace. The
+    // cohort lock excludes cooperating launchers, not unrelated UID admission.
+    // No trusted host-namespace and admission binding is available yet, so a
+    // scan cannot authorize an absence assertion or a lifecycle-enabled start.
+    require_trusted_absence_binding()?;
     let mut stat: libc::statfs = unsafe { std::mem::zeroed() };
     let proc_path = std::ffi::CString::new("/proc")?;
     if unsafe { libc::statfs(proc_path.as_ptr(), &mut stat) } != 0
@@ -308,6 +313,10 @@ pub(super) fn require_uid_absent(uid: u32) -> Result<()> {
         }
     }
     Ok(())
+}
+
+fn require_trusted_absence_binding() -> Result<()> {
+    bail!("lifecycle trusted namespace and UID admission binding unavailable")
 }
 
 fn status_has_uid(status: &str, uid: u32) -> Result<bool> {
