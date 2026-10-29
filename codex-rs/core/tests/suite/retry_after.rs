@@ -54,7 +54,7 @@ const CAPACITY_RETRY_MAX_DELAY: Duration = Duration::from_secs(60);
 const CAPACITY_RETRY_CAP_ATTEMPT: u64 = 10;
 
 fn assert_jittered_capacity_retry_delay(delay: Duration, attempt: u64) {
-    let capped_attempt = attempt.min(CAPACITY_RETRY_CAP_ATTEMPT).max(1);
+    let capped_attempt = attempt.clamp(1, CAPACITY_RETRY_CAP_ATTEMPT);
     let multiplier = 1_u64 << (capped_attempt - 1);
     let base_millis = CAPACITY_RETRY_BASE_DELAY.as_millis() as u64 * multiplier;
     let minimum = Duration::from_millis(base_millis * 9 / 10).min(CAPACITY_RETRY_MAX_DELAY);
