@@ -14,17 +14,16 @@ jobs:
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd
         with:
-          ref: 4e99f6b548ee4f1df3de85f84fe4d6a8282c2ae6
+          ref: eba6416d13e9e6292b2fd6e7089d8f76afc244fa
           persist-credentials: false
       - uses: dtolnay/rust-toolchain@ebb3d1676050bfd0971c36c1e215b5751473994d
         with:
           toolchain: 1.96.0
           components: rustfmt
-      - name: Generate synthetic producer packet
+      - name: Test fail-closed lifecycle source
         working-directory: codex-rs
         shell: bash
         run: |
           set -euo pipefail
-          export CODEX_LIFECYCLE_VECTOR_INPUT="$(jq -nc --argjson now "$(date +%s)" '{now:$now,principal_id:"00000000-0000-4000-8000-000000000001",project_id:17,work_item_ref:"w12345",issuer_kid:"synthetic-issuer",runtime_incarnation:"00000000-0000-4000-8000-000000000002",start_event_id:"00000000-0000-4000-8000-000000000003",end_event_id:"00000000-0000-4000-8000-000000000004",manager_invocation:"00000000-0000-4000-8000-000000000005",artifact_sha256:("a"*64),observer_artifact_sha256:("b"*64),mcp_recipient:"https://example.invalid/mcp",lifecycle_recipient:"https://example.invalid"}')"
           git rev-parse HEAD
-          cargo test --locked -p codex-runtime-proof synthetic_interop_packet -- --ignored --nocapture
+          cargo test --locked -p codex-runtime-proof
