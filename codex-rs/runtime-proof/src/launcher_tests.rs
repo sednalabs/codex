@@ -36,7 +36,9 @@ fn verified_executable_survives_privilege_drop() {
     assert!(sentinel_fd >= 90);
     let _sentinel = unsafe { File::from_raw_fd(sentinel_fd) };
     let mut policy = fixed_policy(&[7; RUNTIME_SEED_BYTES]);
-    let LauncherTarget::Mcp(target) = &mut policy.target else { unreachable!() };
+    let LauncherTarget::Mcp(target) = &mut policy.target else {
+        unreachable!()
+    };
     target.runtime_uid = 65534;
     target.runtime_gid = 65534;
     let run = RunDirectory {
@@ -50,12 +52,18 @@ fn verified_executable_survives_privilege_drop() {
         Ok(child) => {
             let output = child.wait_with_output().expect("wait for ELF fixture");
             fs::remove_dir_all(&base).unwrap();
-            assert_eq!(output.status.code(), Some(0), "ELF fixture isolation checks");
+            assert_eq!(
+                output.status.code(),
+                Some(0),
+                "ELF fixture isolation checks"
+            );
             assert_eq!(output.stdout, b"verified_fd_spawn_ok\n");
         }
         Err(error) => {
             let errno = error.chain().find_map(|cause| {
-                cause.downcast_ref::<std::io::Error>().and_then(std::io::Error::raw_os_error)
+                cause
+                    .downcast_ref::<std::io::Error>()
+                    .and_then(std::io::Error::raw_os_error)
             });
             fs::remove_dir_all(&base).unwrap();
             panic!("verified child spawn failed; numeric errno: {errno:?}");
@@ -131,6 +139,64 @@ fn mcp_failure_stage_exposes_only_a_closed_phase() {
         safe_mcp_failure_stage(&anyhow::anyhow!("MCP launcher failure stage: oauth")),
         None
     );
+}
+
+#[test]
+fn mcp_failure_details_and_errno_are_closed_and_numeric() {
+    let cases = [
+        (
+            McpFailureDetail::ExecutableVerify,
+            "executable_verify",
+            false,
+        ),
+        (
+            McpFailureDetail::BootstrapFdDuplicate,
+            "bootstrap_fd_duplicate",
+            true,
+        ),
+        (McpFailureDetail::AuthFdDuplicate, "auth_fd_duplicate", true),
+        (
+            McpFailureDetail::ExecutableFdDuplicate,
+            "executable_fd_duplicate",
+            true,
+        ),
+        (McpFailureDetail::ChildSpawn, "child_spawn", false),
+        (McpFailureDetail::ChildStdout, "child_stdout", false),
+        (McpFailureDetail::OutputReader, "output_reader", false),
+    ];
+    for (detail, expected, runtime_setup) in cases {
+        let stage = if runtime_setup {
+            McpFailureStage::RuntimeSetup
+        } else {
+            McpFailureStage::ChildStart
+        };
+        let error = anyhow::Error::new(std::io::Error::from_raw_os_error(libc::EACCES))
+            .context("private failure text")
+            .context(detail)
+            .context(stage);
+        assert_eq!(safe_mcp_failure_detail(&error), Some(expected));
+        assert_eq!(safe_mcp_failure_errno(&error), Some(libc::EACCES));
+        assert_eq!(
+            safe_mcp_failure_stage(&error),
+            Some(if runtime_setup {
+                "runtime_setup"
+            } else {
+                "child_start"
+            })
+        );
+    }
+    let unlabeled = anyhow::Error::new(std::io::Error::from_raw_os_error(libc::EACCES))
+        .context(McpFailureStage::ChildStart);
+    assert_eq!(safe_mcp_failure_detail(&unlabeled), None);
+    assert_eq!(safe_mcp_failure_errno(&unlabeled), None);
+    let unknown = anyhow::anyhow!("private failure text")
+        .context(McpFailureDetail::ExecutableVerify)
+        .context(McpFailureStage::ChildStart);
+    assert_eq!(safe_mcp_failure_errno(&unknown), None);
+    let out_of_range = anyhow::Error::new(std::io::Error::from_raw_os_error(i32::MAX))
+        .context(McpFailureDetail::ChildSpawn)
+        .context(McpFailureStage::ChildStart);
+    assert_eq!(safe_mcp_failure_errno(&out_of_range), None);
 }
 
 #[test]

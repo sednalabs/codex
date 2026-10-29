@@ -260,6 +260,39 @@ impl std::fmt::Display for McpFailureStage {
 
 impl std::error::Error for McpFailureStage {}
 
+#[derive(Debug)]
+enum McpFailureDetail {
+    ExecutableVerify,
+    BootstrapFdDuplicate,
+    AuthFdDuplicate,
+    ExecutableFdDuplicate,
+    ChildSpawn,
+    ChildStdout,
+    OutputReader,
+}
+
+impl McpFailureDetail {
+    fn as_str(&self) -> &'static str {
+        match self {
+            Self::ExecutableVerify => "executable_verify",
+            Self::BootstrapFdDuplicate => "bootstrap_fd_duplicate",
+            Self::AuthFdDuplicate => "auth_fd_duplicate",
+            Self::ExecutableFdDuplicate => "executable_fd_duplicate",
+            Self::ChildSpawn => "child_spawn",
+            Self::ChildStdout => "child_stdout",
+            Self::OutputReader => "output_reader",
+        }
+    }
+}
+
+impl std::fmt::Display for McpFailureDetail {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str(self.as_str())
+    }
+}
+
+impl std::error::Error for McpFailureDetail {}
+
 impl ProvisioningStage {
     fn as_str(self) -> &'static str {
         match self {
@@ -362,6 +395,24 @@ pub fn safe_mcp_failure_stage(error: &anyhow::Error) -> Option<&'static str> {
         .map(McpFailureStage::as_str)
 }
 
+/// Returns only a closed substage label for selected native launcher failures.
+pub fn safe_mcp_failure_detail(error: &anyhow::Error) -> Option<&'static str> {
+    error
+        .downcast_ref::<McpFailureDetail>()
+        .map(McpFailureDetail::as_str)
+}
+
+/// Returns only a bounded numeric OS error for a labelled launcher failure.
+pub fn safe_mcp_failure_errno(error: &anyhow::Error) -> Option<i32> {
+    safe_mcp_failure_detail(error)?;
+    error.chain().find_map(|cause| {
+        cause
+            .downcast_ref::<std::io::Error>()
+            .and_then(std::io::Error::raw_os_error)
+            .filter(|errno| (1..=4095).contains(errno))
+    })
+}
+
 fn provision_api_bearer_with_mode(mode: ApiBearerProvisioningMode) -> Result<i32> {
     let arguments = std::env::args_os().skip(1).collect::<Vec<_>>();
     if !matches_api_bearer_invocation(&arguments, mode) {
@@ -459,6 +510,7 @@ fn run_mcp(
     )
     .context(McpFailureStage::RuntimeSetup)?;
     let executable = open_verified_executable(&target.codex_dev_path, &target.codex_dev_sha256)
+        .context(McpFailureDetail::ExecutableVerify)
         .context(McpFailureStage::ChildStart)?;
     let run_directory = create_run_directory(&runtime_directory, target, working_directory)
         .context(McpFailureStage::RuntimeSetup)?;
@@ -466,12 +518,15 @@ fn run_mcp(
     let (bootstrap_parent, bootstrap_child) =
         seqpacket_pair().context(McpFailureStage::RuntimeSetup)?;
     let (auth_parent, auth_child) = seqpacket_pair().context(McpFailureStage::RuntimeSetup)?;
-    let bootstrap_source =
-        duplicate_high(bootstrap_child.as_raw_fd()).context(McpFailureStage::RuntimeSetup)?;
-    let auth_source =
-        duplicate_high(auth_child.as_raw_fd()).context(McpFailureStage::RuntimeSetup)?;
-    let executable_source =
-        duplicate_high(executable.file.as_raw_fd()).context(McpFailureStage::RuntimeSetup)?;
+    let bootstrap_source = duplicate_high(bootstrap_child.as_raw_fd())
+        .context(McpFailureDetail::BootstrapFdDuplicate)
+        .context(McpFailureStage::RuntimeSetup)?;
+    let auth_source = duplicate_high(auth_child.as_raw_fd())
+        .context(McpFailureDetail::AuthFdDuplicate)
+        .context(McpFailureStage::RuntimeSetup)?;
+    let executable_source = duplicate_high(executable.file.as_raw_fd())
+        .context(McpFailureDetail::ExecutableFdDuplicate)
+        .context(McpFailureStage::RuntimeSetup)?;
 
     let mut child = spawn_verified_child(
         &executable_source,
@@ -480,11 +535,13 @@ fn run_mcp(
         &run_directory,
         target,
     )
+    .context(McpFailureDetail::ChildSpawn)
     .context(McpFailureStage::ChildStart)?;
     let stdout = child
         .stdout
         .take()
         .context("fixed codex-dev task has no JSON event stream")
+        .context(McpFailureDetail::ChildStdout)
         .context(McpFailureStage::ChildStart)?;
     let (output_finished_tx, output_finished_rx) = std::sync::mpsc::sync_channel(1);
     let work_item_ref = policy.work_item_ref.clone();
@@ -508,6 +565,7 @@ fn run_mcp(
             terminate_child_group(&mut child);
             return Err(error)
                 .context("start fixed task outcome projection")
+                .context(McpFailureDetail::OutputReader)
                 .context(McpFailureStage::ChildStart);
         }
     };
