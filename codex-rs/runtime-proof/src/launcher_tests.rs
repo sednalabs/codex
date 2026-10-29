@@ -241,8 +241,36 @@ fn fixed_policy(seed: &[u8; RUNTIME_SEED_BYTES]) -> LauncherPolicy {
                 requested_scope: "ops:write".to_string(),
             },
             task_prompt: "Claim the fixed Work item after checking its current state.".to_string(),
+            lifecycle: None,
         }),
     }
+}
+
+#[test]
+fn lifecycle_policy_is_opt_in_and_closed() {
+    let mut value = serde_json::json!({
+        "codex_dev_path": "/bin/example",
+        "codex_dev_sha256": "a".repeat(64),
+        "runtime_uid": 1001,
+        "runtime_gid": 1001,
+        "working_directory": "/",
+        "mcp_recipient": "https://example.invalid",
+        "mcp_oauth": {
+            "token_endpoint": "https://example.invalid/token",
+            "expected_issuer": "https://example.invalid",
+            "client_id": "test",
+            "audience": "test",
+            "requested_scope": "ops:write"
+        },
+        "task_prompt": "test"
+    });
+    let original: McpLaunchConfig = serde_json::from_value(value.clone()).expect("ordinary MCP profile");
+    assert!(original.lifecycle.is_none());
+    value["lifecycle"] = serde_json::json!({"observer_sha256": "b".repeat(64)});
+    let enabled: McpLaunchConfig = serde_json::from_value(value.clone()).expect("lifecycle profile");
+    assert!(enabled.lifecycle.is_some());
+    value["lifecycle"]["unexpected"] = serde_json::json!(true);
+    assert!(serde_json::from_value::<McpLaunchConfig>(value).is_err());
 }
 
 #[test]

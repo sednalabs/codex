@@ -3755,6 +3755,8 @@
         "codex-rs/codex-mcp/src/server.rs",
         "codex-rs/runtime-proof/src/launcher.rs",
         "codex-rs/runtime-proof/src/launcher_tests.rs",
+        "codex-rs/runtime-proof/src/launcher/lifecycle.rs",
+        "codex-rs/runtime-proof/src/launcher/lifecycle_tests.rs",
         "codex-rs/runtime-proof/src/api_claim.rs",
         "codex-rs/runtime-proof/src/api_claim_tests.rs",
         "codex-rs/runtime-proof/src/api_bearer_provisioner.rs",
@@ -3780,6 +3782,11 @@
       "guardrail_lane": "core-runtime-surface-smoke; codex.mcp-safety-targeted; codex.downstream-docs-check; sedna-branch-build; sedna-release",
       "tests": [
         "certificate_digest_matches_ops_protocol_vector",
+        "lifecycle_witness_binds_final_operation_and_issuer",
+        "end_event_requires_actual_closed_cause_and_absence",
+        "receipt_requires_exact_event_and_proof_interval",
+        "possibly_sent_end_keeps_its_original_proof_interval",
+        "uncertain_post_reads_once_and_never_replays",
         "canonical_claim_digest_uses_the_ops_jcs_contract",
         "canonical_claim_digest_distinguishes_omission_null_and_note_changes",
         "canonical_claim_digest_uses_jcs_utf16_key_order",
@@ -3865,7 +3872,7 @@
         "delegate_provider_override_is_rejected_before_credential_egress"
       ],
       "owner": "downstream",
-      "notes": "The protected launcher supplies the issuer certificate, ephemeral key, and finite authentication inputs through separate anonymous descriptors. The client does not mint authority or trust a thread identifier. The API target is a maintained fixed HTTP claim client, not an exported signer or generic proxy; its API bearer is an independent protected input and never reuses the MCP token or secret. Missing live bearer, approved API claim policy, and first-use acceptance remain deployment boundaries. Certificate digest fields use bare lowercase hexadecimal to match the Ops verifier; operation digest fields retain the existing sha256:-prefixed wire form. Provider credentials use the existing ChatGPT token import path and ephemeral storage; resolved provider and transport configuration are checked against the effective built-in recipient before egress, including delegate role overrides. Current managed-cloud eligibility semantics are matched before protected auth import: eligible or unknown protected plans fail closed until that consumer is admitted without weakening managed requirements. Synthetic tests bind only exact public fake credentials and loopback mocks; an ignored direct transport fixture imports the real protected frame and proves a retained production HTTP client blocks a send after expiry. The delayed CLI response case tests redaction after erasure only. Preserve fail-closed scope matching, key erasure on protection drift, credential and proof redaction, no proof logging, and the ordinary unconfigured path. The lazy post-sampling estimate filter regression checks direct interest on the built sink stack with an ordinary TRACE positive control. Hosted validation is required; generated dependency lock updates are hosted-only. Prior SessionEnd allocation hypotheses were reverted after hosted core validation still failed, and the available traces do not establish a hook-specific cause.",
+      "notes": "The optional native lifecycle path uses a distinct issuer-signed start/end witness, a same-ELF observer pin, a matching start receipt before bootstrap, protected public invocation state, and a fixed stop mode. End requires selected-UID absence and a current independently authorized API bearer; an unresolved effect or unavailable proof falls back to lease recovery and never completes Work. API-v1 and unconfigured execution stay independent. The protected launcher supplies the issuer certificate, ephemeral key, and finite authentication inputs through separate anonymous descriptors. The client does not mint authority or trust a thread identifier. The API target is a maintained fixed HTTP claim client, not an exported signer or generic proxy; its API bearer is an independent protected input and never reuses the MCP token or secret. Missing live bearer, approved API claim policy, and first-use acceptance remain deployment boundaries. Certificate digest fields use bare lowercase hexadecimal to match the Ops verifier; operation digest fields retain the existing sha256:-prefixed wire form. Provider credentials use the existing ChatGPT token import path and ephemeral storage; resolved provider and transport configuration are checked against the effective built-in recipient before egress, including delegate role overrides. Current managed-cloud eligibility semantics are matched before protected auth import: eligible or unknown protected plans fail closed until that consumer is admitted without weakening managed requirements. Synthetic tests bind only exact public fake credentials and loopback mocks; an ignored direct transport fixture imports the real protected frame and proves a retained production HTTP client blocks a send after expiry. The delayed CLI response case tests redaction after erasure only. Preserve fail-closed scope matching, key erasure on protection drift, credential and proof redaction, no proof logging, and the ordinary unconfigured path. The lazy post-sampling estimate filter regression checks direct interest on the built sink stack with an ordinary TRACE positive control. Hosted validation is required; generated dependency lock updates are hosted-only. Prior SessionEnd allocation hypotheses were reverted after hosted core validation still failed, and the available traces do not establish a hook-specific cause.",
       "upstreamability_tier": "downstream-adapter",
       "boundary_type": "runtime-credential-proof",
       "hotspot_files": [

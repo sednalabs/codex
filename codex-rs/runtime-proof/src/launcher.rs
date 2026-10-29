@@ -7,6 +7,8 @@
 //! input only after `/proc/<pid>/exe` is bound to the already verified file
 //! object.
 
+mod lifecycle;
+
 use crate::api_claim;
 use crate::auth::AuthFrame;
 use crate::mcp_oauth::McpOAuthPolicy;
@@ -113,6 +115,14 @@ struct McpLaunchConfig {
     mcp_recipient: String,
     mcp_oauth: McpOAuthPolicy,
     task_prompt: String,
+    #[serde(default)]
+    lifecycle: Option<LifecycleConfig>,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct LifecycleConfig {
+    observer_sha256: String,
 }
 
 #[derive(Deserialize)]
@@ -142,6 +152,7 @@ struct McpSupervisionContext<'a> {
     run_directory: &'a RunDirectory,
     policy: &'a LauncherPolicy,
     target: &'a McpLaunchConfig,
+    policy_sha256: &'a str,
 }
 
 /// Starts the fixed root-owned task and returns the child exit code.
@@ -158,12 +169,44 @@ pub fn run() -> Result<i32> {
 
     let credential_directory = credential_directory().context(McpFailureStage::CredentialSetup)?;
     match &policy.target {
-        LauncherTarget::Mcp(target) => run_mcp(&policy, target, &credential_directory),
+        LauncherTarget::Mcp(target) => run_mcp(
+            &policy,
+            target,
+            &credential_directory,
+            &wire::certificate_digest(&policy_bytes),
+        ),
         LauncherTarget::Http(target) => {
             crate::api_bearer_provisioner::cleanup_loaded_bearer_source(&credential_directory)?;
             run_http_claim(&policy, target, &credential_directory)
         }
     }
+}
+
+/// Reports only independently observed teardown for the fixed systemd invocation.
+pub fn lifecycle_stop() -> Result<i32> {
+    require_root_launcher()?;
+    let policy_bytes = read_root_file(Path::new(POLICY_PATH), MAX_POLICY_BYTES)?;
+    let policy: LauncherPolicy = serde_json::from_slice(&policy_bytes)?;
+    let LauncherTarget::Mcp(target) = &policy.target else {
+        return Ok(0);
+    };
+    let Some(config) = &target.lifecycle else {
+        return Ok(0);
+    };
+    validate_policy(&policy)?;
+    open_verified_self_executable(&config.observer_sha256)?;
+    let _lock = lifecycle::lock_cohort()?;
+    let invocation = lifecycle::manager_invocation()?;
+    let Some(mut context) = lifecycle::load_context(invocation)? else {
+        return Ok(0);
+    };
+    let credentials = credential_directory()?;
+    lifecycle::finish(
+        &mut context, &policy, target, &credentials,
+        &wire::certificate_digest(&policy_bytes), &config.observer_sha256,
+        lifecycle::Source::Systemd, lifecycle::Cause::Unobserved, None, None,
+    )?;
+    Ok(0)
 }
 
 /// Provisions the fixed API bearer before a claim policy is activated.
@@ -449,7 +492,16 @@ fn run_mcp(
     policy: &LauncherPolicy,
     target: &McpLaunchConfig,
     credential_directory: &Path,
+    policy_sha256: &str,
 ) -> Result<i32> {
+    let _lifecycle_lock = if let Some(config) = &target.lifecycle {
+        open_verified_self_executable(&config.observer_sha256)?;
+        let lock = lifecycle::lock_cohort()?;
+        lifecycle::require_uid_absent(target.runtime_uid)?;
+        Some(lock)
+    } else {
+        None
+    };
     let runtime_directory =
         validate_runtime_directory(target.runtime_gid).context(McpFailureStage::RuntimeSetup)?;
     let working_directory = validate_working_directory(
@@ -522,6 +574,7 @@ fn run_mcp(
         run_directory: &run_directory,
         policy,
         target,
+        policy_sha256,
     };
     let result = supervise_child(
         &mut child,
@@ -690,6 +743,9 @@ fn validate_policy(policy: &LauncherPolicy) -> Result<()> {
     }
     match &policy.target {
         LauncherTarget::Mcp(target) => {
+            if let Some(lifecycle) = &target.lifecycle {
+                validate_sha256(&lifecycle.observer_sha256)?;
+            }
             if target.runtime_uid == 0
                 || target.runtime_gid == 0
                 || target.task_prompt.trim().is_empty()
@@ -1046,6 +1102,7 @@ fn supervise_child(
         run_directory,
         policy,
         target,
+        policy_sha256,
     } = context;
     verify_child_image_and_identity(child, executable, target)
         .context(McpFailureStage::ChildStart)?;
@@ -1110,10 +1167,24 @@ fn supervise_child(
     };
     let certificate =
         issue_certificate(&claims, &issuer_seed, policy).context(McpFailureStage::Signer)?;
-    drop(issuer_seed);
     let certificate_sha256 = wire::certificate_digest(certificate.as_bytes());
     validate_live_credentials(&provider, &mcp_access_token.bearer, expires_at)
         .context(McpFailureStage::CredentialSetup)?;
+    let mut lifecycle_context = if let Some(config) = &target.lifecycle {
+        Some(lifecycle::start(
+            policy,
+            target,
+            credential_directory,
+            &certificate,
+            &claims,
+            &issuer_seed,
+            policy_sha256,
+            &config.observer_sha256,
+        )?)
+    } else {
+        None
+    };
+    drop(issuer_seed);
 
     let auth_packet = {
         let auth_frame = AuthFrame {
@@ -1167,8 +1238,31 @@ fn supervise_child(
         return Err(anyhow!("fixed codex-dev task has no prompt input"))
             .context(McpFailureStage::ChildPrompt);
     }
-    let status = wait_for_child(child, task_deadline).context(McpFailureStage::ChildExit)?;
-    Ok(exit_code(status))
+    let outcome = wait_for_child(child, task_deadline, target.lifecycle.is_some())
+        .context(McpFailureStage::ChildExit)?;
+    if let (Some(context), Some(config)) = (&mut lifecycle_context, &target.lifecycle) {
+        use std::os::unix::process::ExitStatusExt as _;
+        let (cause, code, signal) = match &outcome {
+            ChildWait::Exited(status) if status.code().is_some() => {
+                (lifecycle::Cause::Exited, status.code(), None)
+            }
+            ChildWait::Exited(status) if status.signal().is_some() => {
+                (lifecycle::Cause::Signalled, None, status.signal())
+            }
+            ChildWait::Exited(_) => (lifecycle::Cause::Unobserved, None, None),
+            ChildWait::TimedOut => (lifecycle::Cause::Timeout, None, None),
+        };
+        let _end_result = lifecycle::finish(
+            context, policy, target, credential_directory, policy_sha256,
+            &config.observer_sha256, lifecycle::Source::Launcher, cause, code, signal,
+        );
+        // An unresolved end is not evidence of a terminal epoch. The stop
+        // hook and fixed lease retain recovery without changing child status.
+    }
+    match outcome {
+        ChildWait::Exited(status) => Ok(exit_code(status)),
+        ChildWait::TimedOut => Ok(1),
+    }
 }
 
 fn effective_expiry(now: i64, policy_expires_at: i64, token_expires_at: i64) -> Result<(i64, u32)> {
@@ -1602,9 +1696,14 @@ fn write_prompt_until<W: std::io::Write + AsRawFd>(
     Ok(())
 }
 
-fn wait_for_child(child: &mut Child, deadline: Instant) -> Result<ExitStatus> {
+enum ChildWait {
+    Exited(ExitStatus),
+    TimedOut,
+}
+
+fn wait_for_child(child: &mut Child, deadline: Instant, observe_timeout: bool) -> Result<ChildWait> {
     loop {
-        if Instant::now() >= deadline {
+        if !observe_timeout && Instant::now() >= deadline {
             bail!("fixed task exceeded its certificate execution lease");
         }
         let pid = child.id() as libc::pid_t;
@@ -1622,9 +1721,16 @@ fn wait_for_child(child: &mut Child, deadline: Instant) -> Result<ExitStatus> {
             if error.kind() != std::io::ErrorKind::Interrupted {
                 return Err(error).context("observe fixed task termination");
             }
+            continue;
         } else if unsafe { info.si_pid() } == pid {
             terminate_child_group_before_reap(pid);
-            return child.wait().context("reap fixed task");
+            return child.wait().map(ChildWait::Exited).context("reap fixed task");
+        }
+        if observe_timeout && Instant::now() >= deadline {
+            terminate_child_group_before_reap(pid);
+            let _ = child.kill();
+            child.wait().context("reap timed-out fixed task")?;
+            return Ok(ChildWait::TimedOut);
         }
         std::thread::sleep(Duration::from_millis(100));
     }

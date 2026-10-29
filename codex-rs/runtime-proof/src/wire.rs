@@ -139,6 +139,21 @@ pub(crate) fn canonical_api_operation(body: &Value) -> Result<Vec<u8>> {
     Ok(canonical)
 }
 
+#[cfg(target_os = "linux")]
+pub(crate) fn canonical_lifecycle_operation(body: &Value) -> Result<Vec<u8>> {
+    let operation = serde_json::json!({
+        "transport": "http",
+        "method": "POST",
+        "route": "/v0/work-items/lifecycle",
+        "parameters": body,
+    });
+    validate_numbers(&operation)?;
+    let mut canonical = Vec::new();
+    serde_json_canonicalizer::to_writer(&operation, &mut canonical)
+        .context("canonicalize lifecycle operation")?;
+    Ok(canonical)
+}
+
 fn validate_numbers(value: &Value) -> Result<()> {
     match value {
         Value::Null | Value::Bool(_) | Value::String(_) => Ok(()),

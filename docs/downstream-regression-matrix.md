@@ -59,6 +59,14 @@ classification, payload redaction, child-event exclusion, overlong-line draining
 and closed MCP launcher failure-stage projection. Protected package installation
 and natural first use remain separate acceptance steps.
 
+The optional native launcher lifecycle path requires a separately issuer-signed
+event and matching start receipt before bootstrap. Its focused tests cover the
+event/witness binding, closed causes, exact receipt comparison, immutable
+potentially-sent proof timing, and a single read after an uncertain POST. A
+stop event requires an independently established selected-UID absence; a
+missing current bearer or unresolved effect leaves lease recovery intact.
+These source checks do not establish service admission or live activation.
+
 ## Core default path
 
 Exact-target V2 `wait_agent` ignores queue-only (`trigger_turn=false`) mailbox

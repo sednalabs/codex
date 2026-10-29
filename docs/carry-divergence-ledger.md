@@ -4020,6 +4020,18 @@ or writing it. Installation never starts or reloads the unit. Packaging does
 not create the host policy, credentials, service account, issuer appointment,
 or live execution authority.
 
+The optional native supervised path additionally supports issuer-signed lifecycle
+events. The same pinned launcher reports start only after a matching receipt and
+before bootstrap; it preserves a reaped exit, signal, or timeout and reports end
+only after selected-UID absence. A fixed stop mode can reconcile the protected
+per-invocation public context after teardown without inventing a child outcome.
+The original certificate remains a historical reference; a new lifecycle
+witness and independently authorized current API bearer are required. Unknown
+effects, unavailable bearer, and unproven absence remain unresolved and fall
+back to lease recovery. The API claim and ordinary unconfigured paths are not
+made dependent on lifecycle. Consumer admission, deployment, and live proof
+remain separate from this source change.
+
 Curated plugin ZIP extraction applies Unix permissions only after masking to
 ordinary `0o777` bits. This keeps executable plugin files usable while making
 the filesystem permission boundary independent of the ZIP reader's current
