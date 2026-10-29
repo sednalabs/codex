@@ -2,10 +2,66 @@ use super::*;
 use ed25519_dalek::Signature;
 use ed25519_dalek::Verifier as _;
 use pretty_assertions::assert_eq;
+use std::os::fd::FromRawFd as _;
 use std::os::unix::fs::PermissionsExt as _;
 use std::process::Command;
 use std::time::Duration;
 use std::time::Instant;
+
+/// Run only on an isolated root-capable Linux test runner with a compiled ELF fixture.
+#[test]
+#[ignore]
+fn verified_executable_survives_privilege_drop() {
+    assert_eq!(unsafe { libc::geteuid() }, 0, "root test runner required");
+    let fixture = std::env::var_os("CODEX_VERIFIED_EXEC_FIXTURE").expect("ELF fixture path");
+    let base = PathBuf::from("/root").join(format!("codex-verified-exec-{}", Uuid::new_v4()));
+    fs::create_dir(&base).expect("create private fixture directory");
+    fs::set_permissions(&base, fs::Permissions::from_mode(0o700)).unwrap();
+    let path = base.join("child");
+    fs::copy(fixture, &path).expect("copy ELF fixture");
+    fs::set_permissions(&path, fs::Permissions::from_mode(0o755)).unwrap();
+    let digest = sha256_file(&File::open(&path).unwrap()).unwrap();
+    let verified = open_verified_executable(&path, &digest).expect("verify fixture inode");
+    fs::rename(&path, base.join("original")).unwrap();
+    fs::copy("/usr/bin/false", &path).unwrap();
+    fs::set_permissions(&path, fs::Permissions::from_mode(0o755)).unwrap();
+
+    let (_bootstrap_parent, bootstrap_child) = seqpacket_pair().unwrap();
+    let (_auth_parent, auth_child) = seqpacket_pair().unwrap();
+    let bootstrap = duplicate_high(bootstrap_child.as_raw_fd()).unwrap();
+    let auth = duplicate_high(auth_child.as_raw_fd()).unwrap();
+    let executable = duplicate_high(verified.file.as_raw_fd()).unwrap();
+    let null = File::open("/dev/null").unwrap();
+    let sentinel_fd = unsafe { libc::fcntl(null.as_raw_fd(), libc::F_DUPFD, 90) };
+    assert!(sentinel_fd >= 90);
+    let _sentinel = unsafe { File::from_raw_fd(sentinel_fd) };
+    let mut policy = fixed_policy(&[7; RUNTIME_SEED_BYTES]);
+    let LauncherTarget::Mcp(target) = &mut policy.target else { unreachable!() };
+    target.runtime_uid = 65534;
+    target.runtime_gid = 65534;
+    let run = RunDirectory {
+        codex_home: PathBuf::from("/"),
+        child_home: PathBuf::from("/"),
+        working_directory: PathBuf::from("/"),
+        config_sha256: String::new(),
+    };
+    let result = spawn_verified_child(&executable, &bootstrap, &auth, &run, target);
+    match result {
+        Ok(child) => {
+            let output = child.wait_with_output().expect("wait for ELF fixture");
+            fs::remove_dir_all(&base).unwrap();
+            assert_eq!(output.status.code(), Some(0), "ELF fixture isolation checks");
+            assert_eq!(output.stdout, b"verified_fd_spawn_ok\n");
+        }
+        Err(error) => {
+            let errno = error.chain().find_map(|cause| {
+                cause.downcast_ref::<std::io::Error>().and_then(std::io::Error::raw_os_error)
+            });
+            fs::remove_dir_all(&base).unwrap();
+            panic!("verified child spawn failed; numeric errno: {errno:?}");
+        }
+    }
+}
 
 #[test]
 fn api_bearer_provisioning_accepts_only_the_fixed_browser_modes() {
