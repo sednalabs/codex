@@ -913,6 +913,18 @@ fn read_bearer(
     super::api_claim::validate_bearer(std::mem::take(&mut secret.0), policy.principal, now)
 }
 
+fn require_policy_digest(current: &[u8], expected: &str) -> Result<()> {
+    if wire::certificate_digest(current) != expected {
+        bail!("lifecycle protected policy changed");
+    }
+    Ok(())
+}
+
+fn require_current_policy(expected: &str) -> Result<()> {
+    let current = super::read_root_file(Path::new(super::POLICY_PATH), super::MAX_POLICY_BYTES)?;
+    require_policy_digest(&current, expected)
+}
+
 /// Persist and acknowledge start before the child receives bootstrap authority.
 pub(super) fn start(
     policy: &super::LauncherPolicy,
@@ -1065,6 +1077,10 @@ pub(super) fn finish(
     // Refresh proof times only before the event can possibly have been sent.
     let bearer = read_bearer(credentials, policy, now)?;
     let seed = super::read_issuer_seed(credentials, policy)?;
+    require_current_policy(policy_sha256)?;
+    if bearer.expires_at <= super::api_claim::unix_seconds()? {
+        bail!("lifecycle API authority expired");
+    }
     let pending = context
         .pending_end
         .as_mut()
@@ -1081,6 +1097,10 @@ pub(super) fn finish(
         // Recheck after credential loading and durable preparation, immediately
         // before the request that can assert the absence observation.
         require_uid_absent(context.selected_uid)?;
+        require_current_policy(policy_sha256)?;
+        if bearer.expires_at <= super::api_claim::unix_seconds()? {
+            bail!("lifecycle API authority expired");
+        }
     }
     if !deliver_once(
         super::api_claim::API_RECIPIENT,

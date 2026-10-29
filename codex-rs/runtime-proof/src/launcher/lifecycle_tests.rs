@@ -194,6 +194,14 @@ fn launcher_observation_is_not_an_end_publisher() {
 }
 
 #[test]
+fn end_authority_rejects_changed_protected_policy() {
+    let original = b"synthetic original policy";
+    let digest = wire::certificate_digest(original);
+    assert!(require_policy_digest(original, &digest).is_ok());
+    assert!(require_policy_digest(b"synthetic replacement policy", &digest).is_err());
+}
+
+#[test]
 fn uncertain_post_reads_once_and_never_replays() {
     let listener = TcpListener::bind("127.0.0.1:0").expect("bind loopback");
     listener
