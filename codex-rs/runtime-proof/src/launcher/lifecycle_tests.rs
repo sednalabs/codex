@@ -284,6 +284,26 @@ fn manager_and_uid_evidence_are_strict() {
 }
 
 #[test]
+fn inner_namespace_view_without_external_binding_cannot_prove_absence() {
+    // The guard has no input accepting self/proc-1 equality as host proof.
+    let error = require_uid_absent(65_534).expect_err("unbound view must fail closed");
+    assert_eq!(
+        error.to_string(),
+        "lifecycle trusted namespace and UID admission binding unavailable"
+    );
+}
+
+#[test]
+fn cooperative_lock_without_admission_fence_cannot_prove_absence() {
+    // Holding the launcher's lock supplies no external UID admission fence.
+    let error = require_trusted_absence_binding().expect_err("cooperative lock is insufficient");
+    assert_eq!(
+        error.to_string(),
+        "lifecycle trusted namespace and UID admission binding unavailable"
+    );
+}
+
+#[test]
 fn uncertain_post_reads_once_and_never_replays() {
     let listener = TcpListener::bind("127.0.0.1:0").expect("bind loopback");
     listener

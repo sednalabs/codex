@@ -4032,6 +4032,11 @@ back to lease recovery. The API claim and ordinary unconfigured paths are not
 made dependent on lifecycle. Consumer admission, deployment, and live proof
 remain separate from this source change.
 
+Until a trusted PID-namespace and UID-admission binding is implemented, the
+optional lifecycle path fails closed at its absence checks, including before
+startup; it cannot assert an end or release a claim. A matching process view or
+cooperative launcher lock alone is not that binding.
+
 Curated plugin ZIP extraction applies Unix permissions only after masking to
 ordinary `0o777` bits. This keeps executable plugin files usable while making
 the filesystem permission boundary independent of the ZIP reader's current
