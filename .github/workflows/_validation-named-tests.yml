@@ -143,21 +143,35 @@ jobs:
         with:
           targets: x86_64-unknown-linux-gnu
 
-      - name: Install Linux sandbox integration-test prerequisite
-        if: ${{ runner.os == 'Linux' && contains(inputs.request_json, '"package":"codex-core"') && contains(inputs.request_json, '"target_kind":"integration"') }}
+      - name: Set up remote test env (Docker)
+        if: ${{ runner.os == 'Linux' && contains(inputs.request_json, 'suite::unified_exec::unified_exec_runs_under_sandbox') }}
         shell: bash
         run: |
           set -euo pipefail
-          sudo apt-get update -y
-          sudo DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends bubblewrap
-          bwrap_path="$(command -v bwrap)"
-          bwrap_realpath="$(readlink -f "${bwrap_path}")"
-          test -x "${bwrap_realpath}"
-          printf 'bubblewrap_path=%s\n' "${bwrap_path}"
-          printf 'bubblewrap_realpath=%s\n' "${bwrap_realpath}"
-          sha256sum "${bwrap_realpath}"
-          "${bwrap_path}" --version
-          "${bwrap_path}" --unshare-user --unshare-pid --unshare-ipc --ro-bind / / --proc /proc -- /bin/true
+          export CODEX_TEST_REMOTE_ENV_CONTAINER_NAME="codex-named-tests-${GITHUB_RUN_ID}"
+          source "${GITHUB_WORKSPACE}/validation-target/scripts/test-remote-env.sh"
+          test_codex_binary="${GITHUB_WORKSPACE}/validation-target/codex-rs/target/debug/codex"
+          test_codex_binary_sha="$(sha256sum "${test_codex_binary}" | awk '{print $1}')"
+          remote_test_codex_binary_sha="$(docker exec "${CODEX_TEST_REMOTE_ENV_CONTAINER_NAME}" sha256sum /tmp/codex-remote-env/codex | awk '{print $1}')"
+          test "${test_codex_binary_sha}" = "${remote_test_codex_binary_sha}"
+          printf 'test_codex_binary_sha256=%s\n' "${test_codex_binary_sha}"
+          docker exec "${CODEX_TEST_REMOTE_ENV_CONTAINER_NAME}" sh -lc '
+            set -eu
+            bwrap_path="$(command -v bwrap)"
+            bwrap_realpath="$(readlink -f "${bwrap_path}")"
+            test -x "${bwrap_realpath}"
+            printf "bubblewrap_path=%s\\n" "${bwrap_path}"
+            printf "bubblewrap_realpath=%s\\n" "${bwrap_realpath}"
+            sha256sum "${bwrap_realpath}"
+            "${bwrap_path}" --version
+            "${bwrap_path}" --unshare-user --unshare-pid --unshare-ipc --ro-bind / / --proc /proc -- /bin/true
+          '
+          {
+            echo "CODEX_TEST_ENVIRONMENT=${CODEX_TEST_ENVIRONMENT}"
+            echo "CODEX_TEST_REMOTE_ENV=${CODEX_TEST_REMOTE_ENV}"
+            echo "CODEX_TEST_REMOTE_ENV_CONTAINER_NAME=${CODEX_TEST_REMOTE_ENV_CONTAINER_NAME}"
+            echo "CODEX_TEST_REMOTE_EXEC_SERVER_URL=${CODEX_TEST_REMOTE_EXEC_SERVER_URL}"
+          } >> "${GITHUB_ENV}"
 
       - name: Build the stdio test server for core integration tests
         if: ${{ contains(inputs.request_json, '"package":"codex-core"') && contains(inputs.request_json, '"target_kind":"integration"') }}
@@ -176,6 +190,19 @@ jobs:
         run: |
           set -euo pipefail
           python3 ../.workflow-src/.github/scripts/run_named_rust_tests.py
+
+      - name: Tear down remote test env
+        if: ${{ always() && runner.os == 'Linux' && contains(inputs.request_json, 'suite::unified_exec::unified_exec_runs_under_sandbox') }}
+        shell: bash
+        env:
+          TEST_STEP_OUTCOME: ${{ steps.named_tests.outcome }}
+        run: |
+          set +e
+          container_name="codex-named-tests-${GITHUB_RUN_ID}"
+          if [[ "${TEST_STEP_OUTCOME}" != "success" ]]; then
+            docker logs "${container_name}" || true
+          fi
+          docker rm -f "${container_name}" >/dev/null 2>&1 || true
 
       - name: Append named-test evidence
         if: ${{ always() }}
