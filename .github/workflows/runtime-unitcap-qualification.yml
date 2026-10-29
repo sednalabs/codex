@@ -1,0 +1,65 @@
+name: Runtime proof unit capability qualification
+
+on:
+  push:
+    branches: [validation/runtime-proof-unitcap-20261030]
+
+permissions:
+  contents: read
+
+jobs:
+  targeted:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd
+        with:
+          ref: ce5dbebfec6d5de9e259ae52481565f0a889c044
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@ebb3d1676050bfd0971c36c1e215b5751473994d
+        with:
+          toolchain: 1.96.0
+      - name: Build focused synthetic fixtures
+        working-directory: codex-rs
+        shell: bash
+        run: |
+          set -euo pipefail
+          git rev-parse HEAD
+          cc -O2 -Wall -Wextra -Werror runtime-proof/tests/verified-exec-fixture.c -o "$RUNNER_TEMP/verified-exec-fixture"
+          cargo test --locked -p codex-runtime-proof --no-run --message-format=json > "$RUNNER_TEMP/unitcap-build.jsonl"
+          test_binary="$(jq -r 'select(.reason == "compiler-artifact" and .target.name == "codex_runtime_proof" and .profile.test == true and .executable != null) | .executable' "$RUNNER_TEMP/unitcap-build.jsonl")"
+          test -n "$test_binary"
+          "$test_binary" mcp_oauth::tests --nocapture
+          sudo test ! -e /usr/local/libexec/codex-unitcap-fixture
+          sudo install -d -m 0755 /usr/local/libexec/codex-unitcap-fixture
+          sudo install -m 0755 "$test_binary" /usr/local/libexec/codex-unitcap-fixture/test
+          sudo install -m 0755 "$RUNNER_TEMP/verified-exec-fixture" /usr/local/libexec/codex-unitcap-fixture/child
+          printf '%s' synthetic | sudo tee /usr/local/libexec/codex-unitcap-fixture/credential >/dev/null
+          printf '%s' '{}' | sudo tee /usr/local/libexec/codex-unitcap-fixture/policy.json >/dev/null
+          if getent group codex-runtime-proof >/dev/null; then exit 1; fi
+          sudo groupadd --non-unique --gid 981 codex-runtime-proof
+      - name: Exercise actual fixed-unit privilege profile
+        working-directory: codex-rs
+        shell: bash
+        run: |
+          set -euo pipefail
+          for mode in observe effective_missing permitted_missing; do
+            expected=errno1
+            if [[ "$mode" == observe ]]; then expected=observe; fi
+            unit="codex-unitcap-${mode}.service"
+            # Keep every execution-hardening directive; substitute only fixture
+            # paths, credential source, output sink and the selected test.
+            sed -E \
+              -e 's|^ConditionPathExists=.*|ConditionPathExists=/usr/local/libexec/codex-unitcap-fixture/policy.json|' \
+              -e 's|^(LoadCredential=[^:]+)(:.*)?$|\1:/usr/local/libexec/codex-unitcap-fixture/credential|' \
+              -e 's|^StandardOutput=null$|StandardOutput=journal|' \
+              -e "s|^ExecStart=.*|Environment=CODEX_VERIFIED_EXEC_FIXTURE=/usr/local/libexec/codex-unitcap-fixture/child\\nEnvironment=CODEX_VERIFIED_EXEC_BASE=/run/codex-runtime-proof\\nEnvironment=CODEX_VERIFIED_CAP_MODE=$mode\\nEnvironment=CODEX_VERIFIED_EXPECT=$expected\\nExecStart=/usr/local/libexec/codex-unitcap-fixture/test --exact launcher::tests::verified_executable_survives_privilege_drop --ignored --nocapture --test-threads=1|" \
+              runtime-proof/systemd/codex-runtime-proof-claim.service > "$RUNNER_TEMP/$unit"
+            sudo install -m 0644 "$RUNNER_TEMP/$unit" "/etc/systemd/system/$unit"
+            sudo systemctl daemon-reload
+            if ! sudo systemctl start "$unit"; then
+              sudo journalctl -u "$unit" --no-pager -o cat | tail -40
+              exit 1
+            fi
+            sudo journalctl -u "$unit" --no-pager -o cat | rg 'fixture_cap_|fixture_spawn|test result:'
+          done
