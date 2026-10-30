@@ -417,7 +417,9 @@ class InstallShTest(unittest.TestCase):
             )
             self.assertEqual(first.returncode, 0, first.stderr)
             oldest = releases / f"{versions[0]}-{target}"
-            helper = oldest / "bin/codex-code-mode-host"
+            # Some /bin/sleep instances are multicall coreutils binaries that
+            # dispatch based on the executable basename.
+            helper = oldest / "bin/sleep"
             shutil.copy("/bin/sleep", helper)
             if system.sysname == "Darwin":
                 # A copied macOS system binary cannot run with its platform signature.
@@ -427,9 +429,7 @@ class InstallShTest(unittest.TestCase):
                     capture_output=True,
                 )
             # A helper can outlive its parent CLI; retain its whole release.
-            # Keep the executable path inside the release under test, but use
-            # argv[0]="sleep" so multicall coreutils builds select the sleep applet.
-            with subprocess.Popen(["sleep", "300"], executable=str(helper)) as running:
+            with subprocess.Popen([str(helper), "300"]) as running:
                 try:
                     second, _ = run_installer_in(
                         root, versions[1], **install_options[versions[1]]
