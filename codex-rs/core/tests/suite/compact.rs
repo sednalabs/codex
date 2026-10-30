@@ -2363,7 +2363,11 @@ async fn auto_compact_emits_context_compaction_items() {
         set_test_compact_prompt(config);
         config.model_auto_compact_token_limit = Some(200_000);
     });
-    let codex = builder.build(&server).await.unwrap().codex;
+    let TestCodex {
+        codex,
+        thread_manager: _thread_manager,
+        ..
+    } = builder.build(&server).await.unwrap();
 
     let mut started_item = None;
     let mut completed_item = None;
@@ -2443,7 +2447,11 @@ async fn auto_compact_starts_after_turn_started() {
         set_test_compact_prompt(config);
         config.model_auto_compact_token_limit = Some(200_000);
     });
-    let codex = builder.build(&server).await.unwrap().codex;
+    let TestCodex {
+        codex,
+        thread_manager: _thread_manager,
+        ..
+    } = builder.build(&server).await.unwrap();
 
     codex
         .start_or_steer_turn(TurnInputRequest::user_input(vec![UserInput::Text {
@@ -3497,7 +3505,7 @@ async fn pre_sampling_compact_advised_errors_fall_back_then_retry_on_selected_mo
     assert_eq!(actual_models, expected_models);
 }
 
-/// Manual compaction keeps the configured retry limit even when the server supplies advice.
+/// Manual compaction keeps the configured retry limit for rate limits with server advice.
 #[test_case::test_case(0; "no_retries")]
 #[test_case::test_case(2; "two_retries")]
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -3505,11 +3513,11 @@ async fn manual_remote_compact_advice_respects_retry_limit(max_retries: u64) {
     skip_if_no_network!();
 
     let server = start_mock_server().await;
-    let overload = wiremock::ResponseTemplate::new(/*s*/ 503)
+    let rate_limit = wiremock::ResponseTemplate::new(/*s*/ 429)
         .insert_header("Retry-After", "0")
-        .set_body_json(json!({ "error": { "code": "server_is_overloaded" } }));
+        .set_body_json(json!({ "error": { "code": "rate_limit_exceeded" } }));
     let request_log =
-        mount_response_sequence(&server, vec![overload; (max_retries + 1) as usize]).await;
+        mount_response_sequence(&server, vec![rate_limit; (max_retries + 1) as usize]).await;
     let mut model_provider = openai_model_provider(&server);
     model_provider.request_max_retries = Some(0);
     model_provider.stream_max_retries = Some(max_retries);
@@ -3534,14 +3542,14 @@ async fn manual_remote_compact_advice_respects_retry_limit(max_retries: u64) {
             EventMsg::TurnComplete(event) => {
                 assert_eq!(
                     event.error.and_then(|error| error.codex_error_info),
-                    Some(CodexErrorInfo::ServerOverloaded)
+                    Some(CodexErrorInfo::RateLimitExceeded)
                 );
                 break;
             }
             _ => {}
         }
     }
-    assert_eq!(errors, vec![Some(CodexErrorInfo::ServerOverloaded)]);
+    assert_eq!(errors, vec![Some(CodexErrorInfo::RateLimitExceeded)]);
     assert_eq!(
         reconnect_messages,
         (1..=max_retries)
@@ -4585,7 +4593,11 @@ async fn manual_compact_twice_preserves_latest_user_messages() {
         config.model_provider = model_provider;
         set_test_compact_prompt(config);
     });
-    let codex = builder.build(&server).await.unwrap().codex;
+    let TestCodex {
+        codex,
+        thread_manager: _thread_manager,
+        ..
+    } = builder.build(&server).await.unwrap();
 
     codex
         .start_or_steer_turn(TurnInputRequest::user_input(vec![UserInput::Text {

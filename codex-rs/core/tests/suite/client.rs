@@ -2211,11 +2211,14 @@ async fn includes_apps_guidance_as_developer_message_for_chatgpt_auth() {
                 .expect("test config should allow feature update");
             config.chatgpt_base_url = apps_base_url;
         });
-    let codex = builder
+    let TestCodex {
+        codex,
+        thread_manager: _thread_manager,
+        ..
+    } = builder
         .build(&server)
         .await
-        .expect("create new conversation")
-        .codex;
+        .expect("create new conversation");
 
     codex
         .start_or_steer_turn(TurnInputRequest::user_input(vec![UserInput::Text {

@@ -87,9 +87,23 @@ async fn compact(test: &TestCodex, server: &MockServer) -> Result<()> {
 
 fn model_updates(request: &Request) -> Vec<String> {
     request
-        .message_input_texts("developer")
+        .input()
         .into_iter()
-        .filter(|text| text.contains("<model_instructions>"))
+        .filter(|item| item["type"] == "message" && item["role"] == "developer")
+        .filter_map(|item| {
+            let content = item["content"].as_array()?;
+            let has_model_instruction_kind =
+                item["internal_chat_message_metadata_passthrough"]["content_item_kinds"]
+                    .as_array()
+                    .is_some_and(|kinds| kinds.iter().any(|kind| kind == "model.instructions"));
+            let text = content
+                .iter()
+                .filter(|span| span["type"] == "input_text")
+                .filter_map(|span| span["text"].as_str())
+                .collect::<Vec<_>>()
+                .join("");
+            (has_model_instruction_kind || text.contains("<model_instructions>")).then_some(text)
+        })
         .collect()
 }
 
@@ -153,13 +167,20 @@ async fn catalog_and_model_changes_preserve_the_window_base(
     let updated_request = send_turn(&test, &server, "use refreshed instructions").await?;
     let mut updates = Vec::new();
     if incremental_tools && custom_instructions.is_none() {
-        updates.push(format!("<model_instructions>\nThe following instructions replace the previous base instructions:\n\n{UPDATED}\n</model_instructions>"));
+        updates.push(format!(
+            "\nThe following instructions replace the previous base instructions:\n\n{UPDATED}\n"
+        ));
     }
     assert_eq!(model_updates(&updated_request), updates);
-    assert_eq!(
-        updated_request.has_content_kinds(&["model.instructions"]),
-        incremental_tools && custom_instructions.is_none()
-    );
+    if incremental_tools && custom_instructions.is_none() {
+        assert!(updated_request.has_content_kinds(&[
+            "model.instructions",
+            "client.base_instructions",
+            "model.instructions",
+        ]));
+    } else {
+        assert!(!updated_request.has_content_kinds(&["model.instructions"]));
+    }
     assert!(updated_request.input().starts_with(&first_request.input()));
     let unchanged_request = send_turn(&test, &server, "keep refreshed instructions").await?;
     assert_eq!(model_updates(&unchanged_request), updates);
@@ -167,7 +188,10 @@ async fn catalog_and_model_changes_preserve_the_window_base(
     refresh_catalog(&test, &server, MODEL, "").await;
     let cleared_request = send_turn(&test, &server, "clear managed instructions").await?;
     if incremental_tools && custom_instructions.is_none() {
-        updates.push("<model_instructions>\nThe previous base instructions no longer apply. No replacement base instructions are active.\n</model_instructions>".to_string());
+        updates.push(
+            "\nThe previous base instructions no longer apply. No replacement base instructions are active.\n"
+                .to_string(),
+        );
     }
     assert_eq!(model_updates(&cleared_request), updates);
 
@@ -196,7 +220,7 @@ async fn catalog_and_model_changes_preserve_the_window_base(
     let switched_request = switch_model(&test, &server, SWITCHED_MODEL).await?;
     let updates = vec![match custom_instructions {
         None => format!(
-            "<model_instructions>\nThe current model is {SWITCHED_MODEL}.\nThe following instructions replace the previous base instructions:\n\n{SWITCHED}\n</model_instructions>"
+            "\nThe current model is {SWITCHED_MODEL}.\nThe following instructions replace the previous base instructions:\n\n{SWITCHED}\n"
         ),
         Some(_) => format!(
             "<model_instructions>\nThe current model is {SWITCHED_MODEL}.\n</model_instructions>"

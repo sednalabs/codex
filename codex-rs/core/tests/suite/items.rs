@@ -321,7 +321,11 @@ async fn web_search_item_is_emitted() -> anyhow::Result<()> {
 
     let server = start_mock_server().await;
 
-    let TestCodex { codex, .. } = test_codex()
+    let TestCodex {
+        codex,
+        thread_manager: _thread_manager,
+        ..
+    } = test_codex()
         .with_history_mode(ThreadHistoryMode::Paginated)
         .build(&server)
         .await?;

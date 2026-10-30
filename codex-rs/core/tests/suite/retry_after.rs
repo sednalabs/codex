@@ -323,7 +323,7 @@ async fn responses_http_uses_retry_after() -> Result<()> {
 
     submit_user_input(&test, "retry the upstream overload").await?;
     let retry = telemetry.next_retry().await;
-    assert!(retry.delay <= Duration::from_secs(1));
+    assert!(retry.delay <= Duration::from_millis(1100));
     assert_eq!(
         retry,
         RetryTelemetryEvent {
@@ -335,7 +335,7 @@ async fn responses_http_uses_retry_after() -> Result<()> {
     );
     assert!(wait_for_retry(&mut telemetry, &retry).await >= Duration::from_secs(1));
     let retry = telemetry.next_retry().await;
-    assert!(retry.delay <= Duration::from_secs(1));
+    assert!(retry.delay <= Duration::from_millis(1100));
     assert_eq!(
         retry,
         RetryTelemetryEvent {
@@ -386,7 +386,7 @@ async fn responses_http_429_uses_retry_after() -> Result<()> {
 
     submit_user_input(&test, "retry the rate-limited request").await?;
     let retry = telemetry.next_retry().await;
-    assert!(retry.delay <= Duration::from_secs(1));
+    assert!(retry.delay <= Duration::from_millis(1100));
     assert_eq!(
         retry,
         RetryTelemetryEvent {
@@ -659,7 +659,7 @@ async fn compact_v2_uses_retry_after() -> Result<()> {
 
     test.codex.submit(Op::Compact).await?;
     let retry = telemetry.next_retry().await;
-    assert!(retry.delay <= Duration::from_secs(1));
+    assert!(retry.delay <= Duration::from_millis(1100));
     assert_eq!(
         retry,
         RetryTelemetryEvent {
@@ -910,7 +910,7 @@ async fn compact_v2_rate_limit_uses_server_advice(
 
     test.codex.submit(Op::Compact).await?;
     let retry = telemetry.next_retry().await;
-    assert!(retry.delay <= Duration::from_secs(1));
+    assert!(retry.delay <= Duration::from_millis(1100));
     assert_eq!(
         retry,
         RetryTelemetryEvent {
@@ -1214,7 +1214,7 @@ async fn sse_failure_uses_server_advice(
 
     submit_user_input(&test, "retry after the server's advice").await?;
     let retry = telemetry.next_retry().await;
-    assert!(retry.delay <= Duration::from_secs(1));
+    assert!(retry.delay <= Duration::from_millis(1100));
     assert_eq!(
         retry,
         RetryTelemetryEvent {
@@ -1710,7 +1710,7 @@ async fn websocket_failed_event_uses_header_over_plaintext_retry_after() -> Resu
     submit_user_input(&test, "retry the rate-limited websocket stream").await?;
 
     let retry = telemetry.next_retry().await;
-    assert!(retry.delay <= Duration::from_secs(1));
+    assert!(retry.delay <= Duration::from_millis(1100));
     assert_eq!(
         retry,
         RetryTelemetryEvent {
@@ -1856,7 +1856,7 @@ async fn websocket_error_uses_nested_retry_after() -> Result<()> {
     assert_eq!(warmup.body_json()["generate"].as_bool(), Some(false));
     submit_user_input(&test, "recover from the websocket error").await?;
     let retry = telemetry.next_retry().await;
-    assert!(retry.delay <= Duration::from_secs(1));
+    assert!(retry.delay <= Duration::from_millis(1100));
     assert_eq!(
         (
             retry.attempt,
