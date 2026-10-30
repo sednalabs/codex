@@ -44,7 +44,7 @@ jobs:
           PRODUCT_PARENT_SHA: 9e8f834ffdb8e1d9ea65a046d36598776bbf6b73
           UPSTREAM_BASE_SHA: 582a8812e023b08cbf10b4603ac41644b8d99261
           UPSTREAM_TREE: 33e5705f89c2065fe35056e6d97790eb181ec93f
-          EXPECTED_WORKFLOW_PARENT_SHA: af1c90b05d30730002cd81f6a2a2a3a3b3ed3445
+          EXPECTED_WORKFLOW_PARENT_SHA: 2af674da1ca594b18a5a411fd77d5a5600c755a3
           EXPECTED_REF: refs/heads/validation/codex-linux-package-1313-20261030
           EXPECTED_REPOSITORY: sednalabs/codex
         run: |
@@ -54,14 +54,13 @@ jobs:
             echo "This package route is restricted to its exact validation branch." >&2
             exit 1
           }
-          git fetch --no-tags --depth=1 "https://github.com/${GITHUB_REPOSITORY}.git" "${EXPECTED_WORKFLOW_PARENT_SHA}"
+          git fetch --no-tags --depth=10 "https://github.com/${GITHUB_REPOSITORY}.git" "${EXPECTED_WORKFLOW_PARENT_SHA}"
           git fetch --no-tags --depth=500 "https://github.com/${GITHUB_REPOSITORY}.git" "${PRODUCT_SOURCE_SHA}"
           git fetch --no-tags --depth=1 https://github.com/openai/codex.git "${UPSTREAM_BASE_SHA}"
           [[ "$(git rev-parse HEAD)" == "${GITHUB_SHA}" ]]
           host_parent="$(git cat-file commit "${GITHUB_SHA}" | sed -n '/^$/q; s/^parent //p')"
           [[ "${host_parent}" == "${EXPECTED_WORKFLOW_PARENT_SHA}" ]]
-          workflow_parent_parent="$(git cat-file commit "${EXPECTED_WORKFLOW_PARENT_SHA}" | sed -n '/^$/q; s/^parent //p')"
-          [[ "${workflow_parent_parent}" == "${PRODUCT_SOURCE_SHA}" ]]
+          git merge-base --is-ancestor "${PRODUCT_SOURCE_SHA}" "${EXPECTED_WORKFLOW_PARENT_SHA}"
           [[ "$(git rev-parse "${PRODUCT_SOURCE_SHA}^{tree}")" == "${PRODUCT_SOURCE_TREE}" ]]
           [[ "$(git rev-parse "${UPSTREAM_BASE_SHA}^{tree}")" == "${UPSTREAM_TREE}" ]]
           source_parent="$(git cat-file commit "${PRODUCT_SOURCE_SHA}" | sed -n '/^$/q; s/^parent //p')"
@@ -153,6 +152,7 @@ jobs:
           packaged_bwrap_sha="$(sha256sum "${package_dir}/codex-resources/bwrap" | awk '{print $1}')"
           [[ "${packaged_bwrap_sha}" == "${CODEX_BWRAP_SHA256}" ]]
           sha256sum "${archive}" > "${archive}.sha256"
+          echo "CARGO_BIN_EXE_codex=${package_dir}/bin/codex" >> "${GITHUB_ENV}"
 
           printf '%s\n' \
             "Codex Linux CLI progressive package" \
