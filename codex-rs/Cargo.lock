@@ -2247,7 +2247,7 @@ dependencies = [
  "tracing",
  "ts-rs",
  "uuid",
- "zstd",
+ "zstd 0.14.3",
 ]
 
 [[package]]
@@ -2316,7 +2316,7 @@ dependencies = [
  "tracing",
  "url",
  "uuid",
- "zstd",
+ "zstd 0.14.3",
 ]
 
 [[package]]
@@ -2582,7 +2582,7 @@ dependencies = [
  "which 8.0.0",
  "windows-sys 0.61.2",
  "wiremock",
- "zstd",
+ "zstd 0.14.3",
 ]
 
 [[package]]
@@ -3066,7 +3066,7 @@ dependencies = [
  "whoami 1.6.1",
  "windows-sys 0.61.2",
  "wiremock",
- "zstd",
+ "zstd 0.14.3",
 ]
 
 [[package]]
@@ -3229,7 +3229,7 @@ dependencies = [
  "uuid",
  "walkdir",
  "wiremock",
- "zstd",
+ "zstd 0.14.3",
 ]
 
 [[package]]
@@ -3310,7 +3310,7 @@ dependencies = [
 
 [[package]]
 name = "codex-exec-server-cli"
-version = "0.0.0"
+version = "0.164.0-dev"
 dependencies = [
  "anyhow",
  "assert_matches",
@@ -3713,7 +3713,7 @@ dependencies = [
  "tracing",
  "uuid",
  "wiremock",
- "zstd",
+ "zstd 0.14.3",
 ]
 
 [[package]]
@@ -3841,7 +3841,7 @@ dependencies = [
  "tracing-subscriber",
  "url",
  "windows-sys 0.61.2",
- "zstd",
+ "zstd 0.14.3",
 ]
 
 [[package]]
@@ -4445,7 +4445,7 @@ dependencies = [
 
 [[package]]
 name = "codex-plugin-host"
-version = "0.0.0"
+version = "0.164.0-dev"
 dependencies = [
  "codex-utils-cargo-bin",
  "codex-utils-process",
@@ -4695,7 +4695,7 @@ dependencies = [
  "tokio",
  "tracing",
  "uuid",
- "zstd",
+ "zstd 0.14.3",
 ]
 
 [[package]]
@@ -4987,7 +4987,7 @@ dependencies = [
  "tokio",
  "tracing",
  "uuid",
- "zstd",
+ "zstd 0.14.3",
 ]
 
 [[package]]
@@ -5934,7 +5934,7 @@ dependencies = [
  "tracing-subscriber",
  "walkdir",
  "wiremock",
- "zstd",
+ "zstd 0.14.3",
 ]
 
 [[package]]
@@ -16157,7 +16157,7 @@ dependencies = [
  "tower-layer",
  "tower-service",
  "tracing",
- "zstd",
+ "zstd 0.13.3",
 ]
 
 [[package]]
@@ -18315,7 +18315,7 @@ dependencies = [
  "windows-sys 0.61.2",
  "zeroize",
  "zopfli",
- "zstd",
+ "zstd 0.14.3",
 ]
 
 [[package]]
@@ -18363,11 +18363,29 @@ dependencies = [
 
 [[package]]
 name = "zstd"
+version = "0.13.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "e91ee311a569c327171651566e07972200e76fcfe2242a4fa446149a3881c08a"
+dependencies = [
+ "zstd-safe 7.3.0",
+]
+
+[[package]]
+name = "zstd"
 version = "0.14.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "db3ae9bf90af6e40197bef767eeefc46ad6397420fe873830bd85e5fbbfb3c70"
 dependencies = [
- "zstd-safe",
+ "zstd-safe 8.2.0",
+]
+
+[[package]]
+name = "zstd-safe"
+version = "7.3.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "64d80649ab6db9d9f6f9c80a40becd948eda4714a0a5ac8c4d157a32231c7882"
+dependencies = [
+ "zstd-sys",
 ]
 
 [[package]]
