@@ -388,20 +388,6 @@ where
     matcher(&ev).expect("EventMsg should match matcher predicate")
 }
 
-pub async fn wait_for_successful_turn(
-    codex: &CodexThread,
-) -> codex_protocol::protocol::TurnCompleteEvent {
-    let turn = wait_for_event_match(codex, |event| match event {
-        codex_protocol::protocol::EventMsg::TurnComplete(turn) => Some(turn.clone()),
-        _ => None,
-    })
-    .await;
-    if let Some(error) = turn.error.as_ref() {
-        panic!("turn completed with error: {}", error.message);
-    }
-    turn
-}
-
 pub async fn wait_for_event_with_timeout<F>(
     codex: &CodexThread,
     mut predicate: F,
