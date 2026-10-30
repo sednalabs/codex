@@ -638,7 +638,7 @@ async fn mailbox_snapshot(
             .as_ref()
             .map(|(communication, _, _)| {
                 if communication.origin == Some(AgentCommunicationOrigin::Result)
-                    && !communication.intent.wakes_native_wait()
+                    && !communication.resolved_intent().wakes_native_wait()
                 {
                     AgentWakeCause::ChildTerminalTransition
                 } else {
@@ -696,7 +696,7 @@ async fn mailbox_snapshot(
                     .services
                     .agent_control
                     .agent_id_for_path(&communication.author),
-                intent: communication.intent,
+                intent: communication.resolved_intent(),
                 trigger_turn_requested: communication.trigger_turn,
                 enqueued_at_ms: *enqueued_at_ms,
                 ended_active_wait: is_causal,
@@ -730,7 +730,7 @@ async fn mailbox_snapshot(
             }
             if communication.encrypted_content.is_some()
                 || communication.content.is_empty()
-                || !communication.intent.wakes_native_wait()
+                || !communication.resolved_intent().wakes_native_wait()
             {
                 return None;
             }
@@ -1520,7 +1520,7 @@ mod tests {
             "decision needed".to_string(),
             /*trigger_turn*/ false,
         );
-        target_action.intent = codex_protocol::protocol::AgentMessageIntent::ActionRequired;
+        target_action.intent = Some(codex_protocol::protocol::AgentMessageIntent::ActionRequired);
         let mut sibling_action = codex_protocol::protocol::InterAgentCommunication::new(
             sibling,
             AgentPath::root(),
@@ -1528,7 +1528,7 @@ mod tests {
             "result ready".to_string(),
             /*trigger_turn*/ false,
         );
-        sibling_action.intent = codex_protocol::protocol::AgentMessageIntent::ResultReady;
+        sibling_action.intent = Some(codex_protocol::protocol::AgentMessageIntent::ResultReady);
         let sibling_turn_trigger = codex_protocol::protocol::InterAgentCommunication::new(
             AgentPath::try_from("/root/other_reviewer").expect("sibling path"),
             AgentPath::root(),
@@ -1572,7 +1572,7 @@ mod tests {
             "sibling decision".to_string(),
             /*trigger_turn*/ false,
         );
-        sibling_action.intent = codex_protocol::protocol::AgentMessageIntent::ActionRequired;
+        sibling_action.intent = Some(codex_protocol::protocol::AgentMessageIntent::ActionRequired);
         let mut later_action = codex_protocol::protocol::InterAgentCommunication::new(
             AgentPath::try_from("/root/reviewer").expect("target path"),
             AgentPath::root(),
@@ -1580,7 +1580,7 @@ mod tests {
             "later result".to_string(),
             /*trigger_turn*/ false,
         );
-        later_action.intent = codex_protocol::protocol::AgentMessageIntent::ResultReady;
+        later_action.intent = Some(codex_protocol::protocol::AgentMessageIntent::ResultReady);
         let entries = vec![&target_terminal, &sibling_action, &later_action];
 
         assert_eq!(

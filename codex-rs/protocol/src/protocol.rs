@@ -754,9 +754,9 @@ pub struct InterAgentCommunication {
     #[ts(optional)]
     pub internal_chat_message_metadata_passthrough: Option<InternalChatMessageMetadataPassthrough>,
     pub trigger_turn: bool,
-    #[serde(default, skip_serializing_if = "AgentMessageIntent::is_progress")]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     #[ts(optional)]
-    pub intent: AgentMessageIntent,
+    pub intent: Option<AgentMessageIntent>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[ts(optional)]
     pub origin: Option<AgentCommunicationOrigin>,
@@ -777,7 +777,7 @@ pub enum AgentMessageIntent {
 }
 
 impl AgentMessageIntent {
-    pub fn is_progress(&self) -> bool {
+    pub const fn is_progress(self) -> bool {
         matches!(self, Self::Progress)
     }
 
@@ -793,6 +793,10 @@ pub enum AgentCommunicationOrigin {
 }
 
 impl InterAgentCommunication {
+    pub fn resolved_intent(&self) -> AgentMessageIntent {
+        self.intent.unwrap_or_default()
+    }
+
     pub fn new(
         author: AgentPath,
         recipient: AgentPath,
@@ -809,7 +813,7 @@ impl InterAgentCommunication {
             encrypted_content: None,
             internal_chat_message_metadata_passthrough: None,
             trigger_turn,
-            intent: AgentMessageIntent::Progress,
+            intent: None,
             origin: None,
         }
     }
@@ -830,7 +834,7 @@ impl InterAgentCommunication {
             encrypted_content: Some(encrypted_content),
             internal_chat_message_metadata_passthrough: None,
             trigger_turn,
-            intent: AgentMessageIntent::Progress,
+            intent: None,
             origin: None,
         }
     }
@@ -4928,7 +4932,7 @@ mod tests {
             encrypted_content: None,
             internal_chat_message_metadata_passthrough: None,
             trigger_turn: true,
-            intent: AgentMessageIntent::Progress,
+            intent: None,
             origin: None,
         };
         communication.set_turn_id_if_missing("turn-1");
@@ -4967,14 +4971,14 @@ mod tests {
         let communication: InterAgentCommunication =
             serde_json::from_value(communication).expect("deserialize legacy communication");
 
-        assert_eq!(communication.intent, AgentMessageIntent::Progress);
-        assert!(!communication.intent.wakes_native_wait());
+        assert_eq!(communication.resolved_intent(), AgentMessageIntent::Progress);
+        assert!(!communication.resolved_intent().wakes_native_wait());
     }
 
     #[test]
     fn inter_agent_communication_serializes_explicit_wait_intent() {
         let communication = InterAgentCommunication {
-            intent: AgentMessageIntent::ResultReady,
+            intent: Some(AgentMessageIntent::ResultReady),
             ..InterAgentCommunication::new(
                 AgentPath::root(),
                 AgentPath::root().join("worker").expect("recipient path"),

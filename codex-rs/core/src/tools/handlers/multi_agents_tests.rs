@@ -2646,7 +2646,7 @@ async fn multi_agent_v2_spawn_returns_path_and_send_message_accepts_relative_pat
                         && communication.encrypted_content.as_deref() == Some("encrypted-send-message")
                         && !communication.trigger_turn
                         && communication.intent
-                            == codex_protocol::protocol::AgentMessageIntent::Progress
+                            == None
             )
     }));
 
@@ -2688,7 +2688,7 @@ async fn multi_agent_v2_spawn_returns_path_and_send_message_accepts_relative_pat
                     op,
                     Op::InterAgentCommunication { communication }
                         if communication.encrypted_content.as_deref() == Some(message)
-                            && communication.intent == expected_intent
+                            && communication.intent == Some(expected_intent)
                             && !communication.trigger_turn
                 )
         }));
@@ -2784,7 +2784,7 @@ async fn multi_agent_v2_send_message_keeps_cold_target_unloaded() {
                     if communication.encrypted_content.as_deref() == Some("opaque-encrypted-message")
                         && !communication.trigger_turn
                         && communication.intent
-                            == codex_protocol::protocol::AgentMessageIntent::Progress
+                            == None
             )
     }));
     assert!(manager.get_thread(child_thread_id).await.is_err());
@@ -2987,7 +2987,7 @@ async fn multi_agent_v2_send_message_accepts_root_target_from_child() {
                         && communication.content.is_empty()
                         && communication.encrypted_content.as_deref() == Some("encrypted-decision-request")
                         && communication.intent
-                            == codex_protocol::protocol::AgentMessageIntent::ActionRequired
+                            == Some(codex_protocol::protocol::AgentMessageIntent::ActionRequired)
                         && !communication.trigger_turn
             )
     }));
@@ -5944,7 +5944,7 @@ fn multi_agent_v2_wait_agent_wakes_on_explicit_action_from_outside_exact_target_
             "recipient decision needed".to_string(),
             /*trigger_turn*/ false,
         );
-        actionable.intent = codex_protocol::protocol::AgentMessageIntent::ActionRequired;
+        actionable.intent = Some(codex_protocol::protocol::AgentMessageIntent::ActionRequired);
         session
             .input_queue
             .enqueue_mailbox_communication(actionable)
@@ -6093,7 +6093,7 @@ fn multi_agent_v2_wait_agent_does_not_return_completed_content() {
             "bounded result ready".to_string(),
             /*trigger_turn*/ false,
         );
-        result_ready.intent = codex_protocol::protocol::AgentMessageIntent::ResultReady;
+        result_ready.intent = Some(codex_protocol::protocol::AgentMessageIntent::ResultReady);
         session
             .input_queue
             .enqueue_mailbox_communication(result_ready)

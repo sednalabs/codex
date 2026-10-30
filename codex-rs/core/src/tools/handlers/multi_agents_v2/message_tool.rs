@@ -328,7 +328,7 @@ async fn handle_message_submission_inner(
         .unwrap_or_else(AgentPath::root);
     let mut communication =
         communication_from_tool_message(author, receiver_agent_path.clone(), message);
-    communication.intent = intent;
+    communication.intent = (!intent.is_progress()).then_some(intent);
     let kind = match mode {
         MessageDeliveryMode::QueueOnly => AgentCommunicationKind::Message,
         MessageDeliveryMode::TriggerTurn => AgentCommunicationKind::Followup,

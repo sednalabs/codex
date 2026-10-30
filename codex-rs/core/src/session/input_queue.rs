@@ -814,7 +814,7 @@ impl InputQueue {
 }
 
 pub(crate) fn is_actionable_wait_communication(communication: &InterAgentCommunication) -> bool {
-    communication.intent.wakes_native_wait()
+    communication.resolved_intent().wakes_native_wait()
 }
 
 pub(crate) fn current_time_ms() -> u64 {
@@ -1175,7 +1175,7 @@ mod tests {
             "action needed",
             /*trigger_turn*/ false,
         );
-        actionable.intent = codex_protocol::protocol::AgentMessageIntent::ActionRequired;
+        actionable.intent = Some(codex_protocol::protocol::AgentMessageIntent::ActionRequired);
         input_queue
             .enqueue_mailbox_communication(actionable)
             .await;
@@ -1262,8 +1262,9 @@ mod tests {
                     /*trigger_turn*/ false,
                 );
                 if index == InputQueue::MAX_MAILBOX_NOTIFICATION_SNAPSHOT {
-                    communication.intent =
-                        codex_protocol::protocol::AgentMessageIntent::ActionRequired;
+                    communication.intent = Some(
+                        codex_protocol::protocol::AgentMessageIntent::ActionRequired,
+                    );
                 }
                 communication
             })
@@ -1311,7 +1312,7 @@ mod tests {
                 "opaque body".to_string(),
                 /*trigger_turn*/ false,
             );
-            communication.intent = intent;
+            communication.intent = Some(intent);
             input_queue
                 .enqueue_mailbox_communication(communication)
                 .await;
@@ -1381,7 +1382,7 @@ mod tests {
             "action needed",
             /*trigger_turn*/ false,
         );
-        actionable.intent = codex_protocol::protocol::AgentMessageIntent::ResultReady;
+        actionable.intent = Some(codex_protocol::protocol::AgentMessageIntent::ResultReady);
         input_queue
             .extend_pending_input_for_turn_state(
                 &turn_state,
@@ -1456,7 +1457,7 @@ mod tests {
             "action needed",
             /*trigger_turn*/ false,
         );
-        actionable.intent = codex_protocol::protocol::AgentMessageIntent::ActionRequired;
+        actionable.intent = Some(codex_protocol::protocol::AgentMessageIntent::ActionRequired);
         input_queue.enqueue_mailbox_communication(actionable).await;
         assert!(input_queue.has_pending_wait_input(&active_turn).await);
     }
