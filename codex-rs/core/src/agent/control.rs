@@ -156,7 +156,7 @@ impl LocalAgentControl {
         input: Vec<UserInput>,
         start_options: TurnStartOptions,
     ) -> CodexResult<String> {
-        let agent_id = thread.thread_id;
+        let agent_id = thread.session.thread_id;
         let result = match thread
             .start_or_steer_turn(TurnInputRequest::user_input(input).on_start(start_options))
             .await
