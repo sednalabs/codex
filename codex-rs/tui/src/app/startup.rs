@@ -571,6 +571,7 @@ impl App {
         let mut start_in_agents_overview =
             matches!(&session_selection, SessionSelection::AgentsOverview);
         let mut read_only_thread = false;
+        let mut provider_error = None;
         let mut history_notice = None;
         let (mut chat_widget, initial_started_thread) = match session_selection {
             SessionSelection::StartFresh
@@ -683,7 +684,11 @@ impl App {
                     .await
                 {
                     Ok(Ok(resumed)) => Ok(resumed),
-                    Ok(Err(err)) if crate::app_server_session::is_active_writer_error(&err) => {
+                    Ok(Err(err))
+                        if crate::app_server_session::is_active_writer_error(&err)
+                            || crate::app_server_session::model_provider_error(&err).is_some() =>
+                    {
+                        provider_error = crate::app_server_session::model_provider_error(&err);
                         read_only_thread = true;
                         match startup_draft
                             .run_until(
@@ -738,7 +743,6 @@ impl App {
                             config: &config,
                             local_settings: &local_settings,
                         },
-                        &app_server_target,
                         &target_session,
                         action,
                         resumed,
@@ -843,7 +847,6 @@ impl App {
                         config: &config,
                         local_settings: &local_settings,
                     },
-                    &app_server_target,
                     &target_session,
                     action,
                     forked,
@@ -922,10 +925,6 @@ impl App {
             &app_server_target,
             environment_manager.as_ref(),
         ));
-        chat_widget.set_agents_navigation_enabled(matches!(
-            app_server_target,
-            AppServerTarget::LocalDaemon { .. }
-        ));
         let thread_and_widget_ms = thread_and_widget_started_at.elapsed().as_millis();
         chat_widget.windows_sandbox_local_server = !app_server_target.uses_remote_workspace()
             && app_server.app_server_platform_os() == Some("windows");
@@ -943,6 +942,14 @@ impl App {
             app_event_tx.send(AppEvent::InsertHistoryCell(Box::new(
                 history_cell::StartupWarningsCell::new(vec![warning]),
             )));
+        }
+        // Automatic NFS detection is Linux-only; manual migration supports Unix.
+        #[cfg(target_os = "linux")]
+        if !app_server_target.uses_remote_workspace() {
+            tokio::spawn(startup_warnings::warn_about_nfs_migration(
+                config.sqlite_config().clone(),
+                app_event_tx.clone(),
+            ));
         }
         let file_search = FileSearchManager::new(config.cwd.to_path_buf(), app_event_tx.clone());
         let runtime_keymap =
@@ -1103,7 +1110,7 @@ See the Codex keymap documentation for supported actions and examples."
         }
         if start_in_agents_overview {
             app.open_agents_overview(&app_server);
-        } else if !matches!(app.app_server_target, AppServerTarget::Embedded) {
+        } else {
             app.refresh_agents_overview_threads(&app_server);
         }
         if let Some(entry) = startup_hooks_browser {
@@ -1118,7 +1125,10 @@ See the Codex keymap documentation for supported actions and examples."
             if started.blocks_direct_input {
                 app.mark_primary_thread_parent_owned(thread_id);
             }
-            if read_only_thread {
+            if let Some(error) = provider_error.clone() {
+                app.chat_widget
+                    .show_provider_error(error, /*rejected_message_id*/ None);
+            } else if read_only_thread {
                 app.chat_widget.show_external_writer_thread();
             }
             match startup_draft
@@ -1133,13 +1143,16 @@ See the Codex keymap documentation for supported actions and examples."
                     return shutdown_on_startup_error(app_server, &mut other_backends, err).await;
                 }
             }
-            if read_only_thread {
+            if let Some(error) = provider_error {
+                app.chat_widget
+                    .show_provider_error(error, /*rejected_message_id*/ None);
+            } else if read_only_thread {
                 app.ensure_thread_channel(thread_id).mark_external_writer();
                 app.chat_widget.show_external_writer_thread();
-                if let Some(notice) = history_notice {
-                    app.chat_widget
-                        .add_info_message(notice.to_string(), /*hint*/ None);
-                }
+            }
+            if let Some(notice) = history_notice {
+                app.chat_widget
+                    .add_info_message(notice.to_string(), /*hint*/ None);
             }
             if !read_only_thread
                 && should_prompt_for_paused_goal_after_startup_resume
@@ -1291,7 +1304,7 @@ See the Codex keymap documentation for supported actions and examples."
                     if !tui.is_owned_screen() && tui.is_alt_screen_active() {
                         app.close_transcript_overlay(tui);
                     } else if let Err(err) =
-                        tui.set_overlay_input(crate::tui::OverlayInput::Default)
+                        tui.set_mouse_capture(app.chat_widget.mouse_capture(tui.is_owned_screen()))
                     {
                         break Err(err.into());
                     }
@@ -1378,7 +1391,9 @@ See the Codex keymap documentation for supported actions and examples."
                             && wait_for_drain
                         {
                             tokio::time::sleep_until(deadline).await;
-                            color_eyre::eyre::bail!("Server connection could not be restored");
+                            color_eyre::eyre::bail!(
+                                "Automatic reconnect timed out waiting for the server to finish shutting down."
+                            );
                         }
                         attempt.await
                     }));
@@ -1672,6 +1687,8 @@ See the Codex keymap documentation for supported actions and examples."
                 }
             }
         };
+        // Let the pending terminal poll unwind while the app server shuts down.
+        tui.pause_events();
         app.chat_widget.mention_usage_mut().flush().await;
         if let Err(err) = backends.shutdown().await {
             tracing::warn!(error = %err, "failed to shut down embedded app server");

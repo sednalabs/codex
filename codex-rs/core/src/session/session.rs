@@ -169,8 +169,8 @@ pub(crate) struct SessionConfiguration {
     pub(super) thread_source: Option<ThreadSource>,
     /// Effective originator used for this thread's Responses requests and analytics events.
     pub(super) originator: String,
-    /// Fixed at thread startup and shared with turn snapshots.
-    pub(super) dynamic_tools: Arc<[DynamicToolSpec]>,
+    /// Active tools used to build the next model request.
+    pub(crate) dynamic_tools: Arc<[DynamicToolSpec]>,
     pub(super) user_shell_override: Option<shell::Shell>,
 }
 
@@ -710,12 +710,9 @@ impl Session {
         state.session_configuration.originator.clone()
     }
 
-    pub(crate) async fn dynamic_tools(&self) -> Vec<DynamicToolSpec> {
-        let dynamic_tools = {
-            let state = self.state.lock().await;
-            Arc::clone(&state.session_configuration.dynamic_tools)
-        };
-        dynamic_tools.to_vec()
+    pub(crate) async fn dynamic_tools(&self) -> Arc<[DynamicToolSpec]> {
+        let state = self.state.lock().await;
+        Arc::clone(&state.session_configuration.dynamic_tools)
     }
 
     pub(crate) async fn responses_metadata(
@@ -731,6 +728,17 @@ impl Session {
         );
         ExecutionMetadata::from_settings(&step_context.settings).apply_to(&mut responses_metadata);
         responses_metadata.guardian_recorded_items = self.parent_observer_event_tx.get().is_some();
+        if responses_metadata.subagent_header.as_deref()
+            == Some(crate::guardian::GUARDIAN_REVIEWER_NAME)
+            && let Some(pending) = self
+                .services
+                .thread_extension_data
+                .get::<crate::guardian::PendingReviewRouting>()
+            && let Some(parent) = &pending.0
+            && responses_metadata.parent_response_id.as_deref() == Some(parent.id.as_str())
+        {
+            responses_metadata.parent_routing_affinity = parent.routing_affinity.clone();
+        }
         responses_metadata.tool_namespaces_info = if step_context
             .turn
             .config
@@ -1313,18 +1321,6 @@ impl Session {
                     session_configuration.sandbox_policy(environment_selections)
                 ),
             };
-            let rollout_thread_trace = if matches!(
-                session_configuration.session_source,
-                SessionSource::SubAgent(SubAgentSource::ThreadSpawn { .. })
-            ) {
-                // Spawned child threads are part of their root rollout tree. If the
-                // parent had no trace bundle, do not create an orphan child bundle
-                // that looks like an independent rollout.
-                parent_rollout_thread_trace.start_child_thread_trace_or_disabled(trace_metadata)
-            } else {
-                ThreadTraceContext::start_root_or_disabled(trace_metadata)
-            };
-
             let mut post_session_configured_events = Vec::<Event>::new();
 
             for usage in config.features.legacy_feature_usages() {
@@ -1388,6 +1384,9 @@ impl Session {
             .with_auth_env(auth_env_telemetry.to_otel_metadata())
             .with_user_id(telemetry_auth.and_then(CodexAuth::get_chatgpt_user_id))
             .with_tool_result_log_config(config.otel.tool_result);
+            if !config.otel.log_sse_deltas {
+                session_telemetry = session_telemetry.without_sse_delta_logs();
+            }
             if let Some(metrics) = thread_extension_data.get::<codex_otel::MetricsClient>() {
                 session_telemetry = session_telemetry.with_metrics(metrics.as_ref().clone());
             }
@@ -1579,17 +1578,24 @@ impl Session {
                     &config.features,
                 ),
             );
+            if matches!(initial_history, InitialHistory::Resumed(_)) {
+                state.persisted_dynamic_tools = initial_history
+                    .get_dynamic_tools()
+                    .unwrap_or_default()
+                    .into();
+                if state.session_configuration.dynamic_tools.is_empty() {
+                    state.session_configuration.dynamic_tools =
+                        Arc::clone(&state.persisted_dynamic_tools);
+                }
+            }
             state.base_instructions_provenance = base_instructions_provenance.clone();
             // Restore a provided effort baseline before startup prewarm can establish a new one.
             if let Some(pin) = thread_extension_data.remove::<ReasoningEffortPin>() {
                 state.reasoning_effort_pin = pin.as_ref().clone();
             }
             state.active_disabled_plugin_ids = session_configuration.disabled_plugin_ids.clone();
-            let managed_network_requirements_configured = config
-                .config_layer_stack
-                .requirements_toml()
-                .network
-                .is_some();
+            let managed_network_requirements_configured =
+                config.config_layer_stack.requirements().network.is_some();
             let managed_network_requirements_enabled =
                 config.managed_network_requirements_enabled();
             let network_approval = Arc::new(NetworkApprovalService::default());
@@ -1694,7 +1700,7 @@ impl Session {
                 analytics_events_client.unwrap_or_else(|| {
                     AnalyticsEventsClient::new(
                         Arc::clone(&auth_manager),
-                        config.chatgpt_base_url.trim_end_matches('/').to_string(),
+                        config.chatgpt_backend_url(),
                         config.analytics_enabled,
                     )
                 })
@@ -1714,7 +1720,8 @@ impl Session {
                         }
                     }
                     RolloutItem::EventMsg(event) => mcp_runtime.observe_event(event),
-                    RolloutItem::SessionMeta(_)
+                    RolloutItem::DynamicToolsUpdated { .. }
+                    | RolloutItem::SessionMeta(_)
                     | RolloutItem::ResponseItem(_)
                     | RolloutItem::InterAgentCommunication(_)
                     | RolloutItem::InterAgentCommunicationMetadata { .. }
@@ -1763,6 +1770,28 @@ impl Session {
                 );
             let reasoning_effort_override_enabled =
                 config.features.enabled(Feature::ReasoningEffortOverride) && !title_request;
+            // Once tracing starts, startup cleanup must own the session before the next await.
+            let rollout_thread_trace = if matches!(
+                session_configuration.session_source,
+                SessionSource::SubAgent(SubAgentSource::ThreadSpawn { .. })
+            ) {
+                // Spawned child threads are part of their root rollout tree. If the
+                // parent had no trace bundle, do not create an orphan child bundle
+                // that looks like an independent rollout.
+                if matches!(&initial_history, InitialHistory::Resumed(_)) {
+                    parent_rollout_thread_trace.resume_child_thread_trace(thread_id.to_string())
+                } else {
+                    parent_rollout_thread_trace.start_child_thread_trace(trace_metadata)
+                }
+            } else {
+                ThreadTraceContext::start_root(trace_metadata)
+            };
+            // Extensions have already started. On error, finish constructing the
+            // session so normal teardown can release everything they registered.
+            let (rollout_thread_trace, trace_error) = match rollout_thread_trace {
+                Ok(trace) => (trace, None),
+                Err(err) => (ThreadTraceContext::disabled(), Some(err)),
+            };
             let services = SessionServices {
                 // Start with an empty connection set. The initialized set is
                 // published after SessionConfigured so MCP events follow it.
@@ -1937,6 +1966,14 @@ impl Session {
             });
             if let Some(startup) = &startup {
                 startup.set_session(Arc::clone(&sess));
+            }
+            if let Some(err) = trace_error {
+                if startup.is_none() {
+                    super::handlers::shutdown_session_runtime(&sess).await;
+                }
+                return Err(
+                    CodexErr::Fatal(format!("failed to start rollout recording: {err:#}")).into(),
+                );
             }
             if let Some(network_policy_decider_session) = network_policy_decider_session {
                 let mut guard = network_policy_decider_session.write().await;

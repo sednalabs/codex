@@ -1,4 +1,7 @@
 //! The chat composer is the bottom-pane text input state machine.
+//! Rich registers retain original payloads across draft clears and composer replacement;
+//! only the live register transfers, not undo or repeat history. Copies receive fresh IDs and labels
+//! before ordinary attachment pruning, including after each semantic repeat action.
 //!
 //! It edits [`TextArea`] and attachments, routes popup keys, makes completed slash commands atomic,
 //! and handles Enter/newlines. It shows Luna Reserve's yellow arrow and detects unbracketed paste
@@ -35,7 +38,7 @@
 //!
 //! # Key Event Routing
 //!
-//! Plain Left opens agents when the local-daemon composer is empty and available for input.
+//! Plain Left opens agents from an empty, active composer connected to a local daemon or remote App Server.
 //! Explicit editor remaps take precedence.
 //! Most key handling goes through [`ChatComposer::handle_key_event`], which dispatches to a
 //! popup-specific handler if a popup is visible and otherwise to
@@ -129,6 +132,8 @@
 //! Multiline pastes continue blockquote prefixes.
 //! `Enter` submits immediately. `Tab` requests queuing while a task is running; if no task is
 //! running, `Tab` submits just like Enter so input is never dropped.
+//! Submit and queue bindings act only on fresh key presses; repeated events are consumed so a held
+//! key cannot dispatch a preserved draft after another input layer closes.
 //! Vim Replace shares Insert's composer actions; only textarea editing differs.
 //! Literal completion/paste edits discard stale Replace recovery; subsequent typing records anew.
 //! Token markers added during Replace are removed when restoring overwritten characters.
@@ -147,7 +152,9 @@
 //! dispatch, they intentionally preserve the textarea kill buffer. That lets users `Ctrl+K` part
 //! of a draft, perform a composer action such as changing reasoning level, and then `Ctrl+Y` the
 //! killed text back into the now-empty draft. Replacing the chat widget carries that buffer into
-//! the fresh composer so Vim yanks survive `/new` and thread switches.
+//! the fresh composer so Vim yanks survive `/new`, `/cd`, and thread switches. Rich objects retain
+//! their original image paths, mention targets, and collapsed-paste contents. Pasted objects receive
+//! fresh identities and labels, including in Replace mode, where Backspace removes them atomically.
 //!
 //! The numeric auto-submit path used by the slash popup performs the same pending-paste expansion
 //! and attachment pruning, and clears pending paste state on success.
@@ -166,7 +173,7 @@
 //!
 //! During reconnection, `handle_restricted_key` edits the draft directly without popup dispatch,
 //! composer shortcuts, or submission; `?` becomes literal input. Enter and Tab leave the draft
-//! intact until reconnection succeeds, except for the local `/warnings` command.
+//! intact until reconnection succeeds, except for `/warnings`, `/config`, `/quit`, and `/exit`.
 //! When connected but the thread is unavailable, configured
 //! submit keys may dispatch explicitly allowed recovery and local commands; other drafts stay put.
 //! Empty-prompt agents navigation remains available with its usual editor and draft guards.
@@ -276,6 +283,7 @@
 //!   [`ChatComposer::handle_paste`], which first commits buffered typing before classifying the
 //!   pasted text. This preserves the order when a paste arrives before the next burst-flush tick;
 //!   buffered keys have already been classified and go directly through `apply_paste`.
+//!   Image detection probes only regular files. Pasted device and FIFO paths stay literal.
 //! - Startup recovery previews held keys with the live Vim Replace policy without consuming them.
 //!   Buffered pastes remain literal in recovery so large-paste and image classification stays with
 //!   the live paste path.
@@ -291,8 +299,6 @@ use crate::key_hint;
 use crate::key_hint::KeyBinding;
 use crate::key_hint::ShortcutHint;
 use crate::key_hint::has_ctrl_or_alt;
-use crate::line_truncation::truncate_line_with_ellipsis_if_overflow;
-use crate::ui_consts::FOOTER_INDENT_COLS;
 use codex_message_history::HistoryBatchCursor;
 use crossterm::event::KeyCode;
 use crossterm::event::KeyEvent;
@@ -363,6 +369,7 @@ use super::skill_popup::SkillPopup;
 use super::slash_commands::ServiceTierCommand;
 use super::slash_commands::SlashCommandItem;
 use super::voice_strip::VoiceStrip;
+use crate::bottom_pane::footer_content::FooterContent;
 use crate::history_cell::sanitize_user_text;
 use crate::key_hint::KeyBindingListExt;
 use crate::keymap::EditorKeymap;
@@ -371,12 +378,12 @@ use crate::keymap::KeymapContextSet;
 use crate::keymap::RuntimeKeymap;
 use crate::keymap::VimNormalKeymap;
 use crate::keymap::user_bindings;
-use crate::onboarding::mark_underlined_hyperlink;
 use crate::render::Insets;
 use crate::render::RectExt;
 use crate::render::renderable::Renderable;
 use crate::slash_command::SlashCommand;
 use crate::style::user_message_style;
+use crate::ui_consts::FOOTER_INDENT_COLS;
 use codex_protocol::ThreadId;
 use codex_protocol::user_input::ByteRange;
 use codex_protocol::user_input::MAX_USER_INPUT_TEXT_CHARS;
@@ -400,6 +407,7 @@ mod slash_input;
 mod sparkle;
 mod status_surface;
 mod vim_history;
+mod vim_register;
 mod vim_search;
 mod warning_notice;
 
@@ -424,7 +432,6 @@ use crate::app_event::ConnectorsSnapshot;
 use crate::app_event_sender::AppEventSender;
 use crate::bottom_pane::LocalImageAttachment;
 use crate::bottom_pane::MentionBinding;
-use crate::bottom_pane::textarea::KillBufferSnapshot;
 use crate::bottom_pane::textarea::TextArea;
 use crate::clipboard_paste::normalize_pasted_path;
 use crate::clipboard_paste::pasted_image_format;
@@ -449,6 +456,7 @@ use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Duration;
 use std::time::Instant;
+pub(crate) use vim_register::KillBufferSnapshot;
 
 use ratatui::style::Color;
 
@@ -616,8 +624,9 @@ pub(crate) struct ChatComposer {
     pub(super) mention_usage: MentionUsage,
     app_event_tx: AppEventSender,
     history: ChatComposerHistory,
-    agents_navigation_enabled: bool,
-    footer: FooterState,
+    pub(super) command_center_enabled: bool,
+    // Keep the footer payload out of the composer's stack frame during session navigation.
+    footer: Box<FooterState>,
     has_focus: bool,
     frame_requester: Option<FrameRequester>,
     sparkle: sparkle::Sparkle,
@@ -657,6 +666,7 @@ pub(crate) struct ChatComposer {
     side_conversation_active: bool,
     history_search: Option<HistorySearchSession>,
     vim_history: VimHistory,
+    vim_register: vim_register::VimRegister,
     submit_keys: Vec<KeyBinding>,
     queue_keys: Vec<KeyBinding>,
     toggle_shortcuts_keys: Vec<KeyBinding>,
@@ -680,6 +690,7 @@ pub(super) struct ComposerDraft {
     local_image_paths: Vec<PathBuf>,
     remote_image_urls: Vec<String>,
     mention_bindings: Vec<MentionBinding>,
+    mention_ranges: Vec<Range<usize>>,
     pending_pastes: Vec<(String, String)>,
     cursor: usize,
 }
@@ -748,8 +759,8 @@ impl ChatComposer {
             mention_usage: MentionUsage::default(),
             app_event_tx,
             history: ChatComposerHistory::new(),
-            agents_navigation_enabled: false,
-            footer: FooterState {
+            command_center_enabled: false,
+            footer: Box::new(FooterState {
                 quit_shortcut_expires_at: None,
                 quit_shortcut_key: key_hint::ctrl(KeyCode::Char('c')),
                 esc_backtrack_hint: false,
@@ -764,7 +775,6 @@ impl ChatComposer {
                 goal_status_indicator: None,
                 ide_context_active: false,
                 status_line_value: None,
-                status_line_hyperlink_url: None,
                 status_line_enabled: false,
                 side_conversation_context_label: None,
                 active_agent_label: None,
@@ -795,7 +805,7 @@ impl ChatComposer {
                 reasoning_up_key: default_keymap
                     .primary_hint(KeymapContext::Chat, "increase_reasoning_effort"),
                 toggle_voice_key: default_keymap.primary_hint(KeymapContext::Chat, "toggle_voice"),
-            },
+            }),
             has_focus: has_input_focus,
             frame_requester: None,
             sparkle: sparkle::Sparkle::default(),
@@ -831,6 +841,7 @@ impl ChatComposer {
             side_conversation_active: false,
             history_search: None,
             vim_history: VimHistory::default(),
+            vim_register: vim_register::VimRegister::default(),
             submit_keys: vec![key_hint::plain(KeyCode::Enter)],
             queue_keys: vec![key_hint::plain(KeyCode::Tab)],
             toggle_shortcuts_keys: vec![
@@ -879,8 +890,10 @@ impl ChatComposer {
             if self.footer.status_line_enabled
                 && let Some(previous) = passive_footer_status_line(&self.footer_props())
             {
-                self.effort_status_line_transition =
-                    Some(EffortStatusLineTransition::new(tier, previous));
+                self.effort_status_line_transition = Some(EffortStatusLineTransition::new(
+                    tier,
+                    previous.into_hyperlink_line(),
+                ));
             }
             if let Some(frame_requester) = &self.frame_requester {
                 frame_requester.schedule_frame();
@@ -1256,8 +1269,11 @@ impl ChatComposer {
             return false;
         };
 
-        // normalize_pasted_path already handles Windows → WSL path conversion,
-        // so we can directly try to read the image dimensions.
+        // Opening a serial device or FIFO can block the input loop.
+        if !path_buf.is_file() {
+            return false;
+        }
+
         match image::image_dimensions(&path_buf) {
             Ok((width, height)) => {
                 tracing::info!("OK: {pasted}");
@@ -1388,11 +1404,11 @@ impl ChatComposer {
     }
 
     pub(crate) fn take_kill_buffer_snapshot(&mut self) -> KillBufferSnapshot {
-        self.draft.textarea.take_kill_buffer_snapshot()
+        vim_register::take_snapshot(self)
     }
 
     pub(crate) fn restore_kill_buffer_snapshot(&mut self, snapshot: KillBufferSnapshot) {
-        self.draft.textarea.restore_kill_buffer_snapshot(snapshot);
+        vim_register::restore_snapshot(self, snapshot);
     }
 
     /// Restore draft history transferred from the startup composer.
@@ -1642,12 +1658,14 @@ impl ChatComposer {
     }
 
     pub(super) fn snapshot_draft(&self) -> ComposerDraft {
+        let (mention_bindings, mention_ranges) = self.snapshot_mention_bindings_with_ranges();
         ComposerDraft {
             text: self.current_text(),
             text_elements: self.current_text_elements(),
             local_image_paths: self.attachments.local_image_paths(),
             remote_image_urls: self.attachments.remote_image_urls(),
-            mention_bindings: self.mention_bindings(),
+            mention_bindings,
+            mention_ranges,
             pending_pastes: self.draft.pending_pastes.clone(),
             cursor: self.current_cursor(),
         }
@@ -1660,6 +1678,7 @@ impl ChatComposer {
             local_image_paths,
             remote_image_urls,
             mention_bindings,
+            mention_ranges,
             pending_pastes,
             cursor,
         } = draft;
@@ -1668,8 +1687,20 @@ impl ChatComposer {
             text,
             text_elements,
             local_image_paths,
-            mention_bindings,
+            Vec::new(),
         );
+        for (binding, range) in mention_bindings.into_iter().zip(mention_ranges) {
+            if let Some(id) = self.draft.textarea.element_id_for_exact_range(range) {
+                self.draft.mention_bindings.insert(
+                    id,
+                    ComposerMentionBinding {
+                        sigil: binding.sigil,
+                        mention: binding.mention,
+                        path: binding.path,
+                    },
+                );
+            }
+        }
         self.set_pending_pastes(pending_pastes);
         self.set_current_cursor(cursor);
         self.sync_popups();
@@ -1812,14 +1843,15 @@ impl ChatComposer {
     }
 
     #[cfg(test)]
-    pub(crate) fn status_line_text(&self) -> Option<String> {
-        self.footer.status_line_text()
+    pub(crate) fn status_line_content(&self) -> Option<&FooterContent> {
+        self.footer.status_line_value.as_ref()
     }
 
     pub(crate) fn local_images(&self) -> Vec<LocalImageAttachment> {
         self.attachments.local_images()
     }
 
+    #[cfg(test)]
     pub(crate) fn mention_bindings(&self) -> Vec<MentionBinding> {
         self.snapshot_mention_bindings()
     }
@@ -2910,20 +2942,32 @@ impl ChatComposer {
     }
 
     fn snapshot_mention_bindings(&self) -> Vec<MentionBinding> {
-        let mut ordered = Vec::new();
-        for (id, sigil, mention) in self.current_mention_elements() {
-            if let Some(binding) = self.draft.mention_bindings.get(&id)
-                && binding.sigil == sigil
-                && binding.mention == mention
-            {
-                ordered.push(MentionBinding {
-                    sigil: binding.sigil,
-                    mention: binding.mention.clone(),
-                    path: binding.path.clone(),
-                });
-            }
-        }
-        ordered
+        self.snapshot_mention_bindings_with_ranges().0
+    }
+
+    fn snapshot_mention_bindings_with_ranges(&self) -> (Vec<MentionBinding>, Vec<Range<usize>>) {
+        self.draft
+            .textarea
+            .text_element_snapshots()
+            .into_iter()
+            .filter_map(|element| {
+                let binding = self.draft.mention_bindings.get(&element.id)?;
+                if element.text != format!("{}{}", binding.sigil, binding.mention)
+                    || (crate::task_mentions::valid_thread_path(&binding.path).is_none()
+                        && Self::mention_token_from_insert_text(&element.text).is_none())
+                {
+                    return None;
+                }
+                Some((
+                    MentionBinding {
+                        sigil: binding.sigil,
+                        mention: binding.mention.clone(),
+                        path: binding.path.clone(),
+                    },
+                    element.range,
+                ))
+            })
+            .unzip()
     }
 
     fn bind_mentions_from_snapshot(&mut self, mention_bindings: Vec<MentionBinding>) {
@@ -3528,6 +3572,11 @@ impl ChatComposer {
         } else {
             self.footer.mode = reset_mode_after_activity(self.footer.mode);
         }
+        if key_event.kind == KeyEventKind::Repeat
+            && (self.queue_keys.is_pressed(key_event) || self.submit_keys.is_pressed(key_event))
+        {
+            return (InputResult::None, true);
+        }
         if self.queue_keys.is_pressed(key_event)
             && (self.is_task_running || self.queue_submissions || !self.is_bang_shell_command())
         {
@@ -3755,9 +3804,28 @@ impl ChatComposer {
         }
 
         self.begin_vim_edit(input);
-        self.draft.textarea.input(input);
+        if self.draft.textarea.is_vim_normal_mode()
+            && !self.draft.textarea.is_vim_operator_pending()
+            && self.vim_normal_keymap.repeat_last_change.is_pressed(input)
+        {
+            self.draft.textarea.set_cursor(self.draft.textarea.cursor());
+            if let Some(edits) = self.draft.textarea.begin_vim_repeat() {
+                for edit in edits {
+                    let elements = self.draft.textarea.element_payloads();
+                    if !self.draft.textarea.apply_vim_edit(&edit) {
+                        break;
+                    }
+                    vim_register::sync(self);
+                    self.sync_bash_mode_from_text();
+                    self.reconcile_deleted_elements(elements);
+                }
+                self.draft.textarea.finish_vim_repeat();
+            }
+        } else {
+            self.draft.textarea.input(input);
+            vim_register::sync(self);
+        }
         self.sync_bash_mode_from_text();
-
         if let Some(elements_before) = elements_before {
             self.reconcile_deleted_elements(elements_before);
         }
@@ -4322,19 +4390,11 @@ impl ChatComposer {
         }
     }
 
-    pub(crate) fn set_status_line(&mut self, status_line: Option<Line<'static>>) -> bool {
+    pub(crate) fn set_status_line(&mut self, status_line: Option<FooterContent>) -> bool {
         if self.footer.status_line_value == status_line {
             return false;
         }
         self.footer.status_line_value = status_line;
-        true
-    }
-
-    pub(crate) fn set_status_line_hyperlink(&mut self, url: Option<String>) -> bool {
-        if self.footer.status_line_hyperlink_url == url {
-            return false;
-        }
-        self.footer.status_line_hyperlink_url = url;
         true
     }
 
@@ -4628,39 +4688,32 @@ impl ChatComposer {
                 } else if let Some(line) = self.history_search_footer_line() {
                     render_footer_line(hint_rect, buf, line);
                 } else {
-                    let available_width =
-                        hint_rect.width.saturating_sub(FOOTER_INDENT_COLS as u16) as usize;
+                    let mut status_line_width =
+                        hint_rect.width.saturating_sub(FOOTER_INDENT_COLS as u16);
                     let status_line_active = uses_passive_footer_status_layout(&footer_props);
                     let combined_status_line = if status_line_active {
                         passive_footer_status_line(&footer_props)
                     } else {
                         None
                     };
-                    let transition_visible = status_line_active
+                    let status_line_visible = status_line_active
                         && !self.footer.flash_visible()
                         && self.footer.hint_override.is_none();
-                    let transition_active = transition_visible
+                    let transition_active = status_line_visible
                         && self
                             .effort_status_line_transition
                             .as_ref()
                             .is_some_and(|transition| !transition.is_finished());
-                    let combined_status_line = if transition_visible
+                    let combined_status_line = if status_line_visible
                         && let Some(transition) = &self.effort_status_line_transition
                         && !transition.is_finished()
                     {
-                        transition.render_line(
-                            combined_status_line.as_ref(),
-                            hint_rect.width.saturating_sub(FOOTER_INDENT_COLS as u16),
-                        )
+                        let current = combined_status_line.map(FooterContent::into_hyperlink_line);
+                        transition
+                            .render_line(current, status_line_width)
+                            .map(FooterContent::HyperlinkLine)
                     } else {
                         combined_status_line
-                    };
-                    let mut truncated_status_line = if status_line_active {
-                        combined_status_line.as_ref().map(|line| {
-                            truncate_line_with_ellipsis_if_overflow(line.clone(), available_width)
-                        })
-                    } else {
-                        None
                     };
                     let left_mode_indicator =
                         if status_line_active || self.status_surface_height(options) > 0 {
@@ -4678,10 +4731,9 @@ impl ChatComposer {
                     } else if let Some(items) = active_footer_hint_override {
                         footer_hint_items_width(items)
                     } else if status_line_active {
-                        truncated_status_line
+                        combined_status_line
                             .as_ref()
-                            .map(|line| line.width() as u16)
-                            .unwrap_or(0)
+                            .map_or(/*default*/ 0, FooterContent::width)
                     } else {
                         footer_line_width(
                             &footer_props,
@@ -4711,15 +4763,11 @@ impl ChatComposer {
                             Some(self.right_footer_line_with_context())
                         };
                     let right_width = right_line.as_ref().map(|l| l.width() as u16).unwrap_or(0);
-                    if status_line_active
+                    if status_line_visible
                         && let Some(max_left) = max_left_width_for_right(hint_rect, right_width)
-                        && left_width > max_left
-                        && let Some(line) = combined_status_line.as_ref().map(|line| {
-                            truncate_line_with_ellipsis_if_overflow(line.clone(), max_left as usize)
-                        })
                     {
-                        left_width = line.width() as u16;
-                        truncated_status_line = Some(line);
+                        status_line_width = max_left;
+                        left_width = left_width.min(max_left);
                     }
                     let can_show_left_and_context =
                         can_show_left_with_context(hint_rect, left_width, right_width);
@@ -4768,31 +4816,15 @@ impl ChatComposer {
                     if let Some((summary_left, _)) = single_line_layout {
                         match summary_left {
                             SummaryLeft::Default => {
-                                if status_line_active {
-                                    if let Some(line) = truncated_status_line.clone() {
-                                        render_footer_line(hint_rect, buf, line);
-                                    } else {
-                                        render_footer_from_props(
-                                            hint_rect,
-                                            buf,
-                                            &footer_props,
-                                            left_mode_indicator,
-                                            show_cycle_hint,
-                                            show_shortcuts_hint,
-                                            show_queue_hint,
-                                        );
-                                    }
-                                } else {
-                                    render_footer_from_props(
-                                        hint_rect,
-                                        buf,
-                                        &footer_props,
-                                        left_mode_indicator,
-                                        show_cycle_hint,
-                                        show_shortcuts_hint,
-                                        show_queue_hint,
-                                    );
-                                }
+                                render_footer_from_props(
+                                    hint_rect,
+                                    buf,
+                                    &footer_props,
+                                    left_mode_indicator,
+                                    show_cycle_hint,
+                                    show_shortcuts_hint,
+                                    show_queue_hint,
+                                );
                             }
                             SummaryLeft::Custom(line) => {
                                 render_footer_line(hint_rect, buf, line);
@@ -4806,8 +4838,14 @@ impl ChatComposer {
                     } else if let Some(items) = active_footer_hint_override {
                         render_footer_hint_items(hint_rect, buf, items);
                     } else if status_line_active {
-                        if let Some(line) = truncated_status_line {
-                            render_footer_line(hint_rect, buf, line);
+                        if let Some(content) = combined_status_line {
+                            content.render(
+                                Rect {
+                                    width: status_line_width,
+                                    ..inset_footer_hint_area(hint_rect)
+                                },
+                                buf,
+                            );
                         }
                     } else {
                         render_footer_from_props(
@@ -4823,12 +4861,7 @@ impl ChatComposer {
                     if show_right && let Some(line) = &right_line {
                         render_context_right(hint_rect, buf, line);
                     }
-                    if status_line_active
-                        && let Some(url) = self.footer.status_line_hyperlink_url.as_deref()
-                    {
-                        mark_underlined_hyperlink(buf, hint_rect, url);
-                    }
-                    if transition_visible
+                    if status_line_visible
                         && let Some(transition) = &self.effort_status_line_transition
                         && !transition.is_finished()
                         && let Some(frame_requester) = &self.frame_requester
@@ -5401,9 +5434,9 @@ mod tests {
             /*enhanced_keys_supported*/ true,
             |composer| {
                 composer.set_status_line_enabled(/*enabled*/ true);
-                composer.set_status_line(Some(Line::from(
-                    "gpt-5.4 high fast · ~/code/codex-1 · Context 0% used",
-                )));
+                composer.set_status_line(Some(
+                    Line::from("gpt-5.4 high fast · ~/code/codex-1 · Context 0% used").into(),
+                ));
                 composer.set_text_content("!git status".to_string(), Vec::new(), Vec::new());
             },
         );
@@ -5413,9 +5446,9 @@ mod tests {
             /*enhanced_keys_supported*/ true,
             |composer| {
                 composer.set_status_line_enabled(/*enabled*/ true);
-                composer.set_status_line(Some(Line::from(
-                    "gpt-5.4 high fast · ~/code/codex-1 · Context 0% used",
-                )));
+                composer.set_status_line(Some(
+                    Line::from("gpt-5.4 high fast · ~/code/codex-1 · Context 0% used").into(),
+                ));
                 composer.set_text_content("!".to_string(), Vec::new(), Vec::new());
                 let _ = composer.handle_key_event(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
             },
@@ -5456,9 +5489,9 @@ mod tests {
             /*disable_paste_burst*/ false,
         );
         composer.set_status_line_enabled(/*enabled*/ true);
-        composer.set_status_line(Some(Line::from(
-            "gpt-5.4 high fast · ~/code/codex-1 · Context 0% used",
-        )));
+        composer.set_status_line(Some(
+            Line::from("gpt-5.4 high fast · ~/code/codex-1 · Context 0% used").into(),
+        ));
         composer.set_text_content("!git status".to_string(), Vec::new(), Vec::new());
 
         let area = Rect::new(0, 0, 100, 9);
@@ -5631,11 +5664,18 @@ mod tests {
         );
         let url = "https://github.com/openai/codex/pull/20252";
         composer.set_status_line_enabled(/*enabled*/ true);
-        composer.set_status_line(Some(Line::from(Span::styled(
-            "PR #20252",
-            Style::default().cyan().underlined(),
-        ))));
-        composer.set_status_line_hyperlink(Some(url.to_string()));
+        composer.set_status_line(
+            crate::bottom_pane::status_line_from_segments(
+                [(
+                    crate::bottom_pane::status_line_setup::StatusLineItem::PullRequestNumber,
+                    "PR #20252".to_string(),
+                )],
+                /*use_theme_colors*/ false,
+                /*thread_id*/ None,
+                Some(url),
+            )
+            .map(Into::into),
+        );
 
         let area = Rect::new(0, 0, 40, 6);
         let mut buf = Buffer::empty(area);
@@ -5645,10 +5685,7 @@ mod tests {
             .flat_map(|y| (area.left()..area.right()).map(move |x| (x, y)))
             .filter(|&(x, y)| buf[(x, y)].symbol().contains(url))
             .count();
-        assert_eq!(
-            marked_cells,
-            "PR #20252".chars().filter(|ch| !ch.is_whitespace()).count()
-        );
+        assert_eq!(marked_cells, "PR #20252".chars().count());
     }
 
     #[test]
@@ -9320,7 +9357,11 @@ mod tests {
             "image_placeholder_single",
             /*enhanced_keys_supported*/ false,
             |composer| {
-                composer.attach_image(PathBuf::from("/tmp/image1.png"));
+                let (mut previous, _rx) = new_test_composer();
+                previous.attach_image(PathBuf::from("/tmp/image1.png"));
+                previous.handle_key_event(KeyEvent::new(KeyCode::Char('u'), KeyModifiers::CONTROL));
+                composer.restore_kill_buffer_snapshot(previous.take_kill_buffer_snapshot());
+                composer.handle_key_event(KeyEvent::new(KeyCode::Char('y'), KeyModifiers::CONTROL));
             },
         );
 
@@ -9561,7 +9602,7 @@ mod tests {
     }
 
     #[test]
-    fn kill_buffer_persists_after_submit() {
+    fn kill_buffer_preserves_image_after_submit() {
         use crossterm::event::KeyCode;
         use crossterm::event::KeyEvent;
         use crossterm::event::KeyModifiers;
@@ -9576,11 +9617,12 @@ mod tests {
             /*disable_paste_burst*/ false,
         );
         composer.set_steer_enabled(true);
-        composer.draft.textarea.insert_str("restore me");
-        composer.draft.textarea.set_cursor(/*pos*/ 0);
+        composer.draft.textarea.insert_str("restore me ");
+        let image_path = PathBuf::from("/tmp/killed-image.png");
+        composer.attach_image(image_path.clone());
 
         let (_result, _needs_redraw) =
-            composer.handle_key_event(KeyEvent::new(KeyCode::Char('k'), KeyModifiers::CONTROL));
+            composer.handle_key_event(KeyEvent::new(KeyCode::Char('u'), KeyModifiers::CONTROL));
         assert!(composer.draft.textarea.is_empty());
 
         composer.draft.textarea.insert_str("hello");
@@ -9589,9 +9631,27 @@ mod tests {
         assert!(matches!(result, InputResult::Submitted { .. }));
         assert!(composer.draft.textarea.is_empty());
 
+        let other_image_path = PathBuf::from("/tmp/other-image.png");
+        composer.attach_image(other_image_path.clone());
+        composer.handle_paste(" ".into());
         let (_result, _needs_redraw) =
             composer.handle_key_event(KeyEvent::new(KeyCode::Char('y'), KeyModifiers::CONTROL));
-        assert_eq!(composer.draft.textarea.text(), "restore me");
+        let (result, _) =
+            composer.handle_key_event(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+        assert_eq!(
+            result,
+            InputResult::Submitted {
+                text: "[Image #1] restore me [Image #2]".into(),
+                text_elements: vec![
+                    TextElement::new((0..10).into(), Some("[Image #1]".into())),
+                    TextElement::new((22..32).into(), Some("[Image #2]".into())),
+                ],
+            }
+        );
+        assert_eq!(
+            composer.take_recent_submission_images(),
+            vec![other_image_path, image_path]
+        );
     }
 
     #[test]

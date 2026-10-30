@@ -23,11 +23,22 @@ use retained_instructions::RetainedUserInstructionsSection;
 use sender_user_messages::SenderUserMessagesSection;
 use transcript::ConversationTranscriptSection;
 
+mod native_tool_call;
+
 pub use action::ActionPresentation;
 pub use action::PlannedAction;
 pub use action::PlannedActionKind;
 pub use action::action_for_review;
 pub use authorization::GuardianRootMessage;
+pub use authorization::RootConversationContent;
+pub use preparation::root::RootAssistantCandidate;
+pub use preparation::root::RootAssistantContent;
+pub use preparation::root::RootConversationCandidates;
+pub use preparation::root::RootConversationInput;
+pub use preparation::root::RootConversationSource;
+pub use preparation::root::RootDeliveredMessage;
+pub use preparation::root::RootMessageCandidate;
+pub use preparation::root::RootRetainedAssistant;
 pub use section::ContextSection;
 
 pub use entry::ConversationTranscriptEntry;
@@ -46,6 +57,9 @@ pub use truncation::truncate_text;
 
 mod verified_answers;
 pub use verified_answers::RenderedVerifiedAnswers;
+pub use verified_answers::TrustedUserAnswer;
+pub use verified_answers::collect_verified_answer_candidates;
+pub use verified_answers::render_original_verified_answer;
 pub use verified_answers::render_verified_answer;
 pub use verified_answers::render_verified_answers;
 
@@ -64,6 +78,10 @@ mod budget;
 mod composition;
 mod cursor;
 pub use budget::DEFAULT_MAX_INPUT_TOKENS;
+pub use budget::ElasticBudgetConfig;
+pub use budget::ElasticSection;
+pub use budget::ElasticSectionLimits;
+pub use budget::ElasticSectionLimitsError;
 pub use budget::REQUEST_TOKENS_BOUNDARIES;
 pub use budget::REQUEST_TOKENS_METRIC;
 pub use budget::RequestBudget;
@@ -77,22 +95,31 @@ pub use budget::request_token_bucket;
 pub use cursor::TranscriptCursor;
 pub use cursor::TranscriptMode;
 pub use cursor::TranscriptSelection;
-mod profile;
+mod preparation;
 pub use codex_protocol::TranscriptFormat;
 pub use composition::CollectedContext;
 pub use composition::ComposedContext;
 pub use composition::ContextPresentation;
+pub use composition::MAX_TEXT_PART_ESTIMATED_TOKENS;
 pub use composition::PreparedTranscript;
-pub use profile::ContextProfile;
+pub use preparation::ContextProfile;
+pub use preparation::SyncImagePreparer;
+pub use preparation::SyncPreparation;
+pub use preparation::prepare_sync_context;
+pub use preparation::prepare_sync_context_with_facts;
+pub use preparation::prepare_sync_delivery;
+pub use preparation::prepare_sync_images;
+pub use preparation::root::PreparedRootContext;
+pub use preparation::root::prepare_root_context;
 mod authorization;
 mod entry;
 mod history;
 mod images;
-mod node_repl;
 pub use node_repl::NodeReplContext;
 pub use node_repl::NodeReplResponse;
 pub use node_repl::NodeReplReviewEvidenceMode;
 pub use node_repl::RenderedNodeReplEvidence;
+use preparation::repl as node_repl;
 mod permissions;
 pub use images::TranscriptImageInput;
 pub use images::TranscriptImages;
@@ -161,8 +188,10 @@ pub struct SectionInput<'a> {
     pub transcript: &'a ConversationTranscriptConfig,
     /// Bounded root evidence resolved by the host; empty when not applicable.
     pub root_conversation: &'a [GuardianRootMessage],
-    /// Bounded, role-labeled answers selected from the host-owned context snapshot.
-    pub trusted_user_answers: &'a [String],
+    /// Sync originals retained until request preparation; preferred over the bounded view.
+    pub root_conversation_candidates: Option<&'a RootConversationInput>,
+    /// Role-labeled sync answer candidates or already-bounded answers from other consumers.
+    pub trusted_user_answers: &'a [TrustedUserAnswer],
     /// Exact action JSON; sync composition bounds the reason and descriptions.
     pub planned_action: Option<&'a PlannedAction>,
     /// Sync-only restrictions resolved from the parent execution environment.
@@ -200,6 +229,17 @@ pub trait SectionHistory: Send + Sync {
     /// Bounded host-owned facts from the same snapshot as the current items.
     fn retained_context(&self) -> Option<&codex_history::RetainedContext> {
         None
+    }
+
+    /// Renders an original complete assistant message without request-size selection.
+    /// Sync preparation applies admission after collection; hosts preserve their fragment boundary.
+    fn render_original_assistant(
+        &self,
+        message: &codex_history::RetainedUserMessage,
+    ) -> Option<GuardianRootMessage> {
+        message
+            .complete
+            .then(|| GuardianRootMessage::Assistant(message.text.clone()))
     }
 
     /// Renders one bounded retained assistant message through the host's
@@ -248,8 +288,8 @@ pub trait SectionContributor: Send + Sync {
 /// A section could not provide the evidence needed for a valid review context.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum SectionError {
-    /// One native agent-message ID identifies different authors, recipients or content.
-    ConflictingAgentMessage,
+    /// One native message or tool-call ID identifies different evidence.
+    ConflictingNativeMessage,
     /// Evidence required by this contributor for the current input is missing.
     MissingRequiredEvidence { section: &'static str },
     /// A section cannot be delivered by the requested consumer.
@@ -261,8 +301,8 @@ pub enum SectionError {
 impl std::fmt::Display for SectionError {
     fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            Self::ConflictingAgentMessage => {
-                formatter.write_str("conflicting native agent messages share an ID")
+            Self::ConflictingNativeMessage => {
+                formatter.write_str("conflicting native messages or tool calls share an ID")
             }
             Self::MissingRequiredEvidence { section } => {
                 write!(formatter, "missing required evidence for section {section}")
@@ -304,7 +344,8 @@ pub fn default_registry() -> &'static SectionRegistry {
         registry.register(images::TranscriptImagesSection);
         registry.register(node_repl::NodeReplEvidenceSection);
         registry.register(permissions::PermissionContextSection);
-        registry.register(action::PlannedActionSection);
+        registry.register(action::PlannedActionSection(SectionScope::Shared));
+        registry.register(action::PlannedActionSection(SectionScope::SyncOnly));
         registry
     });
     &REGISTRY

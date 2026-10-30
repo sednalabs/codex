@@ -154,6 +154,7 @@ pub(crate) fn new_server_version_warning(
 #[derive(Debug)]
 pub(crate) struct SafetyAccessBlockCell {
     title: &'static str,
+    pub(crate) explanation: Option<String>,
     body: &'static str,
     actions: &'static [(&'static str, &'static str)],
 }
@@ -163,7 +164,8 @@ const SAFETY_ACCESS_BLOCK_LEARN_MORE_URL: &str = "https://help.openai.com/en/art
 pub(crate) fn new_safety_access_block_event() -> SafetyAccessBlockCell {
     SafetyAccessBlockCell {
         title: "This content can't be shown",
-        body: "We take extra caution with requests involving biological research and applications that could pose safety risks. Eligible researchers can apply for Trusted Access.",
+        explanation: Some("We take extra caution with requests involving biological research and applications that could pose safety risks.".into()),
+        body: "Eligible researchers can apply for Trusted Access.",
         actions: &[
             (
                 "Trusted Access",
@@ -180,7 +182,7 @@ pub(crate) fn new_cyber_policy_error_event(
     use crate::daybreak::Notice;
     let (body, actions): (_, &'static [(&str, &str)]) = match notice {
         Notice::Apply => (
-            "We take extra care with some cybersecurity requests. If you’re doing authorized security work, apply for Daybreak to get broader access.",
+            "If you’re doing authorized security work, apply for Daybreak to get broader access.",
             &[
                 ("Learn more", SAFETY_ACCESS_BLOCK_LEARN_MORE_URL),
                 (
@@ -204,8 +206,19 @@ pub(crate) fn new_cyber_policy_error_event(
     };
     SafetyAccessBlockCell {
         title: "This content can’t be shown",
+        explanation: (notice == Notice::Apply)
+            .then(|| "We take extra care with some cybersecurity requests.".into()),
         body,
         actions,
+    }
+}
+
+impl SafetyAccessBlockCell {
+    fn message(&self) -> String {
+        match &self.explanation {
+            Some(explanation) => format!("{explanation} {}", self.body),
+            None => self.body.to_owned(),
+        }
     }
 }
 
@@ -218,7 +231,7 @@ impl HistoryCell for SafetyAccessBlockCell {
         let mut lines = vec![HyperlinkLine::new(
             vec!["ⓘ ".fg(accent_color()), self.title.bold()].into(),
         )];
-        let body = Line::from(vec!["  ".into(), self.body.dim()]);
+        let body = Line::from(vec!["  ".into(), self.message().dim()]);
         let wrap_width = width.saturating_sub(2).max(1) as usize;
         let wrapped = adaptive_wrap_line(
             &body,
@@ -251,7 +264,7 @@ impl HistoryCell for SafetyAccessBlockCell {
     }
 
     fn raw_lines(&self) -> Vec<Line<'static>> {
-        let mut lines = vec![Line::from(self.title), Line::from(self.body)];
+        let mut lines = vec![Line::from(self.title), Line::from(self.message())];
         lines.extend(
             self.actions
                 .iter()

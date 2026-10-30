@@ -98,7 +98,7 @@ impl ModelProvider for GcpModelProvider {
     }
 
     fn memory_consolidation_preferred_model(&self) -> &'static str {
-        "gpt-6.1-sol"
+        "gpt-6.1-terra"
     }
 
     fn auth_manager(&self) -> Option<Arc<AuthManager>> {
@@ -149,13 +149,18 @@ impl ModelProvider for GcpModelProvider {
         &self,
         config_model_catalog: Option<ModelsResponse>,
     ) -> SharedModelsManager {
+        let origin = if config_model_catalog.is_some() {
+            codex_models_manager::ModelOrigin::ExplicitConfig
+        } else {
+            codex_models_manager::ModelOrigin::Provider
+        };
         let mut model_catalog = config_model_catalog
             .or_else(|| codex_models_manager::bundled_models_response().ok())
             .unwrap_or_default();
         model_catalog.models.retain(|model| {
             matches!(
                 model.slug.as_str(),
-                "gpt-6-astra" | "gpt-6-luna" | "gpt-6.1-sol"
+                "gpt-6-astra" | "gpt-6-luna" | "gpt-6.1-sol" | "gpt-6.1-terra"
             )
         });
         // Vertex supports function tools, namespaces, and client-side tool search, but not
@@ -168,6 +173,7 @@ impl ModelProvider for GcpModelProvider {
         Arc::new(StaticModelsManager::new(
             self.auth_manager.clone(),
             model_catalog,
+            origin,
         ))
     }
 }

@@ -110,12 +110,16 @@ standalone JSON file:
 
 `mitm` defaults to `false`. `mitm_ca` defaults to `None` and is omitted from serialized JSON when
 unset. HTTPS MITM is enabled automatically for limited mode or configured `mitm_hooks`. Set `mitm` to
-`true` to enable it explicitly. The proxy requires `network.enabled = true` and rejects unknown
-fields, including fields nested inside MITM hooks.
+`true` to enable it explicitly. The proxy requires `network.enabled = true`. Unknown policy fields are rejected in both modes.
+Standalone documents may include a top-level `metadata` value and omit `constraints`.
 
 ```bash
 cargo run -p codex-network-proxy -- --config /path/to/network-proxy.json
 ```
+
+Managed hosts must pass `--strict`, which rejects unknown fields at every typed level and requires
+an explicit `constraints` object. Library callers use `StaticNetworkProxyConfig::from_slice_strict`
+for the same checks.
 
 ### 3) Point a client at it
 
@@ -309,7 +313,23 @@ An injected header can additionally set `placeholder` to require one exact
 whole-header value before substituting the secret. Missing, mismatched, or
 duplicate values fail closed. This form requires HTTPS port 443 and cannot
 modify routing or framing headers. Resolved secret headers and signing headers
-are marked sensitive in diagnostics.
+are marked sensitive in diagnostics. Body substitution is available as `body_secret_substitution` with `replacements`
+(each containing an exact `placeholder` and a trusted `secret` source), `port`,
+and `max_body_bytes`. Markers must be opaque ASCII values of 16–256 bytes.
+Input and expanded output are bounded (8 MiB default, 16 MiB maximum), each
+resolved credential is capped at 64 KiB, and at most 65,536 occurrences may be
+replaced. Search work is capped at 256 MiB of worst-case byte comparisons;
+requests may exceed this limit before reaching the body-size limit.
+Compressed payloads, trailers, supplied payload-integrity headers, and AWS
+streaming signatures fail closed. Markers split across HTTP body chunks are
+supported; overlapping
+bindings or occurrences are rejected. Replacement is byte-exact and does not
+perform JSON/form escaping or regex interpretation. The caller must choose
+markers appropriate for the payload encoding. Content length is recomputed,
+and SigV4 runs after substitution so it hashes the actual transmitted body.
+At most one signing action and one body substitution action may match a request;
+combine body bindings in one action to avoid ambiguous transformation order.
+
 All native buffering stages share eight request slots, with a five-second bounded
 wait. Each lease follows the prepared body until consumed or dropped; the 16 MiB
 body cap bounds retained memory even when upstream connections are slow.

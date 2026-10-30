@@ -2051,6 +2051,117 @@ async fn websocket_overload_retry_after_is_a_floor_with_recovery() -> Result<()>
     Ok(())
 }
 
+/// Advised capacity retries must not turn a terminal policy denial into a transport fallback.
+#[tokio::test(flavor = "current_thread")]
+async fn websocket_advised_overload_preserves_terminal_policy_error() -> Result<()> {
+    skip_if_no_network!(Ok(()));
+
+    let mut telemetry = RetryTelemetryCapture::install();
+    let overload = vec![json!({
+        "type": "error",
+        "status": 503,
+        "error": {
+            "code": "server_is_overloaded",
+            "message": "The model is temporarily at capacity.",
+            "headers": { "Retry-After": "1" }
+        }
+    })];
+    let server = responses::start_websocket_server(vec![
+        vec![
+            vec![
+                responses::ev_response_created("prewarm"),
+                responses::ev_completed("prewarm"),
+            ],
+            overload.clone(),
+        ],
+        vec![overload.clone()],
+        vec![overload],
+        vec![vec![json!({
+            "type": "error",
+            "status": 503,
+            "error": {
+                "code": "policy_capacity_unavailable",
+                "message": "This model is disabled."
+            }
+        })]],
+    ])
+    .await;
+    let test = test_codex()
+        .with_config(|config| {
+            config.model_catalog =
+                Some(bundled_models_response().expect("bundled models.json should parse"));
+            config.model_provider.request_max_retries = Some(0);
+            config.model_provider.stream_max_retries = Some(0);
+        })
+        .build_with_websocket_server(&server)
+        .await?;
+
+    let warmup = server
+        .wait_for_request(/*connection_index*/ 0, /*request_index*/ 0)
+        .await;
+    assert_eq!(warmup.body_json()["generate"].as_bool(), Some(false));
+    submit_user_input(
+        &test,
+        "retry capacity failures, but preserve policy denials",
+    )
+    .await?;
+
+    for attempt in 1..=3 {
+        let retry = telemetry.next_retry().await;
+        assert_eq!(retry.attempt, attempt);
+        assert!(wait_for_retry(&mut telemetry, &retry).await >= Duration::from_secs(1));
+    }
+
+    let mut error_events = 0;
+    let mut stream_error_events = 0;
+    let mut fallback_warning_events = 0;
+    loop {
+        match wait_for_event(&test.codex, |_| true).await {
+            EventMsg::Error(error) => {
+                error_events += 1;
+                assert_eq!(
+                    error.codex_error_info,
+                    Some(CodexErrorInfo::PolicyCapacityUnavailable)
+                );
+                assert_eq!(
+                    error.message,
+                    "Policy-restricted capacity is unavailable. Please try again later."
+                );
+            }
+            EventMsg::StreamError(_) => stream_error_events += 1,
+            EventMsg::Warning(warning)
+                if warning.message.contains("Falling back from WebSockets") =>
+            {
+                fallback_warning_events += 1;
+            }
+            EventMsg::TurnComplete(event) => {
+                assert_eq!(
+                    event.error.and_then(|error| error.codex_error_info),
+                    Some(CodexErrorInfo::PolicyCapacityUnavailable)
+                );
+                break;
+            }
+            _ => {}
+        }
+    }
+
+    assert_eq!(error_events, 1);
+    assert_eq!(stream_error_events, 3);
+    assert_eq!(fallback_warning_events, 0);
+    let request_count: usize = server.connections().iter().map(Vec::len).sum();
+    assert_eq!(
+        request_count, 5,
+        "expected prewarm, three advised overloads, and a terminal policy error"
+    );
+    assert_eq!(
+        telemetry.events.try_recv(),
+        Err(mpsc::error::TryRecvError::Empty)
+    );
+    server.shutdown().await;
+
+    Ok(())
+}
+
 /// Headerless websocket capacity retries continue beyond ordinary attempt limits.
 #[tokio::test(flavor = "current_thread")]
 async fn websocket_overload_without_retry_after_retries_until_recovery() -> Result<()> {

@@ -115,9 +115,10 @@ fn changing_retained_context_and_attestations_preserves_history_before_the_curre
                 paths: vec![format!("/skills/skill-{generation}/SKILL.md")],
             };
             let action = PlannedAction {
-                json: format!(r#"{{"tool":"inspect","path":"file-{generation}"}}"#),
                 tool_descriptions: None,
-                kind: PlannedActionKind::Command,
+                kind: PlannedActionKind::Command {
+                    json: format!(r#"{{"tool":"inspect","path":"file-{generation}"}}"#),
+                },
                 reason: None,
             };
             let collected = default_registry()
@@ -126,6 +127,7 @@ fn changing_retained_context_and_attestations_preserves_history_before_the_curre
                     history: &history,
                     transcript: &profile.transcript,
                     root_conversation: &[],
+                    root_conversation_candidates: None,
                     trusted_user_answers: &[],
                     planned_action: Some(&action),
                     permissions: None,

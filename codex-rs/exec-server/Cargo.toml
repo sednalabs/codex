@@ -51,6 +51,7 @@ dirs = { workspace = true }
 futures = { workspace = true }
 http = { workspace = true }
 ml-kem = { workspace = true }
+notify = { workspace = true }
 opentelemetry = { workspace = true }
 prost = "0.14.3"
 rand_core = { workspace = true }

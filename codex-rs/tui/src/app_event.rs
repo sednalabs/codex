@@ -298,6 +298,7 @@ pub(crate) enum AppEvent {
     AccountEmailLoaded {
         request_id: uuid::Uuid,
         email: Option<String>,
+        workspace: Option<String>,
     },
     SecuritySetupLoaded {
         request_id: uuid::Uuid,
@@ -319,7 +320,7 @@ pub(crate) enum AppEvent {
     NewAgentsOverviewSession {
         cwd: Option<AbsolutePathBuf>,
     },
-    /// Update the daemon-wide overview after a background thread listing finishes.
+    /// Update the agents overview after a background thread listing finishes.
     AgentsOverviewThreadsLoaded {
         request_id: Uuid,
         result: Result<AgentsOverviewThreadRefresh, String>,
@@ -398,14 +399,6 @@ pub(crate) enum AppEvent {
         thread_id: ThreadId,
         action: AgentsOverviewAction,
     },
-    /// Start the shared app-server daemon without moving the current embedded session.
-    #[cfg(any(unix, windows))]
-    StartAgentsDaemon,
-    /// Report whether starting the shared app-server daemon succeeded.
-    #[cfg(any(unix, windows))]
-    AgentsDaemonStarted {
-        result: Result<(), String>,
-    },
     /// Open the agent picker for switching active threads.
     OpenAgentPicker,
     /// Merge a completed root-scoped agent-picker refresh without blocking terminal input.
@@ -463,6 +456,13 @@ pub(crate) enum AppEvent {
         model: String,
         turn: AppCommand,
         prompt: UserMessage,
+    },
+
+    /// Fork before a blocked turn and send the selected safer follow-up.
+    ContinueSafetyRecourse {
+        thread_id: ThreadId,
+        turn_id: String,
+        prompt: String,
     },
 
     /// Deliver a synthetic history lookup response to a specific thread channel.
@@ -546,6 +546,11 @@ pub(crate) enum AppEvent {
     /// Start a new session, optionally assigning it a name.
     NewSession {
         name: Option<String>,
+    },
+
+    /// Continue a provider-locked conversation in a fresh chat using its saved history.
+    ContinueProviderChat {
+        thread_id: ThreadId,
     },
 
     /// Create a managed checkout and start or fork a session into it.
@@ -644,10 +649,10 @@ pub(crate) enum AppEvent {
     /// Resume a thread by UUID or thread name inside the running TUI session.
     ResumeSessionByIdOrName(String),
 
-    /// Archive the current active main thread and exit after it succeeds.
+    /// Archive the current active main thread and return to the command center.
     ArchiveCurrentThread,
 
-    /// Permanently delete the current active main thread and exit after it succeeds.
+    /// Permanently delete the current active main thread and return to the command center.
     DeleteCurrentThread,
 
     /// Fork the current session into a new thread, optionally assigning it a name.
@@ -673,6 +678,8 @@ pub(crate) enum AppEvent {
     /// escape hatch that skips shutdown and may drop in-flight work (e.g.,
     /// background tasks, rollout flush, or child process cleanup).
     Exit(ExitMode),
+    /// The user accepted stopping other sessions owned by this embedded server.
+    ConfirmedEmbeddedExit(ExitMode),
 
     /// Apply a choice from the running-task exit menu to its originating thread.
     RunningTaskExit {
@@ -1230,6 +1237,12 @@ pub(crate) enum AppEvent {
 
     /// Update the current model slug in the running app and widget.
     UpdateModel(String),
+
+    /// Apply a model-picker selection to the active conversation and saved local defaults.
+    ApplyModelSelection {
+        model: String,
+        effort: Option<ReasoningEffort>,
+    },
 
     /// Apply an explicit Astra selection and offer the flourish only if it changed the model on
     /// its original task. Automatic model updates do not use this event.

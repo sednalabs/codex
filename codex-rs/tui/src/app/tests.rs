@@ -51,6 +51,8 @@ mod key_chords;
 mod local_command_scroll_tests;
 #[path = "tests/luna_reserve_recovery_tests.rs"]
 mod luna_reserve_recovery_tests;
+#[path = "tests/marketplace_upgrade_tests.rs"]
+mod marketplace_upgrade_tests;
 #[path = "tests/mcp_startup.rs"]
 mod mcp_startup;
 #[path = "tests/misalignment_policy_tests.rs"]
@@ -124,6 +126,7 @@ use crate::app_backtrack::nth_user_position;
 use crate::app_backtrack::user_count;
 use crate::app_event::HistoryBatchEntryResponse;
 use crate::test_support::boxed_future;
+use codex_app_server_protocol::ThreadItem;
 
 async fn drain_managed_worktree_start(app: &mut App, server: &mut AppServerSession) {
     if let Some((mode, name)) = app.pending_start_managed_worktree.take() {
@@ -188,7 +191,7 @@ use codex_app_server_protocol::ThreadArchivedNotification;
 use codex_app_server_protocol::ThreadAttachmentOperation;
 use codex_app_server_protocol::ThreadAttachmentUpdatedNotification;
 use codex_app_server_protocol::ThreadClosedNotification;
-use codex_app_server_protocol::ThreadItem;
+use codex_app_server_protocol::ThreadItemPayload;
 use codex_app_server_protocol::ThreadSettings;
 use codex_app_server_protocol::ThreadSettingsUpdatedNotification;
 use codex_app_server_protocol::ThreadStartedNotification;
@@ -914,7 +917,7 @@ async fn enqueue_primary_thread_session_replays_turns_before_initial_prompt_subm
         vec![test_turn(
             "turn-1",
             TurnStatus::Completed,
-            vec![ThreadItem::UserMessage {
+            vec![ThreadItemPayload::UserMessage {
                 id: "user-1".to_string(),
                 client_id: None,
                 content: vec![AppServerUserInput::Text {
@@ -1845,11 +1848,10 @@ async fn replay_thread_snapshot_does_not_submit_queue_before_replay_catches_up()
             turns: Vec::new(),
             events: vec![
                 ThreadBufferedEvent::Notification(Box::new(ServerNotification::ItemCompleted(
-                    codex_app_server_protocol::ItemCompletedNotification {
-                        thread_id: thread_id.to_string(),
-                        turn_id: "turn-1".into(),
-                        completed_at_ms: 0,
-                        item: ThreadItem::UserMessage {
+                    codex_app_server_protocol::ItemCompletedNotification::new(
+                        thread_id.to_string(),
+                        "turn-1".into(),
+                        ThreadItemPayload::UserMessage {
                             id: "accepted".into(),
                             client_id: Some(client_id),
                             content: vec![UserInput::Text {
@@ -1857,7 +1859,9 @@ async fn replay_thread_snapshot_does_not_submit_queue_before_replay_catches_up()
                                 text_elements: Vec::new(),
                             }],
                         },
-                    },
+                        /*started_at_ms*/ None,
+                        /*completed_at_ms*/ 0,
+                    ),
                 ))),
                 ThreadBufferedEvent::Notification(Box::new(turn_completed_notification(
                     thread_id,
@@ -2170,12 +2174,17 @@ async fn replayed_interrupted_turn_restores_queued_input_to_composer() {
 
 #[tokio::test]
 async fn token_usage_update_refreshes_status_line_with_runtime_context_window() {
+    use crate::bottom_pane::StatusLineItem;
+    use crate::bottom_pane::footer_content::FooterContent;
+
     let mut app = make_test_app().await;
     app.chat_widget.setup_status_line(
-        vec![crate::bottom_pane::StatusLineItem::ContextWindowSize],
+        vec![
+            StatusLineItem::ContextWindowSize,
+            StatusLineItem::UsedTokens,
+        ],
         /*use_theme_colors*/ true,
     );
-
     assert_eq!(
         app.chat_widget.config_panel_tui.status_line,
         app.chat_widget.local_settings.tui.status_line
@@ -2183,14 +2192,31 @@ async fn token_usage_update_refreshes_status_line_with_runtime_context_window() 
     assert!(app.chat_widget.config_panel_tui.status_line_use_colors);
     assert_eq!(app.chat_widget.status_line_text(), None);
 
-    app.handle_thread_event_now(ThreadBufferedEvent::Notification(Box::new(
-        token_usage_notification(ThreadId::new(), "turn-1", Some(950_000)),
-    )));
-
-    assert_eq!(
-        app.chat_widget.status_line_text(),
-        Some("950K window".into())
-    );
+    let thread_id = ThreadId::new();
+    for (extensions, window, expected) in [
+        (false, 950_000, "950K window · 8 used"),
+        (true, 800_000, "800K window · 8 used"),
+        (false, 900_000, "900K window · 8 used"),
+    ] {
+        let before = render_bottom_popup(&app.chat_widget, /*width*/ 60);
+        app.chat_widget
+            .set_feature_enabled(Feature::TuiExtensionsStatusLine, extensions);
+        app.refresh_status_line();
+        assert_eq!(render_bottom_popup(&app.chat_widget, /*width*/ 60), before);
+        app.handle_thread_event_now(ThreadBufferedEvent::Notification(Box::new(
+            token_usage_notification(thread_id, "turn-1", Some(window)),
+        )));
+        assert!(matches!(
+            (extensions, app.chat_widget.status_line_content()),
+            (false, Some(FooterContent::HyperlinkLine(_)))
+                | (true, Some(FooterContent::Extension { .. }))
+        ));
+        let rendered = render_bottom_popup(&app.chat_widget, /*width*/ 60);
+        assert!(
+            rendered.lines().any(|row| row.trim() == expected),
+            "{rendered}"
+        );
+    }
 }
 
 #[tokio::test]
@@ -2200,11 +2226,10 @@ async fn collab_receiver_notification_caches_thread_without_app_server_read() {
         ThreadId::from_string("00000000-0000-0000-0000-000000000123").expect("valid thread id");
 
     app.handle_thread_event_now(ThreadBufferedEvent::Notification(Box::new(
-        ServerNotification::ItemStarted(ItemStartedNotification {
-            thread_id: ThreadId::new().to_string(),
-            turn_id: "turn-1".to_string(),
-            started_at_ms: 0,
-            item: ThreadItem::CollabAgentToolCall {
+        ServerNotification::ItemStarted(ItemStartedNotification::new(
+            ThreadId::new().to_string(),
+            "turn-1".to_string(),
+            ThreadItemPayload::CollabAgentToolCall {
                 id: "wait-1".to_string(),
                 tool: codex_app_server_protocol::CollabAgentTool::Wait,
                 status: codex_app_server_protocol::CollabAgentToolCallStatus::InProgress,
@@ -2216,7 +2241,8 @@ async fn collab_receiver_notification_caches_thread_without_app_server_read() {
                 agents_states: HashMap::new(),
                 mailbox_wait_report: None,
             },
-        }),
+            /*started_at_ms*/ 0,
+        )),
     )));
 
     assert_eq!(
@@ -2238,29 +2264,32 @@ async fn collab_receiver_notification_does_not_cache_not_found_thread() {
         ThreadId::from_string("00000000-0000-0000-0000-000000000124").expect("valid thread id");
 
     app.handle_thread_event_now(ThreadBufferedEvent::Notification(Box::new(
-        ServerNotification::ItemCompleted(codex_app_server_protocol::ItemCompletedNotification {
-            thread_id: ThreadId::new().to_string(),
-            turn_id: "turn-1".to_string(),
-            completed_at_ms: 0,
-            item: ThreadItem::CollabAgentToolCall {
-                id: "send-1".to_string(),
-                tool: codex_app_server_protocol::CollabAgentTool::SendInput,
-                status: codex_app_server_protocol::CollabAgentToolCallStatus::Failed,
-                sender_thread_id: ThreadId::new().to_string(),
-                receiver_thread_ids: vec![receiver_thread_id.to_string()],
-                prompt: Some("hello".to_string()),
-                model: None,
-                reasoning_effort: None,
-                agents_states: HashMap::from([(
-                    receiver_thread_id.to_string(),
-                    codex_app_server_protocol::CollabAgentState {
-                        status: codex_app_server_protocol::CollabAgentStatus::NotFound,
-                        message: None,
-                    },
-                )]),
-                mailbox_wait_report: None,
-            },
-        }),
+        ServerNotification::ItemCompleted(
+            codex_app_server_protocol::ItemCompletedNotification::new(
+                ThreadId::new().to_string(),
+                "turn-1".to_string(),
+                ThreadItemPayload::CollabAgentToolCall {
+                    id: "send-1".to_string(),
+                    tool: codex_app_server_protocol::CollabAgentTool::SendInput,
+                    status: codex_app_server_protocol::CollabAgentToolCallStatus::Failed,
+                    sender_thread_id: ThreadId::new().to_string(),
+                    receiver_thread_ids: vec![receiver_thread_id.to_string()],
+                    prompt: Some("hello".to_string()),
+                    model: None,
+                    reasoning_effort: None,
+                    agents_states: HashMap::from([(
+                        receiver_thread_id.to_string(),
+                        codex_app_server_protocol::CollabAgentState {
+                            status: codex_app_server_protocol::CollabAgentStatus::NotFound,
+                            message: None,
+                        },
+                    )]),
+                    mailbox_wait_report: None,
+                },
+                /*started_at_ms*/ None,
+                /*completed_at_ms*/ 0,
+            ),
+        ),
     )));
 
     assert_eq!(app.agent_navigation.get(&receiver_thread_id), None);
@@ -3605,7 +3634,7 @@ async fn server_only_profile_selection_keeps_turns_on_the_selected_profile() -> 
 async fn remote_resume_rejects_explicit_permission_override() -> Result<()> {
     let (mut app, mut events, _ops) = make_test_app_with_channels().await;
     let endpoint = crate::resolve_remote_addr("ws://127.0.0.1:8765")?;
-    app.app_server_target = crate::AppServerTarget::Remote { endpoint };
+
     let home = tempdir()?;
     std::fs::write(
         home.path().join("config.toml"),
@@ -3630,18 +3659,23 @@ async fn remote_resume_rejects_explicit_permission_override() -> Result<()> {
         &app.harness_overrides
     ));
     let mut tui = crate::tui::test_support::make_test_tui()?;
-    app.resume_target_session(
-        &mut tui,
-        &mut server,
-        SessionTarget {
-            backend_id,
-            thread_id: ThreadId::new(),
-            path: None,
-            cwd: None,
-            history_mode: None,
-        },
-    )
-    .await?;
+    let mut settings = app.backend_settings();
+    settings.target = crate::AppServerTarget::Remote { endpoint };
+    let result = app
+        .prepare_target_session(
+            &mut tui,
+            &mut server,
+            &SessionTarget {
+                backend_id,
+                thread_id: ThreadId::new(),
+                path: None,
+                cwd: None,
+                history_mode: None,
+            },
+            super::resume_preparation::ResumeSource::Backend(&settings),
+        )
+        .await;
+    assert!(matches!(result, Err(AppRunControl::Continue)));
     assert_eq!(app.active_thread_id, None);
     let cell = std::iter::from_fn(|| events.try_recv().ok())
         .find_map(|event| match event {
@@ -4498,11 +4532,10 @@ async fn inactive_thread_file_change_approval_recovers_buffered_changes() {
     let thread_id = ThreadId::new();
     app.enqueue_thread_notification(
         thread_id,
-        ServerNotification::ItemStarted(ItemStartedNotification {
-            thread_id: thread_id.to_string(),
-            turn_id: "turn-approval".to_string(),
-            started_at_ms: 0,
-            item: ThreadItem::FileChange {
+        ServerNotification::ItemStarted(ItemStartedNotification::new(
+            thread_id.to_string(),
+            "turn-approval".to_string(),
+            ThreadItemPayload::FileChange {
                 id: "patch-approval".to_string(),
                 changes: vec![FileUpdateChange {
                     path: "README.md".to_string(),
@@ -4511,7 +4544,8 @@ async fn inactive_thread_file_change_approval_recovers_buffered_changes() {
                 }],
                 status: codex_app_server_protocol::PatchApplyStatus::InProgress,
             },
-        }),
+            /*started_at_ms*/ 0,
+        )),
     )
     .await
     .expect("enqueue file change item");
@@ -4576,11 +4610,10 @@ async fn active_thread_file_change_approval_recovers_buffered_changes() {
     app.startup_protected_input_boundary = true;
     app.enqueue_thread_notification(
         thread_id,
-        ServerNotification::ItemStarted(ItemStartedNotification {
-            thread_id: thread_id.to_string(),
-            turn_id: "turn-active-approval".to_string(),
-            started_at_ms: 0,
-            item: ThreadItem::FileChange {
+        ServerNotification::ItemStarted(ItemStartedNotification::new(
+            thread_id.to_string(),
+            "turn-active-approval".to_string(),
+            ThreadItemPayload::FileChange {
                 id: "patch-active-approval".to_string(),
                 changes: vec![FileUpdateChange {
                     path: "visible-target.md".to_string(),
@@ -4589,7 +4622,8 @@ async fn active_thread_file_change_approval_recovers_buffered_changes() {
                 }],
                 status: codex_app_server_protocol::PatchApplyStatus::InProgress,
             },
-        }),
+            /*started_at_ms*/ 0,
+        )),
     )
     .await
     .expect("enqueue file change item");
@@ -4626,19 +4660,22 @@ async fn active_thread_file_change_approval_recovers_buffered_changes() {
     assert!(!app.chat_widget.has_active_view());
     assert!(app.startup_pending_protected_request);
     app.chat_widget.handle_server_notification(
-        ServerNotification::ItemCompleted(codex_app_server_protocol::ItemCompletedNotification {
-            thread_id: thread_id.to_string(),
-            turn_id: "turn-active-approval".to_string(),
-            completed_at_ms: 0,
-            item: ThreadItem::AgentMessage {
-                id: "agent-1".to_string(),
-                text: "streaming".to_string(),
-                phase: None,
-                memory_citation: None,
-                delivery: None,
-                questions: None,
-            },
-        }),
+        ServerNotification::ItemCompleted(
+            codex_app_server_protocol::ItemCompletedNotification::new(
+                thread_id.to_string(),
+                "turn-active-approval".to_string(),
+                ThreadItemPayload::AgentMessage {
+                    id: "agent-1".to_string(),
+                    text: "streaming".to_string(),
+                    phase: None,
+                    memory_citation: None,
+                    delivery: None,
+                    questions: None,
+                },
+                /*started_at_ms*/ None,
+                /*completed_at_ms*/ 0,
+            ),
+        ),
         /*replay_kind*/ None,
     );
 
@@ -4661,7 +4698,7 @@ async fn replayed_file_change_approval_recovers_snapshot_changes() {
             turns: vec![test_turn(
                 "turn-replayed-approval",
                 TurnStatus::InProgress,
-                vec![ThreadItem::FileChange {
+                vec![ThreadItemPayload::FileChange {
                     id: "patch-replayed-approval".to_string(),
                     changes: vec![FileUpdateChange {
                         path: "visible-target.md".to_string(),
@@ -5591,7 +5628,7 @@ async fn side_thread_snapshot_hides_forked_parent_transcript() {
     let parent_turn = test_turn(
         "parent-turn",
         TurnStatus::Completed,
-        vec![ThreadItem::UserMessage {
+        vec![ThreadItemPayload::UserMessage {
             id: "parent-user".to_string(),
             client_id: None,
             content: vec![AppServerUserInput::Text {
@@ -6218,7 +6255,7 @@ async fn render_clear_ui_header_after_long_transcript_for_snapshot() -> String {
 
     let user_cell = |text: &str| -> Arc<dyn HistoryCell> {
         Arc::new(UserHistoryCell {
-            spoken: false,
+            presentation: Default::default(),
             message: text.to_string(),
             text_elements: Vec::new(),
             local_image_paths: Vec::new(),
@@ -6913,7 +6950,7 @@ async fn app_server_thread_replacement_clears_previous_transcript_before_replay(
             turns: vec![test_turn(
                 "next-turn",
                 TurnStatus::Completed,
-                vec![ThreadItem::UserMessage {
+                vec![ThreadItemPayload::UserMessage {
                     id: "next-user".to_string(),
                     client_id: None,
                     content: vec![AppServerUserInput::Text {
@@ -6997,7 +7034,7 @@ async fn snapshot_thread_switch_discards_queued_previous_history() -> Result<()>
             turns: vec![test_turn(
                 "next-turn",
                 TurnStatus::Completed,
-                vec![ThreadItem::UserMessage {
+                vec![ThreadItemPayload::UserMessage {
                     id: "next-user".to_string(),
                     client_id: None,
                     content: vec![AppServerUserInput::Text {
@@ -7157,17 +7194,20 @@ async fn copy_picker_opening_preserves_terminal_scrollback_without_reflow() {
         crate::transcript_mode::TranscriptMode::Terminal;
     let response = "Existing response\n\n```rust\nkeep_scrollback();\n```";
     app.chat_widget.handle_server_notification(
-        ServerNotification::ItemCompleted(codex_app_server_protocol::ItemCompletedNotification {
-            thread_id: String::new(),
-            turn_id: "turn-1".to_string(),
-            completed_at_ms: 0,
-            item: serde_json::from_value(serde_json::json!({
-                "type": "agentMessage",
-                "id": "message-1",
-                "text": response,
-            }))
-            .expect("valid completed agent message"),
-        }),
+        ServerNotification::ItemCompleted(
+            codex_app_server_protocol::ItemCompletedNotification::new(
+                String::new(),
+                "turn-1".to_string(),
+                serde_json::from_value(serde_json::json!({
+                    "type": "agentMessage",
+                    "id": "message-1",
+                    "text": response,
+                }))
+                .expect("valid completed agent message"),
+                /*started_at_ms*/ None,
+                /*completed_at_ms*/ 0,
+            ),
+        ),
         /*replay_kind*/ None,
     );
     while app_event_rx.try_recv().is_ok() {}
@@ -7498,12 +7538,12 @@ async fn resizing_empty_transcript_schedules_settled_size_recheck() {
     );
 }
 
-fn test_turn(turn_id: &str, status: TurnStatus, items: Vec<ThreadItem>) -> Turn {
+fn test_turn(turn_id: &str, status: TurnStatus, items: Vec<ThreadItemPayload>) -> Turn {
     Turn {
         id: turn_id.to_string(),
         root_turn_id: None,
         items_view: codex_app_server_protocol::TurnItemsView::Full,
-        items,
+        items: items.into_iter().map(ThreadItem::untimed).collect(),
         status,
         error: None,
         started_at: None,
@@ -7942,7 +7982,7 @@ async fn backtrack_selection_preserves_selected_prompt_and_requests_branch() {
                      remote_image_urls: Vec<String>|
      -> Arc<dyn HistoryCell> {
         Arc::new(UserHistoryCell {
-            spoken: false,
+            presentation: Default::default(),
             message: text.to_string(),
             text_elements,
             local_image_paths,
@@ -8224,6 +8264,7 @@ async fn in_app_resume_session_cwd_without_metadata_is_non_fatal() -> Result<()>
     )?;
     app.state_db = None;
     let active_thread_id = app.chat_widget.thread_id();
+    app.chat_widget.insert_str("keep this draft");
     let mut app_server = Box::pin(crate::start_embedded_app_server_for_picker(&app.config)).await?;
     let backend_id = app_server.backend_id();
     let mut tui = crate::tui::test_support::make_test_tui()?;
@@ -8244,6 +8285,10 @@ async fn in_app_resume_session_cwd_without_metadata_is_non_fatal() -> Result<()>
 
     assert!(matches!(control, AppRunControl::Continue));
     assert_eq!(app.chat_widget.thread_id(), active_thread_id);
+    assert_eq!(
+        app.chat_widget.composer_text_with_pending(),
+        "keep this draft"
+    );
     let cell = match app_event_rx.try_recv() {
         Ok(AppEvent::InsertHistoryCell(cell)) => cell,
         other => panic!("expected InsertHistoryCell event, got {other:?}"),
@@ -8470,18 +8515,44 @@ async fn in_app_resume_uses_configured_or_explicit_cwd() -> Result<()> {
             .handle_thread_session_quiet(test_thread_session(ThreadId::new(), active_cwd.clone()));
         let mut tui = crate::tui::test_support::make_test_tui()?;
 
-        let control = app
-            .resume_target_session(
+        let settings = app.backend_settings();
+        // Prepare a destination while another backend owns the displayed configuration.
+        let other_home = tempdir()?;
+        app.config.codex_home = other_home.path().to_path_buf().abs();
+        let active_settings = (app.config.clone(), app.local_settings.clone());
+        let active_thread_id = app.chat_widget.thread_id();
+        app.chat_widget
+            .insert_str("keep this draft until attachment");
+        let prepared = match app
+            .prepare_target_session(
                 &mut tui,
                 app_server,
-                crate::resume_picker::SessionTarget {
+                &crate::resume_picker::SessionTarget {
                     backend_id,
                     path: Some(rollout_path),
                     thread_id,
                     cwd: None,
                     history_mode: None,
                 },
+                super::resume_preparation::ResumeSource::Backend(&settings),
             )
+            .await
+        {
+            Ok(prepared) => prepared,
+            Err(_) => panic!("saved thread should be ready for attachment"),
+        };
+        assert_eq!(
+            (&app.config, &app.local_settings),
+            (&active_settings.0, &active_settings.1)
+        );
+        assert_eq!(app.chat_widget.thread_id(), active_thread_id);
+        assert_eq!(
+            app.chat_widget.composer_text_with_pending(),
+            "keep this draft until attachment"
+        );
+        assert_eq!(app.chat_widget.config_ref().cwd.as_path(), active_cwd);
+        let control = app
+            .activate_prepared_session(&mut tui, app_server, prepared)
             .await?;
 
         assert!(matches!(control, AppRunControl::Continue));
@@ -8655,7 +8726,7 @@ async fn prompt_edit_reverts_earlier_and_first_visible_prompts_in_place_scenario
         filename_ts,
         "2025-01-05T12:00:00Z",
         "unused preview",
-        Some("test-provider"),
+        Some(config.model_provider_id.as_str()),
         /*git_info*/ None,
     )
     .expect("materialized rollout should be created");
@@ -8774,12 +8845,13 @@ async fn prompt_edit_reverts_earlier_and_first_visible_prompts_in_place_scenario
         ));
         for item in selected_turn.items {
             store.push_notification(ServerNotification::ItemCompleted(
-                codex_app_server_protocol::ItemCompletedNotification {
-                    thread_id: source_thread_id.to_string(),
-                    turn_id: selected_turn.id.clone(),
-                    completed_at_ms: 0,
-                    item,
-                },
+                codex_app_server_protocol::ItemCompletedNotification::new(
+                    source_thread_id.to_string(),
+                    selected_turn.id.clone(),
+                    item.payload,
+                    /*started_at_ms*/ None,
+                    /*completed_at_ms*/ 0,
+                ),
             ));
         }
         store.push_notification(turn_completed_notification(
@@ -9112,14 +9184,14 @@ async fn replay_thread_snapshot_replays_turn_history_in_order() {
                     id: "turn-1".to_string(),
                     root_turn_id: None,
                     items_view: codex_app_server_protocol::TurnItemsView::Full,
-                    items: vec![ThreadItem::UserMessage {
+                    items: vec![ThreadItem::untimed(ThreadItemPayload::UserMessage {
                         id: "user-1".to_string(),
                         client_id: None,
                         content: vec![AppServerUserInput::Text {
                             text: "first prompt".to_string(),
                             text_elements: Vec::new(),
                         }],
-                    }],
+                    })],
                     status: TurnStatus::Completed,
                     error: None,
                     started_at: None,
@@ -9131,22 +9203,22 @@ async fn replay_thread_snapshot_replays_turn_history_in_order() {
                     root_turn_id: None,
                     items_view: codex_app_server_protocol::TurnItemsView::Full,
                     items: vec![
-                        ThreadItem::UserMessage {
+                        ThreadItem::untimed(ThreadItemPayload::UserMessage {
                             id: "user-2".to_string(),
                             client_id: None,
                             content: vec![AppServerUserInput::Text {
                                 text: "third prompt".to_string(),
                                 text_elements: Vec::new(),
                             }],
-                        },
-                        ThreadItem::AgentMessage {
+                        }),
+                        ThreadItem::untimed(ThreadItemPayload::AgentMessage {
                             id: "assistant-2".to_string(),
                             text: "done".to_string(),
                             phase: None,
                             memory_citation: None,
                             delivery: None,
                             questions: None,
-                        },
+                        }),
                     ],
                     status: TurnStatus::Completed,
                     error: None,
@@ -9227,11 +9299,10 @@ async fn replace_chat_widget_reseeds_collab_agent_metadata_for_replay() {
             turns: Vec::new(),
             events: vec![ThreadBufferedEvent::Notification(Box::new(
                 ServerNotification::ItemStarted(
-                    codex_app_server_protocol::ItemStartedNotification {
-                        thread_id: "thread-1".to_string(),
-                        turn_id: "turn-1".to_string(),
-                        started_at_ms: 0,
-                        item: ThreadItem::CollabAgentToolCall {
+                    codex_app_server_protocol::ItemStartedNotification::new(
+                        "thread-1".to_string(),
+                        "turn-1".to_string(),
+                        ThreadItemPayload::CollabAgentToolCall {
                             id: "wait-1".to_string(),
                             tool: codex_app_server_protocol::CollabAgentTool::Wait,
                             status:
@@ -9244,7 +9315,8 @@ async fn replace_chat_widget_reseeds_collab_agent_metadata_for_replay() {
                             agents_states: HashMap::new(),
                             mailbox_wait_report: None,
                         },
-                    },
+                        /*started_at_ms*/ 0,
+                    ),
                 ),
             ))],
             active_reasoning_item: None,
@@ -9284,7 +9356,7 @@ async fn refreshed_snapshot_session_persists_resumed_turns() {
     let resumed_turns = vec![test_turn(
         "turn-1",
         TurnStatus::Completed,
-        vec![ThreadItem::UserMessage {
+        vec![ThreadItemPayload::UserMessage {
             id: "user-1".to_string(),
             client_id: None,
             content: vec![AppServerUserInput::Text {
@@ -10153,7 +10225,7 @@ async fn clear_only_ui_reset_preserves_chat_session_state() {
     app.chat_widget
         .apply_external_edit("draft prompt".to_string());
     app.transcript_cells = vec![Arc::new(UserHistoryCell {
-        spoken: false,
+        presentation: Default::default(),
         message: "old message".to_string(),
         text_elements: Vec::new(),
         local_image_paths: Vec::new(),

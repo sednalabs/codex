@@ -126,7 +126,9 @@ fn render_prepared_catalog(
         return RenderedCatalog::default();
     };
     record_catalog_render(extension_metrics, catalog_surface, budget, &rendered.report);
-    let warning_message = rendered.report.warning_message();
+    let warning_message = rendered
+        .report
+        .warning_message(/*catalog_deltas_enabled*/ false);
     let fragment = rendered.into_fragment(include_skills_usage_instructions);
     RenderedCatalog {
         fragment,
@@ -237,7 +239,8 @@ where
                 CatalogSurface::ThreadContext,
                 &catalog,
                 include_usage,
-                SkillCatalogRenderPolicy::ExtensionCompatible,
+                SkillCatalogRenderPolicy::EXTENSION_COMPATIBLE
+                    .with_omitted_descriptions(config.omit_descriptions),
                 skill_metadata_budget(/*context_window*/ None, config.max_context_tokens),
             );
             if let Some(message) = rendered.warning_message {
@@ -416,7 +419,8 @@ where
                     CatalogSurface::TurnInput,
                     &turn_catalog,
                     include_usage,
-                    SkillCatalogRenderPolicy::ExtensionCompatible,
+                    SkillCatalogRenderPolicy::EXTENSION_COMPATIBLE
+                        .with_omitted_descriptions(config.omit_descriptions),
                     metadata_budget,
                 );
                 if let Some(message) = rendered.warning_message {

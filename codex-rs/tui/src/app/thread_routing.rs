@@ -49,11 +49,30 @@ impl App {
             .await;
     }
 
-    pub(super) async fn shutdown_side_threads(&mut self, app_server: &mut AppServerSession) {
-        let side_thread_ids: Vec<ThreadId> = self.side_threads.keys().copied().collect();
-        for side_thread_id in side_thread_ids {
-            self.discard_side_thread(app_server, side_thread_id).await;
+    pub(super) async fn shutdown_side_threads(
+        &mut self,
+        app_server: &mut AppServerSession,
+        root: Option<ThreadId>,
+    ) -> bool {
+        if self.side_threads.is_empty() {
+            return true;
         }
+        let subtree = root.map(|id| self.known_thread_subtree(id));
+        let ids: Vec<_> = self
+            .side_threads
+            .iter()
+            .filter(|(_, side)| {
+                subtree
+                    .as_ref()
+                    .is_none_or(|ids| ids.contains(&side.parent_thread_id))
+            })
+            .map(|(id, _)| *id)
+            .collect();
+        let mut closed = true;
+        for id in ids {
+            closed &= self.discard_side_thread(app_server, id).await;
+        }
+        closed
     }
 
     pub(super) fn abort_thread_event_listener(&mut self, thread_id: ThreadId) {
@@ -115,6 +134,22 @@ impl App {
             if let Some(receiver) = receiver {
                 channel.receiver = Some(receiver);
             }
+        }
+    }
+
+    pub(super) fn retain_subscriptions_for_fork(&mut self) {
+        // Tasks can start while the fork RPC is pending.
+        for id in self
+            .thread_event_channels
+            .keys()
+            .copied()
+            .chain(self.agent_navigation.tracked_thread_ids())
+            .filter(|id| !self.side_threads.contains_key(id))
+        {
+            self.agents_overview
+                .dispatched_requests
+                .entry(id)
+                .or_default();
         }
     }
 
@@ -203,7 +238,8 @@ impl App {
         &mut self,
         target_session: &crate::resume_picker::SessionTarget,
     ) -> bool {
-        if self.active_thread_id != Some(target_session.thread_id)
+        if self.chat_widget.has_provider_error()
+            || self.active_thread_id != Some(target_session.thread_id)
             || self
                 .thread_event_channels
                 .get(&target_session.thread_id)
@@ -536,10 +572,32 @@ impl App {
             return Ok(());
         }
 
-        if self
+        let submitted = match self
             .try_submit_active_thread_op_via_app_server(app_server, thread_id, &op)
-            .await?
+            .await
         {
+            Ok(submitted) => submitted,
+            Err(error) => {
+                if let Some(provider_error) =
+                    crate::app_server_session::model_provider_error(&error)
+                    && self.current_displayed_thread_id() == Some(thread_id)
+                {
+                    self.chat_widget.show_provider_error(
+                        provider_error,
+                        match &op {
+                            AppCommand::UserTurn {
+                                client_user_message_id,
+                                ..
+                            } => Some(client_user_message_id.as_str()),
+                            _ => None,
+                        },
+                    );
+                    return Ok(());
+                }
+                return Err(error);
+            }
+        };
+        if submitted {
             if ThreadEventStore::op_can_change_pending_replay_state(&op) {
                 self.note_thread_outbound_op(thread_id, &op).await;
                 self.refresh_pending_thread_approvals().await;
@@ -1731,23 +1789,23 @@ impl App {
         let confirmed_message_ids = snapshot
             .turns
             .iter()
-            .flat_map(|turn| &turn.items)
+            .flat_map(Turn::item_payloads)
             .chain(snapshot.events.iter().filter_map(|event| {
                 let ThreadBufferedEvent::Notification(notification) = event else {
                     return None;
                 };
                 if let ServerNotification::ItemStarted(notification) = notification.as_ref() {
-                    Some(&notification.item)
+                    Some(&notification.item.payload)
                 } else if let ServerNotification::ItemCompleted(notification) =
                     notification.as_ref()
                 {
-                    Some(&notification.item)
+                    Some(&notification.item.payload)
                 } else {
                     None
                 }
             }))
             .filter_map(|item| {
-                if let ThreadItem::UserMessage { client_id, .. } = item {
+                if let ThreadItemPayload::UserMessage { client_id, .. } = item {
                     client_id.clone()
                 } else {
                     None
@@ -2046,7 +2104,7 @@ impl App {
         let automatic_title_user_message = if self.chat_widget.thread_name().is_none()
             && let ThreadBufferedEvent::Notification(notification) = &event
             && let ServerNotification::ItemCompleted(notification) = notification.as_ref()
-            && let ThreadItem::UserMessage { content, .. } = &notification.item
+            && let ThreadItemPayload::UserMessage { content, .. } = &notification.item.payload
         {
             Some(
                 content

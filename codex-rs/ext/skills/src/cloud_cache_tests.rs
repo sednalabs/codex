@@ -94,6 +94,8 @@ fn state() -> SkillsThreadState {
     SkillsThreadState::new(
         SkillsExtensionConfig {
             include_instructions: true,
+            catalog_deltas_enabled: false,
+            omit_descriptions: false,
             max_context_tokens: None,
             bundled_skills_enabled: false,
             cloud_skill_enabled: true,

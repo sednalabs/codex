@@ -22,6 +22,12 @@ async fn agents_can_offer_restart_for_managed_daemon() -> Result<()> {
 
 #[tokio::test]
 #[cfg(unix)]
+async fn agents_no_daemon_uses_embedded_even_with_a_running_daemon() -> Result<()> {
+    daemon_startup("agents-no-daemon").await
+}
+
+#[tokio::test]
+#[cfg(unix)]
 async fn agents_defers_launch_directory_trust_until_starting_a_task() -> Result<()> {
     daemon_startup("agents-untrusted").await
 }
@@ -135,7 +141,8 @@ async fn restrictive_launcher_uses_embedded_if_daemon_cannot_start() -> Result<(
             .kill_on_drop(true);
         let mut child = command.spawn()?;
         ensure!(
-            job.assign_and_resume_process(child.id().context("missing CLI pid")?)?,
+            job.assign_and_resume_process(child.id().context("missing CLI pid")?)?
+                .is_some(),
             "CLI job assignment failed"
         );
         let status = child.wait().await?;
@@ -235,6 +242,7 @@ async fn daemon_startup(command: &str) -> Result<()> {
         command,
         "start"
             | "agents"
+            | "agents-no-daemon"
             | "agents-untrusted"
             | "agents-untrusted-new"
             | "discovered"
@@ -268,7 +276,7 @@ async fn daemon_startup(command: &str) -> Result<()> {
     }
     let pid_file = home.path().join("app-server-daemon/daemon.pid");
     let result = async {
-        let mut existing_daemon = if matches!(command, "bedrock-running" | "discovered")
+        let mut existing_daemon = if matches!(command, "bedrock-running" | "discovered" | "agents-no-daemon")
             || (mismatch && !disabling)
         {
             let started = Command::new(&codex)
@@ -290,6 +298,11 @@ async fn daemon_startup(command: &str) -> Result<()> {
             // The draft header is visible before the session's command composer is ready.
             steps.push_back(("GPT-5.6-Terra", b"/status\r"));
             "Server:Localbackgroundserver"
+        } else if command == "agents-no-daemon" {
+            args.extend(["agents".into(), "--no-daemon".into()]);
+            steps.push_back(("Notasksyet", b"n"));
+            steps.push_back(("GPT-5.6-Terra", b"/daemon\r"));
+            "Notconnectedtothelocalbackgroundserver"
         } else if command == "agents" {
             args.push("agents".into());
             steps.push_back(("Notasksyet", b"\x1b"));
