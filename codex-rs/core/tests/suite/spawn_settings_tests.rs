@@ -143,7 +143,7 @@ async fn spawn_reports_effective_settings_after_child_runtime_is_removed() -> Re
         _ => None,
     })
     .await;
-    for thread in [test.codex.as_ref(), child.as_ref()] {
+    for (thread_role, thread) in [("parent", test.codex.as_ref()), ("child", child.as_ref())] {
         let EventMsg::TurnComplete(completion) =
             wait_for_event(thread, |event| matches!(event, EventMsg::TurnComplete(_))).await
         else {
@@ -158,9 +158,16 @@ async fn spawn_reports_effective_settings_after_child_runtime_is_removed() -> Re
             .iter()
             .filter(|request| request.header("thread-id") == Some(child_id.to_string()))
             .count();
+        let server_request_paths = server
+            .received_requests()
+            .await
+            .expect("recorded mock server requests")
+            .iter()
+            .map(|request| request.url.path().to_string())
+            .collect::<Vec<_>>();
         assert!(
             completion.error.is_none(),
-            "turn {} completed with error info: {turn_error:?}; response requests={}, child-thread requests={child_request_count}",
+            "{thread_role} turn {} completed with error info: {turn_error:?}; response requests={}, child-thread requests={child_request_count}, mock paths={server_request_paths:?}",
             completion.turn_id,
             observed_requests.len()
         );

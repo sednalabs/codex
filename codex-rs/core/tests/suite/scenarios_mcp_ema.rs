@@ -722,9 +722,16 @@ http_headers = {{ Authorization = "Bearer ordinary-access" }}
         })
         .count();
     let observed_model_requests = mock.requests().len();
+    let observed_model_request_paths = server
+        .received_requests()
+        .await
+        .expect("recorded model requests")
+        .iter()
+        .map(|request| request.url.path().to_string())
+        .collect::<Vec<_>>();
     assert!(
         turn_succeeded,
-        "post-removal turn completed with error info: {turn_error_info:?}; model requests={observed_model_requests}, MCP tool calls={observed_mcp_tool_calls}"
+        "post-removal turn completed with error info: {turn_error_info:?}; model requests={observed_model_requests}, MCP tool calls={observed_mcp_tool_calls}, model server paths={observed_model_request_paths:?}"
     );
     let requests = mock.requests();
     assert_eq!(requests.len(), 4);
