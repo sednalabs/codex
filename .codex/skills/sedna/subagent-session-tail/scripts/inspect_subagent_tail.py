@@ -4,11 +4,10 @@ from __future__ import annotations
 import argparse
 import glob
 import json
-import os
 import sqlite3
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Iterable, Mapping
+from typing import Any, Iterable
 
 SESSIONS_ROOT = Path.home() / ".codex" / "sessions"
 
@@ -16,30 +15,19 @@ SESSIONS_ROOT = Path.home() / ".codex" / "sessions"
 def resolve_usage_database(
     database: str | Path | None = None,
     *,
-    environ: Mapping[str, str] | None = None,
     home: Path | None = None,
 ) -> Path:
-    """Select an explicitly supplied ledger or the current environment fallback.
+    """Select an explicitly supplied ledger or the standard-home fallback.
 
     A caller that knows the active process's effective ``sqlite_home`` should
-    pass its exact ``usage_1.sqlite`` path as ``database``. The environment
-    fallback supports the standard ``codex-dev`` launcher contract; it cannot
-    observe a separate CLI/config ``sqlite_home`` override in another process.
+    pass its exact ``usage_1.sqlite`` path as ``database``. Environment values
+    cannot account for a separate CLI/config ``sqlite_home`` override.
     """
     if database is not None:
         path = str(database).strip()
         if not path:
             raise ValueError("database path must not be blank")
         return Path(path).expanduser()
-
-    env = os.environ if environ is None else environ
-    sqlite_home = env.get("CODEX_SQLITE_HOME", "").strip()
-    if sqlite_home:
-        return Path(sqlite_home).expanduser() / "usage_1.sqlite"
-
-    codex_home = env.get("CODEX_HOME", "").strip()
-    if codex_home:
-        return Path(codex_home).expanduser() / "usage_1.sqlite"
 
     return (home or Path.home()) / ".codex" / "usage_1.sqlite"
 
@@ -307,10 +295,9 @@ def usage_summary(
     child_thread_id: str,
     database: str | Path | None = None,
     *,
-    environ: Mapping[str, str] | None = None,
     home: Path | None = None,
 ) -> list[str]:
-    usage_db = resolve_usage_database(database, environ=environ, home=home)
+    usage_db = resolve_usage_database(database, home=home)
     if not usage_db.exists():
         return ["usage: database not found"]
     conn = sqlite3.connect(f"{usage_db.resolve().as_uri()}?mode=ro", uri=True)

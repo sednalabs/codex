@@ -38,11 +38,11 @@ send one bounded follow-up instead of jumping to interruption.
 7. Use the session tail for the latest meaningful events and the usage ledger as a secondary heartbeat.
 
 For the usage heartbeat, the helper accepts `--database <path>` for an exact
-read-only ledger selection. When omitted, it uses `CODEX_SQLITE_HOME`, then
-`CODEX_HOME`, then the standard `~/.codex` fallback. An explicit `sqlite_home`
-from the active Codex config/CLI can differ from those environment defaults; in
-that case pass `<effective sqlite_home>/usage_1.sqlite` explicitly rather than
-assuming the helper's fallback is the writer's database.
+read-only ledger selection. When omitted, it checks only the standard
+`~/.codex/usage_1.sqlite` path. For a non-standard `sqlite_home`, pass
+`<effective sqlite_home>/usage_1.sqlite` explicitly; Codex config/CLI can
+override environment defaults, so environment variables alone do not establish
+the active process's database.
 
 ## Decision Map
 

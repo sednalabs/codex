@@ -7,6 +7,7 @@ import tempfile
 import unittest
 from datetime import datetime, timezone
 from pathlib import Path
+from unittest.mock import patch
 
 
 SCRIPT = Path(__file__).resolve().parents[1] / "scripts" / "inspect_subagent_tail.py"
@@ -57,17 +58,11 @@ class OutputSummarizationTest(unittest.TestCase):
 
 
 class UsageDatabaseSelectionTest(unittest.TestCase):
-    def test_explicit_database_overrides_environment(self) -> None:
+    def test_explicit_database_is_selected(self) -> None:
         expected = Path(tempfile.gettempdir()) / "selected" / "usage_1.sqlite"
 
         selected = inspect_subagent_tail.resolve_usage_database(
             expected,
-            environ={
-                "CODEX_SQLITE_HOME": str(
-                    Path(tempfile.gettempdir()) / "environment-state"
-                ),
-                "CODEX_HOME": str(Path(tempfile.gettempdir()) / "codex-home"),
-            },
             home=Path(tempfile.gettempdir()) / "user-home",
         )
 
@@ -82,37 +77,16 @@ class UsageDatabaseSelectionTest(unittest.TestCase):
 
         self.assertEqual(args.database, str(database))
 
-    def test_sqlite_home_environment_precedes_codex_home(self) -> None:
-        temp_home = Path(tempfile.gettempdir())
-        selected = inspect_subagent_tail.resolve_usage_database(
-            environ={
-                "CODEX_SQLITE_HOME": str(temp_home / "codex-dev-state"),
-                "CODEX_HOME": str(temp_home / "codex-home"),
-            },
-            home=temp_home / "user-home",
-        )
-
-        self.assertEqual(
-            selected,
-            temp_home / "codex-dev-state" / "usage_1.sqlite",
-        )
-
-    def test_codex_home_is_used_when_sqlite_home_is_unset(self) -> None:
-        temp_home = Path(tempfile.gettempdir())
-        codex_home = temp_home / "codex-home"
-        selected = inspect_subagent_tail.resolve_usage_database(
-            environ={"CODEX_HOME": str(codex_home)},
-            home=temp_home / "user-home",
-        )
-
-        self.assertEqual(selected, codex_home / "usage_1.sqlite")
-
-    def test_user_home_is_only_the_last_fallback(self) -> None:
+    def test_standard_home_is_fallback_even_when_environment_differs(self) -> None:
         home = Path(tempfile.gettempdir()) / "user-home"
-        selected = inspect_subagent_tail.resolve_usage_database(
-            environ={},
-            home=home,
-        )
+        with patch.dict(
+            "os.environ",
+            {
+                "CODEX_SQLITE_HOME": str(home / "environment-state"),
+                "CODEX_HOME": str(home / "other-state"),
+            },
+        ):
+            selected = inspect_subagent_tail.resolve_usage_database(home=home)
 
         self.assertEqual(selected, home / ".codex" / "usage_1.sqlite")
 
@@ -161,7 +135,6 @@ class UsageDatabaseSelectionTest(unittest.TestCase):
             rows = inspect_subagent_tail.usage_summary(
                 "child-thread",
                 database,
-                environ={"CODEX_SQLITE_HOME": str(temp_home / "other-state")},
                 home=temp_home / "user-home",
             )
 
