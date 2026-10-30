@@ -70,14 +70,19 @@ and natural first use remain separate acceptance steps.
 
 ## Core default path
 
-Exact-target V2 `wait_agent` ignores queue-only (`trigger_turn=false`) mailbox
-activity while preserving durable FIFO delivery and notification summaries;
-targetless waits retain broad mailbox wake behavior. The focused guardrail is
-`codex.core-multi-agent-orchestration-targeted`, covering
+V2 `wait_agent` wakes on selected-target terminal completion or an explicitly
+addressed `action_required`/`result_ready` message. Legacy/missing intent is
+progress; queue-only progress, `trigger_turn` scheduling, and unrelated
+process-terminal notifications do not end the wait. Explicit messages from
+outside an exact target set remain eligible, all messages stay durably queued,
+and selected-target completion preserves the existing any/all rule. The
+focused guardrail is `codex.core-multi-agent-orchestration-targeted`, covering
 `multi_agent_v2_wait_agent_accepts_target_and_timeout_arguments`,
 `multi_agent_v2_wait_agent_does_not_return_completed_content`,
-`multi_agent_v2_wait_agent_wakes_on_trigger_turn_mailbox_notification`, and
-`input_queue_tracks_pending_trigger_turn_mail`.
+`multi_agent_v2_wait_agent_wakes_on_explicit_action_from_outside_exact_target_set`,
+`input_queue_keeps_trigger_turn_scheduling_separate_from_wait_wakes`,
+`input_queue_wait_input_ignores_terminal_completion_after_mailbox_delivery_deferral`,
+and `input_queue_wakes_for_explicit_actionable_and_result_ready_intents`.
 
 Default broader local validation path when you intentionally want a repo-side
 gate:

@@ -21,6 +21,7 @@ use codex_protocol::items::AgentNotificationOrigin;
 use codex_protocol::items::AgentNotificationSummary;
 use codex_protocol::items::AgentWakeCause;
 use codex_protocol::protocol::AgentCommunicationOrigin;
+use codex_protocol::protocol::AgentMessageIntent;
 use codex_protocol::protocol::CollabAgentRef;
 use codex_protocol::protocol::CollabWaitingCompletionReason;
 use codex_protocol::protocol::SessionSource;
@@ -522,8 +523,8 @@ pub(crate) struct WakeProvenance {
     /// Entries observed in the queue that did not cause this wake. This
     /// includes ordinary progress and any encrypted/unavailable envelopes.
     pub(crate) noncausal_update_sequences: Vec<u64>,
-    /// Sender intent and runtime disposition for every observed queued update;
-    /// message payloads are intentionally not copied into this receipt.
+    /// Message intent and turn scheduling are separate fields; payloads are
+    /// intentionally not copied into this receipt.
     pub(crate) queued_updates: Vec<QueuedUpdateReceipt>,
     pub(crate) helper_returned_at_ms: u64,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -557,7 +558,8 @@ pub(crate) struct QueuedUpdateReceipt {
     pub(crate) sender_agent_path: AgentPath,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub(crate) sender_thread_id: Option<ThreadId>,
-    pub(crate) intent: AgentDeliveryIntent,
+    pub(crate) intent: AgentMessageIntent,
+    pub(crate) trigger_turn_requested: bool,
     pub(crate) enqueued_at_ms: u64,
     pub(crate) ended_active_wait: bool,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -607,19 +609,37 @@ async fn mailbox_snapshot(
                 .iter()
                 .map(|(communication, _, _)| communication)
                 .collect::<Vec<_>>();
-            causal_mailbox_index(
-                &actionable,
-                receiver_thread_ids.is_empty(),
-                &target_agent_paths,
-            )
-            .and_then(|index| entries.get(index).cloned())
+            causal_mailbox_index(&actionable).and_then(|index| entries.get(index).cloned())
         })
         .flatten();
+    let target_set_relation = match wake_source {
+        WakeSource::Mailbox => causal_entry
+            .as_ref()
+            .map(|(communication, _, _)| {
+                if receiver_thread_ids.is_empty() {
+                    "targetless_root_orchestrator".to_string()
+                } else if target_agent_paths
+                    .iter()
+                    .any(|target| target == &communication.author)
+                {
+                    "selected_target".to_string()
+                } else {
+                    "directly_addressed_outside_target_set".to_string()
+                }
+            })
+            .unwrap_or_else(|| "unknown".to_string()),
+        WakeSource::TargetCompletion if !receiver_thread_ids.is_empty() => {
+            "selected_target_completion".to_string()
+        }
+        _ => target_set_relation,
+    };
     let wake_cause = if wake_source == WakeSource::Mailbox {
         causal_entry
             .as_ref()
             .map(|(communication, _, _)| {
-                if communication.origin == Some(AgentCommunicationOrigin::Result) {
+                if communication.origin == Some(AgentCommunicationOrigin::Result)
+                    && !communication.resolved_intent().wakes_native_wait()
+                {
                     AgentWakeCause::ChildTerminalTransition
                 } else {
                     AgentWakeCause::ChildActionableMessage
@@ -669,13 +689,6 @@ async fn mailbox_snapshot(
         .iter()
         .map(|(communication, sequence, enqueued_at_ms)| {
             let is_causal = causal_sequence == Some(*sequence);
-            let intent = if communication.origin == Some(AgentCommunicationOrigin::Result) {
-                AgentDeliveryIntent::TerminalHandoff
-            } else if communication.trigger_turn {
-                AgentDeliveryIntent::ActionableWakeRequested
-            } else {
-                AgentDeliveryIntent::QueueOnly
-            };
             QueuedUpdateReceipt {
                 sequence: *sequence,
                 sender_agent_path: communication.author.clone(),
@@ -683,7 +696,8 @@ async fn mailbox_snapshot(
                     .services
                     .agent_control
                     .agent_id_for_path(&communication.author),
-                intent,
+                intent: communication.resolved_intent(),
+                trigger_turn_requested: communication.trigger_turn,
                 enqueued_at_ms: *enqueued_at_ms,
                 ended_active_wait: is_causal,
                 delivered_to_model_at_ms: None,
@@ -716,8 +730,7 @@ async fn mailbox_snapshot(
             }
             if communication.encrypted_content.is_some()
                 || communication.content.is_empty()
-                || (!communication.trigger_turn
-                    && communication.origin != Some(AgentCommunicationOrigin::Result))
+                || !communication.resolved_intent().wakes_native_wait()
             {
                 return None;
             }
@@ -797,41 +810,24 @@ async fn mailbox_snapshot(
     }
 }
 
-fn mailbox_sender_is_exact_target(sender: &AgentPath, target_agent_paths: &[AgentPath]) -> bool {
-    target_agent_paths.iter().any(|target| target == sender)
-}
-
 fn mailbox_entry_is_causal(
     communication: &codex_protocol::protocol::InterAgentCommunication,
-    targetless_wait: bool,
-    target_agent_paths: &[AgentPath],
 ) -> bool {
     is_actionable_wait_communication(communication)
-        && (targetless_wait
-            || mailbox_sender_is_exact_target(&communication.author, target_agent_paths))
 }
 
 fn causal_mailbox_index(
     entries: &[&codex_protocol::protocol::InterAgentCommunication],
-    targetless_wait: bool,
-    target_agent_paths: &[AgentPath],
 ) -> Option<usize> {
-    let actionable = entries
+    entries
         .iter()
-        .enumerate()
-        .filter(|(_, communication)| is_actionable_wait_communication(communication))
-        .collect::<Vec<_>>();
-    if targetless_wait {
-        return actionable.first().map(|(index, _)| *index);
-    }
-    if actionable.len() != 1 {
-        return None;
-    }
-    let &(index, communication) = actionable.first()?;
-    mailbox_sender_is_exact_target(&communication.author, target_agent_paths).then_some(index)
+        .position(|communication| mailbox_entry_is_causal(communication))
 }
 
 fn target_set_relation(targetless: bool) -> String {
+    // This identifies the wait's configured target set when no causal mailbox
+    // sender is available; mailbox snapshots refine it to the sender's actual
+    // relation to that set.
     if targetless {
         "targetless_root_orchestrator".to_string()
     } else {
@@ -860,11 +856,13 @@ async fn ready_wake_source(
     if completion_rule.is_satisfied(final_statuses, receiver_thread_ids) {
         Some(WakeSource::TargetCompletion)
     } else if wake_on_mailbox
-        && (pending_input_activity.is_some_and(|activity| activity != InputQueueActivity::Mailbox)
-            || session
-                .input_queue
-                .has_pending_wait_input(&session.active_turn)
-                .await)
+        && (matches!(
+            pending_input_activity,
+            Some(InputQueueActivity::Steer | InputQueueActivity::RuntimeSystemEvent)
+        ) || session
+            .input_queue
+            .has_pending_wait_input(&session.active_turn)
+            .await)
     {
         let latest = collect_current_wait_statuses(session, receiver_thread_ids).await;
         final_statuses.extend(latest.into_iter().filter(|(_, status)| is_final(status)));
@@ -1512,38 +1510,30 @@ mod tests {
     }
 
     #[test]
-    fn exact_target_mailbox_causality_excludes_siblings_and_nested_descendants() {
+    fn mailbox_causality_uses_explicit_intent_not_sender_membership_or_turn_trigger() {
         let target = AgentPath::try_from("/root/reviewer").expect("target path");
         let sibling = AgentPath::try_from("/root/other_reviewer").expect("sibling path");
-        let nested_descendant =
-            AgentPath::try_from("/root/reviewer/worker").expect("nested descendant path");
-        let targets = vec![target.clone()];
-
-        assert!(mailbox_sender_is_exact_target(&target, &targets));
-        assert!(!mailbox_sender_is_exact_target(&sibling, &targets));
-        assert!(!mailbox_sender_is_exact_target(
-            &nested_descendant,
-            &targets
-        ));
-    }
-
-    #[test]
-    fn mailbox_causality_distinguishes_target_wake_from_queued_progress() {
-        let target = AgentPath::try_from("/root/reviewer").expect("target path");
-        let sibling = AgentPath::try_from("/root/other_reviewer").expect("sibling path");
-        let targets = vec![target.clone()];
-        let target_wake = codex_protocol::protocol::InterAgentCommunication::new(
+        let mut target_action = codex_protocol::protocol::InterAgentCommunication::new(
             target,
             AgentPath::root(),
             Vec::new(),
-            "wake".to_string(),
-            /*trigger_turn*/ true,
+            "decision needed".to_string(),
+            /*trigger_turn*/ false,
         );
-        let sibling_wake = codex_protocol::protocol::InterAgentCommunication::new(
+        target_action.intent = Some(codex_protocol::protocol::AgentMessageIntent::ActionRequired);
+        let mut sibling_action = codex_protocol::protocol::InterAgentCommunication::new(
             sibling,
             AgentPath::root(),
             Vec::new(),
-            "sibling wake".to_string(),
+            "result ready".to_string(),
+            /*trigger_turn*/ false,
+        );
+        sibling_action.intent = Some(codex_protocol::protocol::AgentMessageIntent::ResultReady);
+        let sibling_turn_trigger = codex_protocol::protocol::InterAgentCommunication::new(
+            AgentPath::try_from("/root/other_reviewer").expect("sibling path"),
+            AgentPath::root(),
+            Vec::new(),
+            "follow-up task".to_string(),
             /*trigger_turn*/ true,
         );
         let queued_progress = codex_protocol::protocol::InterAgentCommunication::new(
@@ -1554,64 +1544,47 @@ mod tests {
             /*trigger_turn*/ false,
         );
 
-        assert!(mailbox_entry_is_causal(
-            &target_wake,
-            /*targetless_wait*/ false,
-            &targets
-        ));
-        assert!(!mailbox_entry_is_causal(
-            &sibling_wake,
-            /*targetless_wait*/ false,
-            &targets
-        ));
-        assert!(!mailbox_entry_is_causal(
-            &queued_progress,
-            /*targetless_wait*/ false,
-            &targets
-        ));
+        assert!(mailbox_entry_is_causal(&target_action));
+        assert!(mailbox_entry_is_causal(&sibling_action));
+        assert!(!mailbox_entry_is_causal(&sibling_turn_trigger));
+        assert!(!mailbox_entry_is_causal(&queued_progress));
     }
 
     #[test]
-    fn mailbox_causality_is_conservative_when_outside_target_entries_are_present() {
+    fn mailbox_causality_selects_the_first_explicit_intent_and_ignores_terminal_events() {
         let target = AgentPath::try_from("/root/reviewer").expect("target path");
         let sibling = AgentPath::try_from("/root/other_reviewer").expect("sibling path");
-        let target_wake = codex_protocol::protocol::InterAgentCommunication::new(
+        let target_terminal = codex_protocol::protocol::InterAgentCommunication::new(
             target,
             AgentPath::root(),
             Vec::new(),
             "target result".to_string(),
             /*trigger_turn*/ false,
         );
-        let target_wake = codex_protocol::protocol::InterAgentCommunication {
+        let target_terminal = codex_protocol::protocol::InterAgentCommunication {
             origin: Some(AgentCommunicationOrigin::Result),
-            ..target_wake
+            ..target_terminal
         };
-        let sibling_wake = codex_protocol::protocol::InterAgentCommunication::new(
+        let mut sibling_action = codex_protocol::protocol::InterAgentCommunication::new(
             sibling,
             AgentPath::root(),
             Vec::new(),
-            "sibling result".to_string(),
+            "sibling decision".to_string(),
             /*trigger_turn*/ false,
         );
-        let sibling_wake = codex_protocol::protocol::InterAgentCommunication {
-            origin: Some(AgentCommunicationOrigin::Result),
-            ..sibling_wake
-        };
-        let targets = vec![AgentPath::try_from("/root/reviewer").expect("target path")];
-        let entries = vec![&target_wake, &sibling_wake];
+        sibling_action.intent = Some(codex_protocol::protocol::AgentMessageIntent::ActionRequired);
+        let mut later_action = codex_protocol::protocol::InterAgentCommunication::new(
+            AgentPath::try_from("/root/reviewer").expect("target path"),
+            AgentPath::root(),
+            Vec::new(),
+            "later result".to_string(),
+            /*trigger_turn*/ false,
+        );
+        later_action.intent = Some(codex_protocol::protocol::AgentMessageIntent::ResultReady);
+        let entries = vec![&target_terminal, &sibling_action, &later_action];
 
-        assert_eq!(
-            causal_mailbox_index(&entries, /*targetless_wait*/ false, &targets),
-            None
-        );
-        assert_eq!(
-            causal_mailbox_index(&[&target_wake], /*targetless_wait*/ false, &targets),
-            Some(0)
-        );
-        assert_eq!(
-            causal_mailbox_index(&[&sibling_wake], /*targetless_wait*/ false, &targets),
-            None
-        );
+        assert_eq!(causal_mailbox_index(&entries), Some(1));
+        assert_eq!(causal_mailbox_index(&[&target_terminal]), None);
     }
 
     #[test]

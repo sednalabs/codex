@@ -756,7 +756,34 @@ pub struct InterAgentCommunication {
     pub trigger_turn: bool,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[ts(optional)]
+    pub intent: Option<AgentMessageIntent>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
     pub origin: Option<AgentCommunicationOrigin>,
+}
+
+/// The sender's message intent, independent of whether the recipient should
+/// automatically start a model turn.
+#[derive(Debug, Clone, Copy, Default, Serialize, Deserialize, PartialEq, Eq, JsonSchema, TS)]
+#[serde(rename_all = "snake_case")]
+pub enum AgentMessageIntent {
+    /// Informational progress; queue it for the recipient's next safe boundary.
+    #[default]
+    Progress,
+    /// The recipient's decision or input is needed while the sender may remain running.
+    ActionRequired,
+    /// A bounded result is ready for the addressed recipient to consume.
+    ResultReady,
+}
+
+impl AgentMessageIntent {
+    pub const fn is_progress(self) -> bool {
+        matches!(self, Self::Progress)
+    }
+
+    pub const fn wakes_native_wait(self) -> bool {
+        matches!(self, Self::ActionRequired | Self::ResultReady)
+    }
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, JsonSchema, TS)]
@@ -766,6 +793,10 @@ pub enum AgentCommunicationOrigin {
 }
 
 impl InterAgentCommunication {
+    pub fn resolved_intent(&self) -> AgentMessageIntent {
+        self.intent.unwrap_or_default()
+    }
+
     pub fn new(
         author: AgentPath,
         recipient: AgentPath,
@@ -782,6 +813,7 @@ impl InterAgentCommunication {
             encrypted_content: None,
             internal_chat_message_metadata_passthrough: None,
             trigger_turn,
+            intent: None,
             origin: None,
         }
     }
@@ -802,6 +834,7 @@ impl InterAgentCommunication {
             encrypted_content: Some(encrypted_content),
             internal_chat_message_metadata_passthrough: None,
             trigger_turn,
+            intent: None,
             origin: None,
         }
     }
@@ -4899,6 +4932,7 @@ mod tests {
             encrypted_content: None,
             internal_chat_message_metadata_passthrough: None,
             trigger_turn: true,
+            intent: None,
             origin: None,
         };
         communication.set_turn_id_if_missing("turn-1");
@@ -4916,6 +4950,50 @@ mod tests {
                 }],
                 phase: Some(MessagePhase::Commentary),
             }
+        );
+    }
+
+    #[test]
+    fn inter_agent_communication_defaults_legacy_intent_to_progress() {
+        let mut communication = serde_json::to_value(InterAgentCommunication::new(
+            AgentPath::root(),
+            AgentPath::root().join("worker").expect("recipient path"),
+            Vec::new(),
+            "status update".to_string(),
+            /*trigger_turn*/ false,
+        ))
+        .expect("serialize communication");
+        communication
+            .as_object_mut()
+            .expect("communication object")
+            .remove("intent");
+
+        let communication: InterAgentCommunication =
+            serde_json::from_value(communication).expect("deserialize legacy communication");
+
+        assert_eq!(
+            communication.resolved_intent(),
+            AgentMessageIntent::Progress
+        );
+        assert!(!communication.resolved_intent().wakes_native_wait());
+    }
+
+    #[test]
+    fn inter_agent_communication_serializes_explicit_wait_intent() {
+        let communication = InterAgentCommunication {
+            intent: Some(AgentMessageIntent::ResultReady),
+            ..InterAgentCommunication::new(
+                AgentPath::root(),
+                AgentPath::root().join("worker").expect("recipient path"),
+                Vec::new(),
+                "result ready".to_string(),
+                /*trigger_turn*/ false,
+            )
+        };
+
+        assert_eq!(
+            serde_json::to_value(communication).expect("serialize communication")["intent"],
+            "result_ready"
         );
     }
 

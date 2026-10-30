@@ -28,7 +28,7 @@ impl Handler {
     ) -> Result<Box<dyn crate::tools::context::ToolOutput>, FunctionCallError> {
         let arguments = function_arguments(invocation.payload.clone())?;
         let args: SendMessageArgs = parse_arguments(&arguments)?;
-        let (target, message, interrupt) = args.into_parts()?;
+        let (target, message, interrupt, intent) = args.into_parts()?;
         handle_message_submission(
             invocation,
             MessageDeliveryMode::QueueOnly,
@@ -36,6 +36,7 @@ impl Handler {
             message,
             interrupt,
             /*expected_model*/ None,
+            intent,
         )
         .await
         .map(boxed_tool_output)
