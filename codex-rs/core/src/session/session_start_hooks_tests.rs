@@ -1,4 +1,5 @@
 use super::*;
+use pretty_assertions::assert_eq;
 
 #[tokio::test]
 async fn session_start_hooks_only_load_from_trusted_project_layers() -> std::io::Result<()> {

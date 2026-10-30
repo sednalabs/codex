@@ -934,7 +934,7 @@ mod tests {
             wake_ref: Some("amsg_request-1".to_string()),
         };
         let cell = tool_call_history_cell(
-            &ThreadItem::CollabAgentToolCall {
+            &ThreadItemPayload::CollabAgentToolCall {
                 id: "call-wait".to_string(),
                 tool: CollabAgentTool::Wait,
                 status: CollabAgentToolCallStatus::Completed,

@@ -636,6 +636,7 @@ mod tests {
             Some("custom_collaboration"),
             /*description_override*/ None,
             /*parameters_override*/ None,
+            /*mailbox_enabled*/ false,
         );
         let registry = ToolRegistry::from_tools([handler]);
         let registered = registry
