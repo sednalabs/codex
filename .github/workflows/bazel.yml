@@ -108,9 +108,6 @@ jobs:
             for selector in \
               suite::compact::manual_remote_compact_advice_respects_retry_limit::no_retries \
               suite::compact::manual_remote_compact_advice_respects_retry_limit::two_retries \
-              suite::compact::manual_compact_retries_after_context_window_error \
-              suite::user_notification::notify_receives_user_text_while_the_model_receives_attachments \
-              suite::base_instructions::model_switches_refresh_the_window_base_across_compaction_and_restart \
               suite::scenarios::mcp_ema::enterprise_lifecycle_preserves_history_and_ordinary_tools::removal \
               suite::subagent_notifications::spawn_settings_tests::spawn_reports_effective_settings_after_child_runtime_is_removed; do
               ./.github/scripts/run-bazel-ci.sh \
