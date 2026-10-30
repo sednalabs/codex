@@ -1176,9 +1176,7 @@ mod tests {
             /*trigger_turn*/ false,
         );
         actionable.intent = Some(codex_protocol::protocol::AgentMessageIntent::ActionRequired);
-        input_queue
-            .enqueue_mailbox_communication(actionable)
-            .await;
+        input_queue.enqueue_mailbox_communication(actionable).await;
         assert!(input_queue.has_trigger_turn_mailbox_items().await);
         assert!(input_queue.has_pending_wait_input(&Mutex::new(None)).await);
     }
@@ -1262,9 +1260,8 @@ mod tests {
                     /*trigger_turn*/ false,
                 );
                 if index == InputQueue::MAX_MAILBOX_NOTIFICATION_SNAPSHOT {
-                    communication.intent = Some(
-                        codex_protocol::protocol::AgentMessageIntent::ActionRequired,
-                    );
+                    communication.intent =
+                        Some(codex_protocol::protocol::AgentMessageIntent::ActionRequired);
                 }
                 communication
             })

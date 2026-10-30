@@ -1583,14 +1583,8 @@ mod tests {
         later_action.intent = Some(codex_protocol::protocol::AgentMessageIntent::ResultReady);
         let entries = vec![&target_terminal, &sibling_action, &later_action];
 
-        assert_eq!(
-            causal_mailbox_index(&entries),
-            Some(1)
-        );
-        assert_eq!(
-            causal_mailbox_index(&[&target_terminal]),
-            None
-        );
+        assert_eq!(causal_mailbox_index(&entries), Some(1));
+        assert_eq!(causal_mailbox_index(&[&target_terminal]), None);
     }
 
     #[test]

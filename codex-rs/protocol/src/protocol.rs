@@ -4971,7 +4971,10 @@ mod tests {
         let communication: InterAgentCommunication =
             serde_json::from_value(communication).expect("deserialize legacy communication");
 
-        assert_eq!(communication.resolved_intent(), AgentMessageIntent::Progress);
+        assert_eq!(
+            communication.resolved_intent(),
+            AgentMessageIntent::Progress
+        );
         assert!(!communication.resolved_intent().wakes_native_wait());
     }
 

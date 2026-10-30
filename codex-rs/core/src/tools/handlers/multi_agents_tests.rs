@@ -6120,7 +6120,10 @@ fn multi_agent_v2_wait_agent_does_not_return_completed_content() {
             result.wake_provenance.wake_cause,
             codex_protocol::items::AgentWakeCause::ChildActionableMessage
         );
-        assert_eq!(result.wake_provenance.target_set_relation, "selected_target");
+        assert_eq!(
+            result.wake_provenance.target_set_relation,
+            "selected_target"
+        );
         assert_eq!(
             result.wake_provenance.queued_updates[1].intent,
             codex_protocol::protocol::AgentMessageIntent::ResultReady
