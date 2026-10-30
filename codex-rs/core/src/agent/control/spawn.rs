@@ -839,7 +839,9 @@ impl LocalAgentControl {
         let input_admission_started_at = Instant::now();
         match initial_input {
             SpawnInitialInput::UserInput(input) => {
-                self.send_input(new_thread.thread_id, input, start_options)
+                // Spawn owns this runtime even if startup callbacks remove its registry entry.
+                // Deliver the accepted initial prompt through that retained handle.
+                self.send_input_to_thread(&state, new_thread.thread.as_ref(), input, start_options)
                     .await
                     .map_err(|err| err.with_agent_context(AgentErrorContext::InputAdmission))?;
             }

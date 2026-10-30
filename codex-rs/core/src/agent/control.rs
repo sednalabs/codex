@@ -145,6 +145,18 @@ impl LocalAgentControl {
     ) -> CodexResult<String> {
         let state = self.runtime.upgrade()?;
         let thread = state.get_thread(agent_id).await?;
+        self.send_input_to_thread(&state, &thread, input, start_options)
+            .await
+    }
+
+    async fn send_input_to_thread(
+        &self,
+        state: &Arc<ThreadManagerState>,
+        thread: &crate::CodexThread,
+        input: Vec<UserInput>,
+        start_options: TurnStartOptions,
+    ) -> CodexResult<String> {
+        let agent_id = thread.thread_id;
         let result = match thread
             .start_or_steer_turn(TurnInputRequest::user_input(input).on_start(start_options))
             .await
@@ -162,7 +174,7 @@ impl LocalAgentControl {
             )),
             Err(err) => Err(err),
         };
-        self.handle_thread_request_result(agent_id, &state, result)
+        self.handle_thread_request_result(agent_id, state, result)
             .await
     }
 
