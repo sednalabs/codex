@@ -1,0 +1,51 @@
+name: Temporary upstream 582 lock and schema refresh
+
+on:
+  push:
+    branches:
+      - validation/w14939-lock-schema-582a8812
+
+permissions:
+  contents: read
+
+jobs:
+  refresh-generated-locks-and-schema:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          persist-credentials: false
+
+      - name: Prepare standard hosted Bazel environment
+        uses: ./.github/actions/prepare-bazel-ci
+        with:
+          target: x86_64-unknown-linux-gnu
+          cache-scope: lock-schema-refresh-582a8812
+
+      - name: Regenerate Bazel module lock
+        run: bazel mod deps --lockfile_mode=update
+
+      - name: Refresh the advisory-pinned Cargo dependency lock
+        working-directory: codex-rs
+        run: cargo update --package libz-sys --precise 1.1.31
+
+      - name: Verify the Cargo lock resolves in locked mode
+        working-directory: codex-rs
+        run: cargo metadata --locked --format-version 1 > /dev/null
+
+      - name: Regenerate maintained app-server schema and Python types
+        run: just write-app-server-schema
+
+      - name: Upload only generated lock and schema outputs
+        uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f # v7.0.0
+        with:
+          name: codex-w14939-lock-schema-${{ github.sha }}
+          if-no-files-found: error
+          path: |
+            MODULE.bazel.lock
+            codex-rs/Cargo.lock
+            codex-rs/app-server-protocol/schema/**
+            sdk/python/src/openai_codex/generated/**
