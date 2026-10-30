@@ -105,78 +105,14 @@ jobs:
           )
           if [[ "${W14939_FOCUSED_TESTS}" == "true" ]]; then
             focused_status=0
-            ./.github/scripts/run-bazel-ci.sh \
-              --print-failed-test-logs \
-              --print-failed-action-summary \
-              -- \
-              test \
-              --test_tag_filters=-argument-comment-lint \
-              --test_verbose_timeout_warnings \
-              --build_metadata="COMMIT_SHA=${GITHUB_SHA}" \
-              -- \
-              //codex-rs/rollout:rollout-alternate-group-materialization-test || focused_status=$?
-            ./.github/scripts/run-bazel-ci.sh \
-              --print-failed-test-logs \
-              --print-failed-action-summary \
-              -- \
-              test \
-              --test_tag_filters=-argument-comment-lint \
-              --test_verbose_timeout_warnings \
-              --build_metadata="COMMIT_SHA=${GITHUB_SHA}" \
-              --test_arg=--exact \
-              --test_arg=suite::managed_proxy::managed_proxy_mode_routes_through_bridge_and_blocks_direct_egress \
-              -- \
-              //codex-rs/linux-sandbox:linux-sandbox-all-test || focused_status=$?
-            ./.github/scripts/run-bazel-ci.sh \
-              --print-failed-test-logs \
-              --print-failed-action-summary \
-              -- \
-              test \
-              --test_tag_filters=-argument-comment-lint \
-              --test_verbose_timeout_warnings \
-              --test_output=all \
-              --build_metadata="COMMIT_SHA=${GITHUB_SHA}" \
-              --test_arg=--exact \
-              --test_arg=session::tests::isolated_guardian_sessions_skip_agent_mailbox_hooks \
-              -- \
-              //codex-rs/core:core-unit-tests || focused_status=$?
-            ./.github/scripts/run-bazel-ci.sh \
-              --print-failed-test-logs \
-              --print-failed-action-summary \
-              -- \
-              test \
-              --test_tag_filters=-argument-comment-lint \
-              --test_verbose_timeout_warnings \
-              --test_output=all \
-              --build_metadata="COMMIT_SHA=${GITHUB_SHA}" \
-              --test_arg=suite::pending_input::input_interrupts_wait_agent_and_is_sent_in_follow_up_request \
-              -- \
-              //codex-rs/core:core-all-test || focused_status=$?
-            ./.github/scripts/run-bazel-ci.sh \
-              --print-failed-test-logs \
-              --print-failed-action-summary \
-              -- \
-              test \
-              --test_tag_filters=-argument-comment-lint \
-              --test_verbose_timeout_warnings \
-              --test_output=all \
-              --build_metadata="COMMIT_SHA=${GITHUB_SHA}" \
-              --test_arg=--exact \
-              --test_arg=app::tests::session_lifecycle_requests::startup_defaults_tests::fresh_startup_falls_back_only_for_unsupported_config_read \
-              -- \
-              //codex-rs/tui:tui-unit-tests || focused_status=$?
             for selector in \
-              suite::client::configured_reasoning_summary_is_sent \
-              suite::client::history_dedupes_streamed_and_final_messages_across_turns \
-              suite::client::sends_audio_urls_to_responses \
-              suite::items::plan_mode_strips_plan_from_agent_messages \
-              suite::multi_agent_mode::catalog_proactive_mode_is_ultra_only::ultra_uses_proactive_override \
-              suite::otel::record_responses_sets_span_fields_for_response_events \
-              suite::prompt_caching::prefixes_context_and_instructions_once_and_consistently_across_requests \
-              suite::remote_models::remote_models_long_model_slug_is_sent_with_supported_reasoning::custom \
-              suite::request_compression::request_body_is_zstd_compressed_for_codex_backend_when_enabled \
-              suite::scenarios::frozen_cloud_skills::frozen_cloud_skills_with_named_executor_request_history \
-              suite::scenarios::mcp_ema::enterprise_lifecycle_preserves_history_and_ordinary_tools::policy; do
+              suite::compact::manual_remote_compact_advice_respects_retry_limit::no_retries \
+              suite::compact::manual_remote_compact_advice_respects_retry_limit::two_retries \
+              suite::compact::manual_compact_retries_after_context_window_error \
+              suite::user_notification::notify_receives_user_text_while_the_model_receives_attachments \
+              suite::base_instructions::model_switches_refresh_the_window_base_across_compaction_and_restart \
+              suite::scenarios::mcp_ema::enterprise_lifecycle_preserves_history_and_ordinary_tools::removal \
+              suite::subagent_notifications::spawn_settings_tests::spawn_reports_effective_settings_after_child_runtime_is_removed; do
               ./.github/scripts/run-bazel-ci.sh \
                 --print-failed-test-logs \
                 --print-failed-action-summary \
@@ -191,53 +127,6 @@ jobs:
                 -- \
                 //codex-rs/core:core-all-test || focused_status=$?
             done
-            ./.github/scripts/run-bazel-ci.sh \
-              --print-failed-test-logs \
-              --print-failed-action-summary \
-              -- \
-              test \
-              --test_tag_filters=-argument-comment-lint \
-              --test_verbose_timeout_warnings \
-              --test_output=all \
-              --build_metadata="COMMIT_SHA=${GITHUB_SHA}" \
-              --test_arg=multi_agent_v2_interrupted_native_work_settles_before_followup_all_join \
-              -- \
-              //codex-rs/core:core-unit-tests || focused_status=$?
-            ./.github/scripts/run-bazel-ci.sh \
-              --print-failed-test-logs \
-              --print-failed-action-summary \
-              -- \
-              test \
-              --test_tag_filters=-argument-comment-lint \
-              --test_verbose_timeout_warnings \
-              --test_output=all \
-              --build_metadata="COMMIT_SHA=${GITHUB_SHA}" \
-              -- \
-              //codex-rs/ext/mcp:mcp-unit-tests || focused_status=$?
-            ./.github/scripts/run-bazel-ci.sh \
-              --print-failed-test-logs \
-              --print-failed-action-summary \
-              -- \
-              test \
-              --test_tag_filters=-argument-comment-lint \
-              --test_verbose_timeout_warnings \
-              --test_output=all \
-              --build_metadata="COMMIT_SHA=${GITHUB_SHA}" \
-              -- \
-              //codex-rs/memories/write:write-unit-tests || focused_status=$?
-            ./.github/scripts/run-bazel-ci.sh \
-              --print-failed-test-logs \
-              --print-failed-action-summary \
-              -- \
-              test \
-              --test_tag_filters=-argument-comment-lint \
-              --test_verbose_timeout_warnings \
-              --test_output=all \
-              --build_metadata="COMMIT_SHA=${GITHUB_SHA}" \
-              --test_arg=--exact \
-              --test_arg=suite::v2::guardian_v2::guardian_v2_propagates_root_user_input_to_worker_reviews::root_answer_survives_parent_compaction \
-              -- \
-              //codex-rs/app-server:app-server-all-test || focused_status=$?
             exit "${focused_status}"
           fi
           ./.github/scripts/run-bazel-ci.sh \
