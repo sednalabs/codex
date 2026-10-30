@@ -246,11 +246,12 @@ impl AgentControl for LocalAgentControl {
         self.runtime.mailboxes.take(agent)
     }
 
-    fn mailbox_pending_inputs(
-        &self,
+    fn mailbox_pending_inputs<'a>(
+        &'a self,
         agent: ThreadId,
-    ) -> BoxFuture<'_, Result<Vec<crate::PendingAgentMessage>>> {
-        Box::pin(self.mailbox_v2_pending_inputs(agent))
+        config: &'a crate::config::Config,
+    ) -> BoxFuture<'a, Result<Vec<crate::PendingAgentMessage>>> {
+        Box::pin(self.mailbox_v2_pending_inputs(agent, config))
     }
 
     fn mailbox_inputs_for_ids(

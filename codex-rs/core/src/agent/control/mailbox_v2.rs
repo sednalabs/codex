@@ -364,8 +364,15 @@ impl LocalAgentControl {
     pub(crate) async fn mailbox_v2_pending_inputs(
         &self,
         recipient: ThreadId,
+        config: &crate::config::Config,
     ) -> CodexResult<Vec<PendingAgentMessage>> {
-        let Some(mailbox) = self.mailbox_v2_for_recipient(recipient).await? else {
+        // The active session already owns its captured config. Do not resolve it again through
+        // ThreadManager: an accepted child may have left the registry while its initial input
+        // is still being submitted through the retained thread handle.
+        if self.mailbox_v2().is_none() {
+            self.mailbox_v2_initialize(config).await?;
+        }
+        let Some(mailbox) = self.mailbox_v2() else {
             return Ok(Vec::new());
         };
         let page = mailbox

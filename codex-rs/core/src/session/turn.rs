@@ -580,7 +580,7 @@ pub(crate) async fn run_turn(
                 for communication in sess
                     .services
                     .agent_control
-                    .mailbox_pending_inputs(sess.thread_id)
+                    .mailbox_pending_inputs(sess.thread_id, &turn_context.config)
                     .await?
                 {
                     sess.record_inter_agent_communication_checked(

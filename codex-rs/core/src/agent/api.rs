@@ -83,10 +83,11 @@ pub trait AgentControl: Send + Sync {
     /// Read durable V2 mail without consuming its SQLite record. The returned
     /// copy is only an input candidate; canonical history settlement remains
     /// recipient-owned and must be explicitly acknowledged after flush.
-    fn mailbox_pending_inputs(
-        &self,
+    fn mailbox_pending_inputs<'a>(
+        &'a self,
         _agent: ThreadId,
-    ) -> BoxFuture<'_, Result<Vec<crate::PendingAgentMessage>>> {
+        _config: &'a Config,
+    ) -> BoxFuture<'a, Result<Vec<crate::PendingAgentMessage>>> {
         Box::pin(async { Ok(Vec::new()) })
     }
 
