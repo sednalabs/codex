@@ -2645,8 +2645,7 @@ async fn multi_agent_v2_spawn_returns_path_and_send_message_accepts_relative_pat
                         && communication.content.is_empty()
                         && communication.encrypted_content.as_deref() == Some("encrypted-send-message")
                         && !communication.trigger_turn
-                        && communication.intent
-                            == None
+                        && communication.intent.is_none()
             )
     }));
 
@@ -2783,8 +2782,7 @@ async fn multi_agent_v2_send_message_keeps_cold_target_unloaded() {
                 Op::InterAgentCommunication { communication }
                     if communication.encrypted_content.as_deref() == Some("opaque-encrypted-message")
                         && !communication.trigger_turn
-                        && communication.intent
-                            == None
+                        && communication.intent.is_none()
             )
     }));
     assert!(manager.get_thread(child_thread_id).await.is_err());
@@ -5978,7 +5976,7 @@ fn multi_agent_v2_wait_agent_wakes_on_explicit_action_from_outside_exact_target_
                 .wake_provenance
                 .sender_agent_path
                 .as_ref()
-                .map(|path| path.as_str()),
+                .map(codex_protocol::AgentPath::as_str),
             Some(worker_b_path.as_str())
         );
         assert_eq!(
