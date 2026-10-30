@@ -144,7 +144,20 @@ async fn spawn_reports_effective_settings_after_child_runtime_is_removed() -> Re
     })
     .await;
     for thread in [test.codex.as_ref(), child.as_ref()] {
-        wait_for_event(thread, |event| matches!(event, EventMsg::TurnComplete(_))).await;
+        let EventMsg::TurnComplete(completion) =
+            wait_for_event(thread, |event| matches!(event, EventMsg::TurnComplete(_))).await
+        else {
+            unreachable!("wait predicate only returns turn completion");
+        };
+        let turn_error = completion
+            .error
+            .as_ref()
+            .map(|error| error.codex_error_info.clone());
+        assert!(
+            completion.error.is_none(),
+            "turn {} completed with error info: {turn_error:?}",
+            completion.turn_id
+        );
         thread.shutdown_and_wait().await?;
     }
 
@@ -164,7 +177,12 @@ async fn spawn_reports_effective_settings_after_child_runtime_is_removed() -> Re
     let child_request = requests
         .iter()
         .find(|request| request.header("thread-id") == Some(child_id.to_string()))
-        .expect("removed child still receives its initial input");
+        .unwrap_or_else(|| {
+            panic!(
+                "removed child still receives its initial input (recorded requests: {})",
+                requests.len()
+            )
+        });
     let child_body = child_request.body_json();
     assert_eq!(
         (&child_body["model"], &child_body["reasoning"]["effort"]),

@@ -701,11 +701,22 @@ http_headers = {{ Authorization = "Bearer ordinary-access" }}
     let TurnInputSubmission::Started { turn_id, .. } = submission else {
         anyhow::bail!("expected the post-removal prompt to start a new turn");
     };
-    wait_for_event_match(&test.codex, |event| match event {
-        EventMsg::TurnComplete(event) if event.turn_id == turn_id => Some(()),
-        _ => None,
-    })
-    .await;
+    let (turn_succeeded, turn_error_info) =
+        wait_for_event_match(&test.codex, |event| match event {
+            EventMsg::TurnComplete(event) if event.turn_id == turn_id => Some((
+                event.error.is_none(),
+                event
+                    .error
+                    .as_ref()
+                    .and_then(|error| error.codex_error_info.clone()),
+            )),
+            _ => None,
+        })
+        .await;
+    assert!(
+        turn_succeeded,
+        "post-removal turn completed with error info: {turn_error_info:?}"
+    );
     let requests = mock.requests();
     assert_eq!(requests.len(), 4);
     let calls = mcp

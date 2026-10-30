@@ -311,14 +311,12 @@ async fn model_switches_refresh_the_window_base_across_compaction_and_restart() 
     assert!(model_updates(&first_request).is_empty());
     let switched_request = switch_model(&test, &server, SWITCHED_MODEL).await?;
     let mut expected_updates = vec![format!(
-        "<model_instructions>\nThe current model is {SWITCHED_MODEL}.\nThe following instructions replace the previous base instructions:\n\n{SWITCHED}\n</model_instructions>"
+        "\nThe current model is {SWITCHED_MODEL}.\nThe following instructions replace the previous base instructions:\n\n{SWITCHED}\n"
     )];
     assert_eq!(model_updates(&switched_request), expected_updates);
 
     let same_prompt_request = switch_model(&test, &server, SAME_PROMPT_MODEL).await?;
-    expected_updates.push(format!(
-        "<model_instructions>\nThe current model is {SAME_PROMPT_MODEL}.\n</model_instructions>"
-    ));
+    expected_updates.push(format!("\nThe current model is {SAME_PROMPT_MODEL}.\n"));
     assert_eq!(model_updates(&same_prompt_request), expected_updates);
 
     compact(&test, &server).await?;

@@ -3542,7 +3542,9 @@ async fn manual_remote_compact_advice_respects_retry_limit(max_retries: u64) {
             EventMsg::TurnComplete(event) => {
                 assert_eq!(
                     event.error.and_then(|error| error.codex_error_info),
-                    Some(CodexErrorInfo::RateLimitExceeded)
+                    Some(CodexErrorInfo::ResponseTooManyFailedAttempts {
+                        http_status_code: Some(429),
+                    })
                 );
                 break;
             }
@@ -4409,7 +4411,11 @@ async fn manual_compact_retries_after_context_window_error() {
         set_test_compact_prompt(config);
         config.model_auto_compact_token_limit = Some(200_000);
     });
-    let codex = builder.build(&server).await.unwrap().codex;
+    let TestCodex {
+        codex,
+        thread_manager: _thread_manager,
+        ..
+    } = builder.build(&server).await.unwrap();
 
     codex
         .start_or_steer_turn(TurnInputRequest::user_input(vec![UserInput::Text {
