@@ -54,6 +54,9 @@ jobs:
       - name: Test native visual response production CodeQL contract verifier
         run: python3 .github/scripts/test_verify_native_visual_response_contract.py
 
+      - name: Test subagent session-tail usage ledger selection
+        run: python3 .codex/skills/sedna/subagent-session-tail/tests/test_inspect_subagent_tail.py
+
       - name: Check for a clean worktree
         if: always() && !cancelled()
         uses: ./.github/actions/check-clean-worktree

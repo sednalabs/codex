@@ -37,6 +37,13 @@ send one bounded follow-up instead of jumping to interruption.
 6. If present, read `terminal_event`, `terminal_reason`, `current_turn_id`, `last_event_at`, and `matched_session_files` before interpreting the tail.
 7. Use the session tail for the latest meaningful events and the usage ledger as a secondary heartbeat.
 
+For the usage heartbeat, the helper accepts `--database <path>` for an exact
+read-only ledger selection. When omitted, it uses `CODEX_SQLITE_HOME`, then
+`CODEX_HOME`, then the standard `~/.codex` fallback. An explicit `sqlite_home`
+from the active Codex config/CLI can differ from those environment defaults; in
+that case pass `<effective sqlite_home>/usage_1.sqlite` explicitly rather than
+assuming the helper's fallback is the writer's database.
+
 ## Decision Map
 
 - `keep waiting`: `session_state` is `active` and the tail or usage heartbeat is still advancing, or the child is clearly inside a long tool call or build.
@@ -57,6 +64,7 @@ scripts/inspect_subagent_tail.py --child-thread-id <thread-id>
 scripts/inspect_subagent_tail.py --parent-thread-id <parent-thread-id> --agent-path /root/<task_name>
 scripts/inspect_subagent_tail.py --parent-thread-id <parent-thread-id> --agent-path /root/<parent>/<child>
 scripts/inspect_subagent_tail.py --child-thread-id <thread-id> --tail 12 --days 2
+scripts/inspect_subagent_tail.py --child-thread-id <thread-id> --database <effective-sqlite-home>/usage_1.sqlite
 scripts/inspect_subagent_tail.py --child-thread-id <thread-id> --tail 8 --no-usage
 ```
 

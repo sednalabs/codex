@@ -4,24 +4,59 @@ from __future__ import annotations
 import argparse
 import glob
 import json
+import os
 import sqlite3
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Iterable
+from typing import Any, Iterable, Mapping
 
 SESSIONS_ROOT = Path.home() / ".codex" / "sessions"
-USAGE_DB = Path.home() / ".codex" / "usage_1.sqlite"
 
 
-def parse_args() -> argparse.Namespace:
+def resolve_usage_database(
+    database: str | Path | None = None,
+    *,
+    environ: Mapping[str, str] | None = None,
+    home: Path | None = None,
+) -> Path:
+    """Select an explicitly supplied ledger or the current environment fallback.
+
+    A caller that knows the active process's effective ``sqlite_home`` should
+    pass its exact ``usage_1.sqlite`` path as ``database``. The environment
+    fallback supports the standard ``codex-dev`` launcher contract; it cannot
+    observe a separate CLI/config ``sqlite_home`` override in another process.
+    """
+    if database is not None:
+        path = str(database).strip()
+        if not path:
+            raise ValueError("database path must not be blank")
+        return Path(path).expanduser()
+
+    env = os.environ if environ is None else environ
+    sqlite_home = env.get("CODEX_SQLITE_HOME", "").strip()
+    if sqlite_home:
+        return Path(sqlite_home).expanduser() / "usage_1.sqlite"
+
+    codex_home = env.get("CODEX_HOME", "").strip()
+    if codex_home:
+        return Path(codex_home).expanduser() / "usage_1.sqlite"
+
+    return (home or Path.home()) / ".codex" / "usage_1.sqlite"
+
+
+def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Inspect a subagent's recent session tail and usage heartbeat.")
     parser.add_argument("--child-thread-id")
     parser.add_argument("--parent-thread-id")
     parser.add_argument("--agent-path")
     parser.add_argument("--days", type=int, default=3)
     parser.add_argument("--tail", type=int, default=10)
+    parser.add_argument(
+        "--database",
+        help="exact read-only usage-ledger SQLite file (use when active sqlite_home differs from environment)",
+    )
     parser.add_argument("--no-usage", action="store_true")
-    args = parser.parse_args()
+    args = parser.parse_args(argv)
     if not args.child_thread_id and not (args.parent_thread_id and args.agent_path):
         parser.error("provide --child-thread-id, or both --parent-thread-id and --agent-path")
     return args
@@ -268,10 +303,17 @@ def find_by_parent_and_agent(parent_thread_id: str, agent_path: str, days: int, 
     return select_best_session(matches), len(matches)
 
 
-def usage_summary(child_thread_id: str) -> list[str]:
-    if not USAGE_DB.exists():
+def usage_summary(
+    child_thread_id: str,
+    database: str | Path | None = None,
+    *,
+    environ: Mapping[str, str] | None = None,
+    home: Path | None = None,
+) -> list[str]:
+    usage_db = resolve_usage_database(database, environ=environ, home=home)
+    if not usage_db.exists():
         return ["usage: database not found"]
-    conn = sqlite3.connect(str(USAGE_DB))
+    conn = sqlite3.connect(f"{usage_db.resolve().as_uri()}?mode=ro", uri=True)
     conn.row_factory = sqlite3.Row
     rows = conn.execute(
         """
@@ -365,7 +407,7 @@ def main() -> None:
         print(f"- {row}")
     if not args.no_usage and child_thread_id:
         print("usage:")
-        for row in usage_summary(child_thread_id):
+        for row in usage_summary(child_thread_id, args.database):
             print(f"- {row}")
 
 

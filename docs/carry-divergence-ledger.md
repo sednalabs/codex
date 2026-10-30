@@ -454,7 +454,11 @@ decisions.
 The public fork owns only agent workflow helpers that are coupled to Codex
 workflow or session formats. `subagent-session-tail` remains here because its
 parser follows rollout JSONL and usage-ledger contracts; its focused tests cover
-timestamp handling and string, list, object, and scalar tool outputs. The former
+timestamp handling and string, list, object, and scalar tool outputs. Its usage
+heartbeat uses launcher-provided `CODEX_SQLITE_HOME`/`CODEX_HOME` fallbacks and
+accepts an explicit read-only database path when active config `sqlite_home`
+differs from the environment; `blocking-ci` runs the focused path-selection
+test on a standard `ubuntu-latest` runner. The former
 repo-local `codex-orchestrator` and `sidecar-review-loop` bundles are retired:
 semantic orchestration and review policy belongs in an external user policy
 package with its own provenance and rollout controls. Do not restore those two
