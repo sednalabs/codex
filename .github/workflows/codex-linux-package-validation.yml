@@ -1,0 +1,188 @@
+name: Codex Linux package validation
+
+on:
+  push:
+    branches:
+      - validation/codex-linux-package-1313-20261030
+
+concurrency:
+  group: codex-linux-package-validation-${{ github.ref }}
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  package:
+    name: ${{ matrix.target }} package and focused tests
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 180
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - target: x86_64-unknown-linux-gnu
+            runner: ubuntu-24.04
+          - target: aarch64-unknown-linux-gnu
+            runner: ubuntu-24.04-arm
+    env:
+      CODEX_REPO_ROOT: ${{ github.workspace }}
+
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          ref: ${{ github.sha }}
+          fetch-depth: 1
+          persist-credentials: false
+
+      - name: Bind the exact product source and workflow host
+        id: identity
+        shell: bash
+        env:
+          PRODUCT_SOURCE_SHA: 1313c0f40e0083f472d4721cbb5dcade29016483
+          PRODUCT_SOURCE_TREE: 90a2172870ca06bae208c6630fb854cc40f0042f
+          PRODUCT_PARENT_SHA: 9e8f834ffdb8e1d9ea65a046d36598776bbf6b73
+          UPSTREAM_BASE_SHA: 582a8812e023b08cbf10b4603ac41644b8d99261
+          UPSTREAM_TREE: 33e5705f89c2065fe35056e6d97790eb181ec93f
+          EXPECTED_REF: refs/heads/validation/codex-linux-package-1313-20261030
+          EXPECTED_REPOSITORY: sednalabs/codex
+        run: |
+          set -euo pipefail
+          [[ "${GITHUB_REPOSITORY}" == "${EXPECTED_REPOSITORY}" ]]
+          [[ "${GITHUB_REF}" == "${EXPECTED_REF}" ]] || {
+            echo "This package route is restricted to its exact validation branch." >&2
+            exit 1
+          }
+          git fetch --no-tags --depth=500 "https://github.com/${GITHUB_REPOSITORY}.git" "${PRODUCT_SOURCE_SHA}"
+          git fetch --no-tags --depth=1 https://github.com/openai/codex.git "${UPSTREAM_BASE_SHA}"
+          [[ "$(git rev-parse HEAD)" == "${GITHUB_SHA}" ]]
+          [[ "$(git rev-parse HEAD^)" == "${PRODUCT_SOURCE_SHA}" ]]
+          [[ "$(git rev-parse "${PRODUCT_SOURCE_SHA}^{tree}")" == "${PRODUCT_SOURCE_TREE}" ]]
+          [[ "$(git rev-parse "${UPSTREAM_BASE_SHA}^{tree}")" == "${UPSTREAM_TREE}" ]]
+          source_parent="$(git cat-file commit "${PRODUCT_SOURCE_SHA}" | sed -n '/^$/q; s/^parent //p')"
+          [[ "${source_parent}" == "${PRODUCT_PARENT_SHA}" ]]
+          git merge-base --is-ancestor "${UPSTREAM_BASE_SHA}" "${PRODUCT_SOURCE_SHA}"
+          git diff --quiet "${PRODUCT_SOURCE_SHA}" "${GITHUB_SHA}" -- . \
+            ':(exclude).github/workflows/codex-linux-package-validation.yml' || {
+              echo "Only this validation workflow may differ from the product source." >&2
+              exit 1
+            }
+          [[ -z "$(git status --porcelain --untracked-files=normal)" ]]
+
+          {
+            printf 'source_sha=%s\n' "${PRODUCT_SOURCE_SHA}"
+            printf 'source_tree=%s\n' "${PRODUCT_SOURCE_TREE}"
+            printf 'source_short=%s\n' "${PRODUCT_SOURCE_SHA:0:12}"
+            printf 'workflow_host_sha=%s\n' "${GITHUB_SHA}"
+          } >> "${GITHUB_OUTPUT}"
+
+      - name: Install Linux package build dependencies
+        shell: bash
+        run: |
+          set -euo pipefail
+          sudo apt-get update -y
+          sudo DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
+            binutils pkg-config libcap-dev
+
+      - name: Set up Codex CI tools
+        uses: ./.github/actions/setup-ci
+
+      - uses: dtolnay/rust-toolchain@d124f86f28ff42855784ff3319f48ac182c248f8 # 1.99.1
+        with:
+          targets: ${{ matrix.target }}
+
+      - name: Configure source-matched rusty_v8 artifacts
+        uses: ./.github/actions/setup-rusty-v8
+        with:
+          target: ${{ matrix.target }}
+
+      - name: Build and fingerprint the packaged bwrap resource
+        shell: bash
+        env:
+          TARGET: ${{ matrix.target }}
+          STABLE_GIT_COMMIT: ${{ steps.identity.outputs.source_sha }}
+        run: |
+          set -euo pipefail
+          cargo build --manifest-path codex-rs/Cargo.toml --target "${TARGET}" \
+            --release --bin bwrap
+          bwrap_path="${CARGO_TARGET_DIR}/${TARGET}/release/bwrap"
+          [[ -f "${bwrap_path}" ]]
+          strip --strip-debug --strip-unneeded "${bwrap_path}"
+          digest="$(sha256sum "${bwrap_path}" | awk '{print $1}')"
+          echo "CODEX_BWRAP_SHA256=${digest}" >> "${GITHUB_ENV}"
+          echo "Built and fingerprinted bwrap for ${TARGET}: ${digest}"
+
+      - name: Assemble and verify the Linux CLI package
+        shell: bash
+        env:
+          TARGET: ${{ matrix.target }}
+          SOURCE_SHA: ${{ steps.identity.outputs.source_sha }}
+          SOURCE_TREE: ${{ steps.identity.outputs.source_tree }}
+          SOURCE_PARENT_SHA: 9e8f834ffdb8e1d9ea65a046d36598776bbf6b73
+          WORKFLOW_HOST_SHA: ${{ steps.identity.outputs.workflow_host_sha }}
+          SOURCE_SHORT: ${{ steps.identity.outputs.source_short }}
+          UPSTREAM_BASE_SHA: 582a8812e023b08cbf10b4603ac41644b8d99261
+          UPSTREAM_TREE: 33e5705f89c2065fe35056e6d97790eb181ec93f
+          STABLE_GIT_COMMIT: ${{ steps.identity.outputs.source_sha }}
+        run: |
+          set -euo pipefail
+          package_version="0.164.0-dev.sedna.1+u582a8812.g${SOURCE_SHORT}.ci${GITHUB_RUN_NUMBER}"
+          package_dir="${GITHUB_WORKSPACE}/dist/package-${TARGET}"
+          archive="${GITHUB_WORKSPACE}/dist/codex-package-${TARGET}.tar.gz"
+          bwrap_path="${CARGO_TARGET_DIR}/${TARGET}/release/bwrap"
+          mkdir -p "${GITHUB_WORKSPACE}/dist"
+
+          just assemble-codex-package \
+            --target "${TARGET}" \
+            --variant codex \
+            --package-version "${package_version}" \
+            --cargo-profile release \
+            --package-dir "${package_dir}" \
+            --archive-output "${archive}" \
+            --bwrap-bin "${bwrap_path}" \
+            --force
+
+          "${package_dir}/bin/codex" --version
+          "${package_dir}/bin/codex" --help >/dev/null
+          [[ -f "${package_dir}/codex-resources/bwrap" ]]
+          packaged_bwrap_sha="$(sha256sum "${package_dir}/codex-resources/bwrap" | awk '{print $1}')"
+          [[ "${packaged_bwrap_sha}" == "${CODEX_BWRAP_SHA256}" ]]
+          sha256sum "${archive}" > "${archive}.sha256"
+
+          printf '%s\n' \
+            "Codex Linux CLI progressive package" \
+            "Product source commit: ${SOURCE_SHA}" \
+            "Product source tree: ${SOURCE_TREE}" \
+            "Product source parent: ${SOURCE_PARENT_SHA}" \
+            "Exact upstream base: ${UPSTREAM_BASE_SHA}" \
+            "Exact upstream tree: ${UPSTREAM_TREE}" \
+            "Workflow host commit: ${WORKFLOW_HOST_SHA}" \
+            "Target: ${TARGET}" \
+            "Package version: ${package_version}" \
+            "Version basis: Sedna-assigned development-series label; not a claim of upstream release equivalence." \
+            "Status: progressive artifact only; not protected-main, installation, or consumer acceptance." \
+            > "${GITHUB_WORKSPACE}/dist/PROVENANCE.txt"
+
+      - uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f # v7.0.0
+        with:
+          name: codex-linux-${{ matrix.target }}-${{ steps.identity.outputs.source_short }}-${{ github.run_id }}-${{ github.run_attempt }}
+          path: |
+            dist/codex-package-${{ matrix.target }}.tar.gz
+            dist/codex-package-${{ matrix.target }}.tar.gz.sha256
+            dist/PROVENANCE.txt
+          if-no-files-found: error
+          retention-days: 30
+
+      - name: Run focused OAuth device-login tests
+        shell: bash
+        env:
+          TARGET: ${{ matrix.target }}
+          STABLE_GIT_COMMIT: ${{ steps.identity.outputs.source_sha }}
+        run: |
+          set -euo pipefail
+          cargo test --manifest-path codex-rs/Cargo.toml --target "${TARGET}" \
+            -p codex-rmcp-client --lib
+          cargo test --manifest-path codex-rs/Cargo.toml --target "${TARGET}" \
+            -p codex-mcp --lib
+          cargo test --manifest-path codex-rs/Cargo.toml --target "${TARGET}" \
+            -p codex-cli --test mcp_device_login
