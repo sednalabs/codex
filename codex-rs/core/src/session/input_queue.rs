@@ -546,7 +546,7 @@ impl InputQueue {
                 Some(active_turn) => {
                     let turn_state = active_turn.turn_state.lock().await;
                     let pending_items = &turn_state.pending_input.items;
-                    let pending_activity = if pending_items
+                    if pending_items
                         .iter()
                         .any(|input| matches!(input, TurnInput::UserInput { .. }))
                     {
@@ -567,8 +567,7 @@ impl InputQueue {
                             | TurnInput::ResponseItem(_)
                             | TurnInput::InterAgentCommunication(_) => None,
                         })
-                    };
-                    pending_activity
+                    }
                 }
                 None => None,
             }
