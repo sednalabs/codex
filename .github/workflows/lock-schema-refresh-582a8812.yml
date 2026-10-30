@@ -25,9 +25,6 @@ jobs:
           target: x86_64-unknown-linux-gnu
           cache-scope: lock-schema-refresh-582a8812
 
-      - name: Regenerate Bazel module lock
-        run: bazel mod deps --lockfile_mode=update
-
       - name: Refresh the advisory-pinned Cargo dependency lock
         working-directory: codex-rs
         run: cargo update --package libz-sys --precise 1.1.31
@@ -35,6 +32,9 @@ jobs:
       - name: Verify the Cargo lock resolves in locked mode
         working-directory: codex-rs
         run: cargo metadata --locked --format-version 1 > /dev/null
+
+      - name: Regenerate Bazel module lock
+        run: bazel mod deps --lockfile_mode=update
 
       - name: Regenerate maintained app-server schema and Python types
         run: just write-app-server-schema
