@@ -2,9 +2,12 @@
 from __future__ import annotations
 
 import importlib.util
+import sqlite3
+import tempfile
 import unittest
 from datetime import datetime, timezone
 from pathlib import Path
+from unittest.mock import patch
 
 
 SCRIPT = Path(__file__).resolve().parents[1] / "scripts" / "inspect_subagent_tail.py"
@@ -52,6 +55,92 @@ class OutputSummarizationTest(unittest.TestCase):
                 summary = inspect_subagent_tail.summarize_output(output)
                 self.assertEqual(summary, expected)
                 self.assertNotIn("private token", summary)
+
+
+class UsageDatabaseSelectionTest(unittest.TestCase):
+    def test_explicit_database_is_selected(self) -> None:
+        expected = Path(tempfile.gettempdir()) / "selected" / "usage_1.sqlite"
+
+        selected = inspect_subagent_tail.resolve_usage_database(
+            expected,
+            home=Path(tempfile.gettempdir()) / "user-home",
+        )
+
+        self.assertEqual(selected, expected)
+
+    def test_database_argument_is_available_from_cli(self) -> None:
+        database = Path(tempfile.gettempdir()) / "effective" / "usage_1.sqlite"
+
+        args = inspect_subagent_tail.parse_args(
+            ["--child-thread-id", "child-thread", "--database", str(database)]
+        )
+
+        self.assertEqual(args.database, str(database))
+
+    def test_standard_home_is_fallback_even_when_environment_differs(self) -> None:
+        home = Path(tempfile.gettempdir()) / "user-home"
+        with patch.dict(
+            "os.environ",
+            {
+                "CODEX_SQLITE_HOME": str(home / "environment-state"),
+                "CODEX_HOME": str(home / "other-state"),
+            },
+        ):
+            selected = inspect_subagent_tail.resolve_usage_database(home=home)
+
+        self.assertEqual(selected, home / ".codex" / "usage_1.sqlite")
+
+    def test_usage_summary_reads_the_selected_custom_database(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            temp_home = Path(temp_dir)
+            selected_home = temp_home / "selected-state"
+            selected_home.mkdir()
+            database = selected_home / "usage_1.sqlite"
+            with sqlite3.connect(database) as connection:
+                connection.execute(
+                    """
+                    CREATE TABLE usage_provider_calls (
+                        thread_id TEXT,
+                        turn_id TEXT,
+                        started_at TEXT,
+                        actual_model_used TEXT,
+                        input_tokens_uncached INTEGER,
+                        input_tokens_cached INTEGER,
+                        output_tokens INTEGER,
+                        total_tokens INTEGER
+                    )
+                    """
+                )
+                connection.execute(
+                    """
+                    INSERT INTO usage_provider_calls (
+                        thread_id, turn_id, started_at, actual_model_used,
+                        input_tokens_uncached, input_tokens_cached,
+                        output_tokens, total_tokens
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                    """,
+                    (
+                        "child-thread",
+                        "turn-1",
+                        "2026-10-30T03:00:00Z",
+                        "gpt-5.6-luna",
+                        7,
+                        2,
+                        3,
+                        12,
+                    ),
+                )
+            connection.close()
+
+            rows = inspect_subagent_tail.usage_summary(
+                "child-thread",
+                database,
+                home=temp_home / "user-home",
+            )
+
+        self.assertEqual(len(rows), 1)
+        self.assertIn("model=gpt-5.6-luna", rows[0])
+        self.assertIn("total=12", rows[0])
 
 
 if __name__ == "__main__":
