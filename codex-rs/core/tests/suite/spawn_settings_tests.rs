@@ -153,10 +153,16 @@ async fn spawn_reports_effective_settings_after_child_runtime_is_removed() -> Re
             .error
             .as_ref()
             .map(|error| error.codex_error_info.clone());
+        let observed_requests = responses.requests();
+        let child_request_count = observed_requests
+            .iter()
+            .filter(|request| request.header("thread-id") == Some(child_id.to_string()))
+            .count();
         assert!(
             completion.error.is_none(),
-            "turn {} completed with error info: {turn_error:?}",
-            completion.turn_id
+            "turn {} completed with error info: {turn_error:?}; response requests={}, child-thread requests={child_request_count}",
+            completion.turn_id,
+            observed_requests.len()
         );
         thread.shutdown_and_wait().await?;
     }

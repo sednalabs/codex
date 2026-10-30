@@ -713,16 +713,22 @@ http_headers = {{ Authorization = "Bearer ordinary-access" }}
             _ => None,
         })
         .await;
+    let observed_mcp_requests = mcp.received_requests().await.expect("MCP requests");
+    let observed_mcp_tool_calls = observed_mcp_requests
+        .iter()
+        .filter(|request| {
+            serde_json::from_slice::<serde_json::Value>(&request.body)
+                .is_ok_and(|body| body["method"] == "tools/call")
+        })
+        .count();
+    let observed_model_requests = mock.requests().len();
     assert!(
         turn_succeeded,
-        "post-removal turn completed with error info: {turn_error_info:?}"
+        "post-removal turn completed with error info: {turn_error_info:?}; model requests={observed_model_requests}, MCP tool calls={observed_mcp_tool_calls}"
     );
     let requests = mock.requests();
     assert_eq!(requests.len(), 4);
-    let calls = mcp
-        .received_requests()
-        .await
-        .expect("MCP requests")
+    let calls = observed_mcp_requests
         .into_iter()
         .filter(|request| {
             serde_json::from_slice::<serde_json::Value>(&request.body)

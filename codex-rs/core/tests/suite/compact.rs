@@ -3551,7 +3551,12 @@ async fn manual_remote_compact_advice_respects_retry_limit(max_retries: u64) {
             _ => {}
         }
     }
-    assert_eq!(errors, vec![Some(CodexErrorInfo::RateLimitExceeded)]);
+    assert_eq!(
+        errors,
+        vec![Some(CodexErrorInfo::ResponseTooManyFailedAttempts {
+            http_status_code: Some(429),
+        })]
+    );
     assert_eq!(
         reconnect_messages,
         (1..=max_retries)
