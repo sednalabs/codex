@@ -2,10 +2,13 @@
 
 use anyhow::Result;
 use codex_config::test_support::CloudConfigBundleFixture;
+use codex_core::TurnInputSubmission;
 use codex_login::CodexAuth;
 use codex_protocol::openai_models::ToolMode;
 use codex_protocol::protocol::EventMsg;
 use codex_protocol::protocol::McpStartupStatus;
+use codex_protocol::turn_input::TurnInputRequest;
+use codex_protocol::user_input::UserInput;
 use core_test_support::apps_test_server::AppsTestServer;
 use core_test_support::context_snapshot;
 use core_test_support::context_snapshot::ContextSnapshotOptions;
@@ -688,8 +691,21 @@ http_headers = {{ Authorization = "Bearer ordinary-access" }}
     // The pending response is already cancelled. Apply the config update before
     // building the next turn's tool catalog, preserving the original history check.
     test.codex.disable_mcp_enterprise_auth().await;
-    test.submit_text_turn("List my other calendar events.")
+    let submission = test
+        .codex
+        .start_or_steer_turn(TurnInputRequest::user_input(vec![UserInput::Text {
+            text: "List my other calendar events.".into(),
+            text_elements: Vec::new(),
+        }]))
         .await?;
+    let TurnInputSubmission::Started { turn_id, .. } = submission else {
+        anyhow::bail!("expected the post-removal prompt to start a new turn");
+    };
+    wait_for_event_match(&test.codex, |event| match event {
+        EventMsg::TurnComplete(event) if event.turn_id == turn_id => Some(()),
+        _ => None,
+    })
+    .await;
     let requests = mock.requests();
     assert_eq!(requests.len(), 4);
     let calls = mcp
