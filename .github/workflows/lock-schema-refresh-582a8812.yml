@@ -36,6 +36,11 @@ jobs:
       - name: Regenerate Bazel module lock
         run: bazel mod deps --lockfile_mode=update
 
+      - name: Install uv for the Python SDK schema generation
+        uses: astral-sh/setup-uv@07a047e608db84b3d8c06cd9a7c7dcc9c355c18e # v10.3.2
+        with:
+          version: "0.13.5"
+
       - name: Regenerate maintained app-server schema and Python types
         run: just write-app-server-schema
 
