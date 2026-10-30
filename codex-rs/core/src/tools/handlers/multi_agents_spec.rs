@@ -210,11 +210,25 @@ pub fn create_send_message_tool() -> ToolSpec {
                     .to_string(),
             )),
         ),
+        (
+            "intent".to_string(),
+            JsonSchema::string_enum(
+                vec![
+                    json!("progress"),
+                    json!("action_required"),
+                    json!("result_ready"),
+                ],
+                Some(
+                    "Message purpose, independent of automatic turn scheduling. Omit or use progress for routine updates. Use action_required when the recipient's decision/input is needed, or result_ready when a bounded result is ready. Either explicit intent can wake the directly addressed recipient's native wait without starting a new model turn."
+                        .to_string(),
+                ),
+            ),
+        ),
     ]);
 
     ToolSpec::Function(ResponsesApiTool {
         name: "send_message".to_string(),
-        description: "Send a text message to an existing agent. Use `interrupt=true` to stop the current task before queueing the message. Does not trigger a new turn. The receipt's effective_* identity fields describe the recipient agent named by target, never the sending agent."
+        description: "Send a text message to an existing agent. Intent defaults to progress; action_required and result_ready can wake the directly addressed recipient's native wait without starting a new model turn. Use `interrupt=true` to stop the current task before queueing the message. The receipt's effective_* identity fields describe the recipient agent named by target, never the sending agent."
             .to_string(),
         strict: false,
         defer_loading: None,
@@ -647,6 +661,11 @@ fn send_message_output_schema() -> Value {
                 "enum": ["queued"],
                 "description": "The runtime accepted the message for queue-only delivery; it does not represent a model acknowledgement or completion."
             },
+            "intent": {
+                "type": "string",
+                "enum": ["progress", "action_required", "result_ready"],
+                "description": "The accepted message intent. Queued receipt does not prove that a wait was active or that the recipient has consumed the message."
+            },
             "effective_model": {
                 "type": ["string", "null"],
                 "description": "Effective model of the recipient when its runtime is already loaded. Null for a cold or evicted target so queue-only delivery does not activate it."
@@ -669,6 +688,7 @@ fn send_message_output_schema() -> Value {
             "recipient_task_name",
             "effective_identity_scope",
             "handoff_state",
+            "intent",
             "effective_model",
             "effective_model_provider_id",
             "effective_reasoning_effort",
@@ -1323,7 +1343,7 @@ fn wait_agent_tool_parameters_v2(
             JsonSchema::array(
                 JsonSchema::string(/*description*/ None),
                 Some(
-                    "Optional agent ids or task-path references to wait on. Pass multiple targets to wait for whichever finishes first unless return_when=all. Omit to wait only for mailbox activity or timeout; targetless native event waits are reserved for root and orchestrator agents, so leaf agents must provide at least one target."
+                    "Optional agent ids or task-path references to wait on. Pass multiple targets to wait for whichever finishes first unless return_when=all. Omit to wait for an explicitly addressed action_required/result_ready message or timeout; targetless native event waits are reserved for root and orchestrator agents, so leaf agents must provide at least one target."
                         .to_string(),
                 ),
             ),
@@ -1370,7 +1390,7 @@ fn wait_agent_tool_parameters_v2(
 
 fn wait_agent_v2_description(include_runtime_capability: bool) -> String {
     if include_runtime_capability {
-        "Use this for blocking coordination while awaiting sub-agent completion. Waits on the requested agents until the requested completion rule is satisfied, but may also wake early when the current agent receives new mailbox activity. Omit `targets` only for root or orchestrator mailbox waits; leaf agents must provide at least one target, especially when using native event waits. When `return_when` is `any`, completion requires any requested agent to reach terminal status. When `return_when` is `all`, completion requires all requested agents to reach terminal status. Does not return mailbox content; returns an explicit completion reason plus the still-pending targets when applicable. Prefer longer timeouts to avoid busy polling."
+        "Use this for blocking coordination while awaiting sub-agent completion. Waits on the requested agents until the requested completion rule is satisfied, but may also wake early when the current agent receives an explicitly addressed action_required or result_ready message. Routine progress, follow-up turn scheduling, and unrelated terminal notifications do not end the wait. Omit `targets` only for root or orchestrator waits for explicitly addressed action/result messages; leaf agents must provide at least one target, especially when using native event waits. When `return_when` is `any`, completion requires any requested agent to reach terminal status. When `return_when` is `all`, completion requires all requested agents to reach terminal status. It does not consume or return full mailbox content; it may include a bounded summary of the causal message and returns an explicit completion reason plus the still-pending targets when applicable. Prefer longer timeouts to avoid busy polling."
             .to_string()
     } else {
         "Use this for blocking coordination while awaiting sub-agent completion. Waits on the requested agents until an agent reaches terminal status or the timeout expires. Prefer longer timeouts to avoid busy polling."

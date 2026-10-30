@@ -398,6 +398,16 @@ fn send_message_tool_requires_encrypted_scalar_message_and_interrupt_schema() {
         Some(true)
     );
     assert!(properties.contains_key("interrupt"));
+    assert_eq!(
+        properties
+            .get("intent")
+            .and_then(|schema| schema.enum_values.as_ref()),
+        Some(&vec![
+            json!("progress"),
+            json!("action_required"),
+            json!("result_ready")
+        ])
+    );
     assert!(!properties.contains_key("items"));
     assert_eq!(
         properties
@@ -717,6 +727,7 @@ fn send_message_tool_declares_non_acknowledgement_handoff_receipt() {
             "recipient_task_name",
             "effective_identity_scope",
             "handoff_state",
+            "intent",
             "effective_model",
             "effective_model_provider_id",
             "effective_reasoning_effort",
@@ -726,6 +737,10 @@ fn send_message_tool_declares_non_acknowledgement_handoff_receipt() {
     assert_eq!(
         output_schema["properties"]["handoff_state"]["enum"],
         json!(["queued"])
+    );
+    assert_eq!(
+        output_schema["properties"]["intent"]["enum"],
+        json!(["progress", "action_required", "result_ready"])
     );
     assert_eq!(
         output_schema["properties"]["effective_model"]["type"],

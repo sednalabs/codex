@@ -479,10 +479,9 @@ impl InputQueue {
             .any(|entry| entry.communication.trigger_turn)
     }
 
-    /// Returns whether a mailbox message carries an actionable wake signal for
-    /// a native wait. Explicit trigger-turn messages are actionable even when
-    /// their content is encrypted; result messages are actionable without a
-    /// new turn only after a nonempty plaintext payload is available.
+    /// Returns whether a mailbox message carries an explicit action/result
+    /// signal for a native wait. This is independent of trigger-turn scheduling
+    /// and does not inspect or decrypt the message payload.
     pub(crate) async fn has_actionable_wait_mailbox_items(&self) -> bool {
         self.mailbox
             .lock()
@@ -496,8 +495,9 @@ impl InputQueue {
     /// targetless waits. Ordinary queue-only progress remains durable but must
     /// not wake a parent merely because the mailbox is non-empty.
     ///
-    /// Queue-only mailbox messages remain durable, but do not wake a wait that
-    /// is observing specific agents.
+    /// Queue-only progress and turn-scheduling messages remain durable but do
+    /// not satisfy the native-wait predicate for either targeted or targetless
+    /// waits. Explicit action/result intent is independent of turn scheduling.
     #[expect(
         clippy::await_holding_invalid_type,
         reason = "active turn checks and turn state reads must remain atomic"
@@ -506,12 +506,12 @@ impl InputQueue {
         &self,
         active_turn: &Mutex<Option<ActiveTurn>>,
     ) -> bool {
-        let accepts_mailbox_delivery = {
+        let pending_turn_input = {
             let active = active_turn.lock().await;
             match active.as_ref() {
                 Some(active_turn) => {
                     let turn_state = active_turn.turn_state.lock().await;
-                    if turn_state
+                    turn_state
                         .pending_input
                         .items
                         .iter()
@@ -521,16 +521,11 @@ impl InputQueue {
                             }
                             TurnInput::UserInput { .. } | TurnInput::ResponseItem(_) => true,
                         })
-                    {
-                        return true;
-                    }
-                    turn_state.accepts_mailbox_delivery_for_current_turn()
                 }
-                None => true,
+                None => false,
             }
         };
-        (accepts_mailbox_delivery && self.has_actionable_wait_mailbox_items().await)
-            || self.has_pending_terminal_completions().await
+        pending_turn_input || self.has_actionable_wait_mailbox_items().await
     }
 
     /// Returns the activity class for input that is already pending when a
@@ -545,7 +540,7 @@ impl InputQueue {
         &self,
         active_turn: &Mutex<Option<ActiveTurn>>,
     ) -> Option<InputQueueActivity> {
-        let (accepts_mailbox_delivery, pending_activity) = {
+        let pending_activity = {
             let active = active_turn.lock().await;
             match active.as_ref() {
                 Some(active_turn) => {
@@ -573,23 +568,17 @@ impl InputQueue {
                             | TurnInput::InterAgentCommunication(_) => None,
                         })
                     };
-                    (
-                        turn_state.accepts_mailbox_delivery_for_current_turn(),
-                        pending_activity,
-                    )
+                    pending_activity
                 }
-                None => (true, None),
+                None => None,
             }
         };
 
         if pending_activity.is_some() {
             return pending_activity;
         }
-        if accepts_mailbox_delivery && self.has_actionable_wait_mailbox_items().await {
+        if self.has_actionable_wait_mailbox_items().await {
             return Some(InputQueueActivity::Mailbox);
-        }
-        if self.has_pending_terminal_completions().await {
-            return Some(InputQueueActivity::TerminalCompletion);
         }
         None
     }
@@ -825,11 +814,7 @@ impl InputQueue {
 }
 
 pub(crate) fn is_actionable_wait_communication(communication: &InterAgentCommunication) -> bool {
-    communication.trigger_turn
-        || (communication.encrypted_content.is_none()
-            && !communication.content.is_empty()
-            && communication.origin
-                == Some(codex_protocol::protocol::AgentCommunicationOrigin::Result))
+    communication.intent.wakes_native_wait()
 }
 
 pub(crate) fn current_time_ms() -> u64 {
@@ -1159,7 +1144,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn input_queue_tracks_pending_trigger_turn_mail() {
+    async fn input_queue_keeps_trigger_turn_scheduling_separate_from_wait_wakes() {
         let input_queue = InputQueue::new();
 
         input_queue
@@ -1180,6 +1165,19 @@ mod tests {
                 "wake",
                 /*trigger_turn*/ true,
             ))
+            .await;
+        assert!(input_queue.has_trigger_turn_mailbox_items().await);
+        assert!(!input_queue.has_pending_wait_input(&Mutex::new(None)).await);
+
+        let mut actionable = make_mail(
+            AgentPath::root(),
+            AgentPath::try_from("/root/worker").expect("agent path"),
+            "action needed",
+            /*trigger_turn*/ false,
+        );
+        actionable.intent = codex_protocol::protocol::AgentMessageIntent::ActionRequired;
+        input_queue
+            .enqueue_mailbox_communication(actionable)
             .await;
         assert!(input_queue.has_trigger_turn_mailbox_items().await);
         assert!(input_queue.has_pending_wait_input(&Mutex::new(None)).await);
@@ -1257,12 +1255,17 @@ mod tests {
         let input_queue = InputQueue::new();
         let communications = (0..=InputQueue::MAX_MAILBOX_NOTIFICATION_SNAPSHOT)
             .map(|index| {
-                make_mail(
+                let mut communication = make_mail(
                     AgentPath::root(),
                     AgentPath::try_from("/root/worker").expect("agent path"),
                     &format!("mail-{index}"),
-                    index == InputQueue::MAX_MAILBOX_NOTIFICATION_SNAPSHOT,
-                )
+                    /*trigger_turn*/ false,
+                );
+                if index == InputQueue::MAX_MAILBOX_NOTIFICATION_SNAPSHOT {
+                    communication.intent =
+                        codex_protocol::protocol::AgentMessageIntent::ActionRequired;
+                }
+                communication
             })
             .collect();
         input_queue
@@ -1280,7 +1283,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn input_queue_treats_plaintext_result_as_actionable_wait_mail() {
+    async fn input_queue_does_not_treat_legacy_result_as_explicit_wait_intent() {
         let input_queue = InputQueue::new();
         let mut result = make_mail(
             AgentPath::try_from("/root/worker").expect("agent path"),
@@ -1291,11 +1294,34 @@ mod tests {
         result.origin = Some(codex_protocol::protocol::AgentCommunicationOrigin::Result);
         input_queue.enqueue_mailbox_communication(result).await;
 
-        assert!(input_queue.has_pending_wait_input(&Mutex::new(None)).await);
+        assert!(!input_queue.has_pending_wait_input(&Mutex::new(None)).await);
     }
 
     #[tokio::test]
-    async fn input_queue_treats_encrypted_trigger_turn_as_actionable_wait_mail() {
+    async fn input_queue_wakes_for_explicit_actionable_and_result_ready_intents() {
+        let input_queue = InputQueue::new();
+        for intent in [
+            codex_protocol::protocol::AgentMessageIntent::ActionRequired,
+            codex_protocol::protocol::AgentMessageIntent::ResultReady,
+        ] {
+            let mut communication = InterAgentCommunication::new_encrypted(
+                AgentPath::try_from("/root/worker").expect("agent path"),
+                AgentPath::root(),
+                Vec::new(),
+                "opaque body".to_string(),
+                /*trigger_turn*/ false,
+            );
+            communication.intent = intent;
+            input_queue
+                .enqueue_mailbox_communication(communication)
+                .await;
+            assert!(input_queue.has_pending_wait_input(&Mutex::new(None)).await);
+            input_queue.drain_mailbox_communications().await;
+        }
+    }
+
+    #[tokio::test]
+    async fn input_queue_does_not_treat_encrypted_trigger_turn_as_wait_action() {
         let input_queue = InputQueue::new();
         let encrypted_followup = InterAgentCommunication::new_encrypted(
             AgentPath::try_from("/root/worker").expect("agent path"),
@@ -1308,7 +1334,7 @@ mod tests {
             .enqueue_mailbox_communication(encrypted_followup)
             .await;
 
-        assert!(input_queue.has_pending_wait_input(&Mutex::new(None)).await);
+        assert!(!input_queue.has_pending_wait_input(&Mutex::new(None)).await);
     }
 
     #[tokio::test]
@@ -1347,6 +1373,21 @@ mod tests {
                 ))],
             )
             .await;
+        assert!(!input_queue.has_pending_wait_input(&active_turn).await);
+
+        let mut actionable = make_mail(
+            AgentPath::root(),
+            AgentPath::try_from("/root/worker").expect("agent path"),
+            "action needed",
+            /*trigger_turn*/ false,
+        );
+        actionable.intent = codex_protocol::protocol::AgentMessageIntent::ResultReady;
+        input_queue
+            .extend_pending_input_for_turn_state(
+                &turn_state,
+                vec![TurnInput::InterAgentCommunication(actionable)],
+            )
+            .await;
         assert!(input_queue.has_pending_wait_input(&active_turn).await);
     }
 
@@ -1376,7 +1417,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn input_queue_wait_input_allows_terminal_completion_after_mailbox_delivery_deferral() {
+    async fn input_queue_wait_input_ignores_terminal_completion_after_mailbox_delivery_deferral() {
         let input_queue = InputQueue::new();
         let active_turn = Mutex::new(Some(ActiveTurn::default()));
         let turn_state = active_turn
@@ -1407,6 +1448,16 @@ mod tests {
                 uuid::Uuid::new_v4(),
             ))
             .await;
+        assert!(!input_queue.has_pending_wait_input(&active_turn).await);
+
+        let mut actionable = make_mail(
+            AgentPath::root(),
+            AgentPath::try_from("/root/worker").expect("agent path"),
+            "action needed",
+            /*trigger_turn*/ false,
+        );
+        actionable.intent = codex_protocol::protocol::AgentMessageIntent::ActionRequired;
+        input_queue.enqueue_mailbox_communication(actionable).await;
         assert!(input_queue.has_pending_wait_input(&active_turn).await);
     }
 }

@@ -2625,6 +2625,7 @@ async fn multi_agent_v2_spawn_returns_path_and_send_message_accepts_relative_pat
             "recipient_task_name": "/root/test_process",
             "effective_identity_scope": "recipient",
             "handoff_state": "queued",
+            "intent": "progress",
             "effective_model": child_snapshot.model,
             "effective_model_provider_id": child_snapshot.model_provider_id,
             "effective_reasoning_effort": child_snapshot.reasoning_effort,
@@ -2644,8 +2645,54 @@ async fn multi_agent_v2_spawn_returns_path_and_send_message_accepts_relative_pat
                         && communication.content.is_empty()
                         && communication.encrypted_content.as_deref() == Some("encrypted-send-message")
                         && !communication.trigger_turn
+                        && communication.intent
+                            == codex_protocol::protocol::AgentMessageIntent::Progress
             )
     }));
+
+    for (intent, message, expected_intent) in [
+        (
+            "action_required",
+            "encrypted-action-message",
+            codex_protocol::protocol::AgentMessageIntent::ActionRequired,
+        ),
+        (
+            "result_ready",
+            "encrypted-result-message",
+            codex_protocol::protocol::AgentMessageIntent::ResultReady,
+        ),
+    ] {
+        let output = SendMessageHandlerV2
+            .handle(invocation(
+                session.clone(),
+                turn.clone(),
+                "send_message",
+                function_payload(json!({
+                    "target": "test_process",
+                    "message": message,
+                    "intent": intent
+                })),
+            ))
+            .await
+            .expect("send_message should accept explicit intent");
+        let (content, success) = expect_text_output(output);
+        let receipt: serde_json::Value =
+            serde_json::from_str(&content).expect("send_message receipt should be json");
+        assert_eq!(receipt["intent"], intent);
+        assert_eq!(receipt["handoff_state"], "queued");
+        assert_eq!(success, Some(true));
+
+        assert!(manager.captured_ops().iter().any(|(id, op)| {
+            *id == child_thread_id
+                && matches!(
+                    op,
+                    Op::InterAgentCommunication { communication }
+                        if communication.encrypted_content.as_deref() == Some(message)
+                            && communication.intent == expected_intent
+                            && !communication.trigger_turn
+                )
+        }));
+    }
 }
 
 #[tokio::test]
@@ -2721,6 +2768,7 @@ async fn multi_agent_v2_send_message_keeps_cold_target_unloaded() {
             "recipient_task_name": "/root/cold_worker",
             "effective_identity_scope": "recipient",
             "handoff_state": "queued",
+            "intent": "progress",
             "effective_model": null,
             "effective_model_provider_id": null,
             "effective_reasoning_effort": null,
@@ -2735,6 +2783,8 @@ async fn multi_agent_v2_send_message_keeps_cold_target_unloaded() {
                 Op::InterAgentCommunication { communication }
                     if communication.encrypted_content.as_deref() == Some("opaque-encrypted-message")
                         && !communication.trigger_turn
+                        && communication.intent
+                            == codex_protocol::protocol::AgentMessageIntent::Progress
             )
     }));
     assert!(manager.get_thread(child_thread_id).await.is_err());
@@ -2908,18 +2958,23 @@ async fn multi_agent_v2_send_message_accepts_root_target_from_child() {
         agent_role: None,
     });
 
-    SendMessageHandlerV2
+    let output = SendMessageHandlerV2
         .handle(invocation(
             Arc::new(session),
             Arc::new(turn),
             "send_message",
             function_payload(json!({
                 "target": "/root",
-                "message": "encrypted-done"
+                "message": "encrypted-decision-request",
+                "intent": "action_required"
             })),
         ))
         .await
         .expect("send_message should accept the root agent path");
+    let (content, _) = expect_text_output(output);
+    let receipt: serde_json::Value =
+        serde_json::from_str(&content).expect("send_message receipt should be json");
+    assert_eq!(receipt["intent"], "action_required");
 
     assert!(manager.captured_ops().iter().any(|(id, op)| {
         *id == root.thread_id
@@ -2930,7 +2985,9 @@ async fn multi_agent_v2_send_message_accepts_root_target_from_child() {
                         && communication.recipient == AgentPath::root()
                         && communication.other_recipients.is_empty()
                         && communication.content.is_empty()
-                        && communication.encrypted_content.as_deref() == Some("encrypted-done")
+                        && communication.encrypted_content.as_deref() == Some("encrypted-decision-request")
+                        && communication.intent
+                            == codex_protocol::protocol::AgentMessageIntent::ActionRequired
                         && !communication.trigger_turn
             )
     }));
@@ -5780,7 +5837,7 @@ async fn multi_agent_v2_wait_agent_all_waits_for_each_terminal_child_event() {
 }
 
 #[test]
-fn multi_agent_v2_wait_agent_wakes_on_trigger_turn_mailbox_notification() {
+fn multi_agent_v2_wait_agent_wakes_on_explicit_action_from_outside_exact_target_set() {
     run_multi_agent_surface_test(|| async {
         let (mut session, mut turn) = make_session_and_context().await;
         let manager = thread_manager();
@@ -5813,6 +5870,12 @@ fn multi_agent_v2_wait_agent_wakes_on_trigger_turn_mailbox_notification() {
                 .await
                 .expect("spawn worker");
         }
+        let worker_a_id = session
+            .services
+            .agent_control
+            .resolve_agent_reference(session.thread_id, &turn.session_source, "worker_a")
+            .await
+            .expect("worker_a should resolve");
         let worker_b_id = session
             .services
             .agent_control
@@ -5827,7 +5890,7 @@ fn multi_agent_v2_wait_agent_wakes_on_trigger_turn_mailbox_notification() {
             .agent_path
             .expect("worker_b path");
 
-        let wait_task = tokio::spawn({
+        let mut wait_task = tokio::spawn({
             let session = session.clone();
             let turn = turn.clone();
             async move {
@@ -5849,12 +5912,42 @@ fn multi_agent_v2_wait_agent_wakes_on_trigger_turn_mailbox_notification() {
         session
             .input_queue
             .enqueue_mailbox_communication(InterAgentCommunication::new(
-                worker_b_path,
+                worker_b_path.clone(),
                 AgentPath::root(),
                 Vec::new(),
                 "from worker b".to_string(),
                 /*trigger_turn*/ true,
             ))
+            .await;
+        session
+            .input_queue
+            .enqueue_terminal_completion(crate::context::TerminalCompletionNotification {
+                process_id: 7,
+                instance_id: uuid::Uuid::new_v4(),
+                status: crate::context::TerminalCompletionStatus::Exited,
+                exit_code: Some(0),
+                coalesced_exited: 0,
+                coalesced_failed: 0,
+            })
+            .await;
+
+        assert!(
+            timeout(Duration::from_millis(100), &mut wait_task)
+                .await
+                .is_err(),
+            "turn scheduling and unrelated terminal bookkeeping must not end an exact-target wait"
+        );
+        let mut actionable = InterAgentCommunication::new(
+            worker_b_path.clone(),
+            AgentPath::root(),
+            Vec::new(),
+            "recipient decision needed".to_string(),
+            /*trigger_turn*/ false,
+        );
+        actionable.intent = codex_protocol::protocol::AgentMessageIntent::ActionRequired;
+        session
+            .input_queue
+            .enqueue_mailbox_communication(actionable)
             .await;
 
         let output = wait_task
@@ -5874,7 +5967,36 @@ fn multi_agent_v2_wait_agent_wakes_on_trigger_turn_mailbox_notification() {
             CollabWaitingCompletionReason::Mailbox
         );
         assert!(!result.timed_out);
+        assert_eq!(result.requested_ids, vec![worker_a_id]);
+        assert_eq!(result.pending_ids, vec![worker_a_id]);
+        assert_eq!(
+            result.wake_provenance.wake_cause,
+            codex_protocol::items::AgentWakeCause::ChildActionableMessage
+        );
+        assert_eq!(
+            result
+                .wake_provenance
+                .sender_agent_path
+                .as_ref()
+                .map(|path| path.as_str()),
+            Some(worker_b_path.as_str())
+        );
+        assert_eq!(
+            result.wake_provenance.target_set_relation,
+            "directly_addressed_outside_target_set"
+        );
+        assert_eq!(
+            result.wake_provenance.queued_updates[0].intent,
+            codex_protocol::protocol::AgentMessageIntent::Progress
+        );
+        assert!(result.wake_provenance.queued_updates[0].trigger_turn_requested);
+        assert_eq!(
+            result.wake_provenance.queued_updates[1].intent,
+            codex_protocol::protocol::AgentMessageIntent::ActionRequired
+        );
+        assert!(!result.wake_provenance.queued_updates[1].trigger_turn_requested);
         assert_eq!(success, None);
+        assert!(session.input_queue.has_pending_terminal_completions().await);
     });
 }
 
@@ -5964,15 +6086,17 @@ fn multi_agent_v2_wait_agent_does_not_return_completed_content() {
                 .is_err(),
             "queue-only mail must not wake an exact-target wait"
         );
+        let mut result_ready = InterAgentCommunication::new(
+            worker_path.clone(),
+            AgentPath::root(),
+            Vec::new(),
+            "bounded result ready".to_string(),
+            /*trigger_turn*/ false,
+        );
+        result_ready.intent = codex_protocol::protocol::AgentMessageIntent::ResultReady;
         session
             .input_queue
-            .enqueue_mailbox_communication(InterAgentCommunication::new(
-                worker_path.clone(),
-                AgentPath::root(),
-                Vec::new(),
-                "triggered wake".to_string(),
-                /*trigger_turn*/ true,
-            ))
+            .enqueue_mailbox_communication(result_ready)
             .await;
 
         let output = wait_task
@@ -5992,6 +6116,16 @@ fn multi_agent_v2_wait_agent_does_not_return_completed_content() {
             CollabWaitingCompletionReason::Mailbox
         );
         assert!(!result.timed_out);
+        assert_eq!(
+            result.wake_provenance.wake_cause,
+            codex_protocol::items::AgentWakeCause::ChildActionableMessage
+        );
+        assert_eq!(result.wake_provenance.target_set_relation, "selected_target");
+        assert_eq!(
+            result.wake_provenance.queued_updates[1].intent,
+            codex_protocol::protocol::AgentMessageIntent::ResultReady
+        );
+        assert!(!result.wake_provenance.queued_updates[1].trigger_turn_requested);
         let notifications = result
             .wake_notifications
             .expect("mailbox wake should include a safe notification summary");
@@ -6008,7 +6142,7 @@ fn multi_agent_v2_wait_agent_does_not_return_completed_content() {
         assert_eq!(
             notification.content,
             AgentNotificationContent::PlaintextPreview {
-                text: "triggered wake".to_string(),
+                text: "bounded result ready".to_string(),
                 truncated: false,
             }
         );
@@ -6016,6 +6150,10 @@ fn multi_agent_v2_wait_agent_does_not_return_completed_content() {
             .disposition
             .as_ref()
             .expect("actionable disposition should be present");
+        assert_eq!(
+            disposition.intent,
+            codex_protocol::items::AgentDeliveryIntent::ActionableWakeRequested
+        );
         assert!(disposition.ended_active_wait);
         assert_eq!(disposition.queued_update_count, Some(2));
         assert_eq!(result.wake_provenance.noncausal_update_sequences, vec![0]);
