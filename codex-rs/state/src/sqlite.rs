@@ -393,7 +393,7 @@ impl SqliteConfig {
                 result
             }
             .await;
-            if let Err(source) = preflight_result {
+            if preflight_result.is_err() {
                 telemetry::record_init_result(
                     telemetry_override,
                     spec.kind,
@@ -401,9 +401,13 @@ impl SqliteConfig {
                     started.elapsed(),
                     &preflight_result,
                 );
-                return Err(
-                    RuntimeDbInitError::new(spec.label, "open", path.as_path(), source).into(),
-                );
+                return Err(RuntimeDbInitError::new(
+                    spec.label,
+                    "open",
+                    path.as_path(),
+                    preflight_result.expect_err("usage preflight result was checked"),
+                )
+                .into());
             }
         }
         let started = Instant::now();
