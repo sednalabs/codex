@@ -144,6 +144,7 @@ pub(super) fn chats() -> super::chats::Chats {
     use codex_backend_client::ThreadUsageBreakdownGroup;
     super::chats::Chats {
         truncated: false,
+        next_cursor: None,
         rows: [
             ("Q3 planning analysis", 120),
             ("Refactor billing usage", 113),

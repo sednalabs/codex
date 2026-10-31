@@ -71,22 +71,30 @@ async fn bounded_repairing_chat_listing_keeps_estimate_budget_and_marks_partial_
                         params["cursor"],
                         params["limit"],
                         params["useStateDbOnly"].as_bool().unwrap_or_default(),
-                        params["modelProviders"]
+                        params["modelProviders"],
+                        params["sortKey"]
                     ]));
                     if pages.len() == 1 {
-                        // Simulate a slow scan-and-repair page without a wall-clock wait.
+                        // A stale root on the newest-created page must not stop cursor continuation.
                         tokio::time::pause();
                         tokio::time::advance(std::time::Duration::from_secs(/*secs*/ 26)).await;
                         tokio::time::resume();
                     }
-                    let range = if pages.len() == 1 { 0..100 } else { 100..101 };
-                    let data = range.map(|index| json!({
-                        "id": format!("chat-{index}"), "sessionId": format!("chat-{index}"),
-                        "preview": "", "name": format!("Chat {index}"), "ephemeral": false,
-                        "modelProvider": "openai", "createdAt": 0,
-                        "updatedAt": chrono::Utc::now().timestamp(), "status": {"type": "idle"},
-                        "cwd": std::env::temp_dir(), "cliVersion": "test", "source": "cli", "turns": [],
-                    })).collect::<Vec<_>>();
+                    let range = if pages.len() == 1 { 0..100 } else { 100..200 };
+                    let cutoff = chrono::Utc::now().timestamp() - 31 * 24 * 60 * 60;
+                    let data = range
+                        .map(|index| {
+                            let child_only_page = pages.len() == 1 && index != 0;
+                            json!({
+                                "id": format!("chat-{index}"), "sessionId": format!("chat-{index}"),
+                                "preview": "", "name": format!("Chat {index}"), "ephemeral": false,
+                                "parentThreadId": if child_only_page { Some("root-parent") } else { None },
+                                "modelProvider": "openai", "createdAt": if index < 100 { 300 - index } else { 200 - (index - 100) },
+                                "updatedAt": if index == 0 { cutoff } else { chrono::Utc::now().timestamp() }, "status": {"type": "idle"},
+                                "cwd": std::env::temp_dir(), "cliVersion": "test", "source": "cli", "turns": [],
+                            })
+                        })
+                        .collect::<Vec<_>>();
                     json!({"data": data, "nextCursor": if pages.len() == 1 { Some("next") } else { None }})
                 }
                 _ => continue,
@@ -125,7 +133,7 @@ async fn bounded_repairing_chat_listing_keeps_estimate_budget_and_marks_partial_
             let body: serde_json::Value = request.body_json().unwrap();
             let ids = body["thread_ids"].as_array().unwrap();
             assert!(ids.len() <= 100);
-            if ids.iter().any(|id| id == "chat-35") {
+            if ids.iter().any(|id| id == "chat-135") {
                 return ResponseTemplate::new(/*s*/ 503)
                     .set_body_json(json!({"detail": "Thread usage is temporarily unavailable."}));
             }
@@ -135,28 +143,30 @@ async fn bounded_repairing_chat_listing_keeps_estimate_budget_and_marks_partial_
             })).collect::<Vec<_>>();
             ResponseTemplate::new(/*s*/ 200).set_body_json(json!({"threads": threads}))
         }).expect(/*r*/ 2..=16).mount(&server).await;
-    let chats = read(
-        AppServerRequestHandle::Remote(remote.request_handle()),
-        Arc::new(live),
-    )
-    .await
-    .unwrap()
-    .unwrap();
-    assert_eq!(
-        (
-            chats.rows.len(),
-            chats.rows[0].title.as_str(),
-            chats.rows.last().unwrap().title.as_str(),
-            chats.rows.last().unwrap().usage.clone()
-        ),
-        (100, "Chat 99", "Chat 35", None)
-    );
+    let handle = AppServerRequestHandle::Remote(remote.request_handle());
+    let live = Arc::new(live);
+    let chats = read(handle.clone(), Arc::clone(&live), None)
+        .await
+        .unwrap()
+        .unwrap();
+    assert!(chats.rows.is_empty());
     assert!(chats.truncated);
+    let next_cursor = chats.next_cursor.clone().unwrap();
+    let older_chats = read(handle, live, Some(next_cursor.clone()))
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(older_chats.rows.len(), 100);
+    assert_eq!(older_chats.rows.first().unwrap().title, "Chat 199");
+    assert_eq!(older_chats.rows.last().unwrap().title, "Chat 135");
+    assert!(older_chats.rows.last().unwrap().usage.is_none());
+    assert!(older_chats.truncated);
+    assert!(older_chats.next_cursor.is_none());
     assert_eq!(
         rpc.await.unwrap(),
         vec![
-            json!([null, 100, false, []]),
-            json!(["next", 100, false, []])
+            json!([null, 100, false, [], "created_at"]),
+            json!([next_cursor, 100, false, [], "created_at"])
         ]
     );
 }

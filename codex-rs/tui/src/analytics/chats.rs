@@ -12,7 +12,6 @@ use codex_app_server_protocol::ThreadListResponse;
 use codex_app_server_protocol::ThreadSortKey;
 use codex_backend_client::ThreadUsage;
 use std::collections::HashMap;
-use std::collections::HashSet;
 use std::sync::Arc;
 
 pub(super) struct Chat {
@@ -35,36 +34,43 @@ impl Chat {
 pub(super) struct Chats {
     pub rows: Vec<Chat>,
     pub truncated: bool,
+    pub next_cursor: Option<String>,
 }
 
 pub(super) struct RootThreads {
     pub threads: Vec<codex_app_server_protocol::Thread>,
     pub truncated: bool,
+    pub next_cursor: Option<String>,
 }
 
 pub(super) const MAX_RECENT_ROOT_THREADS: usize = 100;
-const MAX_ROOT_LIST_PAGES: usize = 3;
 
 pub(super) async fn read(
     handle: AppServerRequestHandle,
     live: Arc<Live>,
+    cursor: Option<String>,
 ) -> Result<Option<Chats>, String> {
     let session = live.session().await?;
     if !super::models::thread_usage_supported(session.backend.account().plan_type) {
         return Ok(None);
     }
     live.ensure_identity().await?;
-    let roots = tokio::time::timeout(std::time::Duration::from_secs(/*secs*/ 60), roots(&handle))
-        .await
-        .map_err(|_| "Chat listing timed out. Press R to retry.".to_string());
+    let roots = tokio::time::timeout(
+        std::time::Duration::from_secs(/*secs*/ 60),
+        roots(&handle, cursor),
+    )
+    .await
+    .map_err(|_| "Chat listing timed out. Press R to retry.".to_string());
     live.ensure_identity().await?;
     let roots = roots??;
     let truncated = roots.truncated;
+    let next_cursor = roots.next_cursor;
     let threads = roots.threads;
     if threads.is_empty() {
         return Ok(Some(Chats {
             rows: Vec::new(),
             truncated,
+            next_cursor,
         }));
     }
     let ids = threads
@@ -116,75 +122,71 @@ pub(super) async fn read(
                 .map(|usage| usage.estimated_usage_credits_micros),
         )
     });
-    Ok(Some(Chats { rows, truncated }))
+    Ok(Some(Chats {
+        rows,
+        truncated,
+        next_cursor,
+    }))
 }
 
-/// Recent local roots are shared by consumer task and business credit reporting.
-pub(super) async fn roots(handle: &AppServerRequestHandle) -> Result<RootThreads, String> {
+/// One bounded, scan-and-repair page of local roots, shared by task and credit reporting.
+pub(super) async fn roots(
+    handle: &AppServerRequestHandle,
+    cursor: Option<String>,
+) -> Result<RootThreads, String> {
     let cutoff = chrono::Utc::now().timestamp() - 30 * 24 * 60 * 60;
-    let mut threads = Vec::new();
-    let mut cursor = None;
-    let mut seen_cursors = HashSet::new();
-    let mut seen_ids = HashSet::new();
-    let mut truncated = false;
-    let mut pages = 0;
-    loop {
-        if pages == MAX_ROOT_LIST_PAGES {
-            truncated = cursor.is_some();
-            break;
-        }
-        let page: ThreadListResponse = handle
-            .request_typed(ClientRequest::ThreadList {
-                request_id: RequestId::String(uuid::Uuid::new_v4().to_string()),
-                params: ThreadListParams {
-                    cursor,
-                    ..list_params()
-                },
-            })
-            .await
-            .map_err(data::error)?;
-        pages += 1;
-        let reached_cutoff = page.data.iter().any(|thread| thread.updated_at < cutoff);
-        for thread in page.data {
-            if thread.updated_at < cutoff
-                || thread.ephemeral
-                || thread.parent_thread_id.is_some()
-                || !seen_ids.insert(thread.id.clone())
-            {
-                continue;
-            }
-            if threads.len() == MAX_RECENT_ROOT_THREADS {
-                truncated = true;
-                break;
-            }
-            threads.push(thread);
-        }
-        if truncated {
-            break;
-        }
-        match page.next_cursor {
-            Some(next) if !seen_cursors.insert(next.clone()) => {
-                return Err("Chat listing repeated a cursor. Press R to retry.".into());
-            }
-            Some(next) if !reached_cutoff => cursor = Some(next),
-            _ => break,
-        }
+    // UpdatedAt sorting requires a filesystem mtime scan across the whole rollout tree. Use
+    // creation-ordered ThreadList pages instead, retaining its scan-and-repair behavior for the
+    // returned page. The UI exposes the cursor so older active roots remain reachable.
+    let page: ThreadListResponse = handle
+        .request_typed(ClientRequest::ThreadList {
+            request_id: RequestId::String(uuid::Uuid::new_v4().to_string()),
+            params: ThreadListParams {
+                cursor: cursor.clone(),
+                ..list_params(None)
+            },
+        })
+        .await
+        .map_err(data::error)?;
+    if page.next_cursor.as_deref() == cursor.as_deref() && cursor.is_some() {
+        return Err("Chat listing repeated a cursor. Press R to retry.".into());
     }
-    Ok(RootThreads { threads, truncated })
+    let next_cursor = page.next_cursor;
+    let mut threads = page
+        .data
+        .into_iter()
+        .filter(|thread| {
+            thread.updated_at >= cutoff && !thread.ephemeral && thread.parent_thread_id.is_none()
+        })
+        .collect::<Vec<_>>();
+    // The page is ordered by creation time for bounded discovery; rank its eligible roots by
+    // recent activity, without implying this is a global recent-activity ranking.
+    threads.sort_by(|a, b| {
+        b.updated_at
+            .cmp(&a.updated_at)
+            .then_with(|| a.id.cmp(&b.id))
+    });
+    threads.truncate(MAX_RECENT_ROOT_THREADS);
+    let truncated = cursor.is_some() || next_cursor.is_some();
+    Ok(RootThreads {
+        threads,
+        truncated,
+        next_cursor,
+    })
 }
 
-pub(super) fn list_params() -> ThreadListParams {
+pub(super) fn list_params(cursor: Option<String>) -> ThreadListParams {
     ThreadListParams {
         excluded_thread_ids: None,
         attached_to_thread_id: None,
-        limit: Some(100),
-        sort_key: Some(ThreadSortKey::UpdatedAt),
+        limit: Some(MAX_RECENT_ROOT_THREADS as u32),
+        sort_key: Some(ThreadSortKey::CreatedAt),
         sort_direction: Some(SortDirection::Desc),
         model_providers: Some(Vec::new()),
         source_kinds: None,
         originators: None,
         archived: Some(false),
-        cursor: None,
+        cursor,
         section_id: None,
         project_id: None,
         cwd: None,
