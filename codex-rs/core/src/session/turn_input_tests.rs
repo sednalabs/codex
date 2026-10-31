@@ -92,6 +92,12 @@ async fn external_invalidation_steers_only_the_exact_regular_turn() {
             },
         )
         .await;
+    let preempt = CancellationToken::new();
+    let _watch = session
+        .input_queue
+        .watch_user_input(&session.active_turn, &turn_context.sub_id, preempt.clone())
+        .await
+        .expect("watch active turn");
     let item: ResponseItem = serde_json::from_value(serde_json::json!({
         "type": "function_call_output",
         "name": "external_event",
@@ -106,6 +112,7 @@ async fn external_invalidation_steers_only_the_exact_regular_turn() {
         )
         .await
     );
+    assert!(!preempt.is_cancelled());
     assert!(
         steer_external_if_active(
             &session,
@@ -114,6 +121,9 @@ async fn external_invalidation_steers_only_the_exact_regular_turn() {
         )
         .await
     );
+    tokio::time::timeout(std::time::Duration::from_secs(1), preempt.cancelled())
+        .await
+        .expect("admitted wake should signal the active watcher");
     let turn_state = session
         .input_queue
         .turn_state_for_sub_id(&session.active_turn, &turn_context.sub_id)
@@ -126,6 +136,39 @@ async fn external_invalidation_steers_only_the_exact_regular_turn() {
             .await
             .1,
         Some(crate::session::input_queue::InputQueueActivity::Steer)
+    );
+}
+
+#[test_case(TaskKind::Review; "review")]
+#[test_case(TaskKind::Compact; "compact")]
+#[tokio::test]
+async fn external_invalidation_does_not_steer_non_regular_turns(kind: TaskKind) {
+    let (session, turn_context) = make_session_and_context().await;
+    let session = Arc::new(session);
+    let turn_context = Arc::new(turn_context);
+    session
+        .spawn_task(
+            Arc::clone(&turn_context),
+            Vec::new(),
+            NeverEndingTask {
+                kind,
+                listen_to_cancellation_token: true,
+            },
+        )
+        .await;
+    let item: ResponseItem = serde_json::from_value(serde_json::json!({
+        "type": "function_call_output",
+        "name": "external_event",
+        "output": "A source has unread data."
+    }))
+    .expect("valid standalone output");
+    assert!(
+        !steer_external_if_active(
+            &session,
+            SubmittedTurnInput::ResponseItem(item),
+            &turn_context.sub_id,
+        )
+        .await
     );
 }
 
