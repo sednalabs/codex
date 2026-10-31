@@ -377,6 +377,50 @@ impl SqliteConfig {
     ) -> anyhow::Result<SqlitePool> {
         let spec = USAGE_DB;
         let path = spec.path(self);
+        if path.exists() {
+            let started = Instant::now();
+            let preflight_result = async {
+                let pool = self
+                    .open_read_only_pool(&path, Some(DEFAULT_BUSY_TIMEOUT))
+                    .await?;
+                let outcome = validation::quick_check(
+                    &pool,
+                    Instant::now() + Duration::from_millis(/*millis*/ 100),
+                )
+                .await;
+                pool.close().await;
+                match outcome? {
+                    validation::QuickCheckOutcome::Complete => Ok(()),
+                    validation::QuickCheckOutcome::CorruptedNeedsFixed => {
+                        telemetry::record_corruption(telemetry_override, Some(spec.kind));
+                        anyhow::bail!("usage database contains corruption")
+                    }
+                    validation::QuickCheckOutcome::Incomplete => {
+                        anyhow::bail!("usage database integrity check did not complete")
+                    }
+                    validation::QuickCheckOutcome::Skipped => {
+                        anyhow::bail!("usage database integrity check was skipped")
+                    }
+                }
+            }
+            .await;
+            if preflight_result.is_err() {
+                telemetry::record_init_result(
+                    telemetry_override,
+                    spec.kind,
+                    spec.open_phase,
+                    started.elapsed(),
+                    &preflight_result,
+                );
+                return Err(RuntimeDbInitError::new(
+                    spec.label,
+                    "open",
+                    path.as_path(),
+                    preflight_result.expect_err("usage preflight result was checked"),
+                )
+                .into());
+            }
+        }
         let started = Instant::now();
         let pool_result = self
             .open_read_write_pool_with_spec(path.as_path(), Some(spec), telemetry_override)

@@ -738,6 +738,8 @@ mod tests {
             "migrate_memories",
             "open_queue",
             "migrate_queue",
+            "open_usage",
+            "migrate_usage",
             "ensure_backfill_state",
             "post_init_query",
         ]

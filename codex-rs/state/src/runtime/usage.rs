@@ -279,8 +279,10 @@ mod tests {
             r#"SELECT thread_id, turn_id, requested_model, actual_model_used,
                       input_tokens_uncached, input_tokens_cached, input_tokens_cache_write,
                       output_tokens, total_tokens, provider_reported_credits, request_id, status
-               FROM usage_provider_calls"#,
+               FROM usage_provider_calls
+               WHERE provider_call_id = ?"#,
         )
+        .bind(format!("{child_thread_id}:{}", child_record.response_id))
         .fetch_one(pool.as_ref())
         .await
         .expect("projected call row");
