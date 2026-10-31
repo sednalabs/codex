@@ -61,7 +61,10 @@ pub use guardian::ScoreAuthorization as GuardianScoreAuthorization;
 pub use session::turn_context::TurnContext;
 /// Shared with the goal extension to serialize automatic admission with goal changes.
 #[derive(Clone, Debug)]
-pub struct GoalStateAdmissionLock(pub std::sync::Arc<tokio::sync::Semaphore>);
+pub struct GoalStateAdmissionLock(
+    pub std::sync::Arc<tokio::sync::Semaphore>,
+    pub std::sync::Arc<std::sync::atomic::AtomicBool>,
+);
 pub use thread_startup_metadata::ThreadStartupMetadata;
 mod agent;
 pub use agent::api::AgentConfigUpdate;

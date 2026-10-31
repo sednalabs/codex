@@ -296,6 +296,9 @@ pub(super) async fn deliver(
     let Ok(_goal_permit) = goal_lock.0.try_acquire() else {
         return EventAdmission::Deferred;
     };
+    if !goal_lock.1.load(std::sync::atomic::Ordering::Acquire) {
+        return EventAdmission::Deferred;
+    }
     let enabled = session.external_event_gate.lock().await;
     if !*enabled {
         return EventAdmission::Deferred;
@@ -317,6 +320,9 @@ pub(super) async fn deliver(
         _ => return EventAdmission::Deferred,
     }
     if session.collaboration_mode().await.mode == ModeKind::Plan {
+        return EventAdmission::Deferred;
+    }
+    if !goal_lock.1.load(std::sync::atomic::Ordering::Acquire) {
         return EventAdmission::Deferred;
     }
 
@@ -387,7 +393,10 @@ mod tests {
         session
             .services
             .thread_extension_data
-            .insert(crate::GoalStateAdmissionLock(Arc::clone(&lock)));
+            .insert(crate::GoalStateAdmissionLock(
+                Arc::clone(&lock),
+                Arc::new(std::sync::atomic::AtomicBool::new(true)),
+            ));
         let _mutation = lock.acquire().await.unwrap();
         assert_eq!(
             tokio::time::timeout(
@@ -408,9 +417,10 @@ mod tests {
         session
             .services
             .thread_extension_data
-            .insert(crate::GoalStateAdmissionLock(Arc::new(
-                tokio::sync::Semaphore::new(1),
-            )));
+            .insert(crate::GoalStateAdmissionLock(
+                Arc::new(tokio::sync::Semaphore::new(1)),
+                Arc::new(std::sync::atomic::AtomicBool::new(true)),
+            ));
         assert!(*session.external_event_gate.lock().await);
         super::super::handlers::interrupt(&session).await;
         assert!(!*session.external_event_gate.lock().await);

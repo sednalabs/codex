@@ -53,7 +53,7 @@ struct GoalRuntimeInner {
     thread_manager: Weak<ThreadManager>,
     accounting_state: Arc<GoalAccountingState>,
     root_accounting_state: Option<Arc<GoalAccountingState>>,
-    enabled: AtomicBool,
+    enabled: Arc<AtomicBool>,
     tools_available_for_thread: bool,
     tools_visible_for_thread: bool,
     goal_state_lock: Arc<Semaphore>,
@@ -107,7 +107,7 @@ impl GoalRuntimeHandle {
                 thread_manager,
                 accounting_state,
                 root_accounting_state: config.root_accounting_state,
-                enabled: AtomicBool::new(config.enabled),
+                enabled: Arc::new(AtomicBool::new(config.enabled)),
                 tools_available_for_thread: config.tools_available_for_thread,
                 tools_visible_for_thread: config.tools_visible_for_thread,
                 goal_state_lock: Arc::new(Semaphore::new(/*permits*/ 1)),
@@ -116,11 +116,11 @@ impl GoalRuntimeHandle {
     }
 
     pub(crate) fn set_enabled(&self, enabled: bool) {
-        self.inner.enabled.store(enabled, Ordering::Relaxed);
+        self.inner.enabled.store(enabled, Ordering::Release);
     }
 
     pub(crate) fn is_enabled(&self) -> bool {
-        self.inner.enabled.load(Ordering::Relaxed)
+        self.inner.enabled.load(Ordering::Acquire)
     }
 
     pub(crate) fn tools_visible(&self) -> bool {
@@ -162,7 +162,10 @@ impl GoalRuntimeHandle {
     }
 
     pub(crate) fn admission_lock(&self) -> codex_core::GoalStateAdmissionLock {
-        codex_core::GoalStateAdmissionLock(Arc::clone(&self.inner.goal_state_lock))
+        codex_core::GoalStateAdmissionLock(
+            Arc::clone(&self.inner.goal_state_lock),
+            Arc::clone(&self.inner.enabled),
+        )
     }
 
     pub async fn prepare_external_goal_mutation(&self) -> Result<(), String> {

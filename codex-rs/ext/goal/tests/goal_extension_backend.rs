@@ -103,13 +103,64 @@ async fn installed_goal_tools_create_goal_and_fill_empty_preview() -> anyhow::Re
 async fn disabled_goal_extension_does_not_publish_wake_admission() -> anyhow::Result<()> {
     let runtime = test_runtime().await?;
     let thread_id = test_thread_id()?;
-    let harness = GoalExtensionHarness::new_with_enabled(runtime, thread_id, /*enabled*/ false).await?;
+    let harness =
+        GoalExtensionHarness::new_with_enabled(runtime, thread_id, /*enabled*/ false).await?;
     assert!(
         harness
             .thread_store
             .get::<codex_core::GoalStateAdmissionLock>()
             .is_none()
     );
+    Ok(())
+}
+
+#[tokio::test]
+async fn goal_config_changes_update_wake_admission() -> anyhow::Result<()> {
+    let runtime = test_runtime().await?;
+    let thread_id = test_thread_id()?;
+    let mut builder = ExtensionRegistryBuilder::<bool>::new();
+    install_with_backend(
+        &mut builder,
+        runtime,
+        AnalyticsEventsClient::disabled(),
+        /*metrics_client*/ None,
+        Weak::new(),
+        Arc::new(GoalService::new()),
+        |enabled| GoalExtensionConfig {
+            enabled: *enabled,
+            max_goal_token_budget: None,
+        },
+    );
+    let registry = builder.build();
+    let session_store = ExtensionData::new(thread_id.to_string());
+    let thread_store = ExtensionData::new(thread_id.to_string());
+    for contributor in registry.thread_lifecycle_contributors() {
+        contributor
+            .on_thread_start(ThreadStartInput {
+                config: &true,
+                session_source: &SessionSource::Cli,
+                persistent_thread_state_available: true,
+                environments: &[],
+                mcp_resource_client: None,
+                extension_metrics: None,
+                session_store: &session_store,
+                thread_store: &thread_store,
+            })
+            .await;
+    }
+    let admission = thread_store
+        .get::<codex_core::GoalStateAdmissionLock>()
+        .expect("enabled goal must publish admission");
+    for contributor in registry.config_contributors() {
+        contributor.on_config_changed(&session_store, &thread_store, &true, &false);
+    }
+    assert!(thread_store.get::<codex_core::GoalStateAdmissionLock>().is_none());
+    assert!(!admission.1.load(std::sync::atomic::Ordering::Acquire));
+    for contributor in registry.config_contributors() {
+        contributor.on_config_changed(&session_store, &thread_store, &false, &true);
+    }
+    assert!(thread_store.get::<codex_core::GoalStateAdmissionLock>().is_some());
+    assert!(admission.1.load(std::sync::atomic::Ordering::Acquire));
     Ok(())
 }
 
