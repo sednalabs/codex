@@ -318,7 +318,11 @@ pub(super) async fn deliver(
         .await
     {
         Ok(Some(goal)) if goal.status.is_active() => {}
-        _ => return EventAdmission::Deferred,
+        Ok(_) => return EventAdmission::Deferred,
+        Err(error) => {
+            tracing::warn!(thread_id = %session.thread_id, %error, "external wake deferred: goal state unavailable");
+            return EventAdmission::Deferred;
+        }
     }
     if session.collaboration_mode().await.mode == ModeKind::Plan {
         return EventAdmission::Deferred;
@@ -331,7 +335,7 @@ pub(super) async fn deliver(
         session,
         request.clone(),
         TurnInputMode::StartIfIdle,
-        uuid::Uuid::new_v4().to_string(),
+        super::new_submission_id(),
     )
     .await;
     match result {
