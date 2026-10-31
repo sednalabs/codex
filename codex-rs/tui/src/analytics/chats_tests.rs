@@ -43,7 +43,7 @@ async fn incomplete_chat_batches_retain_available_estimates_without_inventing_ze
 }
 
 #[tokio::test]
-async fn slow_repairing_chat_listing_keeps_estimate_budget_and_ranks_across_pages() {
+async fn slow_indexed_chat_listing_keeps_estimate_budget_and_ranks_across_pages() {
     use codex_app_server_client::RemoteAppServerClient;
     use codex_app_server_client::RemoteAppServerConnectArgs;
     use codex_app_server_client::RemoteAppServerEndpoint;
@@ -74,7 +74,8 @@ async fn slow_repairing_chat_listing_keeps_estimate_budget_and_ranks_across_page
                         params["modelProviders"]
                     ]));
                     if pages.len() == 1 {
-                        // Simulate repair exceeding the HTTP estimate budget without a wall-clock wait.
+                        // Simulate local history discovery exceeding the estimate budget without a
+                        // wall-clock wait.
                         tokio::time::pause();
                         tokio::time::advance(std::time::Duration::from_secs(/*secs*/ 26)).await;
                         tokio::time::resume();
@@ -153,10 +154,7 @@ async fn slow_repairing_chat_listing_keeps_estimate_budget_and_ranks_across_page
     );
     assert_eq!(
         rpc.await.unwrap(),
-        vec![
-            json!([null, 100, false, []]),
-            json!(["next", 100, false, []])
-        ]
+        vec![json!([null, 100, true, []]), json!(["next", 100, true, []])]
     );
 }
 

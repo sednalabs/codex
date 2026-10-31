@@ -57,7 +57,7 @@ pub(super) async fn read(
         .iter()
         .map(|thread| thread.id.as_str())
         .collect::<Vec<_>>();
-    // Repairing local history has its own budget; it must not consume estimate time.
+    // Keep estimate time separate from local history discovery.
     let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(/*secs*/ 25);
     let mut data = Vec::new();
     for pair in ids.chunks(/*chunk_size*/ 200) {
@@ -119,7 +119,7 @@ pub(super) async fn roots(
                 request_id: RequestId::String(uuid::Uuid::new_v4().to_string()),
                 params: ThreadListParams {
                     cursor,
-                    ..list_params()
+                    ..root_list_params()
                 },
             })
             .await
@@ -161,6 +161,13 @@ pub(super) fn list_params() -> ThreadListParams {
         search_term: None,
         parent_thread_id: None,
         ancestor_thread_id: None,
+    }
+}
+
+fn root_list_params() -> ThreadListParams {
+    ThreadListParams {
+        use_state_db_only: true,
+        ..list_params()
     }
 }
 
