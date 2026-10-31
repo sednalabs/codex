@@ -2980,6 +2980,7 @@ async fn try_run_sampling_request(
                             sess.thread_id,
                             &turn_context.sub_id,
                             mailbox_input_ids.clone(),
+                            &turn_context.config,
                         )
                         .await
                 {

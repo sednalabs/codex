@@ -129,8 +129,9 @@ pub trait AgentControl: Send + Sync {
         agent: ThreadId,
         turn_id: &'a str,
         ids: Vec<String>,
+        config: &'a Config,
     ) -> BoxFuture<'a, Result<()>> {
-        let _ = (agent, turn_id, ids);
+        let _ = (agent, turn_id, ids, config);
         Box::pin(async { Ok(()) })
     }
 

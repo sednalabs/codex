@@ -282,8 +282,12 @@ impl AgentControl for LocalAgentControl {
         agent: ThreadId,
         turn_id: &'a str,
         ids: Vec<String>,
+        config: &'a crate::config::Config,
     ) -> BoxFuture<'a, Result<()>> {
-        Box::pin(async move { self.mailbox_v2_record_admission(agent, turn_id, &ids).await })
+        Box::pin(async move {
+            self.mailbox_v2_record_admission(agent, turn_id, &ids, config)
+                .await
+        })
     }
 
     fn mailbox_v2(&self) -> Option<std::sync::Arc<codex_agent_mailbox::Mailbox>> {

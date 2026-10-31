@@ -110,6 +110,23 @@ impl LocalAgentControl {
         Ok(self.mailbox_v2())
     }
 
+    /// Resolve the durable mailbox for a session that is already executing.
+    /// Its captured config is authoritative; a second manager lookup would reject
+    /// accepted work whose runtime left the registry during startup.
+    async fn mailbox_v2_for_active_session(
+        &self,
+        config: &Config,
+    ) -> CodexResult<Option<Arc<Mailbox>>> {
+        if let Some(mailbox) = self.mailbox_v2() {
+            return Ok(Some(mailbox));
+        }
+        if !compatible(config) {
+            return Ok(None);
+        }
+        self.mailbox_v2_initialize(config).await?;
+        Ok(self.mailbox_v2())
+    }
+
     /// Claims an accepted message's optional idle activation. Acceptance is
     /// durable first; only the recipient's captured feature/config and live
     /// idle state can authorize a real turn start.
@@ -369,10 +386,7 @@ impl LocalAgentControl {
         // The active session already owns its captured config. Do not resolve it again through
         // ThreadManager: an accepted child may have left the registry while its initial input
         // is still being submitted through the retained thread handle.
-        if self.mailbox_v2().is_none() && compatible(config) {
-            self.mailbox_v2_initialize(config).await?;
-        }
-        let Some(mailbox) = self.mailbox_v2() else {
+        let Some(mailbox) = self.mailbox_v2_for_active_session(config).await? else {
             return Ok(Vec::new());
         };
         let page = mailbox
@@ -565,8 +579,9 @@ impl LocalAgentControl {
         recipient: ThreadId,
         turn_id: &str,
         ids: &[String],
+        config: &Config,
     ) -> CodexResult<()> {
-        let Some(mailbox) = self.mailbox_v2_for_recipient(recipient).await? else {
+        let Some(mailbox) = self.mailbox_v2_for_active_session(config).await? else {
             return Ok(());
         };
         let ids = mailbox

@@ -2307,6 +2307,7 @@ async fn multi_agent_v2_interrupted_native_work_settles_before_followup_all_join
                 .id
                 .expect("captured input should have an id")
                 .to_string()],
+            &first_turn.config,
         )
         .await
         .expect("initial spawn work should be admitted to its source turn");
@@ -2364,6 +2365,7 @@ async fn multi_agent_v2_interrupted_native_work_settles_before_followup_all_join
                 .id
                 .expect("captured input should have an id")
                 .to_string()],
+            &second_turn.config,
         )
         .await
         .expect("follow-up work should be admitted to its source turn");
