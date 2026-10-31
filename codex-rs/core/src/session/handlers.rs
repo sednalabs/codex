@@ -603,7 +603,9 @@ pub(super) async fn submission_loop(
                         && matches!(
                             &result,
                             Ok(codex_protocol::turn_input::TurnInputSubmission::Started { .. })
-                                | Ok(codex_protocol::turn_input::TurnInputSubmission::Steered { .. })
+                                | Ok(
+                                    codex_protocol::turn_input::TurnInputSubmission::Steered { .. }
+                                )
                         )
                     {
                         *sess.external_event_gate.lock().await = true;

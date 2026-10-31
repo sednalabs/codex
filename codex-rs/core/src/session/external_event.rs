@@ -346,7 +346,10 @@ mod tests {
         assert!(*session.external_event_gate.lock().await);
         super::super::handlers::interrupt(&session).await;
         assert!(!*session.external_event_gate.lock().await);
-        assert_eq!(deliver(&session, "irc", "token").await, EventAdmission::Deferred);
+        assert_eq!(
+            deliver(&session, "irc", "token").await,
+            EventAdmission::Deferred
+        );
     }
 
     #[test]
