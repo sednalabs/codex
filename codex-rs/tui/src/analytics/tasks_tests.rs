@@ -120,7 +120,7 @@ async fn consumer_roots_include_paginated_archived_descendants_and_keep_missing_
         }).expect(/*r*/ 1).mount(&server).await;
         let handle = AppServerRequestHandle::Remote(remote.request_handle());
         let live = Arc::new(live);
-        let result = read(handle, Arc::clone(&live)).await;
+        let result = read(handle, Arc::clone(&live), None).await;
         assert_eq!(rpc.await.unwrap(), if unsupported { 4 } else { 6 });
         if switch_account {
             assert_eq!(

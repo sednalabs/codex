@@ -24,10 +24,9 @@ async fn failed_optional_usage_projection_does_not_fail_response_recording() {
     let usage_pool = state_db
         .usage_ledger_pool()
         .expect("usage database should remain available");
-    sqlx::query("DROP TABLE usage_provider_calls")
-        .execute(usage_pool.as_ref())
-        .await
-        .expect("make the optional projection fail on its next write");
+    // Closing the optional pool makes its next projection fail without adding a
+    // database driver dependency to core's test target.
+    usage_pool.close().await;
     session.services.usage_logger = Some(usage_logger);
 
     let usage = TokenUsage {
@@ -47,7 +46,7 @@ async fn failed_optional_usage_projection_does_not_fail_response_recording() {
         )
         .await;
 
-    assert_eq!(
+    pretty_assertions::assert_eq!(
         session
             .state
             .lock()
