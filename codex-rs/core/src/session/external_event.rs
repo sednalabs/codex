@@ -110,9 +110,9 @@ pub(super) fn start(session: &Arc<Session>) -> Result<Option<ListenerGuard>, &'s
         return Err("socket readback mismatch");
     }
     let session = Arc::downgrade(session);
-    Ok(Some(ListenerGuard(tokio::spawn(async move {
-        run(socket, session, source, guard).await;
-    }))))
+    Ok(Some(ListenerGuard(tokio::spawn(Box::pin(run(
+        socket, session, source, guard,
+    ))))))
 }
 
 #[cfg(not(unix))]
