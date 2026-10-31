@@ -826,16 +826,15 @@ def _database_model_groups(
             (Decimal(part["knownSubtotal"]) for part in cost_parts),
             start=Decimal(0),
         )
-        estimate_complete = (
-            not coverage_truncated and all(part["complete"] for part in cost_parts)
+        estimate_complete = not coverage_truncated and all(
+            part["complete"] for part in cost_parts
         )
         reported_subtotal = sum(
             (value for value in reported_credit_values if value is not None),
             start=Decimal(0),
         )
-        reported_complete = (
-            not coverage_truncated
-            and all(value is not None for value in reported_credit_values)
+        reported_complete = not coverage_truncated and all(
+            value is not None for value in reported_credit_values
         )
         groups.append(
             {
@@ -913,9 +912,7 @@ def collect_database_tree(
             )
         }
         if not {"usage_threads", "usage_provider_calls"}.issubset(tables):
-            raise UsageError(
-                "database does not contain the Codex usage ledger tables"
-            )
+            raise UsageError("database does not contain the Codex usage ledger tables")
 
         def columns(table: str) -> set[str]:
             return {
@@ -932,13 +929,14 @@ def collect_database_tree(
             "fork_parent_thread_id",
         }.issubset(thread_columns):
             raise UsageError("usage database has no supported thread lineage schema")
-        if not {"provider_call_id", "thread_id", "started_at"}.issubset(
-            call_columns
-        ):
+        if not {"provider_call_id", "thread_id", "started_at"}.issubset(call_columns):
             raise UsageError("usage database has no supported provider-call schema")
-        if connection.execute(
-            "SELECT 1 FROM usage_threads WHERE thread_id = ?", (root_id,)
-        ).fetchone() is None:
+        if (
+            connection.execute(
+                "SELECT 1 FROM usage_threads WHERE thread_id = ?", (root_id,)
+            ).fetchone()
+            is None
+        ):
             raise UsageError("root thread is not present in usage_threads")
 
         thread_source = (
