@@ -132,6 +132,7 @@ async fn run(
     // cursor, including messages received while this session was stopped.
     let mut state = PendingState::default();
     let mut retry_at = tokio::time::Instant::now();
+    let mut retry_seconds = 30u64;
     loop {
         if state.pending && state.inflight.is_none() && tokio::time::Instant::now() >= retry_at {
             let Some(session) = session.upgrade() else {
@@ -142,8 +143,10 @@ async fn run(
             drop(session);
             if result == EventAdmission::Accepted {
                 state.accepted(token);
+                retry_seconds = 30;
             }
-            retry_at = tokio::time::Instant::now() + std::time::Duration::from_secs(30);
+            retry_at = tokio::time::Instant::now() + std::time::Duration::from_secs(retry_seconds);
+            retry_seconds = retry_seconds.saturating_mul(2).min(900);
         } else if let Some(token) = state.inflight.as_deref()
             && tokio::time::Instant::now() >= retry_at
         {
@@ -153,7 +156,8 @@ async fn run(
             // Retain the original token. If the previous turn is still active,
             // never enqueue another copy; retry only via idle admission.
             let _ = deliver(&session, &source, token, /*idle_only*/ true).await;
-            retry_at = tokio::time::Instant::now() + std::time::Duration::from_secs(30);
+            retry_at = tokio::time::Instant::now() + std::time::Duration::from_secs(retry_seconds);
+            retry_seconds = retry_seconds.saturating_mul(2).min(900);
         }
         tokio::select! {
             received = socket.recv_from(&mut data) => {
@@ -162,6 +166,7 @@ async fn run(
                     let was_pending = state.pending;
                     state.receive(&data[..length]);
                     if !was_pending && state.inflight.is_none() {
+                        retry_seconds = 30;
                         retry_at = tokio::time::Instant::now();
                     }
                 } else if let Some(path) = peer.as_pathname()
@@ -170,6 +175,7 @@ async fn run(
                     && let Some(accepted) = state.receive(&data[..length])
                 {
                     if accepted && state.pending && state.inflight.is_none() {
+                        retry_seconds = 30;
                         retry_at = tokio::time::Instant::now();
                     }
                     let receipt = if accepted {

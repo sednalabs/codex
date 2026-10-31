@@ -100,6 +100,20 @@ async fn installed_goal_tools_create_goal_and_fill_empty_preview() -> anyhow::Re
 }
 
 #[tokio::test]
+async fn disabled_goal_extension_does_not_publish_wake_admission() -> anyhow::Result<()> {
+    let runtime = test_runtime().await?;
+    let thread_id = test_thread_id()?;
+    let harness = GoalExtensionHarness::new_with_enabled(runtime, thread_id, /*enabled*/ false).await?;
+    assert!(
+        harness
+            .thread_store
+            .get::<codex_core::GoalStateAdmissionLock>()
+            .is_none()
+    );
+    Ok(())
+}
+
+#[tokio::test]
 async fn installed_goal_tools_apply_maximum_token_budget() -> anyhow::Result<()> {
     let runtime = test_runtime().await?;
     let thread_id = test_thread_id()?;
@@ -1709,6 +1723,14 @@ impl GoalExtensionHarness {
         runtime: Arc<codex_state::StateRuntime>,
         thread_id: ThreadId,
     ) -> anyhow::Result<Self> {
+        Self::new_with_enabled(runtime, thread_id, /*enabled*/ true).await
+    }
+
+    async fn new_with_enabled(
+        runtime: Arc<codex_state::StateRuntime>,
+        thread_id: ThreadId,
+        enabled: bool,
+    ) -> anyhow::Result<Self> {
         let sink = Arc::new(RecordingEventSink::default());
         let mut builder = ExtensionRegistryBuilder::<()>::with_event_sink(sink.clone());
         let goal_service = Arc::new(GoalService::new());
@@ -1719,8 +1741,8 @@ impl GoalExtensionHarness {
             /*metrics_client*/ None,
             Weak::new(),
             Arc::clone(&goal_service),
-            |_| GoalExtensionConfig {
-                enabled: true,
+            move |_| GoalExtensionConfig {
+                enabled,
                 max_goal_token_budget: None,
             },
         );

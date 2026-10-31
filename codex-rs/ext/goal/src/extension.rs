@@ -158,7 +158,11 @@ where
                 )
             });
             runtime.set_enabled(enabled);
-            input.thread_store.insert(runtime.admission_lock());
+            if enabled {
+                input.thread_store.insert(runtime.admission_lock());
+            } else {
+                input.thread_store.remove::<codex_core::GoalStateAdmissionLock>();
+            }
             self.goal_service.register_runtime(&runtime);
         })
     }

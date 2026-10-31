@@ -173,7 +173,7 @@ impl GoalRuntimeHandle {
         self.inner.accounting_state.reset_empty_responses();
 
         if let Some(turn_id) = self.inner.accounting_state.current_turn_id() {
-            self.account_active_goal_progress(
+            self.account_active_goal_progress_locked(
                 turn_id.as_str(),
                 &format!("{turn_id}:external-goal-mutation"),
                 codex_state::GoalAccountingMode::ActiveOnly,
@@ -344,7 +344,7 @@ impl GoalRuntimeHandle {
                 Some(expected_goal_id),
             ),
         };
-        self.account_active_goal_progress(
+        self.account_active_goal_progress_locked(
             turn_id,
             &format!("{turn_id}:{event_name}-progress"),
             codex_state::GoalAccountingMode::ActiveOnly,
@@ -553,6 +553,24 @@ impl GoalRuntimeHandle {
     }
 
     pub(crate) async fn account_active_goal_progress(
+        &self,
+        turn_id: &str,
+        event_id: &str,
+        mode: codex_state::GoalAccountingMode,
+        budget_limited_goal_disposition: BudgetLimitedGoalDisposition,
+    ) -> Result<Option<AccountedGoalProgress>, String> {
+        let _goal_state_permit = self.goal_state_permit().await?;
+        self.account_active_goal_progress_locked(
+            turn_id,
+            event_id,
+            mode,
+            budget_limited_goal_disposition,
+        )
+        .await
+    }
+
+    // Callers must already hold goal_state_permit.
+    async fn account_active_goal_progress_locked(
         &self,
         turn_id: &str,
         event_id: &str,
