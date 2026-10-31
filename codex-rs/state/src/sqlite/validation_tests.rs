@@ -139,10 +139,20 @@ async fn runtime_opens_recover_or_report_corruption_by_database_policy() -> anyh
                 sidecars_before.push(contents);
             }
 
+            let sidecar_probe = sqlite
+                .open_read_only_pool(&path, Some(Duration::from_secs(/*secs*/ 5)))
+                .await?;
+            let with_sidecars = quick_check(
+                &sidecar_probe,
+                Instant::now() + Duration::from_millis(/*millis*/ 100),
+            )
+            .await?;
+            sidecar_probe.close().await;
+
             let runtime = StateRuntime::init(sqlite.clone(), "openai".to_string()).await?;
             assert!(
                 runtime.usage_ledger_pool().is_none(),
-                "usage ledger opened a corrupt fixture; bounded probe: {bounded_probe:?}"
+                "usage ledger opened a corrupt fixture; bounded probe: {bounded_probe:?}, with sidecars: {with_sidecars:?}"
             );
             runtime.close().await;
 

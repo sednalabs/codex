@@ -5,7 +5,6 @@ use codex_protocol::ThreadId;
 use codex_protocol::protocol::SessionSource;
 use codex_protocol::protocol::ThreadSource;
 use codex_protocol::protocol::TokenUsageRecord;
-use sqlx::Row;
 use sqlx::SqlitePool;
 use std::sync::Arc;
 
