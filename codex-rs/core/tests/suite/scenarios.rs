@@ -3844,6 +3844,10 @@ async fn async_compaction_reuses_pending_work(
         ),
         if over_budget {
             (12_010, 14_010)
+        } else if manual && outcome == PendingCompactionOutcome::Failure {
+            // The failed background response, synchronous retry and continuation
+            // each completed with 3,000 tokens and all count toward thread usage.
+            (3_000, seed_tokens + 9_000)
         } else if manual {
             (3_000, seed_tokens + if succeeds { 3_000 } else { 6_000 })
         } else if succeeds {
