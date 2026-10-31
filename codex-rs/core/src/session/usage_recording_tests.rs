@@ -7,7 +7,7 @@ async fn failed_optional_usage_projection_does_not_fail_response_recording() {
     let state_db = codex_state::StateRuntime::init(sqlite, "openai".to_string())
         .await
         .expect("initialize state runtime");
-    let (session, turn_context, _events) = make_session_and_context_with_rx().await;
+    let (mut session, turn_context, _events) = make_session_and_context_with_rx().await;
     let source = SessionSource::Cli;
     let thread_source = ThreadSource::User;
     let usage_logger = codex_state::UsageLogger::try_new(
@@ -27,7 +27,10 @@ async fn failed_optional_usage_projection_does_not_fail_response_recording() {
     // Closing the optional pool makes its next projection fail without adding a
     // database driver dependency to core's test target.
     usage_pool.close().await;
-    session.services.usage_logger = Some(usage_logger);
+    Arc::get_mut(&mut session)
+        .expect("test session should have a single owner")
+        .services
+        .usage_logger = Some(usage_logger);
 
     let usage = TokenUsage {
         input_tokens: 12,

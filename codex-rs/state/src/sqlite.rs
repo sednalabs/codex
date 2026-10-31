@@ -401,11 +401,13 @@ impl SqliteConfig {
                     started.elapsed(),
                     &preflight_result,
                 );
+            }
+            if let Err(source) = preflight_result {
                 return Err(RuntimeDbInitError::new(
                     spec.label,
                     "open",
                     path.as_path(),
-                    preflight_result.expect_err("usage preflight result was checked"),
+                    source,
                 )
                 .into());
             }
