@@ -406,6 +406,7 @@ mod tests {
             )
             .await
             .expect("persist paused goal");
+        drop(state);
         let reopened = codex_state::StateRuntime::init(sqlite, "test".to_string())
             .await
             .expect("reopen state");
