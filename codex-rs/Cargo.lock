@@ -4174,7 +4174,7 @@ dependencies = [
 
 [[package]]
 name = "codex-message-board-mcp"
-version = "0.0.0"
+version = "0.164.0-dev"
 dependencies = [
  "codex-attachment-store",
  "codex-message-board",
