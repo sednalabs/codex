@@ -39,10 +39,10 @@ jobs:
         working-directory: codex-rs
         run: python3 app-server-protocol/scripts/write_schema_fixtures.py
 
-      - name: Capture only generated schema and Python-type changes
+      - name: Capture generated schema, Python types, and resolver lock delta
         run: |
           set -euo pipefail
-          git add -N -- codex-rs/app-server-protocol/schema sdk/python/src/openai_codex/generated
+          git add -N -- codex-rs/app-server-protocol/schema sdk/python/src/openai_codex/generated codex-rs/Cargo.lock
           changed="$(git diff --name-only HEAD)"
           if [[ -z "$changed" ]]; then
             echo "The generator produced no tracked schema or Python-type delta." >&2
@@ -50,7 +50,7 @@ jobs:
           fi
           while IFS= read -r path; do
             case "$path" in
-              codex-rs/app-server-protocol/schema/*|sdk/python/src/openai_codex/generated/*) ;;
+              codex-rs/app-server-protocol/schema/*|sdk/python/src/openai_codex/generated/*|codex-rs/Cargo.lock) ;;
               *) echo "Unexpected generated path: $path" >&2; exit 1 ;;
             esac
           done <<< "$changed"
