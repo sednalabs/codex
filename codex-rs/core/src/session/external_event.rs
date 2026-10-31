@@ -138,22 +138,40 @@ async fn run(
                 return;
             };
             let token = uuid::Uuid::new_v4().to_string();
-            let result = deliver(&session, &source, &token).await;
+            let result = deliver(&session, &source, &token, /*idle_only*/ false).await;
             drop(session);
             if result == EventAdmission::Accepted {
                 state.accepted(token);
-            } else {
-                retry_at = tokio::time::Instant::now() + std::time::Duration::from_secs(30);
             }
+            retry_at = tokio::time::Instant::now() + std::time::Duration::from_secs(30);
+        } else if let Some(token) = state.inflight.as_deref()
+            && tokio::time::Instant::now() >= retry_at
+        {
+            let Some(session) = session.upgrade() else {
+                return;
+            };
+            // Retain the original token. If the previous turn is still active,
+            // never enqueue another copy; retry only via idle admission.
+            let _ = deliver(&session, &source, token, /*idle_only*/ true).await;
+            retry_at = tokio::time::Instant::now() + std::time::Duration::from_secs(30);
         }
         tokio::select! {
             received = socket.recv_from(&mut data) => {
                 let Ok((length, peer)) = received else { return; };
-                if let Some(accepted) = state.receive(&data[..length])
-                    && let Some(path) = peer.as_pathname()
+                if &data[..length] == b"1" {
+                    let was_pending = state.pending;
+                    state.receive(&data[..length]);
+                    if !was_pending && state.inflight.is_none() {
+                        retry_at = tokio::time::Instant::now();
+                    }
+                } else if let Some(path) = peer.as_pathname()
                     && path.parent() == guard.path.parent()
                     && path.file_name().and_then(|name| name.to_str()).is_some_and(|name| name.starts_with(".ack-"))
+                    && let Some(accepted) = state.receive(&data[..length])
                 {
+                    if accepted && state.pending && state.inflight.is_none() {
+                        retry_at = tokio::time::Instant::now();
+                    }
                     let receipt = if accepted {
                         let mut receipt = b"acknowledged:".to_vec();
                         receipt.extend_from_slice(&data[4..length]);
@@ -164,7 +182,7 @@ async fn run(
                     let _ = socket.send_to(&receipt, path).await;
                 }
             }
-            _ = tokio::time::sleep_until(retry_at), if state.pending && state.inflight.is_none() => {}
+            _ = tokio::time::sleep_until(retry_at), if state.pending || state.inflight.is_some() => {}
         }
     }
 }
@@ -254,7 +272,12 @@ fn event_request(source: &str, token: &str) -> Option<TurnInputRequest> {
 /// Acceptance is not model consumption. The caller must not advance the source
 /// cursor just because this function returns `Accepted`.
 #[cfg(any(unix, test))]
-pub(super) async fn deliver(session: &Arc<Session>, source: &str, token: &str) -> EventAdmission {
+pub(super) async fn deliver(
+    session: &Arc<Session>,
+    source: &str,
+    token: &str,
+    idle_only: bool,
+) -> EventAdmission {
     // Use the same permit as goal control and goal continuation. Never wait for
     // it while holding the interrupt gate: retry if a goal mutation is active.
     let Some(goal_lock) = session
@@ -302,7 +325,7 @@ pub(super) async fn deliver(session: &Arc<Session>, source: &str, token: &str) -
         Ok(TurnInputSubmission::Started { .. }) => EventAdmission::Accepted,
         Ok(TurnInputSubmission::NotSubmitted {
             reason: NotSubmittedReason::NotIdle,
-        }) => {
+        }) if !idle_only => {
             let turn_id = {
                 let active = session.active_turn.lock().await;
                 active.as_ref().and_then(|turn| {
@@ -344,7 +367,7 @@ mod tests {
         let session = Arc::new(session);
         assert!(session.services.state_db.is_none());
         assert_eq!(
-            deliver(&session, "irc", "token").await,
+            deliver(&session, "irc", "token", /*idle_only*/ false).await,
             EventAdmission::Deferred
         );
         assert!(session.active_turn.lock().await.is_none());
@@ -363,7 +386,7 @@ mod tests {
         assert_eq!(
             tokio::time::timeout(
                 std::time::Duration::from_millis(100),
-                deliver(&session, "irc", "token"),
+                deliver(&session, "irc", "token", /*idle_only*/ false),
             )
             .await
             .unwrap(),
@@ -386,7 +409,7 @@ mod tests {
         super::super::handlers::interrupt(&session).await;
         assert!(!*session.external_event_gate.lock().await);
         assert_eq!(
-            deliver(&session, "irc", "token").await,
+            deliver(&session, "irc", "token", /*idle_only*/ false).await,
             EventAdmission::Deferred
         );
     }
