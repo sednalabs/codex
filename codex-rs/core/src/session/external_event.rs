@@ -409,6 +409,16 @@ mod tests {
         let reopened = codex_state::StateRuntime::init(sqlite, "test".to_string())
             .await
             .expect("reopen state");
+        assert_eq!(
+            reopened
+                .thread_goals()
+                .get_thread_goal(session.thread_id)
+                .await
+                .expect("read goal")
+                .expect("goal persisted")
+                .status,
+            codex_state::ThreadGoalStatus::Paused
+        );
         session.services.state_db = Some(reopened);
         session
             .services
