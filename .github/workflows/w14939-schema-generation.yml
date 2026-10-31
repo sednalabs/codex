@@ -1,12 +1,9 @@
 name: w14939 schema generation
 
 on:
-  workflow_dispatch:
-    inputs:
-      product_sha:
-        description: Exact product commit whose generated schemas should be refreshed
-        required: true
-        type: string
+  push:
+    branches:
+      - validation/w14939-schema-5283323-20261031
 
 permissions:
   contents: read
@@ -15,6 +12,8 @@ jobs:
   regenerate:
     name: Regenerate app-server schemas on the standard Linux runner
     runs-on: ubuntu-24.04
+    env:
+      PRODUCT_SHA: 5283323fde5dc59899c9510001ed78b37f1b1270
     permissions:
       contents: read
     steps:
@@ -22,12 +21,10 @@ jobs:
         with:
           persist-credentials: false
 
-      - name: Verify direct workflow-only child and exact product input
-        env:
-          PRODUCT_SHA: ${{ inputs.product_sha }}
+      - name: Verify exact product ancestor and workflow-only host delta
         run: |
           set -euo pipefail
-          test "$(git rev-parse HEAD^1)" = "$PRODUCT_SHA"
+          git merge-base --is-ancestor "$PRODUCT_SHA" HEAD
           changed="$(git diff --name-only "$PRODUCT_SHA" HEAD)"
           test "$changed" = ".github/workflows/w14939-schema-generation.yml"
 
@@ -42,8 +39,6 @@ jobs:
         run: python3 app-server-protocol/scripts/write_schema_fixtures.py
 
       - name: Capture only generated schema and Python-type changes
-        env:
-          PRODUCT_SHA: ${{ inputs.product_sha }}
         run: |
           set -euo pipefail
           git add -N -- codex-rs/app-server-protocol/schema sdk/python/src/openai_codex/generated
@@ -70,7 +65,7 @@ jobs:
 
       - uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f # v7.0.0
         with:
-          name: generated-schema-${{ inputs.product_sha }}
+          name: generated-schema-5283323fde5d
           path: ${{ runner.temp }}/schema-output
           if-no-files-found: error
           retention-days: 1
