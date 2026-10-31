@@ -706,33 +706,43 @@ async fn steer(
 /// Deliver a named, standalone external output to one exact regular turn.
 /// Unlike start-or-steer this can never create a turn after a race.
 #[cfg(any(unix, test))]
+#[expect(
+    clippy::await_holding_invalid_type,
+    reason = "active turn checks and wake admission must remain atomic"
+)]
 pub(super) async fn steer_external_if_active(
     session: &Arc<Session>,
-    mut input: SubmittedTurnInput,
+    input: SubmittedTurnInput,
     expected_turn_id: &str,
 ) -> bool {
-    if !matches!(
-        &input,
-        SubmittedTurnInput::ResponseItem(ResponseItem::FunctionCallOutput {
+    let SubmittedTurnInput::ResponseItem(
+        item @ ResponseItem::FunctionCallOutput {
             call_id: None,
             name: Some(_),
             ..
-        })
-    ) {
+        },
+    ) = input
+    else {
+        return false;
+    };
+    let active = session.active_turn.lock().await;
+    let Some(active_turn) = active.as_ref().filter(|turn| turn.finishing.is_none()) else {
+        return false;
+    };
+    let Some(task) = active_turn.task.as_ref() else {
+        return false;
+    };
+    if task.turn_context.sub_id != expected_turn_id
+        || !matches!(task.kind, crate::state::TaskKind::Regular)
+        || task.cancellation_token.is_cancelled()
+    {
         return false;
     }
     session
-        .steer_input(
-            &mut input,
-            None,
-            BTreeMap::new(),
-            Some(expected_turn_id),
-            None,
-            ResponsesApiClientMetadataUpdate::default(),
-            UserInputMetadata::default(),
-        )
-        .await
-        .is_ok()
+        .input_queue
+        .enqueue_external_wake(active_turn.turn_state.as_ref(), item.into())
+        .await;
+    true
 }
 
 impl Session {

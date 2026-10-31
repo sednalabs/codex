@@ -108,6 +108,8 @@ impl TurnInput {
 #[derive(Default)]
 pub(crate) struct TurnInputQueue {
     items: Vec<TurnInput>,
+    /// Internal admission provenance; never derived from an output's name.
+    external_wake_pending: bool,
     /// Activity from notifying writes. Passive response items do not wake a wait.
     notified_activity: Option<InputQueueActivity>,
 }
@@ -418,6 +420,25 @@ impl InputQueue {
             .send_replace(activity.unwrap_or(InputQueueActivity::Steer));
     }
 
+    /// Queue an already admitted native wake with in-memory-only provenance.
+    pub(super) async fn enqueue_external_wake(
+        &self,
+        turn_state: &Mutex<TurnState>,
+        item: ResponseItemEnvelope,
+    ) {
+        {
+            let mut turn_state = turn_state.lock().await;
+            turn_state.pending_input.external_wake_pending = true;
+            turn_state.pending_input.notified_activity = Some(InputQueueActivity::Steer);
+            turn_state
+                .pending_input
+                .items
+                .push(TurnInput::FunctionCallOutput(item));
+            turn_state.accept_mailbox_delivery_for_current_turn();
+        }
+        self.activity_tx.send_replace(InputQueueActivity::Steer);
+    }
+
     pub(crate) async fn extend_pending_input_for_turn_state(
         &self,
         turn_state: &Mutex<TurnState>,
@@ -501,21 +522,11 @@ impl InputQueue {
 
 impl TurnInputQueue {
     fn has_preempting_input(&self) -> bool {
-        self.items.iter().any(|input| match input {
-            TurnInput::UserInput { .. } => true,
-            // The reserved native-admission hint is distinct from passive
-            // code-mode notifications and carries no sender-supplied input.
-            TurnInput::FunctionCallOutput(ResponseItemEnvelope {
-                item:
-                    ResponseItem::FunctionCallOutput {
-                        name: Some(name),
-                        call_id: None,
-                        ..
-                    },
-                ..
-            }) => name == "external_event",
-            _ => false,
-        })
+        self.external_wake_pending
+            || self
+                .items
+                .iter()
+                .any(|input| matches!(input, TurnInput::UserInput { .. }))
     }
 
     pub(crate) fn is_empty(&self) -> bool {
@@ -544,8 +555,8 @@ mod tests {
     use codex_protocol::user_input::UserInput;
     use pretty_assertions::assert_eq;
 
-    #[test]
-    fn only_explicit_external_wake_and_user_input_preempt() {
+    #[tokio::test]
+    async fn only_admitted_external_wake_and_user_input_preempt() {
         let input = |variant: &str, name: &str| {
             serde_json::from_value::<TurnInput>(serde_json::json!({
                 variant: {"type": "function_call_output", "name": name, "output": "hint"}
@@ -555,9 +566,9 @@ mod tests {
         let mut queue = TurnInputQueue::default();
         queue.items.push(input("ResponseItem", "notify"));
         queue.items.push(input("FunctionCallOutput", "other"));
-        assert!(!queue.has_preempting_input());
         queue.items.push(input("FunctionCallOutput", "external_event"));
-        assert!(queue.has_preempting_input());
+        // An app-server tool_output may choose this name; it is not provenance.
+        assert!(!queue.has_preempting_input());
         queue.items.clear();
         queue.items.push(TurnInput::UserInput {
             content: vec![],
@@ -565,6 +576,23 @@ mod tests {
             metadata: Default::default(),
         });
         assert!(queue.has_preempting_input());
+
+        let input_queue = InputQueue::new();
+        let turn_state = Mutex::new(TurnState::default());
+        let item = match input("FunctionCallOutput", "external_event") {
+            TurnInput::FunctionCallOutput(item) => item,
+            _ => unreachable!(),
+        };
+        input_queue.enqueue_external_wake(&turn_state, item).await;
+        assert!(turn_state.lock().await.pending_input.has_preempting_input());
+        assert_eq!(
+            input_queue
+                .take_pending_input_for_turn_state(&turn_state)
+                .await
+                .len(),
+            1
+        );
+        assert!(!turn_state.lock().await.pending_input.has_preempting_input());
     }
 
     #[test_case::test_case("ResponseItem", TurnInput::ResponseItem)]
