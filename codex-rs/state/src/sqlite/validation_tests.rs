@@ -116,8 +116,11 @@ async fn runtime_opens_recover_or_report_corruption_by_database_policy() -> anyh
                 .await?;
             let complete_probe =
                 quick_check(&probe, Instant::now() + Duration::from_secs(/*secs*/ 5)).await?;
-            let bounded_probe =
-                quick_check(&probe, Instant::now() + Duration::from_millis(/*millis*/ 100)).await?;
+            let bounded_probe = quick_check(
+                &probe,
+                Instant::now() + Duration::from_millis(/*millis*/ 100),
+            )
+            .await?;
             probe.close().await;
             assert_eq!(complete_probe, QuickCheckOutcome::CorruptedNeedsFixed);
             let database_before = tokio::fs::read(&path).await?;

@@ -403,13 +403,9 @@ impl SqliteConfig {
                 );
             }
             if let Err(source) = preflight_result {
-                return Err(RuntimeDbInitError::new(
-                    spec.label,
-                    "open",
-                    path.as_path(),
-                    source,
-                )
-                .into());
+                return Err(
+                    RuntimeDbInitError::new(spec.label, "open", path.as_path(), source).into(),
+                );
             }
         }
         let started = Instant::now();
