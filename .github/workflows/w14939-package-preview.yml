@@ -42,22 +42,16 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          latest_tag="$(git tag --merged "$PRODUCT_SHA" --list 'v*-sedna.*' --sort=-version:refname | head -n 1)"
-          if [[ -n "$latest_tag" ]]; then
-            base_version="${latest_tag#v}"
-          else
-            base_version="0.0.0-sedna.0"
-          fi
-          short_sha="$(git rev-parse --short=8 "$PRODUCT_SHA")"
-          if [[ "$base_version" == *+* ]]; then
-            base_version_core="${base_version%%+*}"
-            base_version_build="${base_version#*+}"
-            preview_version="${base_version_core}-ci.${GITHUB_RUN_NUMBER}+${base_version_build}.g${short_sha}"
-          else
-            preview_version="${base_version}-ci.${GITHUB_RUN_NUMBER}+g${short_sha}"
-          fi
-          echo "package_version=${preview_version}" >> "$GITHUB_OUTPUT"
-          echo "package version=${preview_version}; source=${PRODUCT_SHA}; target=${TARGET}"
+          package_version="$(python3 - <<'PY'
+          import tomllib
+          from pathlib import Path
+
+          manifest = tomllib.loads(Path("codex-rs/Cargo.toml").read_text())
+          print(manifest["workspace"]["package"]["version"])
+          PY
+          )"
+          echo "package_version=${package_version}" >> "$GITHUB_OUTPUT"
+          echo "package version=${package_version}; source=${PRODUCT_SHA}; target=${TARGET}"
 
       - name: Build and smoke-test the maintained generic Codex packages
         uses: ./.github/actions/build-codex-packages
