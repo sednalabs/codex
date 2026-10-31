@@ -289,6 +289,7 @@ async fn run_remote_compaction_request_v2(
     prompt: &Prompt,
     responses_metadata: &CodexResponsesMetadata,
     transport: CompactionRequestTransport<'_>,
+    retry_capacity_indefinitely: bool,
 ) -> CodexResult<RemoteCompactionV2Output> {
     let turn_context = &step_context.turn;
     let client_session = match transport {
@@ -364,7 +365,9 @@ async fn run_remote_compaction_request_v2(
                     client_session,
                     sess,
                     step_context,
-                    ResponsesStreamRequest::RemoteCompactionV2,
+                    ResponsesStreamRequest::RemoteCompactionV2 {
+                        retry_capacity_indefinitely,
+                    },
                 )
                 .await?;
             }

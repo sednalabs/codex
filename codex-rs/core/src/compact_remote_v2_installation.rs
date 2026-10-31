@@ -123,12 +123,20 @@ async fn build_and_install_compaction(
             )),
         )
     } else {
+        // Keep the user-selected model reachable when pre-turn compaction is still using the
+        // previous model; same-model requests retain persistent capacity recovery.
+        let retry_capacity_indefinitely =
+            !crate::compact_model_fallback::current_model_fallback_available(
+                turn_context,
+                &replacement_step_context.turn,
+            );
         let attempt = run_remote_compact_v2_attempt(
             sess,
             step_context,
             &compaction_trace,
             compaction_metadata,
             analytics_details,
+            retry_capacity_indefinitely,
             RemoteCompactV2AttemptInput::Foreground(client_session.as_deref_mut()),
         )
         .await;
@@ -154,6 +162,7 @@ async fn build_and_install_compaction(
                     &fallback_compaction_trace,
                     compaction_metadata,
                     analytics_details,
+                    /*retry_capacity_indefinitely*/ true,
                     RemoteCompactV2AttemptInput::Foreground(client_session),
                 )
                 .await;

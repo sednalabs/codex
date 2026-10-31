@@ -18,8 +18,20 @@ pub(crate) fn should_retry_with_current_model(
             | CodexErrorDetails::Interrupted
             | CodexErrorDetails::SessionBudgetExceeded
             | CodexErrorDetails::ResponseIncomplete(_)
-    ) || (previous.model_info().slug == current.model_info().slug
-        && previous.cyber_access_program == current.cyber_access_program)
+    ) {
+        return false;
+    }
+
+    current_model_fallback_available(previous, current)
+}
+
+/// Whether an explicit switch has a usable current-model compaction fallback.
+pub(crate) fn current_model_fallback_available(
+    previous: &TurnContext,
+    current: &TurnContext,
+) -> bool {
+    if previous.model_info().slug == current.model_info().slug
+        && previous.cyber_access_program == current.cyber_access_program
     {
         return false;
     }

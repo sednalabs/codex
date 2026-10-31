@@ -31,7 +31,11 @@ const CAPACITY_BACKOFF_CAP_ATTEMPT: u64 = 10;
 #[derive(Debug, Clone, Copy)]
 pub(crate) enum ResponsesStreamRequest {
     Sampling,
-    RemoteCompactionV2,
+    /// Keep a selected-model compaction fallback reachable when the prior model is at capacity.
+    RemoteCompactionV2 {
+        /// Whether this compaction attempt can continue capacity retries beyond its budget.
+        retry_capacity_indefinitely: bool,
+    },
 }
 
 pub(crate) struct ResponsesStreamRetryState {
@@ -60,8 +64,8 @@ pub(crate) struct ExhaustedResponseRetry {
 }
 
 /// Returns `Ok(())` when the caller should retry the request loop. Capacity and availability
-/// errors remain retryable while the turn is active; other transient errors obey their retry
-/// budget and return the original error when it is exhausted.
+/// errors can continue beyond the configured retry budget for requests that allow it; other
+/// transient errors obey their retry budget and return the original error when it is exhausted.
 #[tracing::instrument(level = "trace", skip_all, fields(request = ?request))]
 pub(crate) async fn handle_response_stream_error(
     retry_state: &mut ResponsesStreamRetryState,
@@ -91,9 +95,15 @@ pub(crate) async fn handle_response_stream_error(
     }
     let operation = match request {
         ResponsesStreamRequest::Sampling => RetryOperation::Sampling,
-        ResponsesStreamRequest::RemoteCompactionV2 => RetryOperation::RemoteCompactionV2,
+        ResponsesStreamRequest::RemoteCompactionV2 { .. } => RetryOperation::RemoteCompactionV2,
     };
-    if is_transient_capacity_or_availability(&err) {
+    let retry_capacity_indefinitely = match request {
+        ResponsesStreamRequest::Sampling => true,
+        ResponsesStreamRequest::RemoteCompactionV2 {
+            retry_capacity_indefinitely,
+        } => retry_capacity_indefinitely,
+    };
+    if retry_capacity_indefinitely && is_transient_capacity_or_availability(&err) {
         retry_state.capacity_retries = retry_state.capacity_retries.saturating_add(1);
         let attempt = retry_state.capacity_retries;
         let local_delay = capacity_backoff(attempt);
@@ -325,7 +335,7 @@ fn log_retry(
                 "stream disconnected - retrying sampling request ({retries}/{max_retries} in {delay:?})...",
             );
         }
-        ResponsesStreamRequest::RemoteCompactionV2 => {
+        ResponsesStreamRequest::RemoteCompactionV2 { .. } => {
             warn!(
                 turn_id = %turn_context.sub_id,
                 retries,

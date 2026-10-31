@@ -73,6 +73,7 @@ pub(super) async fn run_remote_compact_v2_attempt(
     compaction_trace: &CompactionTraceContext,
     compaction_metadata: CompactionTurnMetadata,
     analytics_details: &mut CompactionAnalyticsDetails,
+    retry_capacity_indefinitely: bool,
     input: RemoteCompactV2AttemptInput<'_>,
 ) -> CodexResult<RemoteCompactV2Attempt> {
     let turn_context = &step_context.turn;
@@ -211,6 +212,7 @@ pub(super) async fn run_remote_compact_v2_attempt(
         &prompt,
         &responses_metadata,
         transport,
+        retry_capacity_indefinitely,
     )
     .await;
     trace_attempt.record_result(
@@ -317,6 +319,7 @@ pub(crate) async fn run_background_compaction(
         &CompactionTraceContext::disabled(),
         metadata,
         &mut CompactionAnalyticsDetails::default(),
+        /*retry_capacity_indefinitely*/ true,
         RemoteCompactV2AttemptInput::Background(prepared_input),
     )
     .await?;
