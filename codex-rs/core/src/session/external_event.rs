@@ -1,8 +1,7 @@
 //! Preliminary session admission for external invalidations.
 //!
-//! Experimental local invalidations. Goal control must be bound atomically to
-//! admission before use; the precheck below alone can race a pause. A source
-//! must retain each event until explicit consumption.
+//! Experimental local invalidations. A source must retain each event until
+//! explicit consumption; restart and source recovery remain separate concerns.
 
 use std::sync::Arc;
 #[cfg(unix)]
@@ -256,6 +255,18 @@ fn event_request(source: &str, token: &str) -> Option<TurnInputRequest> {
 /// cursor just because this function returns `Accepted`.
 #[cfg(any(unix, test))]
 pub(super) async fn deliver(session: &Arc<Session>, source: &str, token: &str) -> EventAdmission {
+    // Use the same permit as goal control and goal continuation. Never wait for
+    // it while holding the interrupt gate: retry if a goal mutation is active.
+    let Some(goal_lock) = session
+        .services
+        .thread_extension_data
+        .get::<crate::GoalStateAdmissionLock>()
+    else {
+        return EventAdmission::Deferred;
+    };
+    let Ok(_goal_permit) = goal_lock.0.try_acquire() else {
+        return EventAdmission::Deferred;
+    };
     let enabled = session.external_event_gate.lock().await;
     if !*enabled {
         return EventAdmission::Deferred;
@@ -340,9 +351,37 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn goal_mutation_permit_defers_admission_without_blocking() {
+        let (session, _) = make_session_and_context().await;
+        let session = Arc::new(session);
+        let lock = Arc::new(tokio::sync::Semaphore::new(1));
+        session
+            .services
+            .thread_extension_data
+            .insert(crate::GoalStateAdmissionLock(Arc::clone(&lock)));
+        let _mutation = lock.acquire().await.unwrap();
+        assert_eq!(
+            tokio::time::timeout(
+                std::time::Duration::from_millis(100),
+                deliver(&session, "irc", "token"),
+            )
+            .await
+            .unwrap(),
+            EventAdmission::Deferred
+        );
+        assert!(session.active_turn.lock().await.is_none());
+    }
+
+    #[tokio::test]
     async fn explicit_interrupt_disables_automatic_admission() {
         let (session, _) = make_session_and_context().await;
         let session = Arc::new(session);
+        session
+            .services
+            .thread_extension_data
+            .insert(crate::GoalStateAdmissionLock(Arc::new(
+                tokio::sync::Semaphore::new(1),
+            )));
         assert!(*session.external_event_gate.lock().await);
         super::super::handlers::interrupt(&session).await;
         assert!(!*session.external_event_gate.lock().await);

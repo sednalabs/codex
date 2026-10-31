@@ -158,6 +158,7 @@ where
                 )
             });
             runtime.set_enabled(enabled);
+            input.thread_store.insert(runtime.admission_lock());
             self.goal_service.register_runtime(&runtime);
         })
     }
@@ -604,6 +605,7 @@ where
             .into_iter()
             .map(|mut tool| {
                 tool.execution_allowed = runtime.tools_available();
+                tool.admission_lock = Some(runtime.admission_lock());
                 Arc::new(tool) as Arc<dyn for<'call> ToolExecutor<ToolCall<'call>>>
             })
             .collect()

@@ -38,6 +38,7 @@ pub(crate) struct GoalToolExecutor {
     event_emitter: GoalEventEmitter,
     metrics: GoalMetrics,
     max_goal_token_budget: Option<i64>,
+    pub(crate) admission_lock: Option<codex_core::GoalStateAdmissionLock>,
 }
 
 #[derive(Clone, Copy)]
@@ -93,6 +94,7 @@ impl GoalToolExecutor {
             event_emitter,
             metrics,
             max_goal_token_budget: None,
+            admission_lock: None,
         }
     }
 
@@ -115,6 +117,7 @@ impl GoalToolExecutor {
             event_emitter,
             metrics,
             max_goal_token_budget,
+            admission_lock: None,
         }
     }
 
@@ -136,6 +139,7 @@ impl GoalToolExecutor {
             event_emitter,
             metrics,
             max_goal_token_budget: None,
+            admission_lock: None,
         }
     }
 }
@@ -174,6 +178,16 @@ impl<'call> ToolExecutor<ToolCall<'call>> for GoalToolExecutor {
                     "Goal tools require a persistent thread.".to_string(),
                 ));
             }
+            let _goal_permit = if !matches!(self.kind, GoalToolKind::Get) {
+                match &self.admission_lock {
+                    Some(lock) => Some(lock.0.acquire().await.map_err(|_| {
+                        FunctionCallError::RespondToModel("Goal state is unavailable.".to_string())
+                    })?),
+                    None => None,
+                }
+            } else {
+                None
+            };
             match self.kind {
                 GoalToolKind::Get => self.handle_get(invocation).await,
                 GoalToolKind::Create => self.handle_create(invocation).await,

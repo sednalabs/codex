@@ -56,7 +56,7 @@ struct GoalRuntimeInner {
     enabled: AtomicBool,
     tools_available_for_thread: bool,
     tools_visible_for_thread: bool,
-    goal_state_lock: Semaphore,
+    goal_state_lock: Arc<Semaphore>,
 }
 
 pub(crate) struct AccountedGoalProgress {
@@ -110,7 +110,7 @@ impl GoalRuntimeHandle {
                 enabled: AtomicBool::new(config.enabled),
                 tools_available_for_thread: config.tools_available_for_thread,
                 tools_visible_for_thread: config.tools_visible_for_thread,
-                goal_state_lock: Semaphore::new(/*permits*/ 1),
+                goal_state_lock: Arc::new(Semaphore::new(/*permits*/ 1)),
             }),
         }
     }
@@ -159,6 +159,10 @@ impl GoalRuntimeHandle {
             .acquire()
             .await
             .map_err(|err| err.to_string())
+    }
+
+    pub(crate) fn admission_lock(&self) -> codex_core::GoalStateAdmissionLock {
+        codex_core::GoalStateAdmissionLock(Arc::clone(&self.inner.goal_state_lock))
     }
 
     pub async fn prepare_external_goal_mutation(&self) -> Result<(), String> {
