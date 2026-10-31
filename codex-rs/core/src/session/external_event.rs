@@ -387,6 +387,45 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn persisted_paused_goal_defers_wake_after_state_reopen() {
+        let home = tempfile::tempdir().expect("state home");
+        let sqlite = codex_state::SqliteConfig::new_for_testing(
+            codex_utils_absolute_path::AbsolutePathBuf::try_from(home.path()).expect("absolute"),
+        );
+        let state = codex_state::StateRuntime::init(sqlite.clone(), "test".to_string())
+            .await
+            .expect("state");
+        let (mut session, _) = make_session_and_context().await;
+        state
+            .thread_goals()
+            .replace_thread_goal(
+                session.thread_id,
+                "remain paused",
+                codex_state::ThreadGoalStatus::Paused,
+                /*token_budget*/ None,
+            )
+            .await
+            .expect("persist paused goal");
+        let reopened = codex_state::StateRuntime::init(sqlite, "test".to_string())
+            .await
+            .expect("reopen state");
+        session.services.state_db = Some(reopened);
+        session
+            .services
+            .thread_extension_data
+            .insert(crate::GoalStateAdmissionLock(
+                Arc::new(tokio::sync::Semaphore::new(1)),
+                Arc::new(std::sync::atomic::AtomicBool::new(true)),
+            ));
+        let session = Arc::new(session);
+        assert_eq!(
+            deliver(&session, "irc", "token", /*idle_only*/ false).await,
+            EventAdmission::Deferred
+        );
+        assert!(session.active_turn.lock().await.is_none());
+    }
+
+    #[tokio::test]
     async fn goal_mutation_permit_defers_admission_without_blocking() {
         let (session, _) = make_session_and_context().await;
         let session = Arc::new(session);
