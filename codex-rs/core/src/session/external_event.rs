@@ -279,6 +279,10 @@ fn event_request(source: &str, token: &str) -> Option<TurnInputRequest> {
 /// Acceptance is not model consumption. The caller must not advance the source
 /// cursor just because this function returns `Accepted`.
 #[cfg(any(unix, test))]
+// Admission and explicit interruption must be serialized across the async
+// goal lookup and turn submission; releasing this gate earlier can restart a
+// turn after the user interrupts it.
+#[allow(clippy::await_holding_invalid_type)]
 pub(super) async fn deliver(
     session: &Arc<Session>,
     source: &str,
