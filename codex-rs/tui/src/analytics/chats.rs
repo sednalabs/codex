@@ -143,7 +143,7 @@ pub(super) async fn roots(
             request_id: RequestId::String(uuid::Uuid::new_v4().to_string()),
             params: ThreadListParams {
                 cursor: cursor.clone(),
-                ..list_params(None)
+                ..list_params(/*cursor*/ None)
             },
         })
         .await

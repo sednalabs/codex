@@ -199,7 +199,7 @@ async fn descendants(
                         archived: Some(archived),
                         cursor,
                         limit: Some(100),
-                        ..super::chats::list_params(None)
+                        ..super::chats::list_params(/*cursor*/ None)
                     },
                 })
                 .await

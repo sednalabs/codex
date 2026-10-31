@@ -145,7 +145,7 @@ async fn bounded_repairing_chat_listing_keeps_estimate_budget_and_marks_partial_
         }).expect(/*r*/ 2..=16).mount(&server).await;
     let handle = AppServerRequestHandle::Remote(remote.request_handle());
     let live = Arc::new(live);
-    let chats = read(handle.clone(), Arc::clone(&live), None)
+    let chats = read(handle.clone(), Arc::clone(&live), /*cursor*/ None)
         .await
         .unwrap()
         .unwrap();
