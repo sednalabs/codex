@@ -77,6 +77,58 @@ fn user_message(text: &str) -> ResponseItem {
     }
 }
 
+#[tokio::test]
+async fn external_invalidation_steers_only_the_exact_regular_turn() {
+    let (session, turn_context) = make_session_and_context().await;
+    let session = Arc::new(session);
+    let turn_context = Arc::new(turn_context);
+    session
+        .spawn_task(
+            Arc::clone(&turn_context),
+            Vec::new(),
+            NeverEndingTask {
+                kind: TaskKind::Regular,
+                listen_to_cancellation_token: true,
+            },
+        )
+        .await;
+    let item: ResponseItem = serde_json::from_value(serde_json::json!({
+        "type": "function_call_output",
+        "name": "external_event",
+        "output": "A source has unread data."
+    }))
+    .expect("valid standalone output");
+    assert!(
+        !steer_external_if_active(
+            &session,
+            SubmittedTurnInput::ResponseItem(item.clone()),
+            "another-turn",
+        )
+        .await
+    );
+    assert!(
+        steer_external_if_active(
+            &session,
+            SubmittedTurnInput::ResponseItem(item),
+            &turn_context.sub_id,
+        )
+        .await
+    );
+    let turn_state = session
+        .input_queue
+        .turn_state_for_sub_id(&session.active_turn, &turn_context.sub_id)
+        .await
+        .expect("active turn");
+    assert_eq!(
+        session
+            .input_queue
+            .subscribe_activity(Some(turn_state.as_ref()))
+            .await
+            .1,
+        Some(crate::session::input_queue::InputQueueActivity::Steer)
+    );
+}
+
 async fn submit_start_only(
     session: &Arc<Session>,
     input: SubmittedTurnInput,

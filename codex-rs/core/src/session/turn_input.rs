@@ -703,6 +703,38 @@ async fn steer(
     }
 }
 
+/// Deliver a named, standalone external output to one exact regular turn.
+/// Unlike start-or-steer this can never create a turn after a race.
+#[cfg(any(unix, test))]
+pub(super) async fn steer_external_if_active(
+    session: &Arc<Session>,
+    mut input: SubmittedTurnInput,
+    expected_turn_id: &str,
+) -> bool {
+    if !matches!(
+        &input,
+        SubmittedTurnInput::ResponseItem(ResponseItem::FunctionCallOutput {
+            call_id: None,
+            name: Some(_),
+            ..
+        })
+    ) {
+        return false;
+    }
+    session
+        .steer_input(
+            &mut input,
+            None,
+            BTreeMap::new(),
+            Some(expected_turn_id),
+            None,
+            ResponsesApiClientMetadataUpdate::default(),
+            UserInputMetadata::default(),
+        )
+        .await
+        .is_ok()
+}
+
 impl Session {
     /// Called under the active-turn lock when registering a task (or a realtime transcript turn).
     pub(crate) async fn record_started_turn(
