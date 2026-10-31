@@ -322,7 +322,7 @@ impl InputQueue {
         })
     }
 
-    /// Signal once a user message is queued for this sampling request.
+    /// Signal once an input that may interrupt a wait is queued for this request.
     pub(crate) async fn watch_user_input(
         &self,
         active_turn: &Mutex<Option<ActiveTurn>>,
@@ -334,7 +334,7 @@ impl InputQueue {
         let mut activity = self.activity_tx.subscribe();
         Some(AbortOnDropHandle::new(tokio::spawn(async move {
             loop {
-                if turn_state.lock().await.pending_input.has_user_input() {
+                if turn_state.lock().await.pending_input.has_preempting_input() {
                     interrupt.cancel();
                     return;
                 }
@@ -500,10 +500,22 @@ impl InputQueue {
 }
 
 impl TurnInputQueue {
-    fn has_user_input(&self) -> bool {
-        self.items
-            .iter()
-            .any(|input| matches!(input, TurnInput::UserInput { .. }))
+    fn has_preempting_input(&self) -> bool {
+        self.items.iter().any(|input| match input {
+            TurnInput::UserInput { .. } => true,
+            // The reserved native-admission hint is distinct from passive
+            // code-mode notifications and carries no sender-supplied input.
+            TurnInput::FunctionCallOutput(ResponseItemEnvelope {
+                item:
+                    ResponseItem::FunctionCallOutput {
+                        name: Some(name),
+                        call_id: None,
+                        ..
+                    },
+                ..
+            }) => name == "external_event",
+            _ => false,
+        })
     }
 
     pub(crate) fn is_empty(&self) -> bool {
@@ -531,6 +543,29 @@ mod tests {
     use codex_protocol::AgentPath;
     use codex_protocol::user_input::UserInput;
     use pretty_assertions::assert_eq;
+
+    #[test]
+    fn only_explicit_external_wake_and_user_input_preempt() {
+        let input = |variant: &str, name: &str| {
+            serde_json::from_value::<TurnInput>(serde_json::json!({
+                variant: {"type": "function_call_output", "name": name, "output": "hint"}
+            }))
+            .unwrap()
+        };
+        let mut queue = TurnInputQueue::default();
+        queue.items.push(input("ResponseItem", "notify"));
+        queue.items.push(input("FunctionCallOutput", "other"));
+        assert!(!queue.has_preempting_input());
+        queue.items.push(input("FunctionCallOutput", "external_event"));
+        assert!(queue.has_preempting_input());
+        queue.items.clear();
+        queue.items.push(TurnInput::UserInput {
+            content: vec![],
+            client_id: None,
+            metadata: Default::default(),
+        });
+        assert!(queue.has_preempting_input());
+    }
 
     #[test_case::test_case("ResponseItem", TurnInput::ResponseItem)]
     #[test_case::test_case("FunctionCallOutput", TurnInput::FunctionCallOutput)]
