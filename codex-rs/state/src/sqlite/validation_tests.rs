@@ -111,6 +111,15 @@ async fn runtime_opens_recover_or_report_corruption_by_database_policy() -> anyh
             // The usage ledger is optional and has no automatic recovery policy.
             // Preserve the corrupt database and any SQLite sidecars byte-for-byte,
             // while allowing the rest of the state runtime to initialize.
+            let probe = sqlite
+                .open_read_only_pool(&path, Some(Duration::from_secs(/*secs*/ 5)))
+                .await?;
+            let complete_probe =
+                quick_check(&probe, Instant::now() + Duration::from_secs(/*secs*/ 5)).await?;
+            let bounded_probe =
+                quick_check(&probe, Instant::now() + Duration::from_millis(/*millis*/ 100)).await?;
+            probe.close().await;
+            assert_eq!(complete_probe, QuickCheckOutcome::CorruptedNeedsFixed);
             let database_before = tokio::fs::read(&path).await?;
             let sidecars = ["-wal", "-shm", "-journal"]
                 .into_iter()
@@ -128,7 +137,10 @@ async fn runtime_opens_recover_or_report_corruption_by_database_policy() -> anyh
             }
 
             let runtime = StateRuntime::init(sqlite.clone(), "openai".to_string()).await?;
-            assert!(runtime.usage_ledger_pool().is_none());
+            assert!(
+                runtime.usage_ledger_pool().is_none(),
+                "usage ledger opened a corrupt fixture; bounded probe: {bounded_probe:?}"
+            );
             runtime.close().await;
 
             assert_eq!(tokio::fs::read(&path).await?, database_before);
