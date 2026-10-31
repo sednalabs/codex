@@ -1,6 +1,7 @@
 import contextlib
 import io
 import json
+import sqlite3
 import tempfile
 import unittest
 from decimal import Decimal
@@ -10,6 +11,7 @@ from unittest.mock import patch
 from codex_usage_tree import (
     RpcError,
     app_server_argv,
+    collect_database_tree,
     collect_local_tree,
     collect_tree,
     error_document,
@@ -193,6 +195,102 @@ class UsageTreeTests(unittest.TestCase):
         self.assertEqual(
             unpriced["calculatedCredits"]["missingRates"], ["gpt-unpriced:input"]
         )
+
+    def test_read_only_database_mode_separates_root_subagent_models_and_credits(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            database = Path(temp_dir) / "usage_1.sqlite"
+            connection = sqlite3.connect(database)
+            connection.executescript(
+                """
+                CREATE TABLE usage_threads (
+                    thread_id TEXT PRIMARY KEY,
+                    parent_thread_id TEXT,
+                    root_thread_id TEXT,
+                    fork_parent_thread_id TEXT,
+                    source TEXT,
+                    thread_source TEXT,
+                    created_at TEXT NOT NULL
+                );
+                CREATE TABLE usage_provider_calls (
+                    provider_call_id TEXT PRIMARY KEY,
+                    thread_id TEXT NOT NULL,
+                    turn_id TEXT,
+                    request_id TEXT,
+                    provider TEXT,
+                    requested_model TEXT,
+                    actual_model_used TEXT,
+                    final_model TEXT,
+                    provider_reported_credits REAL,
+                    started_at TEXT NOT NULL,
+                    completed_at TEXT,
+                    input_tokens_uncached INTEGER,
+                    input_tokens_cached INTEGER,
+                    input_tokens_cache_write INTEGER,
+                    output_tokens INTEGER,
+                    total_tokens INTEGER,
+                    status TEXT
+                );
+                INSERT INTO usage_threads VALUES
+                    ('root', NULL, 'root', NULL, 'cli', 'user', '2026-10-01'),
+                    ('child', 'root', 'root', NULL,
+                     '{"subagent":{"other":"worker"}}', 'subagent', '2026-10-02');
+                INSERT INTO usage_provider_calls VALUES
+                    ('root-call', 'root', 'turn-root', 'response-root', 'openai',
+                     'gpt-6.1-sol', NULL, NULL, 7.5, '2026-10-01', '2026-10-01',
+                     1000000, 1000000, 0, 1000000, 3000000, 'ok'),
+                    ('child-call', 'child', 'turn-child', 'response-child', 'openai',
+                     'gpt-6.1-sol', 'gpt-6-sol', NULL, NULL, '2026-10-02', NULL,
+                     1000000, 1000000, 5, 1000000, 3000000, 'incomplete');
+                """
+            )
+            connection.commit()
+            connection.close()
+            original_bytes = database.read_bytes()
+
+            result = collect_database_tree("root", str(database), load_rates(None))
+
+            self.assertEqual(result["status"], "partial")
+            self.assertFalse(result["completeness"]["historicalCoverageComplete"])
+            self.assertFalse(result["completeness"]["actualDebitObserved"])
+            self.assertTrue(result["completeness"]["selectedLedgerRowsComplete"])
+            self.assertEqual(
+                [row["role"] for row in result["threads"]], ["root", "subagent"]
+            )
+            root_record = result["threads"][0]["responseUsageRecords"][0]
+            self.assertEqual(root_record["requestedModel"], "gpt-6.1-sol")
+            self.assertIsNone(root_record["providerEffectiveModel"])
+            self.assertIsNone(root_record["actualDebit"]["value"])
+            root_group = result["totals"]["root"]["groups"][0]
+            self.assertEqual(root_group["requestedModel"], "gpt-6.1-sol")
+            self.assertIsNone(root_group["providerEffectiveModel"])
+            self.assertEqual(
+                root_group["calculatedCreditEstimate"]["rateModelBasis"],
+                "requested_model_fallback",
+            )
+            self.assertEqual(
+                root_group["calculatedCreditEstimate"]["value"], "302.5"
+            )
+            self.assertEqual(root_group["providerReportedCredits"]["value"], "7.5")
+            self.assertIsNone(root_group["actualDebit"]["value"])
+            child_group = result["totals"]["descendants"]["groups"][0]
+            self.assertEqual(child_group["requestedModel"], "gpt-6.1-sol")
+            self.assertEqual(child_group["providerEffectiveModel"], "gpt-6-sol")
+            self.assertEqual(
+                child_group["statusCounts"], {"incomplete": 1}
+            )
+            self.assertIsNone(child_group["calculatedCreditEstimate"]["value"])
+            self.assertIn(
+                "cacheWriteInputTokens",
+                child_group["calculatedCreditEstimate"]["missingTokenDimensions"],
+            )
+            output = io.StringIO()
+            with contextlib.redirect_stdout(output):
+                exit_code = main(
+                    ["--thread-id", "root", "--database", str(database)]
+                )
+            self.assertEqual(exit_code, 2)
+            self.assertEqual(json.loads(output.getvalue())["status"], "partial")
+            self.assertEqual(database.read_bytes(), original_bytes)
 
     def test_a_list_cap_marks_lineage_incomplete_instead_of_claiming_full_tree(self):
         class CappedAppServer(SyntheticAppServer):

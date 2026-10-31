@@ -34,7 +34,16 @@ impl Chat {
 #[derive(Default)]
 pub(super) struct Chats {
     pub rows: Vec<Chat>,
+    pub truncated: bool,
 }
+
+pub(super) struct RootThreads {
+    pub threads: Vec<codex_app_server_protocol::Thread>,
+    pub truncated: bool,
+}
+
+pub(super) const MAX_RECENT_ROOT_THREADS: usize = 100;
+const MAX_ROOT_LIST_PAGES: usize = 3;
 
 pub(super) async fn read(
     handle: AppServerRequestHandle,
@@ -45,19 +54,24 @@ pub(super) async fn read(
         return Ok(None);
     }
     live.ensure_identity().await?;
-    let threads = tokio::time::timeout(std::time::Duration::from_secs(/*secs*/ 60), roots(&handle))
+    let roots = tokio::time::timeout(std::time::Duration::from_secs(/*secs*/ 60), roots(&handle))
         .await
         .map_err(|_| "Chat listing timed out. Press R to retry.".to_string());
     live.ensure_identity().await?;
-    let threads = threads??;
+    let roots = roots??;
+    let truncated = roots.truncated;
+    let threads = roots.threads;
     if threads.is_empty() {
-        return Ok(Some(Chats { rows: Vec::new() }));
+        return Ok(Some(Chats {
+            rows: Vec::new(),
+            truncated,
+        }));
     }
     let ids = threads
         .iter()
         .map(|thread| thread.id.as_str())
         .collect::<Vec<_>>();
-    // Repairing local history has its own budget; it must not consume estimate time.
+    // Keep estimate time separate from local history discovery.
     let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(/*secs*/ 25);
     let mut data = Vec::new();
     for pair in ids.chunks(/*chunk_size*/ 200) {
@@ -102,18 +116,23 @@ pub(super) async fn read(
                 .map(|usage| usage.estimated_usage_credits_micros),
         )
     });
-    Ok(Some(Chats { rows }))
+    Ok(Some(Chats { rows, truncated }))
 }
 
 /// Recent local roots are shared by consumer task and business credit reporting.
-pub(super) async fn roots(
-    handle: &AppServerRequestHandle,
-) -> Result<Vec<codex_app_server_protocol::Thread>, String> {
+pub(super) async fn roots(handle: &AppServerRequestHandle) -> Result<RootThreads, String> {
     let cutoff = chrono::Utc::now().timestamp() - 30 * 24 * 60 * 60;
     let mut threads = Vec::new();
     let mut cursor = None;
     let mut seen_cursors = HashSet::new();
+    let mut seen_ids = HashSet::new();
+    let mut truncated = false;
+    let mut pages = 0;
     loop {
+        if pages == MAX_ROOT_LIST_PAGES {
+            truncated = cursor.is_some();
+            break;
+        }
         let page: ThreadListResponse = handle
             .request_typed(ClientRequest::ThreadList {
                 request_id: RequestId::String(uuid::Uuid::new_v4().to_string()),
@@ -124,10 +143,25 @@ pub(super) async fn roots(
             })
             .await
             .map_err(data::error)?;
+        pages += 1;
         let reached_cutoff = page.data.iter().any(|thread| thread.updated_at < cutoff);
-        threads.extend(page.data.into_iter().filter(|thread| {
-            thread.updated_at >= cutoff && !thread.ephemeral && thread.parent_thread_id.is_none()
-        }));
+        for thread in page.data {
+            if thread.updated_at < cutoff
+                || thread.ephemeral
+                || thread.parent_thread_id.is_some()
+                || !seen_ids.insert(thread.id.clone())
+            {
+                continue;
+            }
+            if threads.len() == MAX_RECENT_ROOT_THREADS {
+                truncated = true;
+                break;
+            }
+            threads.push(thread);
+        }
+        if truncated {
+            break;
+        }
         match page.next_cursor {
             Some(next) if !seen_cursors.insert(next.clone()) => {
                 return Err("Chat listing repeated a cursor. Press R to retry.".into());
@@ -136,10 +170,7 @@ pub(super) async fn roots(
             _ => break,
         }
     }
-    // Keep repeated rows from overlapping pages out of the backend's distinct-ID batches.
-    let mut seen_ids = HashSet::new();
-    threads.retain(|thread| seen_ids.insert(thread.id.clone()));
-    Ok(threads)
+    Ok(RootThreads { threads, truncated })
 }
 
 pub(super) fn list_params() -> ThreadListParams {

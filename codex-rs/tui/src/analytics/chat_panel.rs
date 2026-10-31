@@ -34,10 +34,26 @@ impl AnalyticsView {
         let Some(chats) = self.chats.ready() else {
             return (lines, 0..1);
         };
+        if chats.truncated {
+            let coverage = if chats.rows.len() == super::chats::MAX_RECENT_ROOT_THREADS {
+                "Partial ranking · newest 100 roots shown; additional chats may be omitted"
+                    .to_string()
+            } else {
+                format!(
+                    "Partial ranking · newest {} roots discovered; additional chats may be omitted",
+                    chats.rows.len()
+                )
+            };
+            lines.extend(wrap(vec![coverage.set_style(secondary_style()).into()]));
+        }
         if chats.rows.is_empty() {
-            lines.extend(wrap(vec![
-                "No recent local chats.".set_style(secondary_style()).into(),
-            ]));
+            lines.extend(wrap(vec![if chats.truncated {
+                "No roots found in the bounded scan; more chats may exist."
+                    .set_style(secondary_style())
+                    .into()
+            } else {
+                "No recent local chats.".set_style(secondary_style()).into()
+            }]));
             return (lines, 0..1);
         }
         let missing = chats.rows.iter().filter(|row| row.usage.is_none()).count();

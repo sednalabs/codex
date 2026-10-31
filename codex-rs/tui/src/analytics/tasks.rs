@@ -53,14 +53,15 @@ pub(super) async fn read(
     .await
     .map_err(|_| "Chat listing timed out. Press R to retry.".to_string());
     live.ensure_identity().await?;
-    let mut roots = roots??;
+    let root_threads = roots??;
+    let mut roots = root_threads.threads;
     roots.sort_by(|a, b| {
         b.updated_at
             .cmp(&a.updated_at)
             .then_with(|| a.id.cmp(&b.id))
     });
-    let truncated = roots.len() > 100;
-    roots.truncate(/*len*/ 100);
+    let truncated = root_threads.truncated || roots.len() > super::chats::MAX_RECENT_ROOT_THREADS;
+    roots.truncate(super::chats::MAX_RECENT_ROOT_THREADS);
     let discoveries = roots
         .iter()
         .map(|root| descendants(&handle, root))

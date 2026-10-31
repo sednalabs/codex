@@ -1,11 +1,12 @@
 #!/usr/bin/env python3
-"""Query a Codex thread tree through app-server or explicitly named local rollouts."""
+"""Query a Codex tree through app-server, an exact local ledger, or named rollouts."""
 
 from __future__ import annotations
 
 import argparse
 import json
 import queue
+import sqlite3
 import subprocess
 import threading
 import time
@@ -17,6 +18,8 @@ PAGE_SIZE = 100
 DEFAULT_MAX_THREADS_PER_STATE = 100
 MAX_THREADS_PER_STATE = 500
 MAX_LOCAL_ROLLOUT_BYTES = 10 * 1024 * 1024
+MAX_DATABASE_THREADS = 900
+MAX_DATABASE_CALLS = 10_000
 TOKEN_FIELDS = {
     "uncachedInput": ("netNewInputTokens", "input"),
     "cachedInput": ("cachedInputTokens", "cached_input"),
@@ -727,6 +730,531 @@ def collect_local_tree(
     }
 
 
+def _database_total(
+    values: list[int | None], *, coverage_truncated: bool
+) -> dict[str, Any]:
+    known = sum(value for value in values if value is not None)
+    missing = sum(value is None for value in values)
+    complete = missing == 0 and not coverage_truncated
+    return {
+        "value": known if complete else None,
+        "knownSubtotal": known,
+        "completeForReturnedRows": complete,
+        "missingValues": missing,
+    }
+
+
+def _database_call_cost(
+    call: dict[str, Any], rates: dict[str, Any]
+) -> tuple[str | None, str, dict[str, Any]]:
+    effective_model = call["providerEffectiveModel"]
+    requested_model = call["requestedModel"]
+    rate_model = effective_model or requested_model
+    estimate_basis = (
+        "provider_effective_model"
+        if effective_model
+        else "requested_model_fallback"
+        if requested_model
+        else "unknown_model"
+    )
+    cache_write = call["cacheWriteInputTokens"]
+    cost = _cost(
+        {
+            "model": rate_model,
+            "netNewInputTokens": (
+                call["inputTokensUncached"] if cache_write == 0 else None
+            ),
+            "cachedInputTokens": call["inputTokensCached"],
+            "outputTokens": call["outputTokens"],
+            "unpricedTokenDimensions": (
+                [] if cache_write == 0 else ["cacheWriteInputTokens"]
+            ),
+        },
+        rates,
+    )
+    return rate_model, estimate_basis, cost
+
+
+def _database_model_groups(
+    calls: list[dict[str, Any]],
+    rates: dict[str, Any],
+    *,
+    coverage_truncated: bool,
+) -> list[dict[str, Any]]:
+    grouped: dict[tuple[str | None, str | None], list[dict[str, Any]]] = {}
+    for call in calls:
+        key = (call["requestedModel"], call["providerEffectiveModel"])
+        grouped.setdefault(key, []).append(call)
+
+    groups = []
+    for (requested_model, effective_model), items in sorted(
+        grouped.items(), key=lambda item: tuple(value or "" for value in item[0])
+    ):
+        status_counts: dict[str, int] = {}
+        for item in items:
+            status = item["status"] or "unknown"
+            status_counts[status] = status_counts.get(status, 0) + 1
+
+        token_totals = {
+            field: _database_total(
+                [item[field] for item in items],
+                coverage_truncated=coverage_truncated,
+            )
+            for field in (
+                "inputTokensUncached",
+                "inputTokensCached",
+                "cacheWriteInputTokens",
+                "outputTokens",
+                "totalTokens",
+            )
+        }
+        rate_model = effective_model or requested_model
+        estimate_basis = (
+            "provider_effective_model"
+            if effective_model
+            else "requested_model_fallback"
+            if requested_model
+            else "unknown_model"
+        )
+        cost_parts = []
+        reported_credit_values: list[Decimal | None] = []
+        for item in items:
+            cost_parts.append(_database_call_cost(item, rates)[2])
+            reported_credit_values.append(item["providerReportedCredits"])
+
+        estimate_subtotal = sum(
+            (Decimal(part["knownSubtotal"]) for part in cost_parts),
+            start=Decimal(0),
+        )
+        estimate_complete = (
+            not coverage_truncated and all(part["complete"] for part in cost_parts)
+        )
+        reported_subtotal = sum(
+            (value for value in reported_credit_values if value is not None),
+            start=Decimal(0),
+        )
+        reported_complete = (
+            not coverage_truncated
+            and all(value is not None for value in reported_credit_values)
+        )
+        groups.append(
+            {
+                "requestedModel": requested_model,
+                "providerEffectiveModel": effective_model,
+                "providerEffectiveModelSource": next(
+                    (
+                        item["providerEffectiveModelSource"]
+                        for item in items
+                        if item["providerEffectiveModelSource"] is not None
+                    ),
+                    None,
+                ),
+                "responseUsageRecordCount": len(items),
+                "statusCounts": dict(sorted(status_counts.items())),
+                "tokenTotals": token_totals,
+                "calculatedCreditEstimate": {
+                    "value": _decimal_text(estimate_subtotal)
+                    if estimate_complete
+                    else None,
+                    "knownSubtotal": _decimal_text(estimate_subtotal),
+                    "completeForReturnedRows": estimate_complete,
+                    "rateModel": rate_model,
+                    "rateModelBasis": estimate_basis,
+                    "missingTokenDimensions": sorted(
+                        {
+                            name
+                            for part in cost_parts
+                            for name in part["missingTokenDimensions"]
+                        }
+                    ),
+                    "missingRates": sorted(
+                        {name for part in cost_parts for name in part["missingRates"]}
+                    ),
+                },
+                "providerReportedCredits": {
+                    "value": _decimal_text(reported_subtotal)
+                    if reported_complete
+                    else None,
+                    "knownSubtotal": _decimal_text(reported_subtotal),
+                    "completeForReturnedRows": reported_complete,
+                    "missingValues": sum(
+                        value is None for value in reported_credit_values
+                    ),
+                    "note": (
+                        "reported ledger field; not independently verified "
+                        "as an account debit"
+                    ),
+                },
+                "actualDebit": {
+                    "value": None,
+                    "status": "not_observed",
+                },
+            }
+        )
+    return groups
+
+
+def collect_database_tree(
+    root_id: str, database_path: str, rates: dict[str, Any]
+) -> dict[str, Any]:
+    """Read an explicitly named usage database without startup, migration, or writes."""
+    if not isinstance(root_id, str) or not root_id.strip():
+        raise UsageError("root thread ID must be non-empty")
+    connection = None
+    try:
+        uri = Path(database_path).resolve(strict=True).as_uri() + "?mode=ro"
+        connection = sqlite3.connect(uri, uri=True, timeout=5.0)
+        connection.row_factory = sqlite3.Row
+        connection.execute("PRAGMA query_only = ON")
+        tables = {
+            row["name"]
+            for row in connection.execute(
+                "SELECT name FROM sqlite_master WHERE type = 'table'"
+            )
+        }
+        if not {"usage_threads", "usage_provider_calls"}.issubset(tables):
+            raise UsageError(
+                "database does not contain the Codex usage ledger tables"
+            )
+
+        def columns(table: str) -> set[str]:
+            return {
+                row["name"]
+                for row in connection.execute(f'PRAGMA table_info("{table}")')
+            }
+
+        thread_columns = columns("usage_threads")
+        call_columns = columns("usage_provider_calls")
+        if not {
+            "thread_id",
+            "parent_thread_id",
+            "root_thread_id",
+            "fork_parent_thread_id",
+        }.issubset(thread_columns):
+            raise UsageError("usage database has no supported thread lineage schema")
+        if not {"provider_call_id", "thread_id", "started_at"}.issubset(
+            call_columns
+        ):
+            raise UsageError("usage database has no supported provider-call schema")
+        if connection.execute(
+            "SELECT 1 FROM usage_threads WHERE thread_id = ?", (root_id,)
+        ).fetchone() is None:
+            raise UsageError("root thread is not present in usage_threads")
+
+        thread_source = (
+            'thread.source AS "source"'
+            if "source" in thread_columns
+            else 'NULL AS "source"'
+        )
+        thread_kind = (
+            'thread.thread_source AS "thread_source"'
+            if "thread_source" in thread_columns
+            else 'NULL AS "thread_source"'
+        )
+        thread_rows = connection.execute(
+            f"""
+            WITH RECURSIVE lineage(thread_id, depth, visited) AS (
+                SELECT thread_id, 0, ',' || thread_id || ','
+                FROM usage_threads WHERE thread_id = ?
+                UNION ALL
+                SELECT child.thread_id, lineage.depth + 1,
+                       lineage.visited || child.thread_id || ','
+                FROM usage_threads AS child
+                JOIN lineage
+                  ON COALESCE(
+                      NULLIF(child.parent_thread_id, ''),
+                      NULLIF(child.fork_parent_thread_id, '')
+                  ) = lineage.thread_id
+                WHERE instr(lineage.visited, ',' || child.thread_id || ',') = 0
+                  AND lineage.depth < ?
+                LIMIT ?
+            ),
+            selected(thread_id) AS (
+                SELECT thread_id FROM lineage
+                UNION
+                SELECT thread_id FROM (
+                    SELECT thread_id FROM usage_threads
+                    WHERE root_thread_id = ?
+                    LIMIT ?
+                )
+            )
+            SELECT thread.thread_id, thread.parent_thread_id,
+                   thread.fork_parent_thread_id, thread.root_thread_id,
+                   {thread_source}, {thread_kind},
+                   COALESCE((
+                       SELECT MIN(lineage.depth) FROM lineage
+                       WHERE lineage.thread_id = thread.thread_id
+                   ), 1) AS depth
+            FROM usage_threads AS thread
+            JOIN selected ON selected.thread_id = thread.thread_id
+            ORDER BY CASE WHEN thread.thread_id = ? THEN 0 ELSE 1 END,
+                     depth, thread.thread_id
+            LIMIT ?
+            """,
+            (
+                root_id,
+                MAX_DATABASE_THREADS,
+                MAX_DATABASE_THREADS + 1,
+                root_id,
+                MAX_DATABASE_THREADS + 1,
+                root_id,
+                MAX_DATABASE_THREADS + 1,
+            ),
+        ).fetchall()
+        threads_truncated = len(thread_rows) > MAX_DATABASE_THREADS
+        thread_rows = thread_rows[:MAX_DATABASE_THREADS]
+        thread_ids = [row["thread_id"] for row in thread_rows]
+        if root_id not in thread_ids:
+            raise UsageError("root thread was omitted by the bounded lineage query")
+
+        selected_fields = (
+            "turn_id",
+            "request_id",
+            "provider",
+            "requested_model",
+            "actual_model_used",
+            "final_model",
+            "provider_reported_credits",
+            "started_at",
+            "completed_at",
+            "input_tokens_uncached",
+            "input_tokens_cached",
+            "input_tokens_cache_write",
+            "output_tokens",
+            "total_tokens",
+            "status",
+        )
+        expressions = [
+            f'"{field}" AS "{field}"' if field in call_columns else f'NULL AS "{field}"'
+            for field in selected_fields
+        ]
+        placeholders = ", ".join("?" for _ in thread_ids)
+        call_rows = connection.execute(
+            f"""
+            SELECT provider_call_id, thread_id, {", ".join(expressions)}
+            FROM usage_provider_calls
+            WHERE thread_id IN ({placeholders})
+            ORDER BY started_at DESC, provider_call_id DESC
+            LIMIT ?
+            """,
+            (*thread_ids, MAX_DATABASE_CALLS + 1),
+        ).fetchall()
+        calls_truncated = len(call_rows) > MAX_DATABASE_CALLS
+        call_rows = call_rows[:MAX_DATABASE_CALLS]
+    except UsageError:
+        raise
+    except (OSError, sqlite3.Error, ValueError) as exc:
+        raise UsageError(
+            "could not read the explicitly supplied usage database in read-only mode"
+        ) from exc
+    finally:
+        if connection is not None:
+            connection.close()
+
+    calls = []
+    for row in call_rows:
+        requested_model = (
+            _optional_text(row["requested_model"], "requested_model") or None
+        )
+        actual_model = (
+            _optional_text(row["actual_model_used"], "actual_model_used") or None
+        )
+        final_model = _optional_text(row["final_model"], "final_model") or None
+        effective_model = final_model or actual_model
+        effective_model_source = (
+            "final_model"
+            if final_model
+            else "actual_model_used"
+            if actual_model
+            else None
+        )
+        reported_credits = row["provider_reported_credits"]
+        if reported_credits is not None:
+            try:
+                reported_credits = Decimal(str(reported_credits))
+            except InvalidOperation as exc:
+                raise UsageError("usage database has invalid reported credits") from exc
+            if not reported_credits.is_finite():
+                raise UsageError("usage database has non-finite reported credits")
+        calls.append(
+            {
+                "threadId": row["thread_id"],
+                "providerCallId": row["provider_call_id"],
+                "turnId": _optional_text(row["turn_id"], "turn_id"),
+                "requestId": _optional_text(row["request_id"], "request_id"),
+                "provider": _optional_text(row["provider"], "provider"),
+                "requestedModel": requested_model,
+                "providerEffectiveModel": effective_model,
+                "providerEffectiveModelSource": effective_model_source,
+                "providerReportedCredits": reported_credits,
+                "startedAt": _optional_text(row["started_at"], "started_at"),
+                "completedAt": _optional_text(row["completed_at"], "completed_at"),
+                "inputTokensUncached": _optional_int(
+                    row["input_tokens_uncached"], "input_tokens_uncached"
+                ),
+                "inputTokensCached": _optional_int(
+                    row["input_tokens_cached"], "input_tokens_cached"
+                ),
+                "cacheWriteInputTokens": _optional_int(
+                    row["input_tokens_cache_write"], "input_tokens_cache_write"
+                ),
+                "outputTokens": _optional_int(row["output_tokens"], "output_tokens"),
+                "totalTokens": _optional_int(row["total_tokens"], "total_tokens"),
+                "status": _optional_text(row["status"], "status"),
+            }
+        )
+
+    calls_by_thread: dict[str, list[dict[str, Any]]] = {}
+    for call in calls:
+        calls_by_thread.setdefault(call["threadId"], []).append(call)
+    truncated = threads_truncated or calls_truncated
+
+    def response_usage_record(call: dict[str, Any]) -> dict[str, Any]:
+        rate_model, estimate_basis, cost = _database_call_cost(call, rates)
+        return {
+            "providerCallId": call["providerCallId"],
+            "requestId": call["requestId"],
+            "turnId": call["turnId"],
+            "provider": call["provider"],
+            "requestedModel": call["requestedModel"],
+            "providerEffectiveModel": call["providerEffectiveModel"],
+            "providerEffectiveModelSource": call["providerEffectiveModelSource"],
+            "startedAt": call["startedAt"],
+            "completedAt": call["completedAt"],
+            "tokenUsage": {
+                "inputTokensUncached": call["inputTokensUncached"],
+                "inputTokensCached": call["inputTokensCached"],
+                "cacheWriteInputTokens": call["cacheWriteInputTokens"],
+                "outputTokens": call["outputTokens"],
+                "totalTokens": call["totalTokens"],
+            },
+            "status": call["status"],
+            "calculatedCreditEstimate": {
+                "value": cost["credits"],
+                "knownSubtotal": cost["knownSubtotal"],
+                "rateModel": rate_model,
+                "rateModelBasis": estimate_basis,
+                "missingTokenDimensions": cost["missingTokenDimensions"],
+                "missingRates": cost["missingRates"],
+            },
+            "providerReportedCredits": (
+                _decimal_text(call["providerReportedCredits"])
+                if call["providerReportedCredits"] is not None
+                else None
+            ),
+            "actualDebit": {"value": None, "status": "not_observed"},
+        }
+
+    thread_output = []
+    for row in thread_rows:
+        thread_id = row["thread_id"]
+        thread_calls = calls_by_thread.get(thread_id, [])
+        source = _optional_text(row["source"], "thread source")
+        thread_source = _optional_text(row["thread_source"], "thread source kind")
+        role = (
+            "root"
+            if thread_id == root_id
+            else "subagent"
+            if thread_source == "subagent"
+            or (source is not None and "subagent" in source.lower())
+            else "descendant"
+        )
+        thread_output.append(
+            {
+                "threadId": thread_id,
+                "parentThreadId": row["parent_thread_id"],
+                "forkParentThreadId": row["fork_parent_thread_id"],
+                "rootThreadId": row["root_thread_id"],
+                "depth": row["depth"],
+                "role": role,
+                "source": source,
+                "threadSource": thread_source,
+                "usageStatus": "observed_response_records"
+                if thread_calls
+                else "no_recorded_response_usage",
+                "responseUsageRecordCount": len(thread_calls),
+                "responseUsageRecords": [
+                    response_usage_record(call) for call in thread_calls
+                ],
+                "models": _database_model_groups(
+                    thread_calls, rates, coverage_truncated=truncated
+                ),
+            }
+        )
+
+    root_calls = [call for call in calls if call["threadId"] == root_id]
+    child_calls = [call for call in calls if call["threadId"] != root_id]
+    return {
+        "schema": "codex-usage-tree/v1",
+        "status": "partial",
+        "scope": "root_and_known_descendants",
+        "rootThreadId": root_id,
+        "lineage": {
+            "source": "usage_threads parent, fork-parent, and root fields",
+            "knownThreadCount": len(thread_rows),
+            "truncated": threads_truncated,
+            "complete": False,
+            "coverageNote": (
+                "unrecorded or historical descendants cannot be enumerated "
+                "from this ledger"
+            ),
+        },
+        "usage": {
+            "source": "explicit read-only usage_provider_calls rows",
+            "responseUsageRecordCount": len(calls),
+            "truncated": calls_truncated,
+            "bestEffort": True,
+            "coverageNote": (
+                "records only usage-bearing responses successfully projected "
+                "to this database; no independent expected-response denominator "
+                "exists"
+            ),
+            "timingNote": (
+                "new response projections store observation time; provider "
+                "start time and latency are not independently measured"
+            ),
+        },
+        "rateMap": {
+            "source": rates["source"],
+            "date": rates["date"],
+            "unit": "credits per 1,000,000 exact-model tokens",
+            "creditsPerMillionTokens": {
+                model: {name: _decimal_text(rate) for name, rate in entries.items()}
+                for model, entries in sorted(rates["models"].items())
+            },
+        },
+        "threads": thread_output,
+        "totals": {
+            "root": {
+                "groups": _database_model_groups(
+                    root_calls, rates, coverage_truncated=truncated
+                )
+            },
+            "descendants": {
+                "groups": _database_model_groups(
+                    child_calls, rates, coverage_truncated=truncated
+                )
+            },
+            "tree": {
+                "groups": _database_model_groups(
+                    calls, rates, coverage_truncated=truncated
+                )
+            },
+        },
+        "completeness": {
+            "historicalCoverageComplete": False,
+            "lineageTruncated": threads_truncated,
+            "responseRowsTruncated": calls_truncated,
+            "selectedLedgerRowsComplete": not truncated,
+            "actualDebitObserved": False,
+        },
+        "bounds": {
+            "maxThreads": MAX_DATABASE_THREADS,
+            "maxResponseUsageRecords": MAX_DATABASE_CALLS,
+        },
+    }
+
+
 def fetch_usage(api: Any, thread_id: str) -> dict[str, Any] | None:
     return _normalize(
         api.request("account/usage/read", {"threadId": thread_id}), thread_id
@@ -965,6 +1493,13 @@ def main(argv: list[str] | None = None) -> int:
         help="read this local rollout JSONL file only (repeat for each known tree thread)",
     )
     parser.add_argument(
+        "--database",
+        help=(
+            "read this exact local usage_1.sqlite path read-only "
+            "(no app-server startup or migration)"
+        ),
+    )
+    parser.add_argument(
         "--expected-child-id",
         action="append",
         default=[],
@@ -987,6 +1522,10 @@ def main(argv: list[str] | None = None) -> int:
     args = parser.parse_args(argv)
     if not args.thread_id.strip():
         parser.error("--thread-id cannot be empty")
+    if args.database and args.rollout_file:
+        parser.error("--database and --rollout-file select different local query modes")
+    if args.database and args.allow_local_app_server_startup:
+        parser.error("read-only database mode does not start an app-server")
     if args.rollout_file and args.allow_local_app_server_startup:
         parser.error("local rollout mode does not start an app-server")
     if args.expected_child_id and not args.rollout_file:
@@ -997,7 +1536,11 @@ def main(argv: list[str] | None = None) -> int:
         parser.error("--timeout-seconds must be in 1..120")
     if not 1 <= args.overall_timeout_seconds <= 3600:
         parser.error("--overall-timeout-seconds must be in 1..3600")
-    if not args.rollout_file and not args.allow_local_app_server_startup:
+    if (
+        not args.rollout_file
+        and not args.database
+        and not args.allow_local_app_server_startup
+    ):
         parser.error(
             "starting a local app-server is not strictly read-only; pass "
             "--allow-local-app-server-startup only if its normal state initialization is acceptable"
@@ -1010,6 +1553,14 @@ def main(argv: list[str] | None = None) -> int:
                 args.thread_id,
                 args.rollout_file,
                 args.expected_child_id,
+                rates,
+            )
+            print(json.dumps(result, indent=2, sort_keys=True))
+            return 0 if result["status"] == "complete" else 2
+        if args.database:
+            result = collect_database_tree(
+                args.thread_id,
+                args.database,
                 rates,
             )
             print(json.dumps(result, indent=2, sort_keys=True))

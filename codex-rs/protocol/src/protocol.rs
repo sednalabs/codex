@@ -2508,6 +2508,14 @@ pub struct TokenUsageRecord {
     pub session_id: SessionId,
     pub root_turn_id: String,
     pub response_id: String,
+    /// Model selected for the request; this is routing intent, not execution evidence.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub requested_model: Option<String>,
+    /// Provider-reported model for this response when available; absent means unrecorded.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub actual_model_used: Option<String>,
     pub usage: TokenUsage,
     pub turn_token_usage: TokenUsage,
     pub thread_token_usage: TokenUsage,

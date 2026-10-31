@@ -235,6 +235,7 @@ impl SessionState {
         session_id: SessionId,
         root_turn_id: String,
         response_id: String,
+        requested_model: Option<String>,
         usage: &TokenUsage,
     ) -> TokenUsageRecord {
         let mut turn_token_usage = self
@@ -258,6 +259,9 @@ impl SessionState {
             session_id,
             root_turn_id,
             response_id,
+            requested_model,
+            // Upstream token records do not expose a per-response actual model.
+            actual_model_used: None,
             usage: usage.clone(),
             turn_token_usage,
             thread_token_usage,

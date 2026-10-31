@@ -7,8 +7,11 @@ use sqlx::migrate::Migrator;
 use std::borrow::Cow;
 
 use super::STATE_MIGRATOR;
+use super::T10_USAGE_MIGRATION_HISTORY;
 use super::THREAD_HISTORY_MIGRATOR;
 use super::repair_legacy_recency_migration_version;
+use super::runtime_usage_migrator;
+use super::runtime_usage_migrator_for_history;
 use crate::PINNED_THREAD_SECTION_ID;
 use crate::PINNED_THREAD_SECTION_NAME;
 
@@ -30,6 +33,146 @@ fn migrator_through(version: i64) -> Migrator {
         create_schemas: STATE_MIGRATOR.create_schemas.clone(),
         no_tx: STATE_MIGRATOR.no_tx,
     }
+}
+
+#[tokio::test]
+async fn usage_migrator_preserves_known_t10_history_without_rewriting_rows() {
+    let sqlite_home = crate::runtime::test_support::unique_temp_dir();
+    tokio::fs::create_dir_all(&sqlite_home)
+        .await
+        .expect("sqlite home should be created");
+    let _cleanup = scopeguard::guard(sqlite_home.clone(), |sqlite_home| {
+        let _ = std::fs::remove_dir_all(sqlite_home);
+    });
+    let sqlite = crate::SqliteConfig::new_for_testing(sqlite_home.as_path().abs());
+    let pool = sqlite
+        .open_read_write_pool(&sqlite.usage_db_path())
+        .await
+        .expect("usage database should open");
+    sqlx::query(
+        r#"CREATE TABLE _sqlx_migrations (
+            version BIGINT PRIMARY KEY,
+            description TEXT NOT NULL,
+            installed_on TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            success BOOLEAN NOT NULL,
+            checksum BLOB NOT NULL,
+            execution_time BIGINT NOT NULL
+        )"#,
+    )
+    .execute(&pool)
+    .await
+    .expect("migration table should be created");
+
+    let (version, description, checksum_hex) = T10_USAGE_MIGRATION_HISTORY[0];
+    let checksum = checksum_hex
+        .as_bytes()
+        .chunks_exact(2)
+        .map(|pair| {
+            let high = super::hex_nibble(pair[0]).expect("valid checksum hex");
+            let low = super::hex_nibble(pair[1]).expect("valid checksum hex");
+            (high << 4) | low
+        })
+        .collect::<Vec<_>>();
+    sqlx::query(
+        "INSERT INTO _sqlx_migrations (version, description, success, checksum, execution_time) VALUES (?, ?, TRUE, ?, 1)",
+    )
+    .bind(version)
+    .bind(description)
+    .bind(checksum.as_slice())
+    .execute(&pool)
+    .await
+    .expect("known T10 migration history should be recorded");
+    sqlx::query(
+        "INSERT INTO _sqlx_migrations (version, description, success, checksum, execution_time) VALUES (8, 'legacy optional usage feature', TRUE, X'01', 1)",
+    )
+    .execute(&pool)
+    .await
+    .expect("an existing optional migration history row should remain valid");
+
+    let base = runtime_usage_migrator();
+    let compatible = runtime_usage_migrator_for_history(&pool, &base)
+        .await
+        .expect("known T10 history should be accepted");
+    assert!(
+        !compatible
+            .iter()
+            .any(|migration| migration.version == version)
+    );
+    assert!(!compatible.iter().any(|migration| migration.version == 8));
+    let persisted_checksum =
+        sqlx::query_scalar::<_, Vec<u8>>("SELECT checksum FROM _sqlx_migrations WHERE version = ?")
+            .bind(version)
+            .fetch_one(&pool)
+            .await
+            .expect("historical checksum should remain present");
+    assert_eq!(persisted_checksum, checksum);
+    pool.close().await;
+}
+
+#[tokio::test]
+async fn usage_migrator_rejects_conflicting_known_history_without_rewriting_it() {
+    let sqlite_home = crate::runtime::test_support::unique_temp_dir();
+    tokio::fs::create_dir_all(&sqlite_home)
+        .await
+        .expect("sqlite home should be created");
+    let _cleanup = scopeguard::guard(sqlite_home.clone(), |sqlite_home| {
+        let _ = std::fs::remove_dir_all(sqlite_home);
+    });
+    let sqlite = crate::SqliteConfig::new_for_testing(sqlite_home.as_path().abs());
+    let pool = sqlite
+        .open_read_write_pool(&sqlite.usage_db_path())
+        .await
+        .expect("usage database should open");
+    sqlx::query(
+        r#"CREATE TABLE _sqlx_migrations (
+            version BIGINT PRIMARY KEY,
+            description TEXT NOT NULL,
+            installed_on TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            success BOOLEAN NOT NULL,
+            checksum BLOB NOT NULL,
+            execution_time BIGINT NOT NULL
+        )"#,
+    )
+    .execute(&pool)
+    .await
+    .expect("migration table should be created");
+
+    let (version, description, checksum_hex) = T10_USAGE_MIGRATION_HISTORY[0];
+    let mut checksum = checksum_hex
+        .as_bytes()
+        .chunks_exact(2)
+        .map(|pair| {
+            let high = super::hex_nibble(pair[0]).expect("valid checksum hex");
+            let low = super::hex_nibble(pair[1]).expect("valid checksum hex");
+            (high << 4) | low
+        })
+        .collect::<Vec<_>>();
+    checksum[0] ^= 0x01;
+    sqlx::query(
+        "INSERT INTO _sqlx_migrations (version, description, success, checksum, execution_time) VALUES (?, ?, TRUE, ?, 1)",
+    )
+    .bind(version)
+    .bind(description)
+    .bind(checksum.as_slice())
+    .execute(&pool)
+    .await
+    .expect("conflicting migration history should be recorded");
+
+    let base = runtime_usage_migrator();
+    assert!(
+        runtime_usage_migrator_for_history(&pool, &base)
+            .await
+            .is_err(),
+        "known version with an unexpected checksum must fail closed"
+    );
+    let persisted_checksum =
+        sqlx::query_scalar::<_, Vec<u8>>("SELECT checksum FROM _sqlx_migrations WHERE version = ?")
+            .bind(version)
+            .fetch_one(&pool)
+            .await
+            .expect("conflicting historical checksum should remain present");
+    assert_eq!(persisted_checksum, checksum);
+    pool.close().await;
 }
 
 #[tokio::test]

@@ -11,6 +11,8 @@
 
 use crate::DbTelemetry;
 use crate::migrations::repair_legacy_recency_migration_version;
+use crate::migrations::runtime_usage_migrator_for_history;
+use crate::migrations::validate_usage_reporting_indexes;
 use crate::runtime::recovery::RuntimeDbInitError;
 use crate::telemetry;
 use crate::telemetry::DbKind;
@@ -46,6 +48,7 @@ use validation::SqliteQuickCheckManager;
 const DEFAULT_BUSY_TIMEOUT: Duration = Duration::from_secs(5);
 
 const LOGS_DB_FILENAME: &str = "logs_2.sqlite";
+const USAGE_DB_FILENAME: &str = "usage_1.sqlite";
 const GOALS_DB_FILENAME: &str = "goals_1.sqlite";
 const MEMORIES_DB_FILENAME: &str = "memories_1.sqlite";
 const QUEUE_DB_FILENAME: &str = "queue_1.sqlite";
@@ -103,6 +106,16 @@ const LOGS_DB: RuntimeDbSpec = RuntimeDbSpec {
     recovery: RecoveryMode::BackupAndRebuild,
 };
 
+const USAGE_DB: RuntimeDbSpec = RuntimeDbSpec {
+    label: "usage DB",
+    filename: USAGE_DB_FILENAME,
+    kind: DbKind::Usage,
+    open_phase: "open_usage",
+    migrate_phase: "migrate_usage",
+    background_reclamation: false,
+    recovery: RecoveryMode::Unavailable,
+};
+
 const GOALS_DB: RuntimeDbSpec = RuntimeDbSpec {
     label: "goals DB",
     filename: GOALS_DB_FILENAME,
@@ -150,9 +163,10 @@ const THREAD_HISTORY_DB: RuntimeDbSpec = RuntimeDbSpec {
     recovery: RecoveryMode::Unavailable,
 };
 
-const RUNTIME_DBS: [RuntimeDbSpec; 7] = [
+const RUNTIME_DBS: [RuntimeDbSpec; 8] = [
     STATE_DB,
     LOGS_DB,
+    USAGE_DB,
     GOALS_DB,
     MEMORIES_DB,
     MEMORIES_V2_DB,
@@ -268,6 +282,11 @@ impl SqliteConfig {
         LOGS_DB.path(self)
     }
 
+    /// Return the local usage ledger database path.
+    pub fn usage_db_path(&self) -> PathBuf {
+        USAGE_DB.path(self)
+    }
+
     pub(crate) fn legacy_logs_db_path(&self) -> Option<PathBuf> {
         let path = self.home().join(LOGS_DB_FILENAME);
         (path != self.logs_db_path()).then_some(path)
@@ -349,6 +368,54 @@ impl SqliteConfig {
     ) -> anyhow::Result<SqlitePool> {
         self.open_runtime_db(LOGS_DB, migrator, telemetry_override)
             .await
+    }
+
+    pub(super) async fn open_usage_db(
+        &self,
+        migrator: &Migrator,
+        telemetry_override: Option<&dyn DbTelemetry>,
+    ) -> anyhow::Result<SqlitePool> {
+        let spec = USAGE_DB;
+        let path = spec.path(self);
+        let started = Instant::now();
+        let pool_result = self
+            .open_read_write_pool_with_spec(path.as_path(), Some(spec), telemetry_override)
+            .await;
+        telemetry::record_init_result(
+            telemetry_override,
+            spec.kind,
+            spec.open_phase,
+            started.elapsed(),
+            &pool_result,
+        );
+        let pool = pool_result.map_err(|source| {
+            RuntimeDbInitError::new(spec.label, "open", path.as_path(), source)
+        })?;
+        let started = Instant::now();
+        let migrate_result = async {
+            validate_usage_reporting_indexes(&pool, /*require_all*/ false).await?;
+            let runtime_migrator = runtime_usage_migrator_for_history(&pool, migrator).await?;
+            runtime_migrator
+                .run(&pool)
+                .await
+                .map_err(anyhow::Error::from)?;
+            validate_usage_reporting_indexes(&pool, /*require_all*/ true).await
+        }
+        .await;
+        telemetry::record_init_result(
+            telemetry_override,
+            spec.kind,
+            spec.migrate_phase,
+            started.elapsed(),
+            &migrate_result,
+        );
+        if let Err(source) = migrate_result {
+            pool.close().await;
+            return Err(
+                RuntimeDbInitError::new(spec.label, "migrate", path.as_path(), source).into(),
+            );
+        }
+        Ok(pool)
     }
 
     pub(super) async fn open_goals_db(

@@ -369,11 +369,15 @@ impl AnalyticsView {
                 .into(),
         ];
         if chats.truncated {
-            coverage.push(
-                "Partial ranking · 100 most recently active chats"
-                    .set_style(secondary_style())
-                    .into(),
-            );
+            let coverage_status = if chats.rows.len() == super::chats::MAX_RECENT_ROOT_THREADS {
+                "Partial ranking · newest 100 roots shown; more may exist".to_string()
+            } else {
+                format!(
+                    "Partial ranking · bounded scan found {} roots; more may exist",
+                    chats.rows.len()
+                )
+            };
+            coverage.push(coverage_status.set_style(secondary_style()).into());
         }
         if let Some(time) = chats.updated_at {
             coverage.push(

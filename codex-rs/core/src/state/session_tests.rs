@@ -25,6 +25,8 @@ async fn record_token_usage_continues_restored_totals() {
         session_id,
         root_turn_id: "root-turn".to_string(),
         response_id: "response-c".to_string(),
+        requested_model: Some("requested-model".to_string()),
+        actual_model_used: None,
         usage: usage(30),
         turn_token_usage: usage(30),
         thread_token_usage: usage(230),
@@ -35,6 +37,7 @@ async fn record_token_usage_continues_restored_totals() {
         session_id,
         "root-turn".to_string(),
         "response-d".to_string(),
+        Some("requested-model".to_string()),
         &usage(20),
     );
     assert_eq!(
@@ -45,6 +48,8 @@ async fn record_token_usage_continues_restored_totals() {
             session_id,
             root_turn_id: "root-turn".to_string(),
             response_id: "response-d".to_string(),
+            requested_model: Some("requested-model".to_string()),
+            actual_model_used: None,
             usage: usage(20),
             turn_token_usage: usage(50),
             thread_token_usage: usage(250),

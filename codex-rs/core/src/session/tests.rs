@@ -3549,6 +3549,8 @@ fn latest_token_usage_record_stops_at_compaction_checkpoint() {
         session_id: SessionId::from(thread_id),
         root_turn_id: "turn-1".to_string(),
         response_id: "response-1".to_string(),
+        requested_model: None,
+        actual_model_used: None,
         usage: TokenUsage::default(),
         turn_token_usage: TokenUsage::default(),
         thread_token_usage: TokenUsage::default(),
@@ -4231,6 +4233,8 @@ async fn start_new_context_window_persists_checkpoint_state(clear_tools: bool) {
         session_id: SessionId::from(thread_id),
         root_turn_id: "turn-1".to_string(),
         response_id: "response-1".to_string(),
+        requested_model: None,
+        actual_model_used: None,
         usage: TokenUsage::default(),
         turn_token_usage: TokenUsage::default(),
         thread_token_usage: TokenUsage::default(),
@@ -7137,6 +7141,7 @@ pub(crate) async fn make_session_and_context() -> (Session, TurnContext) {
         managed_network_requirements_configured: false,
         network_approval: Arc::clone(&network_approval),
         state_db: None,
+        usage_logger: None,
         live_thread: None,
         image_store: crate::passthrough_image_store(),
         thread_store: Arc::new(codex_thread_store::LocalThreadStore::new(
@@ -9476,6 +9481,7 @@ where
         managed_network_requirements_configured: false,
         network_approval: Arc::clone(&network_approval),
         state_db: state_db.clone(),
+        usage_logger: None,
         live_thread: None,
         image_store: crate::passthrough_image_store(),
         thread_store: Arc::new(codex_thread_store::LocalThreadStore::new(

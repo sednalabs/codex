@@ -891,6 +891,7 @@ async fn drain_to_completed(
                 sess.record_observed_response_completed(
                     turn_context,
                     &response_id,
+                    Some(turn_context.model_info().slug.as_str()),
                     token_usage.as_ref(),
                     usage_metadata.as_ref(),
                 )

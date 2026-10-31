@@ -317,6 +317,7 @@ async fn run_remote_compaction_request_v2(
                 turn_context,
                 stream,
                 CompactionRequestKind::Background(&cancellation),
+                settings.model_info.slug.as_str(),
             )
             .await;
         }
@@ -350,6 +351,7 @@ async fn run_remote_compaction_request_v2(
                     turn_context,
                     stream,
                     CompactionRequestKind::Foreground,
+                    settings.model_info.slug.as_str(),
                 )
                 .await
             }
@@ -380,6 +382,7 @@ async fn collect_compaction_output(
     turn_context: &TurnContext,
     mut stream: ResponseStream,
     request_kind: CompactionRequestKind<'_>,
+    requested_model: &str,
 ) -> CodexResult<RemoteCompactionV2Output> {
     let mut output_item_count = 0usize;
     let mut compaction_count = 0usize;
@@ -405,6 +408,16 @@ async fn collect_compaction_output(
                     if let Some(usage) = incomplete.token_usage.as_ref() {
                         // Match completed background requests without replacing the terminal error.
                         let _ = sess.record_rollout_budget_usage(usage).await;
+                        if let Some(response_id) = incomplete.response_id.as_deref() {
+                            sess.record_response_token_usage(
+                                turn_context,
+                                response_id,
+                                Some(usage),
+                                Some(requested_model),
+                                codex_state::UsageCallStatus::Incomplete,
+                            )
+                            .await;
+                        }
                     }
                 }
                 CompactionRequestKind::Foreground => {
@@ -437,13 +450,23 @@ async fn collect_compaction_output(
                 match request_kind {
                     CompactionRequestKind::Background(_) => {
                         if let Some(usage) = token_usage.as_ref() {
-                            sess.record_rollout_budget_usage(usage).await?;
+                            let budget_result = sess.record_rollout_budget_usage(usage).await;
+                            sess.record_response_token_usage(
+                                turn_context,
+                                &response_id,
+                                Some(usage),
+                                Some(requested_model),
+                                codex_state::UsageCallStatus::Completed,
+                            )
+                            .await;
+                            budget_result?;
                         }
                     }
                     CompactionRequestKind::Foreground => {
                         sess.record_observed_response_completed(
                             turn_context,
                             &response_id,
+                            Some(turn_context.model_info().slug.as_str()),
                             token_usage.as_ref(),
                             usage_metadata.as_ref(),
                         )
@@ -1271,6 +1294,7 @@ mod tests {
             &turn_context,
             stream,
             CompactionRequestKind::Background(&cancellation),
+            turn_context.model_info().slug.as_str(),
         )
         .await;
 
@@ -1320,6 +1344,7 @@ mod tests {
             &turn_context,
             stream,
             CompactionRequestKind::Foreground,
+            turn_context.model_info().slug.as_str(),
         )
         .await
         .expect("compaction should be collected");

@@ -80,9 +80,46 @@ field follows the native `TokenUsage` default of zero; a null or nonzero
 cache-write class has no supplied operator rate and makes affected uncached
 input/cost incomplete. Local calculated credits use the dated operator rate
 map; they are estimates, not provider-reported credits, quota usage, or debit.
-The API route remains the only source this tool can classify as complete, and
-neither source replaces an existing durable ledger until a consumer accepts
-its coverage.
+The API route remains the only source this tool can classify as complete.
+Local rollout and database modes are intentionally best-effort and do not
+replace the API or rewrite the existing ledger.
+
+## Explicit usage database mode
+
+To query rows recorded in the local usage ledger, pass the exact database file
+path. The helper does not infer the effective Codex home from environment
+variables or start an app-server:
+
+```sh
+python3 scripts/codex_usage_tree.py \
+  --thread-id <root-thread-uuid> \
+  --database <effective-sqlite-home>/usage_1.sqlite
+```
+
+Use the `sqlite_home` selected by the running Codex configuration when it is
+known; `--database` is authoritative for this read. This mode opens that file
+read-only and does not run migrations. It follows persisted `usage_threads`
+parent, fork-parent, and root lineage, then reports root, descendant, and
+whole-tree response rows grouped by requested model and provider-effective
+model. If no provider-effective model was recorded, it remains null; any
+rate-card estimate falls back to the requested model and is labelled as such.
+`providerReportedCredits` is shown separately and is not independently
+verified as an account debit; `actualDebit` remains `not_observed`.
+For new projected responses, stored timestamps are observation time; provider
+start time and latency are not independently measured.
+
+Database results are always `partial`: they cover only usage-bearing responses
+successfully projected to this database and known lineage rows. They have no
+independent expected-response denominator, so they cannot prove a complete
+historical census. Large trees and call sets are bounded; truncation is
+reported in the result. The command does not treat an absent call row as a
+zero-token response. Current limits are 900 known threads and 10,000 response
+rows; reaching either limit is reported as truncation. The response-level rows
+include request/turn identifiers, token classes, status, requested/effective
+model identity, and any provider-reported credits present in the ledger.
+`selectedLedgerRowsComplete` and the separate lineage/response truncation flags
+show whether those bounded queried rows were fully read; they do not change the
+always-false `historicalCoverageComplete` claim.
 
 Output is JSON on stdout. It includes the root, unique children with parent
 IDs, and root-only / child-only / whole-tree sums grouped by the exact model

@@ -13,6 +13,7 @@ use crate::migrations::runtime_memories_migrator;
 use crate::migrations::runtime_queue_migrator;
 use crate::migrations::runtime_state_migrator;
 use crate::migrations::runtime_thread_history_migrator;
+use crate::migrations::runtime_usage_migrator;
 use crate::model::ThreadRow;
 use crate::model::anchor_from_item;
 use crate::model::datetime_to_epoch_millis;
@@ -62,6 +63,7 @@ mod thread_read_state;
 mod thread_section_order;
 mod thread_sections;
 mod threads;
+mod usage;
 
 pub use external_agent_config_imports::ExternalAgentConfigImportDetailsRecord;
 pub use external_agent_config_imports::ExternalAgentConfigImportFailureRecord;
@@ -87,6 +89,8 @@ pub use thread_read_state::ReadStateOperation;
 pub use thread_read_state::ReadStateUpdate;
 pub use thread_read_state::ThreadReadState;
 pub use threads::ThreadFilterOptions;
+pub use usage::UsageCallStatus;
+pub use usage::UsageLogger;
 
 // "Partition" is the retained-log-content bucket we cap at 10 MiB:
 // - one bucket per non-null thread_id
@@ -103,6 +107,7 @@ pub struct StateRuntime {
     default_provider: String,
     pool: Arc<sqlx::SqlitePool>,
     logs_pool: Arc<sqlx::SqlitePool>,
+    usage_pool: Option<Arc<sqlx::SqlitePool>>,
     thread_goals: GoalStore,
     memories: MemoryStore,
     memories_v2: Arc<tokio::sync::OnceCell<MemoryStore>>,
@@ -264,6 +269,19 @@ impl StateRuntime {
             };
         let thread_updated_at_millis = thread_updated_at_millis.unwrap_or(0);
         let thread_recency_at_millis = thread_recency_at_millis.unwrap_or(0);
+        let usage_migrator = runtime_usage_migrator();
+        let usage_pool = match sqlite
+            .open_usage_db(&usage_migrator, telemetry_override)
+            .await
+        {
+            Ok(pool) => Some(Arc::new(pool)),
+            Err(err) => {
+                warn!(
+                    "local usage ledger unavailable; response rollouts remain the durable source: {err}"
+                );
+                None
+            }
+        };
         let runtime = Arc::new(Self {
             reclamation: reclamation::SqliteReclamationWorker::spawn(sqlite.clone()),
             thread_goals: GoalStore::new(Arc::clone(&goals_pool)),
@@ -272,6 +290,7 @@ impl StateRuntime {
             thread_queue: SqliteQueueStore::new(queue_pool),
             pool,
             logs_pool,
+            usage_pool,
             sqlite,
             default_provider,
             thread_updated_at_millis: Arc::new(AtomicI64::new(thread_updated_at_millis)),
@@ -294,6 +313,11 @@ impl StateRuntime {
     /// Return the SQLite configuration for this runtime.
     pub fn sqlite(&self) -> &SqliteConfig {
         &self.sqlite
+    }
+
+    /// Return the optional local usage ledger pool without making it a session requirement.
+    pub fn usage_ledger_pool(&self) -> Option<Arc<SqlitePool>> {
+        self.usage_pool.as_ref().map(Arc::clone)
     }
 
     pub fn thread_goals(&self) -> &GoalStore {
@@ -319,6 +343,9 @@ impl StateRuntime {
         }
         self.thread_goals.close().await;
         self.logs_pool.close().await;
+        if let Some(usage_pool) = &self.usage_pool {
+            usage_pool.close().await;
+        }
         self.pool.close().await;
     }
 

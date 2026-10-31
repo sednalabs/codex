@@ -2890,6 +2890,8 @@ async fn spawn_agent_fork_sanitizes_inherited_compaction_metadata() {
         session_id: parent_thread.session.session_id(),
         root_turn_id: "parent-turn".to_string(),
         response_id: "parent-response".to_string(),
+        requested_model: None,
+        actual_model_used: None,
         usage: parent_usage.clone(),
         turn_token_usage: parent_usage.clone(),
         thread_token_usage: parent_usage,
@@ -2952,6 +2954,7 @@ async fn spawn_agent_fork_sanitizes_inherited_compaction_metadata() {
         .record_observed_response_completed(
             turn_context.as_ref(),
             "child-response",
+            Some(turn_context.model_info().slug.as_str()),
             Some(&child_usage),
             /*usage_metadata*/ None,
         )
@@ -3014,6 +3017,8 @@ async fn spawn_agent_fork_sanitizes_inherited_compaction_metadata() {
             session_id: child_thread.session.session_id(),
             root_turn_id: turn_context.sub_id.clone(),
             response_id: "child-response".to_string(),
+            requested_model: Some(turn_context.initial_settings.model_info.slug.clone()),
+            actual_model_used: None,
             usage: child_usage.clone(),
             turn_token_usage: child_usage.clone(),
             thread_token_usage: child_usage,

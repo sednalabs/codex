@@ -3395,6 +3395,7 @@ async fn try_run_sampling_request(
                 sess.record_observed_response_completed(
                     &turn_context,
                     &response_id,
+                    Some(step_context.settings.model_info.slug.as_str()),
                     token_usage.as_ref(),
                     usage_metadata.as_ref(),
                 )

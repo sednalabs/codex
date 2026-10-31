@@ -5698,6 +5698,8 @@ impl Session {
                 turn_context,
                 response_id,
                 incomplete.token_usage.as_ref(),
+                Some(settings.model_info.slug.as_str()),
+                codex_state::UsageCallStatus::Incomplete,
             )
             .await;
         }
@@ -5737,6 +5739,7 @@ impl Session {
         &self,
         turn_context: &TurnContext,
         response_id: &str,
+        requested_model: Option<&str>,
         usage: Option<&TokenUsage>,
         usage_metadata: Option<&ResponseUsageMetadata>,
     ) {
@@ -5749,8 +5752,14 @@ impl Session {
             }),
         )
         .await;
-        self.record_response_token_usage(turn_context, response_id, usage)
-            .await;
+        self.record_response_token_usage(
+            turn_context,
+            response_id,
+            usage,
+            requested_model,
+            codex_state::UsageCallStatus::Completed,
+        )
+        .await;
     }
 
     pub(crate) async fn record_response_token_usage(
@@ -5758,6 +5767,8 @@ impl Session {
         turn_context: &TurnContext,
         response_id: &str,
         usage: Option<&TokenUsage>,
+        requested_model: Option<&str>,
+        status: codex_state::UsageCallStatus,
     ) {
         let Some(usage) = usage else {
             return;
@@ -5771,10 +5782,18 @@ impl Session {
                 .root_turn_id()
                 .unwrap_or_else(|| turn_context.sub_id.clone()),
             response_id.to_string(),
+            requested_model.map(str::to_string),
             usage,
         );
-        self.persist_rollout_items(&[RolloutItem::TokenUsageRecord(record)])
+        self.persist_rollout_items(&[RolloutItem::TokenUsageRecord(record.clone())])
             .await;
+        if let Some(usage_logger) = &self.services.usage_logger
+            && let Err(err) = usage_logger.record_response(&record, status).await
+        {
+            warn!(
+                "failed to project response usage to local ledger; rollout record remains durable: {err}"
+            );
+        }
     }
 
     pub(crate) async fn record_token_usage_info(

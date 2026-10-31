@@ -120,6 +120,20 @@ fn chats_long_title_keeps_detail_indent_and_counts_missing_estimates() {
     insta::assert_snapshot!(output);
 }
 
+#[test]
+fn partial_chat_ranking_discloses_the_recent_root_limit() {
+    let mut view = fixture::view(models::AccountKind::Enterprise);
+    let mut chats = fixture::chats();
+    chats.truncated = true;
+    view.section = Section::Chats;
+    view.chats = Load::Ready(chats);
+
+    let output = screen(&mut view, /*width*/ 110, /*height*/ 24);
+
+    assert!(output.contains("Partial ranking"));
+    assert!(output.contains("additional chats may be omitted"));
+}
+
 #[tokio::test]
 async fn unavailable_chats_do_not_open_invisible_details() {
     for key in [KeyCode::Enter, KeyCode::Right] {
@@ -131,6 +145,7 @@ async fn unavailable_chats_do_not_open_invisible_details() {
                 1 => Load::Error("Temporary failure".into()),
                 2 => Load::Ready(chats::Chats::default()),
                 3 => Load::Ready(chats::Chats {
+                    truncated: false,
                     rows: vec![chats::Chat {
                         title: "Another workspace's private title".into(),
                         usage: None,
@@ -151,6 +166,7 @@ fn unavailable_chat_titles_are_hidden_in_panel_and_overview() {
     let mut view = fixture::view(models::AccountKind::Enterprise);
     view.section = Section::Chats;
     view.chats = Load::Ready(chats::Chats {
+        truncated: false,
         rows: vec![chats::Chat {
             title: "Another workspace's private title".into(),
             usage: None,

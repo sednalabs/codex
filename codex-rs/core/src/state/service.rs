@@ -92,6 +92,8 @@ pub(crate) struct SessionServices {
     pub(crate) managed_network_requirements_configured: bool,
     pub(crate) network_approval: Arc<NetworkApprovalService>,
     pub(crate) state_db: Option<StateDbHandle>,
+    /// Optional local usage projection; rollout response records remain the durable source.
+    pub(crate) usage_logger: Option<codex_state::UsageLogger>,
     pub(crate) live_thread: Option<LiveThread>,
     pub(crate) image_store: Arc<dyn AttachmentStore>,
     pub(crate) thread_store: Arc<dyn ThreadStore>,

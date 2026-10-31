@@ -1793,6 +1793,26 @@ impl Session {
                 Ok(trace) => (trace, None),
                 Err(err) => (ThreadTraceContext::disabled(), Some(err)),
             };
+            let usage_logger = if let Some(state_db) = state_db_ctx.as_ref() {
+                match codex_state::UsageLogger::try_new(
+                    state_db,
+                    thread_id,
+                    &session_configuration.session_source,
+                    session_configuration.thread_source.as_ref(),
+                    session_configuration.parent_thread_id.clone(),
+                    session_configuration.forked_from_thread_id.clone(),
+                )
+                .await
+                {
+                    Ok(logger) => logger,
+                    Err(err) => {
+                        warn!("local usage logger unavailable; response rollouts remain durable: {err}");
+                        None
+                    }
+                }
+            } else {
+                None
+            };
             let services = SessionServices {
                 // Start with an empty connection set. The initialized set is
                 // published after SessionConfigured so MCP events follow it.
@@ -1838,6 +1858,7 @@ impl Session {
                 managed_network_requirements_configured,
                 network_approval: Arc::clone(&network_approval),
                 state_db: state_db_ctx.clone(),
+                usage_logger,
                 live_thread: live_thread.clone(),
                 image_store,
                 thread_store: Arc::clone(&thread_store),
