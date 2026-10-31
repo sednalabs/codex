@@ -1178,7 +1178,7 @@ async fn resumed_recipient_lazily_reopens_durable_mailbox_before_first_turn_read
     );
     assert!(resumed_control.mailbox_v2().is_none());
     let pending = resumed_control
-        .mailbox_v2_pending_inputs(recipient)
+        .mailbox_v2_pending_inputs(recipient, &config)
         .await
         .unwrap();
     assert_eq!(pending.len(), 1);

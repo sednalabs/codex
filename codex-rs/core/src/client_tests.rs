@@ -786,6 +786,7 @@ fn incremental_model_baseline_overlay_preserves_notice_and_history() -> anyhow::
             "gpt-previous",
             PREVIOUS_BASELINE.to_string(),
             /*client_owned_base_instructions*/ true,
+            /*suppress_model_change_announcements*/ false,
         );
     let previous_snapshot = previous_state
         .render_diff(crate::context::world_state::PreviousSectionState::Absent)
@@ -796,6 +797,7 @@ fn incremental_model_baseline_overlay_preserves_notice_and_history() -> anyhow::
             "gpt-current",
             CURRENT_BASELINE.to_string(),
             /*client_owned_base_instructions*/ true,
+            /*suppress_model_change_announcements*/ false,
         );
     let (_, updates) = current_state.render_diff(
         crate::context::world_state::PreviousSectionState::Known(&previous_snapshot),
