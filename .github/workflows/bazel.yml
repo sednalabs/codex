@@ -166,17 +166,8 @@ jobs:
               -- \
               //codex-rs/tui:tui-unit-tests || focused_status=$?
             for selector in \
-              suite::client::configured_reasoning_summary_is_sent \
-              suite::client::history_dedupes_streamed_and_final_messages_across_turns \
-              suite::client::sends_audio_urls_to_responses \
-              suite::items::plan_mode_strips_plan_from_agent_messages \
-              suite::multi_agent_mode::catalog_proactive_mode_is_ultra_only::ultra_uses_proactive_override \
-              suite::otel::record_responses_sets_span_fields_for_response_events \
-              suite::prompt_caching::prefixes_context_and_instructions_once_and_consistently_across_requests \
-              suite::remote_models::remote_models_long_model_slug_is_sent_with_supported_reasoning::custom \
-              suite::request_compression::request_body_is_zstd_compressed_for_codex_backend_when_enabled \
-              suite::scenarios::frozen_cloud_skills::frozen_cloud_skills_with_named_executor_request_history \
-              suite::scenarios::mcp_ema::enterprise_lifecycle_preserves_history_and_ordinary_tools::policy; do
+              suite::scenarios::mcp_ema::enterprise_lifecycle_preserves_history_and_ordinary_tools::removal \
+              suite::subagent_notifications::spawn_settings_tests::spawn_reports_effective_settings_after_child_runtime_is_removed; do
               ./.github/scripts/run-bazel-ci.sh \
                 --print-failed-test-logs \
                 --print-failed-action-summary \
