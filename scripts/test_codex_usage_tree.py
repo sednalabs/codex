@@ -267,17 +267,13 @@ class UsageTreeTests(unittest.TestCase):
                 root_group["calculatedCreditEstimate"]["rateModelBasis"],
                 "requested_model_fallback",
             )
-            self.assertEqual(
-                root_group["calculatedCreditEstimate"]["value"], "302.5"
-            )
+            self.assertEqual(root_group["calculatedCreditEstimate"]["value"], "302.5")
             self.assertEqual(root_group["providerReportedCredits"]["value"], "7.5")
             self.assertIsNone(root_group["actualDebit"]["value"])
             child_group = result["totals"]["descendants"]["groups"][0]
             self.assertEqual(child_group["requestedModel"], "gpt-6.1-sol")
             self.assertEqual(child_group["providerEffectiveModel"], "gpt-6-sol")
-            self.assertEqual(
-                child_group["statusCounts"], {"incomplete": 1}
-            )
+            self.assertEqual(child_group["statusCounts"], {"incomplete": 1})
             self.assertIsNone(child_group["calculatedCreditEstimate"]["value"])
             self.assertIn(
                 "cacheWriteInputTokens",
@@ -285,9 +281,7 @@ class UsageTreeTests(unittest.TestCase):
             )
             output = io.StringIO()
             with contextlib.redirect_stdout(output):
-                exit_code = main(
-                    ["--thread-id", "root", "--database", str(database)]
-                )
+                exit_code = main(["--thread-id", "root", "--database", str(database)])
             self.assertEqual(exit_code, 2)
             self.assertEqual(json.loads(output.getvalue())["status"], "partial")
             self.assertEqual(database.read_bytes(), original_bytes)
