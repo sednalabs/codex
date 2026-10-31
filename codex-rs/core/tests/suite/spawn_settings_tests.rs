@@ -153,6 +153,18 @@ async fn spawn_reports_effective_settings_after_child_runtime_is_removed() -> Re
             .error
             .as_ref()
             .map(|error| error.codex_error_info.clone());
+        let turn_error_kind = completion.error.as_ref().map(|error| {
+            let message = error.message.as_str();
+            if message.contains("no thread with id:") {
+                "thread_not_found"
+            } else if message.contains("durable native agent work requires") {
+                "mailbox_incompatible"
+            } else if message.starts_with("unsupported operation:") {
+                "unsupported_operation"
+            } else {
+                "other"
+            }
+        });
         let observed_requests = responses.requests();
         let child_request_count = observed_requests
             .iter()
@@ -167,7 +179,7 @@ async fn spawn_reports_effective_settings_after_child_runtime_is_removed() -> Re
             .collect::<Vec<_>>();
         assert!(
             completion.error.is_none(),
-            "{thread_role} turn {} completed with error info: {turn_error:?}; response requests={}, child-thread requests={child_request_count}, mock paths={server_request_paths:?}",
+            "{thread_role} turn {} completed with error info: {turn_error:?} and safe error category: {turn_error_kind:?}; response requests={}, child-thread requests={child_request_count}, mock paths={server_request_paths:?}",
             completion.turn_id,
             observed_requests.len()
         );
