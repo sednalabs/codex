@@ -1,0 +1,131 @@
+name: exact-source package preview
+
+on:
+  push:
+    branches:
+      - validation/codex-package-preview-e3bc4e53fba
+
+permissions:
+  contents: read
+
+jobs:
+  package:
+    name: ${{ matrix.target }} package smoke
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 120
+    permissions:
+      contents: read
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: ubuntu-24.04
+            target: x86_64-unknown-linux-gnu
+          - runner: ubuntu-24.04-arm
+            target: aarch64-unknown-linux-gnu
+    env:
+      PRODUCT_SHA: e3bc4e53fbace273183c1e7454c057d98c1898bd
+      TARGET: ${{ matrix.target }}
+
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          ref: e3bc4e53fbace273183c1e7454c057d98c1898bd
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Verify exact product checkout
+        run: test "$(git rev-parse HEAD)" = "$PRODUCT_SHA"
+
+      - name: Select package version from source
+        id: meta
+        shell: bash
+        run: |
+          set -euo pipefail
+          package_version="$(python3 - <<'PY'
+          import tomllib
+          from pathlib import Path
+
+          manifest = tomllib.loads(Path("codex-rs/Cargo.toml").read_text())
+          print(manifest["workspace"]["package"]["version"])
+          PY
+          )"
+          echo "package_version=${package_version}" >> "$GITHUB_OUTPUT"
+          echo "package version=${package_version}; source=${PRODUCT_SHA}; target=${TARGET}"
+
+      - name: Build and smoke-test maintained generic Codex packages
+        uses: ./.github/actions/build-codex-packages
+        with:
+          target: ${{ matrix.target }}
+          package-version: ${{ steps.meta.outputs.package_version }}
+          build-mode: release
+          build-system: cargo
+
+      - name: Record source, binary, and archive hashes
+        env:
+          PACKAGE_VERSION: ${{ steps.meta.outputs.package_version }}
+          WORKFLOW_HOST_SHA: ${{ github.sha }}
+        run: |
+          python3 - <<'PY'
+          import hashlib
+          import json
+          import os
+          from pathlib import Path
+          import subprocess
+
+          target = os.environ["TARGET"]
+          package_dir = Path("dist") / target
+          release_dir = Path(os.environ["CARGO_TARGET_DIR"]) / target / "release"
+          package_names = (
+              f"codex-package-{target}.tar.gz",
+              f"codex-package-{target}.tar.zst",
+              f"codex-app-server-package-{target}.tar.gz",
+              f"codex-app-server-package-{target}.tar.zst",
+          )
+
+          def sha256(path: Path) -> str:
+              digest = hashlib.sha256()
+              with path.open("rb") as handle:
+                  for block in iter(lambda: handle.read(1024 * 1024), b""):
+                      digest.update(block)
+              return digest.hexdigest()
+
+          artifacts = {}
+          for name in package_names:
+              path = package_dir / name
+              if not path.is_file():
+                  raise SystemExit(f"required package artifact is missing: {name}")
+              artifacts[name] = {"size_bytes": path.stat().st_size, "sha256": sha256(path)}
+
+          binaries = {}
+          for name in ("codex", "codex-app-server", "codex-code-mode-host", "codex-exec-server", "bwrap"):
+              path = release_dir / name
+              if path.is_file():
+                  binaries[name] = {"size_bytes": path.stat().st_size, "sha256": sha256(path)}
+
+          payload = {
+              "source_sha": os.environ["PRODUCT_SHA"],
+              "source_tree_sha": subprocess.check_output(
+                  ["git", "rev-parse", f"{os.environ['PRODUCT_SHA']}^{{tree}}"], text=True
+              ).strip(),
+              "workflow_host_sha": os.environ["WORKFLOW_HOST_SHA"],
+              "run_id": os.environ["GITHUB_RUN_ID"],
+              "target": target,
+              "runner": os.environ["RUNNER_NAME"],
+              "package_version": os.environ["PACKAGE_VERSION"],
+              "binaries": binaries,
+              "packages": artifacts,
+              "smoke_tests": "passed by .github/actions/build-codex-packages",
+          }
+          (package_dir / "manifest.json").write_text(
+              json.dumps(payload, indent=2, sort_keys=True) + "\n", encoding="utf-8"
+          )
+          PY
+
+      - uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f # v7.0.0
+        with:
+          name: codex-package-${{ matrix.target }}-e3bc4e53
+          path: dist/${{ matrix.target }}
+          if-no-files-found: error
+          compression-level: 0
+          retention-days: 7
