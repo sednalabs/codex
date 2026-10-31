@@ -1,0 +1,76 @@
+name: w14939 schema generation
+
+on:
+  workflow_dispatch:
+    inputs:
+      product_sha:
+        description: Exact product commit whose generated schemas should be refreshed
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+jobs:
+  regenerate:
+    name: Regenerate app-server schemas on the standard Linux runner
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          persist-credentials: false
+
+      - name: Verify direct workflow-only child and exact product input
+        env:
+          PRODUCT_SHA: ${{ inputs.product_sha }}
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD^1)" = "$PRODUCT_SHA"
+          changed="$(git diff --name-only "$PRODUCT_SHA" HEAD)"
+          test "$changed" = ".github/workflows/w14939-schema-generation.yml"
+
+      - uses: ./.github/actions/setup-ci
+
+      - uses: dtolnay/rust-toolchain@e081816240890017053eacbb1bdf337761dc5582 # 1.95.0
+
+      - uses: astral-sh/setup-uv@07a047e608db84b3d8c06cd9a7c7dcc9c355c18e # v10.3.2
+
+      - name: Run the maintained schema and Python-types generator
+        working-directory: codex-rs
+        run: python3 app-server-protocol/scripts/write_schema_fixtures.py
+
+      - name: Capture only generated schema and Python-type changes
+        env:
+          PRODUCT_SHA: ${{ inputs.product_sha }}
+        run: |
+          set -euo pipefail
+          git add -N -- codex-rs/app-server-protocol/schema sdk/python/src/openai_codex/generated
+          changed="$(git diff --name-only HEAD)"
+          if [[ -z "$changed" ]]; then
+            echo "The generator produced no tracked schema or Python-type delta." >&2
+            exit 1
+          fi
+          while IFS= read -r path; do
+            case "$path" in
+              codex-rs/app-server-protocol/schema/*|sdk/python/src/openai_codex/generated/*) ;;
+              *) echo "Unexpected generated path: $path" >&2; exit 1 ;;
+            esac
+          done <<< "$changed"
+          mkdir -p "$RUNNER_TEMP/schema-output"
+          git diff --binary HEAD > "$RUNNER_TEMP/schema-output/generated-schema.patch"
+          {
+            printf 'product_sha=%s\n' "$PRODUCT_SHA"
+            printf 'host_sha=%s\n' "$(git rev-parse HEAD)"
+            printf 'patch_sha256=%s\n' "$(sha256sum "$RUNNER_TEMP/schema-output/generated-schema.patch" | cut -d' ' -f1)"
+            printf 'changed_paths=%s\n' "$(printf '%s\n' "$changed" | wc -l | tr -d ' ')"
+          } > "$RUNNER_TEMP/schema-output/manifest.txt"
+          cat "$RUNNER_TEMP/schema-output/manifest.txt"
+
+      - uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f # v7.0.0
+        with:
+          name: generated-schema-${{ inputs.product_sha }}
+          path: ${{ runner.temp }}/schema-output
+          if-no-files-found: error
+          retention-days: 1
