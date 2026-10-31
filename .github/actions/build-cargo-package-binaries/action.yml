@@ -44,7 +44,7 @@ runs:
         targets: ${{ inputs.target }}
 
     - name: Use hermetic Cargo home (musl)
-      if: ${{ runner.os == 'Linux' }}
+      if: ${{ runner.os == 'Linux' && contains(inputs.target, 'musl') }}
       shell: bash
       working-directory: codex-rs
       run: |
@@ -56,14 +56,14 @@ runs:
         : > "${cargo_home}/config.toml"
 
     - name: Install Zig
-      if: ${{ runner.os == 'Linux' }}
+      if: ${{ runner.os == 'Linux' && contains(inputs.target, 'musl') }}
       uses: mlugg/setup-zig@d1434d08867e3ee9daa34448df10607b98908d29 # v2.2.1
       with:
         version: 0.14.0
         use-cache: false
 
     - name: Install musl build tools
-      if: ${{ runner.os == 'Linux' }}
+      if: ${{ runner.os == 'Linux' && contains(inputs.target, 'musl') }}
       shell: bash
       working-directory: codex-rs
       env:
@@ -71,7 +71,7 @@ runs:
       run: bash "${GITHUB_WORKSPACE}/.github/scripts/install-musl-build-tools.sh"
 
     - name: Disable aws-lc jitter entropy (musl)
-      if: ${{ runner.os == 'Linux' }}
+      if: ${{ runner.os == 'Linux' && contains(inputs.target, 'musl') }}
       shell: bash
       working-directory: codex-rs
       env:
