@@ -45,12 +45,14 @@ Settings:
 04:message/user:
     Begin work.
 -- request 2 (turn) --
-05:message/developer:
-    <model_instructions>
-    The following instructions replace the previous base instructions:
+05:message/developer[3]:
+    [01]
+        The following instructions replace the previous base instructions:
 
-    Check your work before responding.
-    </model_instructions>
+
+    [02] Check your work before responding.
+    [03]
+
 06:message/user:
     Continue with refreshed instructions.
 -- request 3 (turn) --

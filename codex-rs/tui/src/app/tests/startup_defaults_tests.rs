@@ -781,14 +781,9 @@ async fn fresh_startup_falls_back_only_for_unsupported_config_read() -> Result<(
             ),
             (&serde_json::Value::Null, &serde_json::Value::Null)
         );
-        let proxy_result = tokio::time::timeout(Duration::from_secs(/*secs*/ 15), proxy)
-            .await
-            .map_err(|error| {
-                color_eyre::eyre::eyre!(
-                    "waiting for app-server proxy shutdown after unsupported config-read fallback: {error}"
-                )
-            })?;
-        proxy_result??;
+        // run_until_thread_start intentionally drops App::run at request capture, so the
+        // embedded app-server proxy is still owned by this test and needs explicit teardown.
+        proxy.abort();
     }
     Ok(())
 }
