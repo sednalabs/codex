@@ -253,6 +253,7 @@ mod daemon_recovery;
 mod environment;
 mod extension_interruption;
 pub(crate) mod extension_metrics;
+mod external_event;
 mod guardian_checkpoint;
 mod handlers;
 pub(crate) mod inject;
@@ -1079,7 +1080,24 @@ impl Session {
             .as_ref()
             .and_then(|startup| startup.session_teardown(thread_id));
         let session_for_loop = Arc::clone(&session);
+        // The optional local listener belongs to this exact session loop and is
+        // aborted when that loop ends, rather than retaining an old tool runtime.
+        let external_event_listener = match external_event::start(&session) {
+            Ok(listener) => listener,
+            Err(reason) => {
+                session
+                    .send_event_raw(Event {
+                        id: INITIAL_SUBMIT_ID.to_owned(),
+                        msg: EventMsg::Warning(WarningEvent {
+                            message: format!("External event listener unavailable: {reason}"),
+                        }),
+                    })
+                    .await;
+                None
+            }
+        };
         let session_loop_handle = tokio::spawn(Box::pin(storage_originator.scope(async move {
+            let _external_event_listener = external_event_listener;
             submission_loop(session_for_loop, configured_config, rx_sub)
                 .instrument(info_span!("session_loop", thread_id = %thread_id))
                 .await;

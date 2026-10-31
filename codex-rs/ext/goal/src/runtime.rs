@@ -53,10 +53,10 @@ struct GoalRuntimeInner {
     thread_manager: Weak<ThreadManager>,
     accounting_state: Arc<GoalAccountingState>,
     root_accounting_state: Option<Arc<GoalAccountingState>>,
-    enabled: AtomicBool,
+    enabled: Arc<AtomicBool>,
     tools_available_for_thread: bool,
     tools_visible_for_thread: bool,
-    goal_state_lock: Semaphore,
+    goal_state_lock: Arc<Semaphore>,
 }
 
 pub(crate) struct AccountedGoalProgress {
@@ -107,20 +107,20 @@ impl GoalRuntimeHandle {
                 thread_manager,
                 accounting_state,
                 root_accounting_state: config.root_accounting_state,
-                enabled: AtomicBool::new(config.enabled),
+                enabled: Arc::new(AtomicBool::new(config.enabled)),
                 tools_available_for_thread: config.tools_available_for_thread,
                 tools_visible_for_thread: config.tools_visible_for_thread,
-                goal_state_lock: Semaphore::new(/*permits*/ 1),
+                goal_state_lock: Arc::new(Semaphore::new(/*permits*/ 1)),
             }),
         }
     }
 
     pub(crate) fn set_enabled(&self, enabled: bool) {
-        self.inner.enabled.store(enabled, Ordering::Relaxed);
+        self.inner.enabled.store(enabled, Ordering::Release);
     }
 
     pub(crate) fn is_enabled(&self) -> bool {
-        self.inner.enabled.load(Ordering::Relaxed)
+        self.inner.enabled.load(Ordering::Acquire)
     }
 
     pub(crate) fn tools_visible(&self) -> bool {
@@ -161,6 +161,13 @@ impl GoalRuntimeHandle {
             .map_err(|err| err.to_string())
     }
 
+    pub(crate) fn admission_lock(&self) -> codex_core::GoalStateAdmissionLock {
+        codex_core::GoalStateAdmissionLock(
+            Arc::clone(&self.inner.goal_state_lock),
+            Arc::clone(&self.inner.enabled),
+        )
+    }
+
     pub async fn prepare_external_goal_mutation(&self) -> Result<(), String> {
         if !self.is_enabled() {
             return Ok(());
@@ -169,7 +176,7 @@ impl GoalRuntimeHandle {
         self.inner.accounting_state.reset_empty_responses();
 
         if let Some(turn_id) = self.inner.accounting_state.current_turn_id() {
-            self.account_active_goal_progress(
+            self.account_active_goal_progress_locked(
                 turn_id.as_str(),
                 &format!("{turn_id}:external-goal-mutation"),
                 codex_state::GoalAccountingMode::ActiveOnly,
@@ -340,7 +347,7 @@ impl GoalRuntimeHandle {
                 Some(expected_goal_id),
             ),
         };
-        self.account_active_goal_progress(
+        self.account_active_goal_progress_locked(
             turn_id,
             &format!("{turn_id}:{event_name}-progress"),
             codex_state::GoalAccountingMode::ActiveOnly,
@@ -549,6 +556,24 @@ impl GoalRuntimeHandle {
     }
 
     pub(crate) async fn account_active_goal_progress(
+        &self,
+        turn_id: &str,
+        event_id: &str,
+        mode: codex_state::GoalAccountingMode,
+        budget_limited_goal_disposition: BudgetLimitedGoalDisposition,
+    ) -> Result<Option<AccountedGoalProgress>, String> {
+        let _goal_state_permit = self.goal_state_permit().await?;
+        self.account_active_goal_progress_locked(
+            turn_id,
+            event_id,
+            mode,
+            budget_limited_goal_disposition,
+        )
+        .await
+    }
+
+    // Callers must already hold goal_state_permit.
+    async fn account_active_goal_progress_locked(
         &self,
         turn_id: &str,
         event_id: &str,

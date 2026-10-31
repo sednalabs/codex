@@ -59,6 +59,7 @@ use tracing::info;
 use tracing::warn;
 
 pub async fn interrupt(sess: &Arc<Session>) {
+    *sess.external_event_gate.lock().await = false;
     sess.interrupt_task().await;
 }
 
@@ -584,11 +585,31 @@ pub(super) async fn submission_loop(
                     mode,
                     reply,
                 } => {
+                    let explicit_user_input = matches!(
+                        &request.input,
+                        codex_protocol::turn_input::TurnInput::UserInput { content, .. }
+                            if !content.is_empty()
+                    ) && matches!(
+                        &mode,
+                        codex_protocol::turn_input::TurnInputMode::StartOrSteer
+                            | codex_protocol::turn_input::TurnInputMode::Steer { .. }
+                    );
                     let request = WithTurnExtensionData {
                         request: *request,
                         turn_extension_init: sub.turn_extension_init,
                     };
                     let result = turn_input::handle(&sess, request, mode, sub.id.clone()).await;
+                    if explicit_user_input
+                        && matches!(
+                            &result,
+                            Ok(codex_protocol::turn_input::TurnInputSubmission::Started { .. })
+                                | Ok(
+                                    codex_protocol::turn_input::TurnInputSubmission::Steered { .. }
+                                )
+                        )
+                    {
+                        *sess.external_event_gate.lock().await = true;
+                    }
                     let _ = reply.send(result);
                     false
                 }
