@@ -159,11 +159,7 @@ async fn goal_config_changes_update_wake_admission() -> anyhow::Result<()> {
             /*new_config*/ &false,
         );
     }
-    assert!(
-        thread_store
-            .get::<codex_core::GoalStateAdmissionLock>()
-            .is_none()
-    );
+    assert!(thread_store.get::<codex_core::GoalStateAdmissionLock>().is_none());
     assert!(!admission.1.load(std::sync::atomic::Ordering::Acquire));
     for contributor in registry.config_contributors() {
         contributor.on_config_changed(
@@ -173,11 +169,7 @@ async fn goal_config_changes_update_wake_admission() -> anyhow::Result<()> {
             /*new_config*/ &true,
         );
     }
-    assert!(
-        thread_store
-            .get::<codex_core::GoalStateAdmissionLock>()
-            .is_some()
-    );
+    assert!(thread_store.get::<codex_core::GoalStateAdmissionLock>().is_some());
     assert!(admission.1.load(std::sync::atomic::Ordering::Acquire));
     Ok(())
 }

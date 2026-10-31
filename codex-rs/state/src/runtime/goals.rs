@@ -40,34 +40,6 @@ pub enum GoalAccountingMode {
 }
 
 impl GoalStore {
-    /// Preserve a deliberate external-wake stop independently of goal status.
-    pub async fn suspend_external_wake(&self, thread_id: ThreadId) -> anyhow::Result<()> {
-        sqlx::query(
-            "INSERT OR IGNORE INTO thread_external_wake_suspensions (thread_id) SELECT thread_id FROM thread_goals WHERE thread_id = ?",
-        )
-        .bind(thread_id.to_string())
-        .execute_with_busy_retry(self.pool.as_ref())
-        .await?;
-        Ok(())
-    }
-
-    pub async fn external_wake_is_suspended(&self, thread_id: ThreadId) -> anyhow::Result<bool> {
-        sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM thread_external_wake_suspensions WHERE thread_id = ?)")
-            .bind(thread_id.to_string())
-            .fetch_one(self.pool.as_ref())
-            .await
-            .map_err(Into::into)
-    }
-
-    /// Clear a stop only in response to an explicit accepted user action.
-    pub async fn resume_external_wake(&self, thread_id: ThreadId) -> anyhow::Result<()> {
-        sqlx::query("DELETE FROM thread_external_wake_suspensions WHERE thread_id = ?")
-            .bind(thread_id.to_string())
-            .execute_with_busy_retry(self.pool.as_ref())
-            .await?;
-        Ok(())
-    }
-
     pub async fn get_thread_goal(
         &self,
         thread_id: ThreadId,
@@ -797,47 +769,6 @@ mod tests {
             .upsert_thread(&metadata)
             .await
             .expect("test thread should be upserted");
-    }
-
-    #[tokio::test]
-    async fn external_wake_stop_is_independent_of_active_goal_status() {
-        let runtime = test_runtime().await;
-        let thread_id = test_thread_id();
-        upsert_test_thread(&runtime, thread_id).await;
-        runtime
-            .thread_goals()
-            .replace_thread_goal(
-                thread_id,
-                "keep coordinating",
-                crate::ThreadGoalStatus::Active,
-                /*token_budget*/ None,
-            )
-            .await
-            .expect("goal");
-        let goals = runtime.thread_goals();
-        assert!(!goals.external_wake_is_suspended(thread_id).await.expect("initial"));
-        goals.suspend_external_wake(thread_id).await.expect("suspend");
-        goals.suspend_external_wake(thread_id).await.expect("idempotent suspend");
-        assert!(goals.external_wake_is_suspended(thread_id).await.expect("suspended"));
-        let reopened = StateRuntime::init(
-            crate::SqliteConfig::new_for_testing(runtime.sqlite().home().abs()),
-            "test-provider".to_string(),
-        )
-        .await
-        .expect("reopen state");
-        assert!(
-            reopened
-                .thread_goals()
-                .external_wake_is_suspended(thread_id)
-                .await
-                .expect("persisted suspension")
-        );
-        assert_eq!(
-            goals.get_thread_goal(thread_id).await.expect("goal").expect("present").status,
-            crate::ThreadGoalStatus::Active
-        );
-        goals.resume_external_wake(thread_id).await.expect("resume");
-        assert!(!goals.external_wake_is_suspended(thread_id).await.expect("resumed"));
     }
 
     #[tokio::test]
