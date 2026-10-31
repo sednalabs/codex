@@ -28,6 +28,37 @@ use super::session::Session;
 #[cfg(any(unix, test))]
 use super::turn_input;
 
+fn selected(session: &Session) -> bool {
+    std::env::var_os("CODEX_EXTERNAL_EVENT_THREAD")
+        .is_some_and(|value| value == std::ffi::OsString::from(session.thread_id.to_string()))
+}
+
+/// Persist an interrupt for the configured external listener only.
+pub(super) async fn suspend(session: &Session) -> Result<(), &'static str> {
+    if !selected(session) {
+        return Ok(());
+    }
+    let state = session.services.state_db.as_ref().ok_or("goal state unavailable")?;
+    state
+        .thread_goals()
+        .suspend_external_wake(session.thread_id)
+        .await
+        .map_err(|_| "could not save external wake suspension")
+}
+
+/// An accepted explicit user turn can re-enable the selected listener.
+pub(super) async fn resume(session: &Session) -> Result<(), &'static str> {
+    if !selected(session) {
+        return Ok(());
+    }
+    let state = session.services.state_db.as_ref().ok_or("goal state unavailable")?;
+    state
+        .thread_goals()
+        .resume_external_wake(session.thread_id)
+        .await
+        .map_err(|_| "could not clear external wake suspension")
+}
+
 /// Abort the listener with the session loop, including on an early return.
 pub(super) struct ListenerGuard(tokio::task::JoinHandle<()>);
 
@@ -319,6 +350,15 @@ pub(super) async fn deliver(
     {
         Ok(Some(goal)) if goal.status.is_active() => {}
         _ => return EventAdmission::Deferred,
+    }
+    if !matches!(
+        state_db
+            .thread_goals()
+            .external_wake_is_suspended(session.thread_id)
+            .await,
+        Ok(false)
+    ) {
+        return EventAdmission::Deferred;
     }
     if session.collaboration_mode().await.mode == ModeKind::Plan {
         return EventAdmission::Deferred;

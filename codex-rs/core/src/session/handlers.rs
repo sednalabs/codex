@@ -60,7 +60,16 @@ use tracing::warn;
 
 pub async fn interrupt(sess: &Arc<Session>) {
     *sess.external_event_gate.lock().await = false;
-    sess.interrupt_task().await;
+    let (suspension, ()) = tokio::join!(super::external_event::suspend(sess), sess.interrupt_task());
+    if let Err(reason) = suspension {
+        sess.send_event_raw(Event {
+            id: super::new_submission_id(),
+            msg: EventMsg::Warning(WarningEvent {
+                message: format!("External wake stop was not saved: {reason}"),
+            }),
+        })
+        .await;
+    }
 }
 
 pub async fn clean_background_terminals(sess: &Arc<Session>) {
@@ -608,7 +617,18 @@ pub(super) async fn submission_loop(
                                 )
                         )
                     {
-                        *sess.external_event_gate.lock().await = true;
+                        match super::external_event::resume(&sess).await {
+                            Ok(()) => *sess.external_event_gate.lock().await = true,
+                            Err(reason) => {
+                                sess.send_event_raw(Event {
+                                    id: sub.id.clone(),
+                                    msg: EventMsg::Warning(WarningEvent {
+                                        message: format!("External wake remains stopped: {reason}"),
+                                    }),
+                                })
+                                .await;
+                            }
+                        }
                     }
                     let _ = reply.send(result);
                     false
