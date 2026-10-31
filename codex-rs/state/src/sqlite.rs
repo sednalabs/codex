@@ -381,30 +381,19 @@ impl SqliteConfig {
             let started = Instant::now();
             let preflight_result = async {
                 let pool = self
-                    .open_read_only_pool(&path, Some(DEFAULT_BUSY_TIMEOUT))
+                    .open_read_only_pool(path.as_path(), Some(DEFAULT_BUSY_TIMEOUT))
                     .await?;
-                let outcome = validation::quick_check(
+                let result = Self::validate_existing_usage_db(
                     &pool,
                     Instant::now() + Duration::from_millis(/*millis*/ 100),
+                    telemetry_override,
                 )
                 .await;
                 pool.close().await;
-                match outcome? {
-                    validation::QuickCheckOutcome::Complete => Ok(()),
-                    validation::QuickCheckOutcome::CorruptedNeedsFixed => {
-                        telemetry::record_corruption(telemetry_override, Some(spec.kind));
-                        anyhow::bail!("usage database contains corruption")
-                    }
-                    validation::QuickCheckOutcome::Incomplete => {
-                        anyhow::bail!("usage database integrity check did not complete")
-                    }
-                    validation::QuickCheckOutcome::Skipped => {
-                        anyhow::bail!("usage database integrity check was skipped")
-                    }
-                }
+                result
             }
             .await;
-            if preflight_result.is_err() {
+            if let Err(source) = preflight_result {
                 telemetry::record_init_result(
                     telemetry_override,
                     spec.kind,
@@ -412,13 +401,9 @@ impl SqliteConfig {
                     started.elapsed(),
                     &preflight_result,
                 );
-                return Err(RuntimeDbInitError::new(
-                    spec.label,
-                    "open",
-                    path.as_path(),
-                    preflight_result.expect_err("usage preflight result was checked"),
-                )
-                .into());
+                return Err(
+                    RuntimeDbInitError::new(spec.label, "open", path.as_path(), source).into(),
+                );
             }
         }
         let started = Instant::now();
@@ -460,6 +445,31 @@ impl SqliteConfig {
             );
         }
         Ok(pool)
+    }
+
+    async fn validate_existing_usage_db(
+        pool: &SqlitePool,
+        deadline: Instant,
+        telemetry_override: Option<&dyn DbTelemetry>,
+    ) -> anyhow::Result<()> {
+        match validation::quick_check(pool, deadline).await? {
+            validation::QuickCheckOutcome::Complete => Ok(()),
+            validation::QuickCheckOutcome::CorruptedNeedsFixed => {
+                telemetry::record_corruption(telemetry_override, Some(DbKind::Usage));
+                anyhow::bail!("usage database contains corruption")
+            }
+            validation::QuickCheckOutcome::Incomplete | validation::QuickCheckOutcome::Skipped => {
+                // A bounded integrity check that runs out of time is inconclusive, not evidence
+                // of corruption. It may leave corruption undiscovered, so the normal migration
+                // and write operations remain fallible; this path does not claim the DB is clean.
+                // USAGE_DB remains RecoveryMode::Unavailable, so this path never backs up or
+                // rebuilds the file.
+                log::warn!(
+                    "usage database integrity check was incomplete; continuing without a clean-check guarantee"
+                );
+                Ok(())
+            }
+        }
     }
 
     pub(super) async fn open_goals_db(
