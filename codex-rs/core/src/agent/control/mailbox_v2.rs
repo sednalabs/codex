@@ -369,7 +369,7 @@ impl LocalAgentControl {
         // The active session already owns its captured config. Do not resolve it again through
         // ThreadManager: an accepted child may have left the registry while its initial input
         // is still being submitted through the retained thread handle.
-        if self.mailbox_v2().is_none() {
+        if self.mailbox_v2().is_none() && compatible(config) {
             self.mailbox_v2_initialize(config).await?;
         }
         let Some(mailbox) = self.mailbox_v2() else {
