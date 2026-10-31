@@ -566,7 +566,9 @@ mod tests {
         let mut queue = TurnInputQueue::default();
         queue.items.push(input("ResponseItem", "notify"));
         queue.items.push(input("FunctionCallOutput", "other"));
-        queue.items.push(input("FunctionCallOutput", "external_event"));
+        queue
+            .items
+            .push(input("FunctionCallOutput", "external_event"));
         // An app-server tool_output may choose this name; it is not provenance.
         assert!(!queue.has_preempting_input());
         queue.items.clear();
