@@ -2142,7 +2142,7 @@ impl UnauthorizedRecovery {
                 match self
                     .manager
                     .reload_if_account_id_matches(self.expected_account_id.as_deref())
-                    .await
+                    .await?
                 {
                     ReloadOutcome::ReloadedChanged => {
                         self.step = UnauthorizedRecoveryStep::RefreshToken;
@@ -2214,6 +2214,8 @@ pub struct AuthManager {
     chatgpt_base_url: Option<String>,
     agent_identity_authapi_base_url: Option<String>,
     refresh_lock: Arc<Semaphore>,
+    // Writers hold refresh_lock; cancellation retains the attempted generation.
+    unsettled_chatgpt_refresh: Mutex<Option<TokenData>>,
     agent_identity_lock: Semaphore,
     agent_identity_bootstrap_cooldown: Mutex<AgentIdentityBootstrapCooldown>,
     external_auth: RwLock<Option<Arc<dyn ExternalAuth>>>,
@@ -2377,6 +2379,7 @@ impl AuthManager {
             chatgpt_base_url,
             agent_identity_authapi_base_url,
             refresh_lock: Arc::new(Semaphore::new(/*permits*/ 1)),
+            unsettled_chatgpt_refresh: Mutex::new(None),
             agent_identity_lock: Semaphore::new(/*permits*/ 1),
             agent_identity_bootstrap_cooldown: Mutex::default(),
             external_auth: RwLock::new(None),
@@ -2414,6 +2417,7 @@ impl AuthManager {
             chatgpt_base_url: None,
             agent_identity_authapi_base_url: default_agent_identity_authapi_base_url(),
             refresh_lock: Arc::new(Semaphore::new(/*permits*/ 1)),
+            unsettled_chatgpt_refresh: Mutex::new(None),
             agent_identity_lock: Semaphore::new(/*permits*/ 1),
             agent_identity_bootstrap_cooldown: Mutex::default(),
             external_auth: RwLock::new(None),
@@ -2445,6 +2449,7 @@ impl AuthManager {
             chatgpt_base_url: None,
             agent_identity_authapi_base_url: default_agent_identity_authapi_base_url(),
             refresh_lock: Arc::new(Semaphore::new(/*permits*/ 1)),
+            unsettled_chatgpt_refresh: Mutex::new(None),
             agent_identity_lock: Semaphore::new(/*permits*/ 1),
             agent_identity_bootstrap_cooldown: Mutex::default(),
             external_auth: RwLock::new(None),
@@ -2484,6 +2489,7 @@ impl AuthManager {
                     .to_string(),
             ),
             refresh_lock: Arc::new(Semaphore::new(/*permits*/ 1)),
+            unsettled_chatgpt_refresh: Mutex::new(None),
             agent_identity_lock: Semaphore::new(/*permits*/ 1),
             agent_identity_bootstrap_cooldown: Mutex::default(),
             external_auth: RwLock::new(None),
@@ -2522,6 +2528,7 @@ impl AuthManager {
             chatgpt_base_url: None,
             agent_identity_authapi_base_url: default_agent_identity_authapi_base_url(),
             refresh_lock: Arc::new(Semaphore::new(/*permits*/ 1)),
+            unsettled_chatgpt_refresh: Mutex::new(None),
             agent_identity_lock: Semaphore::new(/*permits*/ 1),
             agent_identity_bootstrap_cooldown: Mutex::default(),
             external_auth: RwLock::new(Some(Arc::new(BearerTokenRefresher::new(config, env)))),
@@ -2570,6 +2577,23 @@ impl AuthManager {
                 .filter(|failure| Self::auths_equal_for_refresh(Some(auth), Some(&failure.auth)))
                 .map(|failure| failure.error.clone())
         })
+    }
+
+    /// Whether this credential's refresh exchange or persistence started but did not finish.
+    /// Cancellation retains the record so callers can withhold an uncertain generation.
+    /// Waiting for the refresh guard or reloading storage does not mark a credential.
+    pub fn is_chatgpt_refresh_unsettled(&self, auth: &CodexAuth) -> std::io::Result<bool> {
+        let unsettled = self
+            .unsettled_chatgpt_refresh
+            .lock()
+            .map_err(|_| std::io::Error::other("Refresh progress is unavailable."))?;
+        // Match the stored generation; get_token_data() rewrites workspace claims.
+        Ok(unsettled.as_ref().is_some_and(|tokens| {
+            auth.get_current_auth_json()
+                .and_then(|auth| auth.tokens)
+                .as_ref()
+                == Some(tokens)
+        }))
     }
 
     /// Current cached auth (clone). May be `None` if not logged in or load failed.
@@ -2799,7 +2823,7 @@ impl AuthManager {
         tracing::info!("Reloading auth");
         loop {
             let generation = self.auth_change_state_tx.borrow().generation;
-            let new_auth = self.load_auth(/*cached_auth*/ None).await;
+            let new_auth = self.load_auth(/*cached_auth*/ None).await.ok().flatten();
             if let Some(publication) = self.publish_reloaded_auth(generation, new_auth) {
                 return publication.changed;
             }
@@ -2844,18 +2868,18 @@ impl AuthManager {
     async fn reload_if_account_id_matches(
         &self,
         expected_account_id: Option<&str>,
-    ) -> ReloadOutcome {
+    ) -> std::io::Result<ReloadOutcome> {
         let expected_account_id = match expected_account_id {
             Some(account_id) => account_id,
             None => {
                 tracing::info!("Skipping auth reload because no account id is available.");
-                return ReloadOutcome::Skipped;
+                return Ok(ReloadOutcome::Skipped);
             }
         };
 
         loop {
             let generation = self.auth_change_state_tx.borrow().generation;
-            let new_auth = self.load_auth(/*cached_auth*/ None).await;
+            let new_auth = self.load_auth(/*cached_auth*/ None).await?;
             let new_account_id = new_auth.as_ref().and_then(CodexAuth::get_account_id);
 
             if new_account_id.as_deref() != Some(expected_account_id) {
@@ -2863,19 +2887,19 @@ impl AuthManager {
                 tracing::info!(
                     "Skipping auth reload due to account id mismatch (expected: {expected_account_id}, found: {found_account_id})"
                 );
-                return ReloadOutcome::Skipped;
+                return Ok(ReloadOutcome::Skipped);
             }
 
             tracing::info!("Reloading auth for account {expected_account_id}");
             if let Some(publication) = self.publish_reloaded_auth(generation, new_auth) {
-                return if publication.changed_for_refresh {
+                return Ok(if publication.changed_for_refresh {
                     ReloadOutcome::ReloadedChanged
                 } else {
                     ReloadOutcome::ReloadedNoChange
-                };
+                });
             }
             if self.inner.is_poisoned() {
-                return ReloadOutcome::Skipped;
+                return Ok(ReloadOutcome::Skipped);
             }
         }
     }
@@ -2934,16 +2958,19 @@ impl AuthManager {
         }
     }
 
-    async fn load_auth(&self, cached_auth: Option<&CodexAuth>) -> Option<CodexAuth> {
+    async fn load_auth(
+        &self,
+        cached_auth: Option<&CodexAuth>,
+    ) -> std::io::Result<Option<CodexAuth>> {
         if let Some(external_auth) = self.external_auth_provider() {
             let cached_auth = self.auth_cached();
             if cached_auth
                 .as_ref()
                 .is_some_and(|auth| self.refresh_failure_for_auth(auth).is_some())
             {
-                return cached_auth;
+                return Ok(cached_auth);
             }
-            return match self.resolve_external_auth(external_auth.as_ref()).await {
+            let auth = match self.resolve_external_auth(external_auth.as_ref()).await {
                 Ok(auth) => Some(auth),
                 Err(err) => {
                     tracing::error!("Failed to resolve external auth: {err}");
@@ -2959,9 +2986,10 @@ impl AuthManager {
                     }
                 }
             };
+            return Ok(auth);
         }
 
-        self.try_load_managed_auth(cached_auth).await.ok().flatten()
+        self.try_load_managed_auth(cached_auth).await
     }
 
     async fn try_load_managed_auth(
@@ -3344,7 +3372,7 @@ impl AuthManager {
 
         match self
             .reload_if_account_id_matches(expected_account_id.as_deref())
-            .await
+            .await?
         {
             ReloadOutcome::ReloadedChanged => {
                 tracing::info!("Skipping token refresh because auth changed after guarded reload.");
@@ -3593,42 +3621,64 @@ impl AuthManager {
             .as_ref()
             .map(|provenance| provenance.client_id.clone())
             .unwrap_or_else(oauth_client_id);
-        let refresh_response = request_chatgpt_token_refresh(
-            tokens.refresh_token.clone(),
-            &endpoint,
-            &client_id,
-            auth.client(),
-            reason,
-        )
-        .await?;
+        let previous_unsettled = self
+            .unsettled_chatgpt_refresh
+            .lock()
+            .map_err(|_| std::io::Error::other("Refresh progress is unavailable."))?
+            .replace(tokens.clone());
+        let result: Result<(), RefreshTokenError> = async {
+            let refresh_response = request_chatgpt_token_refresh(
+                tokens.refresh_token.clone(),
+                &endpoint,
+                &client_id,
+                auth.client(),
+                reason,
+            )
+            .await?;
 
-        // An explicit override may send refresh to another authority. Retain provenance
-        // only when the endpoint used by this request matches the recorded issuer.
-        let provenance = tokens.oauth_provenance.clone().filter(|provenance| {
-            endpoint == format!("{}/oauth/token", provenance.issuer.trim_end_matches('/'))
-        });
+            // An explicit override may send refresh to another authority. Retain provenance
+            // only when the endpoint used by this request matches the recorded issuer.
+            let provenance = tokens.oauth_provenance.clone().filter(|provenance| {
+                endpoint == format!("{}/oauth/token", provenance.issuer.trim_end_matches('/'))
+            });
 
-        let storage = Arc::clone(auth.storage());
-        let originator = codex_otel::auth_storage::AuthStorageOriginator::current();
-        tokio::task::spawn_blocking(move || {
-            originator.sync_scope(|| {
-                persist_tokens(
-                    &storage,
-                    &tokens,
-                    provenance,
-                    refresh_response.id_token,
-                    refresh_response.access_token,
-                    refresh_response.refresh_token,
-                )
+            let storage = Arc::clone(auth.storage());
+            let originator = codex_otel::auth_storage::AuthStorageOriginator::current();
+            tokio::task::spawn_blocking(move || {
+                originator.sync_scope(|| {
+                    persist_tokens(
+                        &storage,
+                        &tokens,
+                        provenance,
+                        refresh_response.id_token,
+                        refresh_response.access_token,
+                        refresh_response.refresh_token,
+                    )
+                })
             })
-        })
-        .await
-        .map_err(|_| {
-            RefreshTokenError::Transient(std::io::Error::other(
-                "credential persistence task failed",
-            ))
-        })?
-        .map_err(RefreshTokenError::from)?;
+            .await
+            .map_err(|_| {
+                RefreshTokenError::Transient(std::io::Error::other(
+                    "credential persistence task failed",
+                ))
+            })?
+            .map_err(RefreshTokenError::from)?;
+            Ok(())
+        }
+        .await;
+        // Dropping this future while exchange or persistence is pending leaves
+        // the attempted generation recorded. A known failure cannot settle an
+        // earlier cancelled attempt; successful persistence can.
+        *self
+            .unsettled_chatgpt_refresh
+            .lock()
+            .map_err(|_| std::io::Error::other("Refresh progress is unavailable."))? =
+            if result.is_ok() {
+                None
+            } else {
+                previous_unsettled
+            };
+        result?;
         self.reload().await;
 
         Ok(())

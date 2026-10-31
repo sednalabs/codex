@@ -34,6 +34,7 @@ pub(crate) struct ModelInstructionsState {
     previous_model: Option<String>,
     instructions: String,
     client_owned_base_instructions: bool,
+    suppress_model_change_announcements: bool,
 }
 
 impl ModelInstructionsState {
@@ -43,15 +44,21 @@ impl ModelInstructionsState {
             previous_model: previous_model.map(str::to_string),
             instructions,
             client_owned_base_instructions: false,
+            suppress_model_change_announcements: false,
         }
     }
 
     #[cfg(test)]
-    pub(crate) fn for_incremental_tools(model: &str, instructions: String) -> Self {
+    pub(crate) fn for_incremental_tools(
+        model: &str,
+        instructions: String,
+        suppress_model_change_announcements: bool,
+    ) -> Self {
         Self::for_incremental_tools_with_ownership(
             model,
             instructions,
             /*client_owned_base_instructions*/ false,
+            suppress_model_change_announcements,
         )
     }
 
@@ -59,6 +66,7 @@ impl ModelInstructionsState {
         model: &str,
         instructions: String,
         client_owned_base_instructions: bool,
+        suppress_model_change_announcements: bool,
     ) -> Self {
         let instructions = BaseInstructionsFragment(instructions);
         let instructions_hash = WorldStateHash::from_fragment(&instructions);
@@ -70,6 +78,7 @@ impl ModelInstructionsState {
             previous_model: None,
             instructions: instructions.0,
             client_owned_base_instructions,
+            suppress_model_change_announcements,
         }
     }
 }
@@ -132,12 +141,13 @@ impl WorldStateSection for ModelInstructionsState {
         let instructions_changed = instructions_hash.is_some_and(|current| {
             previous_instructions_hash.map_or(model_changed, |previous| previous != current)
         });
-        if instructions_hash.is_some() && !model_changed && !instructions_changed {
-            return (None, Vec::new());
+        let announce_model = model_changed && !self.suppress_model_change_announcements;
+        if instructions_hash.is_some() && !announce_model && !instructions_changed {
+            return (model_changed.then(|| self.snapshot.clone()), Vec::new());
         }
         let updates = if instructions_hash.is_some() {
             let instructions = ModelInstructions {
-                model: model_changed.then(|| model.clone()),
+                model: announce_model.then(|| model.clone()),
                 instructions: instructions_changed.then(|| self.instructions.clone()),
             };
             if self.client_owned_base_instructions {
@@ -152,7 +162,7 @@ impl WorldStateSection for ModelInstructionsState {
                 WorldStateUpdate::optional_standalone_boxed_fragment(Some(Box::new(instructions)))
             }
         } else {
-            let fragment = (model_changed && !self.instructions.is_empty()).then(|| {
+            let fragment = (announce_model && !self.instructions.is_empty()).then(|| {
                 Box::new(ModelSwitchInstructions::new(self.instructions.clone()))
                     as Box<dyn ContextualUserFragment>
             });

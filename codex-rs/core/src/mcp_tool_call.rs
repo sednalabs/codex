@@ -40,6 +40,7 @@ use codex_features::Feature;
 use codex_mcp::CODEX_APPS_MCP_SERVER_NAME;
 use codex_mcp::MCP_TOOL_CODEX_APPS_META_KEY;
 use codex_mcp::McpPermissionPromptAutoApproveContext;
+use codex_mcp::McpToolRequestMetaHook;
 use codex_mcp::PreparedMcpCall;
 use codex_mcp::SandboxState;
 use codex_mcp::ToolInfo;
@@ -542,13 +543,32 @@ async fn handle_approved_mcp_tool_call(
                     if let Some(rewritten_arguments) = rewritten_arguments.as_ref() {
                         tool_input = rewritten_arguments.clone();
                     }
-                    let request_meta = build_mcp_tool_call_request_meta(
+                    let mut request_meta = build_mcp_tool_call_request_meta(
                         step_context,
                         &server,
                         call_id,
                         Some(&metadata),
                         prepared_call.is_host_owned_apps(),
                     );
+                    if let Some(recipient) = sess
+                        .services
+                        .thread_extension_data
+                        .get::<crate::AgentMcpMetadataRecipient>()
+                        && recipient.matches(
+                            prepared_call.server_name(),
+                            &prepared_call.config().mcp_server_catalog,
+                        )
+                        && let Some(JsonValue::Object(meta)) = &mut request_meta
+                    {
+                        meta.insert(
+                            "x-codex-root-turn-id".into(),
+                            serde_json::json!(turn_context.turn_metadata_state.root_turn_id()),
+                        );
+                        meta.insert(
+                            "x-codex-cyber-access-program".into(),
+                            serde_json::json!(turn_context.cyber_access_program),
+                        );
+                    }
                     let request_meta = with_mcp_tool_call_ids_meta(
                         request_meta,
                         &sess.thread_id.to_string(),
@@ -565,10 +585,22 @@ async fn handle_approved_mcp_tool_call(
                         .services
                         .rollout_thread_trace
                         .start_mcp_call_trace(call_id);
-                    Ok((
-                        rewritten_arguments,
-                        mcp_call_trace.add_request_meta(request_meta),
-                    ))
+                    let mut request_meta = mcp_call_trace.add_request_meta(request_meta);
+                    if let Some(hook) = sess
+                        .services
+                        .thread_extension_data
+                        .get::<McpToolRequestMetaHook>()
+                    {
+                        hook.apply(
+                            &prepared_call,
+                            sess.thread_id,
+                            &turn_context.sub_id,
+                            call_id,
+                            &mut request_meta,
+                        )
+                        .await?;
+                    }
+                    Ok((rewritten_arguments, request_meta))
                 })
                 .await
                 .map_err(|error| {

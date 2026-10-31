@@ -69,6 +69,8 @@ pub use retained_instructions::RetainedInstructionItem;
 pub use retained_instructions::retained_assistant_message;
 
 mod action;
+mod allocation;
+pub use allocation::PreparedElasticContext;
 mod enforcement;
 pub(crate) use enforcement::BudgetPriority;
 pub use enforcement::Budgeted;
@@ -102,6 +104,7 @@ pub use composition::ComposedContext;
 pub use composition::ContextPresentation;
 pub use composition::MAX_TEXT_PART_ESTIMATED_TOKENS;
 pub use composition::PreparedTranscript;
+pub use preparation::ContextBudgeting;
 pub use preparation::ContextProfile;
 pub use preparation::SyncImagePreparer;
 pub use preparation::SyncPreparation;

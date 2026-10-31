@@ -77,13 +77,10 @@ impl App {
     }
 
     fn sync_owned_transcript(&mut self, width: u16) -> bool {
+        self.transcript_view.image_protocol = self.prepare_frame_images();
         let chat_widget = &self.chat_widget;
         let transcript_width = chat_widget.history_wrap_width(width);
         let view = &mut self.transcript_view;
-        view.image_protocol = chat_widget.pet_image_support().protocol().filter(|_| {
-            !self.app_server_target.uses_remote_workspace()
-                && crate::projectless::has_only_local_environments(&self.environment_manager)
-        });
         view.mouse_scroll_speed = self.local_settings.tui.mouse_scroll_speed.unwrap_or(1.0);
         view.primary_selection = self.right_click_paste_environment.primary;
         view.copy_on_select = self
@@ -367,7 +364,10 @@ impl App {
                 frame.set_cursor_position(position);
             }
             if chat_widget.no_modal_or_popup_active() {
-                frame.transcript_images = view.image_placements();
+                frame.image_placements = view.image_placements();
+                if let Some(previews) = &chat_widget.composer_images {
+                    frame.image_placements.extend(previews.placements.take());
+                }
             }
         })?;
         if let Some((surface, tip)) = &turn_tip
@@ -395,7 +395,7 @@ impl App {
         Ok(bottom_area)
     }
 
-    /// Keep modal input ownership while allowing selection and copying in the visible transcript.
+    /// Keep modal input ownership while allowing selection, copying, and disclosure in the visible transcript.
     pub(super) fn handle_owned_transcript_event(
         &mut self,
         tui: &mut tui::Tui,
@@ -670,9 +670,13 @@ impl App {
             TuiEvent::Key(key) => self
                 .transcript_view
                 .handle_key(*key, &self.transcript_cells),
-            TuiEvent::Mouse(mouse) if modal_transcript_mouse => self
-                .transcript_view
-                .handle_selection_mouse(*mouse, &self.transcript_cells),
+            TuiEvent::Mouse(mouse) if modal_transcript_mouse => {
+                self.transcript_view.handle_selection_mouse(
+                    *mouse,
+                    &self.transcript_cells,
+                    self.chat_widget.current_patch_approval(),
+                )
+            }
             TuiEvent::Mouse(mouse) => self
                 .transcript_view
                 .handle_mouse(*mouse, &self.transcript_cells),

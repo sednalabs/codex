@@ -141,8 +141,9 @@ where
 
 impl AgentIdentityAuthRecord {
     pub(crate) fn from_agent_identity_jwt(jwt: &str) -> std::io::Result<Self> {
-        let claims =
-            decode_agent_identity_jwt(jwt, /*jwks*/ None).map_err(std::io::Error::other)?;
+        let claims = decode_agent_identity_jwt(jwt, /*jwks*/ None).map_err(|error| {
+            storage_error::with_context("failed to decode agent identity JWT", error)
+        })?;
 
         Ok(claims.into())
     }
@@ -247,7 +248,9 @@ impl FileAuthStorage {
         let mut file = File::open(auth_file)?;
         let mut contents = String::new();
         file.read_to_string(&mut contents)?;
-        let auth_dot_json: AuthDotJson = serde_json::from_str(&contents)?;
+        let auth_dot_json: AuthDotJson = serde_json::from_str(&contents).map_err(|err| {
+            storage_error::with_context("failed to deserialize CLI auth from file", err)
+        })?;
 
         Ok(auth_dot_json)
     }
@@ -554,6 +557,37 @@ impl AuthStorageBackend for AutoAuthStorage {
             Some(auth) => Ok(Some(auth)),
             None => self.file_storage.load(),
         }
+    }
+
+    fn compare_and_save(&self, expected: &AuthDotJson, auth: &AuthDotJson) -> std::io::Result<()> {
+        let keyring_auth = self.keyring_storage.load();
+        let current = match keyring_auth {
+            Ok(Some(current)) => Some(current),
+            Ok(None) => self.file_storage.load()?,
+            Err(ref error) => {
+                // Preserve refreshed fallback tokens without writing to a keyring
+                // whose current generation we could not read, even if it recovers.
+                let mut telemetry = storage_telemetry::telemetry(
+                    AuthCredentialsStoreMode::Auto,
+                    self.keyring_backend_kind,
+                    Operation::Save,
+                );
+                telemetry.record_load_attempt(
+                    storage_telemetry::keyring_store(self.keyring_backend_kind),
+                    &keyring_auth,
+                );
+                telemetry.record_secure_error(error);
+                let result = self.file_storage.compare_and_save(expected, auth);
+                telemetry.record_save_attempt(Store::File, &result);
+                return result;
+            }
+        };
+        if current.as_ref() != Some(expected) {
+            return Err(std::io::Error::other(
+                "Credentials changed before refresh commit.",
+            ));
+        }
+        self.save(auth)
     }
 
     fn load(&self) -> std::io::Result<Option<AuthDotJson>> {

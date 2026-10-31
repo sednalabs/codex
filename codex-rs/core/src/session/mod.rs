@@ -255,7 +255,7 @@ mod extension_interruption;
 pub(crate) mod extension_metrics;
 mod guardian_checkpoint;
 mod handlers;
-mod inject;
+pub(crate) mod inject;
 mod reasoning_effort;
 mod submission;
 pub(crate) use reasoning_effort::RequestEffortUsage;
@@ -324,6 +324,7 @@ use crate::shell;
 use crate::state::AcceptedUserInputResponse;
 use crate::state::AutoCompactWindowIds;
 use crate::state::AutoCompactWindowSnapshot;
+use crate::state::PendingApproval;
 use crate::state::PendingRequestPermissions;
 use crate::state::ReasoningEffortPin;
 use crate::state::SessionServices;
@@ -419,8 +420,19 @@ use codex_utils_stream_parser::ProposedPlanSegment;
 /// Whether reported usage updates the installed context baseline or only spending.
 #[derive(Clone, Copy)]
 pub(crate) enum TokenUsageContext {
-    Sampling { includes_reasoning: bool },
+    Sampling {
+        includes_reasoning: bool,
+        /// Input history length before the response, including requests with no output items.
+        input_item_count: usize,
+    },
     SpendingOnly,
+}
+
+/// Which active turn can service a network approval.
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub(crate) enum NetworkApprovalTurn {
+    Originating,
+    AnyActive,
 }
 
 /// Queue and lifecycle endpoints for a running [`Session`].
@@ -721,15 +733,22 @@ impl Session {
             instructions
         };
         let exec_policy = if isolation == codex_extension_api::SessionIsolation::Isolated {
-            let managed_policy = config
+            let source_requirements = config
                 .config_layer_stack
                 .requirements()
                 .exec_policy
                 .as_deref()
+                .cloned()
+                .map(Arc::new);
+            let managed_policy = source_requirements
+                .as_deref()
                 .map_or_else(codex_execpolicy::Policy::empty, |policy| {
                     policy.as_ref().clone()
                 });
-            Arc::new(ExecPolicyManager::new(Arc::new(managed_policy)))
+            Arc::new(ExecPolicyManager::from_snapshot(
+                Arc::new(managed_policy),
+                source_requirements,
+            ))
         } else if let Some(exec_policy) = &inherited_exec_policy {
             Arc::clone(exec_policy)
         } else {
@@ -1599,11 +1618,9 @@ impl Session {
         state.auto_compact_window_snapshot()
     }
 
-    pub(crate) async fn estimated_tokens_after_last_model_generated_item(&self) -> i64 {
+    pub(crate) async fn estimated_tokens_since_last_usage(&self) -> i64 {
         let state = self.state.lock().await;
-        state
-            .history
-            .estimated_tokens_after_last_model_generated_item()
+        state.history.estimated_tokens_since_last_usage()
     }
 
     pub(crate) async fn total_token_usage(&self) -> Option<TokenUsage> {
@@ -3199,6 +3216,22 @@ impl Session {
         timing
     }
 
+    /// Keep tool results paused and attribute a queued network prompt to its triggering call.
+    pub(crate) fn hold_queued_network_approval(
+        &self,
+        turn: &TurnContext,
+        call_id: Option<&str>,
+    ) -> (
+        crate::elicitation::ElicitationRegistration,
+        Option<codex_direct_tool_timing::ToolBlockingTimingGuard>,
+    ) {
+        let owner = self.user_wait_timing_owner(turn, call_id);
+        (
+            self.services.elicitations.register(),
+            self.start_user_wait_timing(turn, owner.as_deref()),
+        )
+    }
+
     /// Emit an exec approval request event and await the user's decision.
     ///
     /// The request is keyed by `call_id` + `approval_id` so matching responses
@@ -3226,12 +3259,13 @@ impl Session {
         command: Vec<String>,
         cwd: PathUri,
         reason: Option<String>,
-        network_approval_context: Option<NetworkApprovalContext>,
+        network_approval: Option<(NetworkApprovalContext, NetworkApprovalTurn)>,
         proposed_execpolicy_amendment: Option<ExecPolicyAmendment>,
         additional_permissions: Option<AdditionalPermissionProfile>,
         available_decisions: Option<Vec<ReviewDecision>>,
         plugin_attribution_override: Option<PluginCommandAttribution>,
     ) -> ReviewDecision {
+        let (network_approval_context, turn_binding) = network_approval.unzip();
         let user_wait_owner = self.user_wait_timing_owner(turn_context, timing_call_id);
         let _elicitation = self.services.elicitations.register();
         //  command-level approvals use `call_id`.
@@ -3239,19 +3273,40 @@ impl Session {
         let effective_approval_id = approval_id.clone().unwrap_or_else(|| call_id.clone());
         // Add the tx_approve callback to the map before sending the request.
         let (tx_approve, rx_approve) = oneshot::channel();
-        let prev_entry = {
+        let (prev_entry, _network_prompt) = {
             let mut active = self.active_turn.lock().await;
+            // The proxy reviews with the active turn's settings. A sandbox retry
+            // keeps its originating step's settings even after a background cell yields.
+            if let Some(binding) = turn_binding
+                && active
+                    .as_ref()
+                    .and_then(|turn| turn.task.as_ref())
+                    .is_none_or(|task| {
+                        binding == NetworkApprovalTurn::Originating
+                            && task.turn_context.sub_id != turn_context.sub_id
+                    })
+            {
+                return ReviewDecision::Abort;
+            }
             match active.as_mut() {
                 Some(at) => {
                     let mut ts = at.turn_state.lock().await;
-                    ts.insert_pending_approval(
+                    let prev = ts.insert_pending_approval(
                         effective_approval_id.clone(),
                         tx_approve,
                         kind,
                         turn_context.sub_id.clone(),
-                    )
+                    );
+                    let prompt = network_approval_context.as_ref().map(|_| {
+                        ts.track_network_prompt(
+                            &self.tx_event,
+                            &turn_context.sub_id,
+                            &effective_approval_id,
+                        )
+                    });
+                    (prev, prompt)
                 }
-                None => None,
+                None => (None, None),
             }
         };
         if prev_entry.is_some() {
@@ -3759,25 +3814,32 @@ impl Session {
         clippy::await_holding_invalid_type,
         reason = "active turn checks and turn state updates must remain atomic"
     )]
+    async fn take_pending_approval(
+        &self,
+        approval_id: &str,
+        expected_turn_id: Option<&str>,
+    ) -> Option<(PendingApproval, Option<String>)> {
+        let active = self.active_turn.lock().await;
+        let turn = active.as_ref()?;
+        // A live Cancel interrupts the turn servicing the prompt, which can differ from its origin.
+        let turn_id = turn.task.as_ref().map(|task| &task.turn_context.sub_id);
+        let pending = turn
+            .turn_state
+            .lock()
+            .await
+            .remove_pending_approval(approval_id, expected_turn_id)?;
+        (!pending.sender.is_closed()).then(|| (pending, turn_id.cloned()))
+    }
+
     pub async fn notify_approval(&self, approval_id: &str, decision: ReviewDecision) {
-        let entry = {
-            let mut active = self.active_turn.lock().await;
-            match active.as_mut() {
-                Some(at) => {
-                    let mut ts = at.turn_state.lock().await;
-                    ts.remove_pending_approval(approval_id)
-                }
-                None => None,
-            }
-        };
-        match entry {
-            Some(pending) => {
-                let decision = pending.validate(decision);
-                pending.sender.send(decision).ok();
-            }
-            None => {
-                warn!("No pending approval found for call_id: {approval_id}");
-            }
+        if let Some((pending, _)) = self
+            .take_pending_approval(approval_id, /*expected_turn_id*/ None)
+            .await
+        {
+            let decision = pending.validate(decision);
+            let _ = pending.sender.send(decision);
+        } else {
+            warn!("No pending approval found for call_id: {approval_id}");
         }
     }
 
@@ -4283,7 +4345,7 @@ impl Session {
             }
             let extension_data =
                 codex_extension_api::ExtensionData::new(turn_context.sub_id.clone());
-            extension_data.insert_arc(Arc::clone(&settings.model_info));
+            extension_data.insert_arc(Arc::clone(&settings.model_info.model));
             // Standalone and hosted search must use the same turn-scoped permission mode.
             extension_data.insert(turn_context.config.web_search_mode.value());
             if let Some(messages) = settings
@@ -5661,7 +5723,10 @@ impl Session {
                 turn_context,
                 &turn_context.initial_settings,
                 token_usage,
-                TokenUsageContext::Sampling { includes_reasoning },
+                TokenUsageContext::Sampling {
+                    includes_reasoning,
+                    input_item_count: 0,
+                },
             )
             .await;
         self.send_token_count_event(turn_context).await;
@@ -5723,11 +5788,15 @@ impl Session {
             let token_info = {
                 let mut state = self.state.lock().await;
                 match context {
-                    TokenUsageContext::Sampling { includes_reasoning } => {
+                    TokenUsageContext::Sampling {
+                        includes_reasoning,
+                        input_item_count,
+                    } => {
                         state.update_token_info_from_usage(
                             token_usage,
                             turn_context.model_context_window(),
                             includes_reasoning,
+                            input_item_count,
                         );
                         if matches!(
                             turn_context.config.model_auto_compact_token_limit_scope,
@@ -5819,7 +5888,9 @@ impl Session {
 
             // The local estimate already includes every retained reasoning item.
             info.last_usage_includes_reasoning = Some(true);
-            state.set_token_info(Some(info));
+            state
+                .history
+                .set_token_info_with_boundary(Some(info), history.raw_items().len());
         }
         self.set_auto_compact_window_estimated_prefill_for_scope(
             turn_context,

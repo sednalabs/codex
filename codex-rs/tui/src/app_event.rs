@@ -279,7 +279,8 @@ pub(crate) enum RecapTrigger {
 
 #[derive(Debug)]
 pub(crate) struct AgentsOverviewThreadRefresh {
-    pub(crate) threads: std::collections::HashMap<ThreadId, Option<Thread>>,
+    pub(crate) cleared_unread: Vec<ThreadId>,
+    pub(crate) threads: std::collections::HashMap<ThreadId, Option<(Thread, bool)>>,
     pub(crate) last_messages: std::collections::HashMap<ThreadId, String>,
     pub(crate) recent_seed_complete: bool,
     pub(crate) discovery: Option<crate::app::agents_overview_discovery::AgentsOverviewDiscovery>,
@@ -316,6 +317,11 @@ pub(crate) enum AppEvent {
     /// Open the live command center for recent and locally retained root sessions.
     OpenAgentsOverview,
     ShowMoreAgentsOverview,
+    RefreshViewedThread {
+        backend_id: crate::backend_id::BackendId,
+        thread_id: ThreadId,
+        revision: String,
+    },
     /// Create an empty thread from the command center.
     NewAgentsOverviewSession {
         cwd: Option<AbsolutePathBuf>,
@@ -595,6 +601,7 @@ pub(crate) enum AppEvent {
 
     /// Result of the fresh startup thread that is attached after the input UI is live.
     StartupThreadStarted {
+        backend_id: crate::backend_id::BackendId,
         result: color_eyre::Result<AppServerStartedThread>,
     },
 
@@ -648,6 +655,9 @@ pub(crate) enum AppEvent {
 
     /// Resume a thread by UUID or thread name inside the running TUI session.
     ResumeSessionByIdOrName(String),
+
+    /// Attach a conversation through the registered backend that owns it.
+    ResumeBackendSession(crate::resume_picker::SessionTarget),
 
     /// Archive the current active main thread and return to the command center.
     ArchiveCurrentThread,

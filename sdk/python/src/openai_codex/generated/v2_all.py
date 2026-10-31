@@ -1101,8 +1101,16 @@ class InputAudioContentItem(BaseModel):
     model_config = ConfigDict(
         populate_by_name=True,
     )
-    audio_url: str
     type: Annotated[Literal["input_audio"], Field(title="InputAudioContentItemType")]
+    audio_url: str
+
+
+class FileIdContentItem1(BaseModel):
+    model_config = ConfigDict(
+        populate_by_name=True,
+    )
+    type: Annotated[Literal["input_audio"], Field(title="InputAudioContentItemType")]
+    file_id: str
 
 
 class OutputTextContentItem(BaseModel):
@@ -6340,6 +6348,20 @@ class ThreadSectionAppearance(BaseModel):
     icon: str | None = None
 
 
+class ThreadSectionChangedNotification(BaseModel):
+    model_config = ConfigDict(
+        populate_by_name=True,
+    )
+    section_id: Annotated[
+        str | None,
+        Field(
+            alias="sectionId",
+            description="Destination section, or `null` when the thread was removed from its section.",
+        ),
+    ]
+    thread_id: Annotated[str, Field(alias="threadId")]
+
+
 class ThreadSectionCreateParams(BaseModel):
     model_config = ConfigDict(
         populate_by_name=True,
@@ -6780,6 +6802,14 @@ class AudioUserInput(BaseModel):
     url: str
 
 
+class FileIdUserInput1(BaseModel):
+    model_config = ConfigDict(
+        populate_by_name=True,
+    )
+    type: Annotated[Literal["audio"], Field(title="AudioUserInputType")]
+    file_id: Annotated[str, Field(alias="fileId")]
+
+
 class LocalAudioUserInput(BaseModel):
     model_config = ConfigDict(
         populate_by_name=True,
@@ -6813,6 +6843,7 @@ class UserInput(
         | FileIdUserInput
         | LocalImageUserInput
         | AudioUserInput
+        | FileIdUserInput1
         | LocalAudioUserInput
         | SkillUserInput
         | MentionUserInput
@@ -6824,6 +6855,7 @@ class UserInput(
         | FileIdUserInput
         | LocalImageUserInput
         | AudioUserInput
+        | FileIdUserInput1
         | LocalAudioUserInput
         | SkillUserInput
         | MentionUserInput
@@ -8393,6 +8425,7 @@ class ContentItem(
         | InputImageContentItem
         | FileIdContentItem
         | InputAudioContentItem
+        | FileIdContentItem1
         | OutputTextContentItem
     ]
 ):
@@ -8401,6 +8434,7 @@ class ContentItem(
         | InputImageContentItem
         | FileIdContentItem
         | InputAudioContentItem
+        | FileIdContentItem1
         | OutputTextContentItem
     )
 
@@ -9743,6 +9777,23 @@ class ThreadNameUpdatedServerNotification(BaseModel):
         Literal["thread/name/updated"], Field(title="Thread/name/updatedNotificationMethod")
     ]
     params: ThreadNameUpdatedNotification
+
+
+class ThreadSectionChangedServerNotification(BaseModel):
+    model_config = ConfigDict(
+        populate_by_name=True,
+    )
+    emitted_at_ms: Annotated[
+        int | None,
+        Field(
+            alias="emittedAtMs",
+            description="Unix timestamp (in milliseconds) when app-server emitted this notification.",
+        ),
+    ] = None
+    method: Annotated[
+        Literal["thread/section/changed"], Field(title="Thread/section/changedNotificationMethod")
+    ]
+    params: ThreadSectionChangedNotification
 
 
 class ThreadAttachmentUpdatedServerNotification(BaseModel):
@@ -13689,6 +13740,7 @@ class ServerNotification(
         | ThreadRevertedServerNotification
         | SkillsChangedServerNotification
         | ThreadNameUpdatedServerNotification
+        | ThreadSectionChangedServerNotification
         | ThreadAttachmentUpdatedServerNotification
         | ThreadGoalUpdatedServerNotification
         | ThreadPredictionUpdatedServerNotification
@@ -13777,6 +13829,7 @@ class ServerNotification(
         | ThreadRevertedServerNotification
         | SkillsChangedServerNotification
         | ThreadNameUpdatedServerNotification
+        | ThreadSectionChangedServerNotification
         | ThreadAttachmentUpdatedServerNotification
         | ThreadGoalUpdatedServerNotification
         | ThreadPredictionUpdatedServerNotification

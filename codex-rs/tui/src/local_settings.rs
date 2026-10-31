@@ -252,6 +252,7 @@ impl LocalSettings {
                         | TerminalName::Iterm2
                         | TerminalName::WarpTerminal
                         | TerminalName::WezTerm
+                        | TerminalName::Rex
                         | TerminalName::Alacritty
                         | TerminalName::Konsole
                         | TerminalName::GnomeTerminal

@@ -109,6 +109,10 @@ impl Session {
                 &model_info.slug,
                 instructions,
                 client_owned_base_instructions,
+                turn_context
+                    .config
+                    .features
+                    .enabled(Feature::SuppressModelChangeAnnouncements),
             )
         } else {
             let model_instructions = render_current_instructions();
