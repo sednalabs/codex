@@ -152,12 +152,22 @@ async fn goal_config_changes_update_wake_admission() -> anyhow::Result<()> {
         .get::<codex_core::GoalStateAdmissionLock>()
         .expect("enabled goal must publish admission");
     for contributor in registry.config_contributors() {
-        contributor.on_config_changed(&session_store, &thread_store, &true, &false);
+        contributor.on_config_changed(
+            &session_store,
+            &thread_store,
+            /*previous_config*/ &true,
+            /*new_config*/ &false,
+        );
     }
     assert!(thread_store.get::<codex_core::GoalStateAdmissionLock>().is_none());
     assert!(!admission.1.load(std::sync::atomic::Ordering::Acquire));
     for contributor in registry.config_contributors() {
-        contributor.on_config_changed(&session_store, &thread_store, &false, &true);
+        contributor.on_config_changed(
+            &session_store,
+            &thread_store,
+            /*previous_config*/ &false,
+            /*new_config*/ &true,
+        );
     }
     assert!(thread_store.get::<codex_core::GoalStateAdmissionLock>().is_some());
     assert!(admission.1.load(std::sync::atomic::Ordering::Acquire));

@@ -145,8 +145,9 @@ async fn run(
                 state.accepted(token);
                 retry_seconds = 30;
             }
-            retry_at = tokio::time::Instant::now() + std::time::Duration::from_secs(retry_seconds);
-            retry_seconds = retry_seconds.saturating_mul(2).min(900);
+            // A deferred admission does not start model work, so keep the
+            // recovery delay bounded when a goal or mode becomes eligible.
+            retry_at = tokio::time::Instant::now() + std::time::Duration::from_secs(30);
         } else if let Some(token) = state.inflight.as_deref()
             && tokio::time::Instant::now() >= retry_at
         {
@@ -157,7 +158,7 @@ async fn run(
             // never enqueue another copy; retry only via idle admission.
             let _ = deliver(&session, &source, token, /*idle_only*/ true).await;
             retry_at = tokio::time::Instant::now() + std::time::Duration::from_secs(retry_seconds);
-            retry_seconds = retry_seconds.saturating_mul(2).min(900);
+            retry_seconds = retry_seconds.saturating_mul(2).min(300);
         }
         tokio::select! {
             received = socket.recv_from(&mut data) => {
@@ -165,7 +166,7 @@ async fn run(
                 if &data[..length] == b"1" {
                     let was_pending = state.pending;
                     state.receive(&data[..length]);
-                    if !was_pending && state.inflight.is_none() {
+                    if !was_pending {
                         retry_seconds = 30;
                         retry_at = tokio::time::Instant::now();
                     }
