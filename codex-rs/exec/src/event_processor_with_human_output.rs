@@ -2,17 +2,17 @@ use std::io::IsTerminal;
 use std::path::PathBuf;
 
 use codex_app_server_protocol::CommandExecutionStatus;
-use codex_app_server_protocol::ComputerUseCallStatus;
 use codex_app_server_protocol::McpToolCallStatus;
 use codex_app_server_protocol::PatchApplyStatus;
 use codex_app_server_protocol::ServerNotification;
-use codex_app_server_protocol::ThreadItem;
+use codex_app_server_protocol::ThreadItemPayload;
 use codex_app_server_protocol::ThreadTokenUsage;
 use codex_app_server_protocol::TurnStatus;
 use codex_core::config::Config;
 use codex_model_provider_info::WireApi;
 use codex_protocol::num_format::format_with_separators;
 use codex_protocol::protocol::SessionConfiguredEvent;
+use codex_utils_path_uri::PathUri;
 use codex_utils_sandbox_summary::summarize_permission_profile;
 use owo_colors::OwoColorize;
 use owo_colors::Style;
@@ -37,6 +37,7 @@ pub(crate) struct EventProcessorWithHumanOutput {
     final_message_rendered: bool,
     emit_final_message_on_shutdown: bool,
     last_total_token_usage: Option<ThreadTokenUsage>,
+    last_turn_diff: String,
 }
 
 impl EventProcessorWithHumanOutput {
@@ -62,19 +63,20 @@ impl EventProcessorWithHumanOutput {
             final_message_rendered: false,
             emit_final_message_on_shutdown: false,
             last_total_token_usage: None,
+            last_turn_diff: String::new(),
         }
     }
 
-    fn render_item_started(&self, item: &ThreadItem) {
+    fn render_item_started(&self, item: &ThreadItemPayload) {
         match item {
-            ThreadItem::CommandExecution { command, cwd, .. } => {
+            ThreadItemPayload::CommandExecution { command, cwd, .. } => {
                 eprintln!(
                     "{}\n{} in {cwd}",
                     "exec".style(self.italic).style(self.magenta),
                     command.style(self.bold),
                 );
             }
-            ThreadItem::McpToolCall { server, tool, .. } => {
+            ThreadItemPayload::McpToolCall { server, tool, .. } => {
                 eprintln!(
                     "{} {} {}",
                     "mcp:".style(self.bold),
@@ -82,30 +84,22 @@ impl EventProcessorWithHumanOutput {
                     "started".style(self.dimmed)
                 );
             }
-            ThreadItem::ComputerUseCall { adapter, tool, .. } => {
-                eprintln!(
-                    "{} {}",
-                    computer_use_human_label(adapter, ComputerUseCallStatus::InProgress)
-                        .style(self.bold),
-                    tool.style(self.dimmed)
-                );
-            }
-            ThreadItem::WebSearch(item) => {
+            ThreadItemPayload::WebSearch(item) => {
                 eprintln!("{} {}", "web search:".style(self.bold), item.query);
             }
-            ThreadItem::FileChange { .. } => {
+            ThreadItemPayload::FileChange { .. } => {
                 eprintln!("{}", "apply patch".style(self.bold));
             }
-            ThreadItem::CollabAgentToolCall { tool, .. } => {
+            ThreadItemPayload::CollabAgentToolCall { tool, .. } => {
                 eprintln!("{} {:?}", "collab:".style(self.bold), tool);
             }
             _ => {}
         }
     }
 
-    fn render_item_completed(&mut self, item: ThreadItem) {
+    fn render_item_completed(&mut self, item: ThreadItemPayload) {
         match item {
-            ThreadItem::AgentMessage { text, .. } => {
+            ThreadItemPayload::AgentMessage { text, .. } => {
                 eprintln!(
                     "{}\n{}",
                     "codex".style(self.italic).style(self.magenta),
@@ -114,7 +108,7 @@ impl EventProcessorWithHumanOutput {
                 self.final_message = Some(text);
                 self.final_message_rendered = true;
             }
-            ThreadItem::Reasoning {
+            ThreadItemPayload::Reasoning {
                 summary, content, ..
             } => {
                 if self.show_agent_reasoning
@@ -125,7 +119,7 @@ impl EventProcessorWithHumanOutput {
                     eprintln!("{}", text.style(self.dimmed));
                 }
             }
-            ThreadItem::CommandExecution {
+            ThreadItemPayload::CommandExecution {
                 command: _,
                 aggregated_output,
                 exit_code,
@@ -169,7 +163,7 @@ impl EventProcessorWithHumanOutput {
                     eprintln!("{output}");
                 }
             }
-            ThreadItem::FileChange {
+            ThreadItemPayload::FileChange {
                 changes, status, ..
             } => {
                 let status_text = match status {
@@ -183,7 +177,7 @@ impl EventProcessorWithHumanOutput {
                     eprintln!("{}", change.path.style(self.dimmed));
                 }
             }
-            ThreadItem::McpToolCall {
+            ThreadItemPayload::McpToolCall {
                 server,
                 tool,
                 status,
@@ -205,49 +199,14 @@ impl EventProcessorWithHumanOutput {
                     eprintln!("{}", error.message.style(self.red));
                 }
             }
-            ThreadItem::ComputerUseCall {
-                adapter,
-                tool,
-                status,
-                error,
-                ..
-            } => {
-                let status_style = match status {
-                    ComputerUseCallStatus::Completed => self.green,
-                    ComputerUseCallStatus::Failed => self.red,
-                    ComputerUseCallStatus::InProgress => self.dimmed,
-                };
-                eprintln!(
-                    "{} {}",
-                    computer_use_human_label(&adapter, status).style(status_style),
-                    tool.style(self.dimmed)
-                );
-                if let Some(error) = error {
-                    eprintln!("{}", error.style(self.red));
-                }
-            }
-            ThreadItem::WebSearch(item) => {
+            ThreadItemPayload::WebSearch(item) => {
                 eprintln!("{} {}", "web search:".style(self.bold), item.query);
             }
-            ThreadItem::ContextCompaction { .. } => {
+            ThreadItemPayload::ContextCompaction { .. } => {
                 eprintln!("{}", "context compacted".style(self.dimmed));
             }
             _ => {}
         }
-    }
-}
-
-fn computer_use_human_label(adapter: &str, status: ComputerUseCallStatus) -> String {
-    let surface = match adapter {
-        "android" | "android_emulator" | "android-emulator" => "Android emulator".to_string(),
-        "browser" => "browser".to_string(),
-        "desktop" | "computer" => "computer".to_string(),
-        other => other.replace(['_', '-'], " "),
-    };
-    match status {
-        ComputerUseCallStatus::InProgress => format!("Using {surface}"),
-        ComputerUseCallStatus::Completed => format!("Used {surface}"),
-        ComputerUseCallStatus::Failed => format!("Failed using {surface}"),
     }
 }
 
@@ -283,6 +242,14 @@ impl EventProcessor for EventProcessorWithHumanOutput {
                 CodexStatus::Running
             }
             ServerNotification::Warning(notification) => self.process_warning(notification.message),
+            ServerNotification::AuthRecoveryStarted(notification) => {
+                eprintln!("{}", notification.message);
+                CodexStatus::Running
+            }
+            ServerNotification::AuthRecoveryCompleted(notification) => {
+                eprintln!("{}", notification.message.style(self.green));
+                CodexStatus::Running
+            }
             ServerNotification::Error(notification) => {
                 eprintln!(
                     "{} {}",
@@ -320,11 +287,11 @@ impl EventProcessor for EventProcessorWithHumanOutput {
                 CodexStatus::Running
             }
             ServerNotification::ItemStarted(notification) => {
-                self.render_item_started(&notification.item);
+                self.render_item_started(&notification.item.payload);
                 CodexStatus::Running
             }
             ServerNotification::ItemCompleted(notification) => {
-                self.render_item_completed(notification.item);
+                self.render_item_completed(notification.item.payload);
                 CodexStatus::Running
             }
             ServerNotification::ModelRerouted(notification) => {
@@ -376,9 +343,12 @@ impl EventProcessor for EventProcessorWithHumanOutput {
                 TurnStatus::InProgress => CodexStatus::Running,
             },
             ServerNotification::TurnDiffUpdated(notification) => {
-                if !notification.diff.trim().is_empty() {
+                if notification.diff != self.last_turn_diff && !notification.diff.trim().is_empty()
+                {
                     eprintln!("{}", notification.diff);
                 }
+                // Remember empty updates too, so a restored diff is rendered again.
+                self.last_turn_diff = notification.diff;
                 CodexStatus::Running
             }
             ServerNotification::TurnPlanUpdated(notification) => {
@@ -404,7 +374,10 @@ impl EventProcessor for EventProcessorWithHumanOutput {
                 }
                 CodexStatus::Running
             }
-            ServerNotification::TurnStarted(_) => CodexStatus::Running,
+            ServerNotification::TurnStarted(_) => {
+                self.last_turn_diff.clear();
+                CodexStatus::Running
+            }
             _ => CodexStatus::Running,
         }
     }
@@ -480,8 +453,8 @@ fn config_summary_entries(
             "sandbox",
             summarize_permission_profile(
                 &permission_profile,
-                &config.cwd,
-                config.effective_workspace_roots().as_slice(),
+                &PathUri::from_abs_path(&config.cwd),
+                &config.effective_workspace_roots(),
             ),
         ),
     ];
@@ -526,17 +499,19 @@ fn reasoning_text(
     }
 }
 
-fn final_message_from_turn_items(items: &[ThreadItem]) -> Option<String> {
+fn final_message_from_turn_items(
+    items: &[impl std::borrow::Borrow<ThreadItemPayload>],
+) -> Option<String> {
     items
         .iter()
         .rev()
-        .find_map(|item| match item {
-            ThreadItem::AgentMessage { text, .. } => Some(text.clone()),
+        .find_map(|item| match item.borrow() {
+            ThreadItemPayload::AgentMessage { text, .. } => Some(text.clone()),
             _ => None,
         })
         .or_else(|| {
-            items.iter().rev().find_map(|item| match item {
-                ThreadItem::Plan { text, .. } => Some(text.clone()),
+            items.iter().rev().find_map(|item| match item.borrow() {
+                ThreadItemPayload::Plan { text, .. } => Some(text.clone()),
                 _ => None,
             })
         })

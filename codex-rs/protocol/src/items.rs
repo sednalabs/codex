@@ -4,8 +4,13 @@ use crate::ThreadId;
 use crate::dynamic_tools::DynamicToolCallOutputContentItem;
 use crate::mcp::CallToolResult;
 use crate::memory_citation::MemoryCitation;
+use crate::models::AudioReference;
 use crate::models::ContentItem;
+use crate::models::ContentItemMetadata;
+use crate::models::FunctionCallOutputBody;
 use crate::models::ImageDetail;
+use crate::models::ImageReference;
+use crate::models::InternalChatMessageMetadataPassthrough;
 use crate::models::MessagePhase;
 use crate::models::ResponseItem;
 use crate::models::WebSearchAction;
@@ -13,7 +18,6 @@ use crate::openai_models::ReasoningEffort as ReasoningEffortConfig;
 use crate::parse_command::ParsedCommand;
 use crate::protocol::AgentStatus;
 use crate::protocol::CollabAgentRef;
-use crate::protocol::CollabWaitingCompletionReason;
 use crate::protocol::ExecCommandSource;
 use crate::protocol::ExecCommandStatus;
 use crate::protocol::FileChange;
@@ -21,7 +25,7 @@ use crate::protocol::PatchApplyStatus;
 use crate::protocol::ReviewOutputEvent;
 use crate::protocol::ReviewTarget;
 use crate::protocol::SubAgentActivityKind;
-use crate::protocol::TerminalWaitInfo;
+use crate::protocol::UserMessageAudioKind;
 use crate::user_input::ByteRange;
 use crate::user_input::TextElement;
 use crate::user_input::UserInput;
@@ -45,6 +49,7 @@ use ts_rs::TS;
 #[ts(tag = "type")]
 pub enum TurnItem {
     UserMessage(UserMessageItem),
+    FunctionCallOutput(FunctionCallOutputItem),
     HookPrompt(HookPromptItem),
     AgentMessage(AgentMessageItem),
     Plan(PlanItem),
@@ -85,6 +90,16 @@ pub struct UserMessageItem {
     pub content: Vec<UserInput>,
 }
 
+#[derive(Debug, Clone, Deserialize, Serialize, TS, JsonSchema)]
+pub struct FunctionCallOutputItem {
+    pub id: String,
+    pub name: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub namespace: Option<String>,
+    pub output: FunctionCallOutputBody,
+}
+
 #[derive(Debug, Clone, Deserialize, Serialize, TS, JsonSchema, PartialEq, Eq)]
 pub struct HookPromptItem {
     pub id: String,
@@ -97,13 +112,11 @@ pub struct HookPromptItem {
 pub struct HookPromptFragment {
     pub text: String,
     pub hook_run_id: String,
-}
-
-#[derive(Debug, Clone, Deserialize, Serialize, TS, JsonSchema, PartialEq, Eq)]
-pub struct SubagentNotificationItem {
-    #[serde(alias = "agent_path")]
-    pub agent_id: String,
-    pub status: AgentStatus,
+    /// Emission-time attribution; persisted on the ResponseItem, not the UI hook fragment.
+    #[serde(skip)]
+    #[ts(skip)]
+    #[schemars(skip)]
+    pub metadata: ContentItemMetadata,
 }
 
 #[derive(Debug, Deserialize, Serialize)]
@@ -115,14 +128,27 @@ struct HookPromptXml {
     text: String,
 }
 
-const SUBAGENT_NOTIFICATION_OPEN_TAG: &str = "<subagent_notification>";
-const SUBAGENT_NOTIFICATION_CLOSE_TAG: &str = "</subagent_notification>";
-
 #[derive(Debug, Clone, Deserialize, Serialize, TS, JsonSchema)]
 #[serde(tag = "type")]
 #[ts(tag = "type")]
 pub enum AgentMessageContent {
     Text { text: String },
+}
+
+#[derive(Debug, Clone, Copy, Deserialize, Serialize, TS, JsonSchema, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+#[ts(rename_all = "camelCase")]
+#[ts(export_to = "v2/")]
+pub enum AgentMessageDelivery {
+    Async,
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize, TS, JsonSchema, PartialEq, Eq)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+#[ts(export_to = "v2/")]
+pub struct AsyncUserInputQuestion {
+    pub title: String,
+    pub options: Option<Vec<String>>,
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize, TS, JsonSchema)]
@@ -144,6 +170,12 @@ pub struct AgentMessageItem {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[ts(optional)]
     pub memory_citation: Option<MemoryCitation>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub delivery: Option<AgentMessageDelivery>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub questions: Option<Vec<AsyncUserInputQuestion>>,
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize, TS, JsonSchema)]
@@ -210,8 +242,24 @@ pub fn is_safe_plugin_relative_path(path: &str) -> bool {
         })
 }
 
+/// Immutable model labels carried within command lifecycle events for analytics.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ModelInvocationContext {
+    pub model_slug: String,
+    pub reasoning_effort: Option<String>,
+}
+
 #[derive(Debug, Clone, Deserialize, Serialize, TS, JsonSchema, PartialEq)]
 pub struct CommandExecutionItem {
+    /// Observed process backend for live analytics; None means unknown or not launched.
+    #[serde(skip)]
+    #[schemars(skip)]
+    #[ts(skip)]
+    pub sandbox_type: Option<crate::sandbox::SandboxType>,
+    #[serde(skip)]
+    #[schemars(skip)]
+    #[ts(skip)]
+    pub model_context: Option<ModelInvocationContext>,
     pub id: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[ts(optional)]
@@ -229,16 +277,7 @@ pub struct CommandExecutionItem {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[ts(optional)]
     pub interaction_input: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    #[ts(optional)]
-    pub terminal_wait: Option<TerminalWaitInfo>,
     pub status: CommandExecutionStatus,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    #[ts(optional)]
-    pub stdout: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    #[ts(optional)]
-    pub stderr: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[ts(optional)]
     pub aggregated_output: Option<String>,
@@ -248,9 +287,6 @@ pub struct CommandExecutionItem {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[ts(type = "string", optional)]
     pub duration: Option<Duration>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    #[ts(optional)]
-    pub formatted_output: Option<String>,
 }
 
 #[derive(Debug, Clone, Copy, Deserialize, Serialize, TS, JsonSchema, PartialEq, Eq)]
@@ -292,6 +328,10 @@ pub enum CollabAgentTool {
     ResumeAgent,
     Wait,
     CloseAgent,
+    SendMessage,
+    FollowupTask,
+    InterruptAgent,
+    ListAgents,
 }
 
 #[derive(Debug, Clone, Copy, Deserialize, Serialize, TS, JsonSchema, PartialEq, Eq)]
@@ -300,6 +340,7 @@ pub enum CollabAgentToolCallStatus {
     InProgress,
     Completed,
     Failed,
+    Interrupted,
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize, TS, JsonSchema, PartialEq)]
@@ -321,144 +362,87 @@ pub struct CollabAgentToolCallItem {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[ts(optional)]
     pub reasoning_effort: Option<ReasoningEffortConfig>,
-    /// Model requested for a spawned agent before its effective configuration is known.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    #[ts(optional)]
-    pub requested_model: Option<String>,
-    /// Reasoning effort requested for a spawned agent before its effective configuration is known.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    #[ts(optional)]
-    pub requested_reasoning_effort: Option<ReasoningEffortConfig>,
     #[serde(default)]
     pub agents_states: HashMap<ThreadId, AgentStatus>,
-    /// Safe, bounded notifications observed while waiting. Encrypted payloads are
-    /// represented by their availability marker and are never copied here.
+    /// Structured native V2 selection state, updated while the wait is asleep
+    /// and retained on the canonical history item for replay.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[ts(optional)]
-    pub wake_notifications: Option<Vec<AgentNotificationSummary>>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    #[ts(optional)]
-    pub completion_reason: Option<CollabWaitingCompletionReason>,
-    /// Structured wake cause for native wait completion. This is carried
-    /// separately from child notifications so operator/system wakes remain
-    /// visible at the history/TUI boundary even when no child message exists.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    #[ts(optional)]
-    pub wake_cause: Option<AgentWakeCause>,
+    pub mailbox_wait_report: Option<MailboxWaitReport>,
 }
 
-#[derive(Debug, Clone, Deserialize, Serialize, TS, JsonSchema, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, Default, Deserialize, Serialize, TS, JsonSchema, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
-pub enum AgentNotificationOrigin {
-    ExplicitMessage,
-    TurnResult,
+pub enum MailboxWaitReturnWhen {
+    #[default]
+    Any,
+    All,
 }
 
-#[derive(Debug, Clone, Deserialize, Serialize, TS, JsonSchema, PartialEq, Eq)]
-#[serde(rename_all = "snake_case", tag = "type")]
-pub enum AgentNotificationContent {
-    PlaintextPreview { text: String, truncated: bool },
-    SenderSummary { text: String, truncated: bool },
-    EncryptedUnavailable,
-    Unavailable,
-}
-
-/// The sender's requested delivery behavior. Queue-only progress must not be
-/// mistaken for a request to resume the recipient's model turn.
 #[derive(Debug, Clone, Copy, Deserialize, Serialize, TS, JsonSchema, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
-pub enum AgentDeliveryIntent {
-    QueueOnly,
-    ActionableWakeRequested,
-    TerminalHandoff,
-    InterruptEmergency,
+pub enum MailboxWakeCause {
+    Result,
+    Reply,
+    Request,
+    Human,
+    Tool,
+    Deadline,
+    Cancel,
+    Interrupted,
+    SubscriptionLoss,
+    RuntimeFault,
+    NoMatchingWork,
+    AlreadySatisfied,
+    Cycle,
+    NeedsAttention,
 }
 
-/// The event that actually ended a native wait. This is deliberately separate
-/// from sender intent: a queued message can be delivered during a later turn
-/// without having caused that turn.
-#[derive(Debug, Clone, Copy, Deserialize, Serialize, TS, JsonSchema, PartialEq, Eq)]
-#[serde(rename_all = "snake_case")]
-pub enum AgentWakeCause {
-    OperatorMessage,
-    ChildActionableMessage,
-    ChildTerminalTransition,
-    UnrelatedMailboxEvent,
-    TimeoutLeaseExpiry,
-    CancellationInterruption,
-    PersistentGoalContinuation,
-    RuntimeSystemEvent,
-}
-
-/// Runtime observations attached to a bounded mailbox delivery. Unknown
-/// provider/UI boundaries stay `None`; no field implies a provider wake.
 #[derive(Debug, Clone, Deserialize, Serialize, TS, JsonSchema, PartialEq, Eq)]
-#[serde(rename_all = "snake_case")]
-pub struct AgentDeliveryDisposition {
-    pub intent: AgentDeliveryIntent,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    #[ts(optional)]
-    pub enqueued_at_ms: Option<u64>,
+#[serde(rename_all = "camelCase")]
+pub struct MailboxWaitSelectionItem {
+    #[serde(default, alias = "work_ref")]
+    #[ts(optional = false)]
+    pub work_ref: Option<String>,
+    #[serde(default, alias = "message_id")]
+    #[ts(optional = false)]
+    pub message_id: Option<String>,
     #[serde(default)]
-    pub ended_active_wait: bool,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    #[ts(optional)]
-    pub wait_id: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    #[ts(optional)]
-    pub target_set_relation: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    #[ts(optional)]
-    pub parent_turn_started: Option<bool>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    #[ts(optional)]
-    pub delivered_to_model_at_ms: Option<u64>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    #[ts(optional)]
-    pub delivered_turn_id: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    #[ts(optional)]
-    pub displayed_at_ms: Option<u64>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    #[ts(optional)]
-    pub actual_wake_cause: Option<AgentWakeCause>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    #[ts(optional)]
-    pub queued_update_count: Option<usize>,
+    #[ts(optional = false)]
+    pub agent: Option<String>,
+    pub status: String,
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize, TS, JsonSchema, PartialEq, Eq)]
-pub struct AgentNotificationSummary {
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    #[ts(optional)]
-    pub communication_id: Option<ResponseItemId>,
-    /// Queue-local stable sequence for communications without a durable ID.
-    pub sequence: u64,
-    pub origin: AgentNotificationOrigin,
-    pub sender_agent_path: AgentPath,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    #[ts(optional)]
-    pub sender_thread_id: Option<ThreadId>,
-    pub content: AgentNotificationContent,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    #[ts(optional)]
-    pub disposition: Option<AgentDeliveryDisposition>,
+#[serde(rename_all = "camelCase")]
+pub struct MailboxWaitReport {
+    #[serde(alias = "requested_targets")]
+    pub requested_targets: Vec<String>,
+    #[serde(alias = "requested_replies_to")]
+    pub requested_replies_to: Vec<String>,
+    pub return_when: MailboxWaitReturnWhen,
+    pub completed: Vec<MailboxWaitSelectionItem>,
+    pub pending: Vec<MailboxWaitSelectionItem>,
+    #[serde(default)]
+    pub completion_reason: Option<MailboxWakeCause>,
+    pub condition_satisfied: bool,
+    pub quiet_count: usize,
+    #[serde(default)]
+    pub wake_sender: Option<String>,
+    #[serde(default)]
+    pub wake_ref: Option<String>,
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize, TS, JsonSchema, PartialEq, Eq)]
 pub struct SubAgentActivityItem {
+    /// Resolved model at sub-agent creation; absent from older records and other activities.
+    pub model: Option<String>,
+    /// Resolved reasoning effort at sub-agent creation, when known.
+    pub reasoning_effort: Option<ReasoningEffortConfig>,
     pub id: String,
     pub kind: SubAgentActivityKind,
     pub agent_thread_id: ThreadId,
     pub agent_path: AgentPath,
-    /// Effective model selected for the affected child, when known.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    #[ts(optional)]
-    pub model: Option<String>,
-    /// Effective reasoning effort selected for the affected child, when known.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    #[ts(optional)]
-    pub reasoning_effort: Option<ReasoningEffortConfig>,
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize, TS, JsonSchema, PartialEq)]
@@ -517,6 +501,25 @@ pub struct FileChangeItem {
     pub stderr: Option<String>,
 }
 
+/// UI resource and display preference for model invocations, captured from the tool descriptor.
+#[derive(Debug, Clone, Deserialize, Serialize, TS, JsonSchema, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+#[ts(rename_all = "camelCase")]
+#[ts(export_to = "v2/")]
+pub struct McpAppUi {
+    pub resource_uri: String,
+    pub preferred_model_display_mode: McpAppDisplayMode,
+}
+
+#[derive(Debug, Clone, Copy, Deserialize, Serialize, TS, JsonSchema, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+#[ts(rename_all = "camelCase")]
+#[ts(export_to = "v2/")]
+pub enum McpAppDisplayMode {
+    Inline,
+    Fullscreen,
+}
+
 #[derive(Debug, Clone, Deserialize, Serialize, TS, JsonSchema, PartialEq)]
 #[serde(rename_all = "camelCase")]
 #[ts(rename_all = "camelCase")]
@@ -528,9 +531,13 @@ pub struct McpToolCallItem {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[ts(optional)]
     pub connector_id: Option<String>,
+    /// Legacy compatibility field; prefer `mcp_app_ui.resource_uri` when available.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[ts(optional)]
     pub mcp_app_resource_uri: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub mcp_app_ui: Option<McpAppUi>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[ts(optional)]
     pub link_id: Option<String>,
@@ -543,6 +550,9 @@ pub struct McpToolCallItem {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[ts(optional)]
     pub plugin_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub read_only_hint: Option<bool>,
     pub status: McpToolCallStatus,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[ts(optional)]
@@ -644,7 +654,10 @@ impl UserMessageItem {
         self.content
             .iter()
             .filter_map(|c| match c {
-                UserInput::Image { image_url, .. } => Some(image_url.clone()),
+                UserInput::Image {
+                    image: ImageReference::Inline { image_url },
+                    ..
+                } => Some(image_url.clone()),
                 _ => None,
             })
             .collect()
@@ -655,7 +668,10 @@ impl UserMessageItem {
             self.content
                 .iter()
                 .filter_map(|c| match c {
-                    UserInput::Image { detail, .. } => Some(*detail),
+                    UserInput::Image {
+                        image: ImageReference::Inline { .. },
+                        detail,
+                    } => Some(*detail),
                     _ => None,
                 })
                 .collect(),
@@ -688,7 +704,52 @@ impl UserMessageItem {
         self.content
             .iter()
             .filter_map(|c| match c {
-                UserInput::Audio { audio_url } => Some(audio_url.clone()),
+                UserInput::Audio {
+                    audio: AudioReference::Inline { audio_url },
+                } => Some(audio_url.clone()),
+                _ => None,
+            })
+            .collect()
+    }
+
+    /// Returns file-backed audio references when the message includes an upload.
+    /// Inline payloads remain exclusively in the legacy `audio` field.
+    pub fn audio_references(&self) -> Option<Vec<AudioReference>> {
+        let audio = self
+            .content
+            .iter()
+            .filter_map(|content| match content {
+                UserInput::Audio {
+                    audio: audio @ AudioReference::File { .. },
+                } => Some(audio.clone()),
+                _ => None,
+            })
+            .collect::<Vec<_>>();
+        (!audio.is_empty()).then_some(audio)
+    }
+
+    /// Returns the original inline/file ordering when uploaded audio is present.
+    pub fn audio_order(&self) -> Vec<UserMessageAudioKind> {
+        if !self.content.iter().any(|content| {
+            matches!(
+                content,
+                UserInput::Audio {
+                    audio: AudioReference::File { .. }
+                }
+            )
+        }) {
+            return Vec::new();
+        }
+
+        self.content
+            .iter()
+            .filter_map(|content| match content {
+                UserInput::Audio {
+                    audio: AudioReference::Inline { .. },
+                } => Some(UserMessageAudioKind::Inline),
+                UserInput::Audio {
+                    audio: AudioReference::File { .. },
+                } => Some(UserMessageAudioKind::File),
                 _ => None,
             })
             .collect()
@@ -705,7 +766,7 @@ impl UserMessageItem {
     }
 }
 
-fn trim_trailing_default_image_details(
+pub(crate) fn trim_trailing_default_image_details(
     mut details: Vec<Option<ImageDetail>>,
 ) -> Vec<Option<ImageDetail>> {
     while matches!(details.last(), Some(None)) {
@@ -728,30 +789,39 @@ impl HookPromptFragment {
         Self {
             text: text.into(),
             hook_run_id: hook_run_id.into(),
+            metadata: ContentItemMetadata::default(),
         }
     }
 }
 
 pub fn build_hook_prompt_message(fragments: &[HookPromptFragment]) -> Option<ResponseItem> {
-    let content = fragments
-        .iter()
-        .filter(|fragment| !fragment.hook_run_id.trim().is_empty())
-        .filter_map(|fragment| {
-            serialize_hook_prompt_fragment(&fragment.text, &fragment.hook_run_id)
-                .map(|text| ContentItem::InputText { text })
-        })
-        .collect::<Vec<_>>();
+    let mut content = Vec::new();
+    let mut metadata = Vec::new();
+    for fragment in fragments {
+        if let Some(text) = serialize_hook_prompt_fragment(&fragment.text, &fragment.hook_run_id) {
+            content.push(ContentItem::InputText { text });
+            metadata.push(fragment.metadata.clone());
+        }
+    }
 
     if content.is_empty() {
         return None;
     }
 
     Some(ResponseItem::Message {
+        status: None,
+        encrypted_content: None,
         id: Some(ResponseItemId::new("msg")),
         role: "user".to_string(),
         content,
         phase: None,
-        internal_chat_message_metadata_passthrough: None,
+        internal_chat_message_metadata_passthrough: metadata
+            .iter()
+            .any(|part| part != &ContentItemMetadata::default())
+            .then_some(InternalChatMessageMetadataPassthrough {
+                content_item_metadata: Some(metadata),
+                ..Default::default()
+            }),
     })
 }
 
@@ -783,52 +853,7 @@ pub fn parse_hook_prompt_fragment(text: &str) -> Option<HookPromptFragment> {
         return None;
     }
 
-    Some(HookPromptFragment { text, hook_run_id })
-}
-
-pub fn parse_subagent_notification_response_item(
-    item: &ResponseItem,
-) -> Option<SubagentNotificationItem> {
-    let ResponseItem::Message { role, content, .. } = item else {
-        return None;
-    };
-    if role != "user" {
-        return None;
-    }
-
-    let mut parsed = None;
-    for content_item in content {
-        let text = match content_item {
-            ContentItem::InputText { text } | ContentItem::OutputText { text } => text,
-            ContentItem::InputImage { .. } | ContentItem::InputAudio { .. } => return None,
-        };
-        let item = parse_subagent_notification_fragment(text)?;
-        if parsed.replace(item).is_some() {
-            return None;
-        }
-    }
-
-    parsed
-}
-
-fn parse_subagent_notification_fragment(text: &str) -> Option<SubagentNotificationItem> {
-    let trimmed = text.trim();
-    let lower_trimmed = trimmed.to_ascii_lowercase();
-    if !lower_trimmed.starts_with(SUBAGENT_NOTIFICATION_OPEN_TAG)
-        || !lower_trimmed.ends_with(SUBAGENT_NOTIFICATION_CLOSE_TAG)
-    {
-        return None;
-    }
-
-    let payload_start = SUBAGENT_NOTIFICATION_OPEN_TAG.len();
-    let payload_end = trimmed.len() - SUBAGENT_NOTIFICATION_CLOSE_TAG.len();
-    let payload = trimmed.get(payload_start..payload_end)?.trim();
-    let parsed: SubagentNotificationItem = serde_json::from_str(payload).ok()?;
-    if parsed.agent_id.trim().is_empty() {
-        return None;
-    }
-
-    Some(parsed)
+    Some(HookPromptFragment::from_single_hook(text, hook_run_id))
 }
 
 fn serialize_hook_prompt_fragment(text: &str, hook_run_id: &str) -> Option<String> {
@@ -846,6 +871,7 @@ impl TurnItem {
     pub fn id(&self) -> String {
         match self {
             TurnItem::UserMessage(item) => item.id.clone(),
+            TurnItem::FunctionCallOutput(item) => item.id.clone(),
             TurnItem::HookPrompt(item) => item.id.clone(),
             TurnItem::AgentMessage(item) => item.id.clone(),
             TurnItem::Plan(item) => item.id.clone(),
@@ -900,7 +926,14 @@ mod tests {
                 text_elements: Vec::new(),
             },
             UserInput::Audio {
-                audio_url: "https://example.com/remote.mp3".to_string(),
+                audio: AudioReference::Inline {
+                    audio_url: "https://example.com/remote.mp3".to_string(),
+                },
+            },
+            UserInput::Audio {
+                audio: AudioReference::File {
+                    file_id: "file_audio".to_string(),
+                },
             },
             UserInput::LocalAudio {
                 path: std::path::PathBuf::from("local.wav"),
@@ -913,6 +946,16 @@ mod tests {
                 vec!["https://example.com/remote.mp3".to_string()],
                 vec![std::path::PathBuf::from("local.wav")],
             )
+        );
+        assert_eq!(
+            item.audio_references(),
+            Some(vec![AudioReference::File {
+                file_id: "file_audio".to_string(),
+            }])
+        );
+        assert_eq!(
+            item.audio_order(),
+            vec![UserMessageAudioKind::Inline, UserMessageAudioKind::File]
         );
     }
 
@@ -967,89 +1010,8 @@ mod tests {
             HookPromptFragment {
                 text: "Retry with tests.".to_string(),
                 hook_run_id: "hook-run-1".to_string(),
+                metadata: Default::default(),
             }
         );
-    }
-
-    #[test]
-    fn parse_subagent_notification_response_item_accepts_case_insensitive_tag() {
-        let payload = serde_json::to_string(&SubagentNotificationItem {
-            agent_id: "agent-123".to_string(),
-            status: AgentStatus::Running,
-        })
-        .expect("subagent notification payload");
-        let item = ResponseItem::Message {
-            id: Some(ResponseItemId::from_server("msg-1".to_string())),
-            role: "user".to_string(),
-            content: vec![ContentItem::InputText {
-                text: format!("<SUBAGENT_NOTIFICATION>{payload}</subagent_notification>"),
-            }],
-            phase: None,
-            internal_chat_message_metadata_passthrough: None,
-        };
-
-        assert_eq!(
-            parse_subagent_notification_response_item(&item),
-            Some(SubagentNotificationItem {
-                agent_id: "agent-123".to_string(),
-                status: AgentStatus::Running,
-            })
-        );
-    }
-
-    #[test]
-    fn parse_subagent_notification_response_item_accepts_completed_status_payload() {
-        let payload = serde_json::to_string(&SubagentNotificationItem {
-            agent_id: "agent-123".to_string(),
-            status: AgentStatus::Completed(None),
-        })
-        .expect("subagent notification payload");
-        let item = ResponseItem::Message {
-            id: Some(ResponseItemId::from_server("msg-1".to_string())),
-            role: "user".to_string(),
-            content: vec![ContentItem::InputText {
-                text: format!("<subagent_notification>{payload}</subagent_notification>"),
-            }],
-            phase: None,
-            internal_chat_message_metadata_passthrough: None,
-        };
-
-        assert_eq!(
-            parse_subagent_notification_response_item(&item),
-            Some(SubagentNotificationItem {
-                agent_id: "agent-123".to_string(),
-                status: AgentStatus::Completed(None),
-            })
-        );
-    }
-
-    #[test]
-    fn parse_subagent_notification_response_item_rejects_non_notification_messages() {
-        let item = ResponseItem::Message {
-            id: Some(ResponseItemId::from_server("msg-1".to_string())),
-            role: "user".to_string(),
-            content: vec![ContentItem::InputText {
-                text: "hello world".to_string(),
-            }],
-            phase: None,
-            internal_chat_message_metadata_passthrough: None,
-        };
-
-        assert_eq!(parse_subagent_notification_response_item(&item), None);
-    }
-
-    #[test]
-    fn parse_subagent_notification_response_item_rejects_audio_content() {
-        let item = ResponseItem::Message {
-            id: Some(ResponseItemId::from_server("msg-1".to_string())),
-            role: "user".to_string(),
-            content: vec![ContentItem::InputAudio {
-                audio_url: "data:audio/wav;base64,AAAA".to_string(),
-            }],
-            phase: None,
-            internal_chat_message_metadata_passthrough: None,
-        };
-
-        assert_eq!(parse_subagent_notification_response_item(&item), None);
     }
 }

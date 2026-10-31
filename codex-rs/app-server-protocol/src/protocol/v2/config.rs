@@ -1,32 +1,45 @@
+use super::ApplicationRequirements;
 use super::ApprovalsReviewer;
 use super::AskForApproval;
+use super::BrowserUseConfig;
+use super::ComputerUseConfig;
 use super::SandboxMode;
-use super::WindowsSandboxSetupMode;
+use super::WindowsSandboxImplementation;
 use super::shared::default_enabled;
+use crate::JsonSchema;
+use crate::TS;
 use codex_experimental_api_macros::ExperimentalApi;
 use codex_protocol::config_types::AutoCompactTokenLimitScope;
 use codex_protocol::config_types::ForcedLoginMethod;
 use codex_protocol::config_types::ReasoningSummary;
+use codex_protocol::config_types::ToolExposureSurface;
 use codex_protocol::config_types::Verbosity;
 use codex_protocol::config_types::WebSearchMode;
 use codex_protocol::config_types::WebSearchToolConfig;
 use codex_protocol::openai_models::ReasoningEffort;
 use codex_utils_absolute_path::AbsolutePathBuf;
 use codex_utils_path_uri::PathUri;
-use schemars::JsonSchema;
+pub use codex_utils_redacted_string::SerdeRedactedString;
 use serde::Deserialize;
 use serde::Serialize;
 use serde_json::Value as JsonValue;
 use std::collections::BTreeMap;
 use std::collections::HashMap;
 use std::path::PathBuf;
-use ts_rs::TS;
 
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq, JsonSchema, TS)]
 #[serde(tag = "type", rename_all = "camelCase")]
 #[ts(tag = "type")]
 #[ts(export_to = "v2/")]
 pub enum ConfigLayerSource {
+    /// Default configuration supplied with the installed Codex package.
+    #[serde(rename_all = "camelCase")]
+    #[ts(rename_all = "camelCase")]
+    PackagedDefaults {
+        /// Path to the packaged default configuration file.
+        file: AbsolutePathBuf,
+    },
+
     /// Managed preferences layer delivered by MDM (macOS only).
     #[serde(rename_all = "camelCase")]
     #[ts(rename_all = "camelCase")]
@@ -102,6 +115,7 @@ impl ConfigLayerSource {
     /// from a layer with a lower precedence.
     pub fn precedence(&self) -> i16 {
         match self {
+            ConfigLayerSource::PackagedDefaults { .. } => -10,
             ConfigLayerSource::Mdm { .. } => 0,
             ConfigLayerSource::System { .. } => 10,
             ConfigLayerSource::EnterpriseManaged { .. } => 15,
@@ -198,18 +212,40 @@ pub struct AppToolsConfig {
     pub tools: HashMap<String, AppToolConfig>,
 }
 
+/// Approval settings for a connected account within an app.
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, JsonSchema, TS)]
+#[serde(rename_all = "snake_case")]
+#[ts(export_to = "v2/")]
+pub struct AppLinkConfig {
+    pub approvals_reviewer: Option<ApprovalsReviewer>,
+    pub default_tools_approval_mode: Option<AppToolApproval>,
+}
+
+/// Account settings for a single app.
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, JsonSchema, TS)]
+#[serde(rename_all = "snake_case")]
+#[ts(export_to = "v2/")]
+pub struct AppLinksConfig {
+    #[serde(default, flatten)]
+    pub links: HashMap<String, AppLinkConfig>,
+}
+
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq, JsonSchema, TS)]
 #[serde(rename_all = "snake_case")]
 #[ts(export_to = "v2/")]
 pub struct AppConfig {
     #[serde(default = "default_enabled")]
     pub enabled: bool,
+    /// Additional model-facing surfaces omitted for this connector's tools.
+    pub omit_tools_from: Option<Vec<ToolExposureSurface>>,
     pub approvals_reviewer: Option<ApprovalsReviewer>,
     pub destructive_enabled: Option<bool>,
     pub open_world_enabled: Option<bool>,
     pub default_tools_approval_mode: Option<AppToolApproval>,
     pub default_tools_enabled: Option<bool>,
     pub tools: Option<AppToolsConfig>,
+    /// Per-account approval settings keyed by link ID.
+    pub links: Option<AppLinksConfig>,
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq, JsonSchema, TS)]
@@ -273,6 +309,8 @@ pub struct Config {
     #[experimental("config/read.apps")]
     #[serde(default)]
     pub apps: Option<AppsConfig>,
+    pub browser_use: Option<BrowserUseConfig>,
+    pub computer_use: Option<ComputerUseConfig>,
     pub desktop: Option<HashMap<String, JsonValue>>,
     #[serde(default, flatten)]
     pub additional: HashMap<String, JsonValue>,
@@ -374,26 +412,41 @@ pub struct ConfigReadResponse {
 #[serde(rename_all = "camelCase")]
 #[ts(export_to = "v2/")]
 pub struct ConfigRequirements {
+    /// Exact provider selection required by managed policy.
+    pub model_provider: Option<String>,
+    /// Complete required provider definitions, using config.toml field names.
+    pub model_providers: Option<HashMap<String, JsonValue>>,
+    /// Effective login methods after managed, forced-login, and workspace restrictions.
+    /// An empty list permits no login method. Older servers may omit this field.
+    pub allowed_login_methods: Option<Vec<ForcedLoginMethod>>,
+    pub cli_auth_credentials_store: Option<CliAuthCredentialsStoreMode>,
+    pub chatgpt_base_url: Option<String>,
+    pub additional_developer_instructions: Option<String>,
     #[experimental(nested)]
     pub allowed_approval_policies: Option<Vec<AskForApproval>>,
     #[experimental("configRequirements/read.allowedApprovalsReviewers")]
     pub allowed_approvals_reviewers: Option<Vec<ApprovalsReviewer>>,
     pub allowed_sandbox_modes: Option<Vec<SandboxMode>>,
-    pub allowed_windows_sandbox_implementations: Option<Vec<WindowsSandboxSetupMode>>,
+    pub allowed_windows_sandbox_implementations: Option<Vec<WindowsSandboxImplementation>>,
     pub allowed_permission_profiles: Option<BTreeMap<String, bool>>,
     pub default_permissions: Option<String>,
     pub allowed_web_search_modes: Option<Vec<WebSearchMode>>,
     pub allow_managed_hooks_only: Option<bool>,
+    pub allow_browser_and_computer_use: Option<bool>,
     pub allow_appshots: Option<bool>,
     pub allow_remote_control: Option<bool>,
     pub computer_use: Option<ComputerUseRequirements>,
     pub browser_use: Option<BrowserUseRequirements>,
+    pub in_app_browser: Option<InAppBrowserRequirements>,
     pub feature_requirements: Option<BTreeMap<String, bool>>,
     #[experimental("configRequirements/read.hooks")]
-    pub hooks: Option<ManagedHooksRequirements>,
+    pub hooks: Option<Box<ManagedHooksRequirements>>,
     pub enforce_residency: Option<ResidencyRequirement>,
     #[experimental("configRequirements/read.network")]
     pub network: Option<NetworkRequirements>,
+    #[experimental("configRequirements/read.application")]
+    pub application: Option<ApplicationRequirements>,
+    pub auto_review: Option<AutoReviewRequirements>,
     pub models: Option<ModelsRequirements>,
     #[schemars(with = "Option<String>")]
     pub sqlite_home: Option<PathUri>,
@@ -404,7 +457,25 @@ pub struct ConfigRequirements {
     pub check_for_update_on_startup: Option<bool>,
     pub allow_login_shell: Option<bool>,
     pub feedback: Option<FeedbackRequirements>,
-    pub windows_sandbox_private_desktop: Option<bool>,
+    pub otel: Option<OtelRequirements>,
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone, Copy, PartialEq, Eq, JsonSchema, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(export_to = "v2/", rename_all = "camelCase")]
+pub enum CliAuthCredentialsStoreMode {
+    File,
+    Keyring,
+    Auto,
+    Ephemeral,
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq, JsonSchema, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(export_to = "v2/")]
+pub struct AutoReviewRequirements {
+    pub required_on_models: Option<Vec<String>>,
+    pub ignore_rules: Option<Vec<String>>,
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq, JsonSchema, TS)]
@@ -431,23 +502,190 @@ pub struct FeedbackRequirements {
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq, JsonSchema, TS)]
+#[serde(rename_all = "snake_case")]
+#[ts(export_to = "v2/")]
+pub struct OtelRequirements {
+    pub tool_result: Option<OtelToolResultLogConfig>,
+    pub log_sse_deltas: Option<bool>,
+    pub log_user_prompt: Option<bool>,
+    pub log_agent_responses: Option<bool>,
+    pub log_guardian_assessments: Option<bool>,
+    pub environment: Option<String>,
+    pub exporter: Option<OtelExporter>,
+    pub trace_exporter: Option<OtelExporter>,
+    pub metrics_exporter: Option<OtelExporter>,
+    pub span_attributes: Option<HashMap<String, String>>,
+    pub tracestate: Option<BTreeMap<String, BTreeMap<String, String>>>,
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq, JsonSchema, TS)]
+#[serde(rename_all = "snake_case")]
+#[ts(export_to = "v2/")]
+pub struct OtelToolResultLogConfig {
+    pub max_bytes: usize,
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq, JsonSchema, TS)]
+#[serde(rename_all = "kebab-case")]
+#[ts(export_to = "v2/", rename_all = "kebab-case")]
+pub enum OtelExporter {
+    None,
+    Statsig,
+    OtlpHttp {
+        endpoint: String,
+        /// Header names are retained; values are redacted by the server.
+        #[schemars(with = "HashMap<String, String>")]
+        #[ts(as = "HashMap<String, String>")]
+        headers: HashMap<String, SerdeRedactedString>,
+        protocol: OtelHttpProtocol,
+        tls: Option<OtelTlsConfig>,
+    },
+    OtlpGrpc {
+        endpoint: String,
+        /// Header names are retained; values are redacted by the server.
+        #[schemars(with = "HashMap<String, String>")]
+        #[ts(as = "HashMap<String, String>")]
+        headers: HashMap<String, SerdeRedactedString>,
+        tls: Option<OtelTlsConfig>,
+    },
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq, JsonSchema, TS)]
+#[serde(rename_all = "kebab-case")]
+#[ts(export_to = "v2/", rename_all = "kebab-case")]
+pub enum OtelHttpProtocol {
+    Binary,
+    Json,
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq, JsonSchema, TS)]
+#[serde(rename_all = "kebab-case")]
+#[ts(export_to = "v2/", rename_all = "kebab-case")]
+pub struct OtelTlsConfig {
+    pub ca_certificate: Option<PathBuf>,
+    pub client_certificate: Option<PathBuf>,
+    pub client_private_key: Option<PathBuf>,
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq, JsonSchema, TS)]
 #[serde(rename_all = "camelCase")]
 #[ts(export_to = "v2/")]
 pub struct ComputerUseRequirements {
     pub allow_locked_computer_use: Option<bool>,
+    pub allow_persistent_approval: Option<bool>,
+    pub default_app_access: Option<AllowDenyRequirement>,
+    pub macos: Option<ComputerUseMacosRequirements>,
+    pub windows: Option<ComputerUseWindowsRequirements>,
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq, JsonSchema, TS)]
 #[serde(rename_all = "camelCase")]
 #[ts(export_to = "v2/")]
 pub struct BrowserUseRequirements {
+    pub extension: Option<BrowserUseExtensionRequirements>,
+    pub allow_webmcp: Option<bool>,
+    pub allow_history_access: Option<bool>,
     pub disable_auto_review: Option<bool>,
+    pub allow_global_persistent_approval: Option<bool>,
+    pub default_origin_policy: Option<BrowserUseOriginPolicy>,
+    pub origins: Option<BTreeMap<String, BrowserUseOriginPolicy>>,
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq, JsonSchema, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(export_to = "v2/")]
+pub struct BrowserUseExtensionRequirements {
+    pub request_headers: Option<Vec<RequestHeader>>,
+}
+
+#[derive(Serialize, Deserialize, Clone, PartialEq, Eq, JsonSchema, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(export_to = "v2/")]
+pub struct RequestHeader {
+    pub name: String,
+    pub value: String,
+}
+
+impl std::fmt::Debug for RequestHeader {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("RequestHeader")
+            .field("name", &self.name)
+            .field("value", &"[REDACTED]")
+            .finish()
+    }
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq, JsonSchema, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(export_to = "v2/")]
+pub struct BrowserUseOriginPolicy {
+    pub access: Option<AllowDenyRequirement>,
+    pub downloads: Option<AllowDenyRequirement>,
+    pub uploads: Option<AllowDenyRequirement>,
+    pub full_cdp_access: Option<AllowDenyRequirement>,
+    pub auto_review: Option<AllowDenyRequirement>,
+    pub persistent_approval: Option<bool>,
+    pub access_approval_lifetime: Option<BrowserUseAccessApprovalLifetime>,
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone, Copy, PartialEq, Eq, JsonSchema, TS)]
+#[serde(rename_all = "lowercase")]
+#[ts(rename_all = "lowercase", export_to = "v2/")]
+pub enum AllowDenyRequirement {
+    Allow,
+    Deny,
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone, Copy, PartialEq, Eq, JsonSchema, TS)]
+#[serde(rename_all = "lowercase")]
+#[ts(rename_all = "lowercase", export_to = "v2/")]
+pub enum BrowserUseAccessApprovalLifetime {
+    Turn,
+    Thread,
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq, JsonSchema, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(export_to = "v2/")]
+pub struct ComputerUseMacosRequirements {
+    pub bundle_ids: Option<BTreeMap<String, AllowDenyRequirement>>,
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq, JsonSchema, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(export_to = "v2/")]
+pub struct ComputerUseWindowsRequirements {
+    pub aumids: Option<BTreeMap<String, AllowDenyRequirement>>,
+    pub exes: Option<Vec<ComputerUseWindowsExeRequirement>>,
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq, JsonSchema, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(export_to = "v2/")]
+pub struct ComputerUseWindowsExeRequirement {
+    pub publisher_name: String,
+    pub product_name: String,
+    pub binary_name: Option<String>,
+    pub access: AllowDenyRequirement,
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq, JsonSchema, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(export_to = "v2/")]
+pub struct InAppBrowserRequirements {
+    pub allow_external_browser_settings_import: Option<bool>,
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq, JsonSchema, TS)]
 #[serde(rename_all = "camelCase")]
 #[ts(export_to = "v2/")]
 pub struct ManagedHooksRequirements {
+    #[serde(rename = "PreModelRequest", default)]
+    #[ts(rename = "PreModelRequest")]
+    pub pre_model_request: Vec<ConfiguredHookMatcherGroup>,
+    #[serde(rename = "PostModelRequest", default)]
+    #[ts(rename = "PostModelRequest")]
+    pub post_model_request: Vec<ConfiguredHookMatcherGroup>,
     pub managed_dir: Option<PathBuf>,
     pub windows_managed_dir: Option<PathBuf>,
     #[serde(rename = "PreToolUse")]
@@ -483,6 +721,9 @@ pub struct ManagedHooksRequirements {
     #[serde(rename = "Stop")]
     #[ts(rename = "Stop")]
     pub stop: Vec<ConfiguredHookMatcherGroup>,
+    #[serde(rename = "Interrupt", default)]
+    #[ts(rename = "Interrupt")]
+    pub interrupt: Vec<ConfiguredHookMatcherGroup>,
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq, JsonSchema, TS)]
@@ -519,6 +760,19 @@ pub enum ConfiguredHookHandler {
         #[ts(rename = "additionalContextLimit")]
         additional_context_limit: Option<usize>,
     },
+    #[serde(rename = "mcp_tool")]
+    #[ts(rename = "mcp_tool")]
+    McpTool {
+        server: String,
+        tool: String,
+        input: serde_json::Map<String, serde_json::Value>,
+        #[serde(rename = "timeoutSec")]
+        #[ts(rename = "timeoutSec")]
+        timeout_sec: Option<u64>,
+        #[serde(rename = "statusMessage")]
+        #[ts(rename = "statusMessage")]
+        status_message: Option<String>,
+    },
     #[serde(rename = "prompt")]
     #[ts(rename = "prompt")]
     Prompt {},
@@ -537,8 +791,10 @@ pub struct NetworkRequirements {
     pub allow_upstream_proxy: Option<bool>,
     pub dangerously_allow_non_loopback_proxy: Option<bool>,
     pub dangerously_allow_all_unix_sockets: Option<bool>,
-    /// Canonical network permission map for `experimental_network`.
+    /// Canonical managed network permission map.
     pub domains: Option<BTreeMap<String, NetworkDomainPermission>>,
+    /// Host patterns routed to network approval before ordinary allow rules.
+    pub review_domains: Option<Vec<String>>,
     /// When true, only managed allowlist entries are respected while managed
     /// network enforcement is active.
     pub managed_allowed_domains_only: Option<bool>,
@@ -546,7 +802,7 @@ pub struct NetworkRequirements {
     pub allowed_domains: Option<Vec<String>>,
     /// Legacy compatibility view derived from `domains`.
     pub denied_domains: Option<Vec<String>>,
-    /// Canonical unix socket permission map for `experimental_network`.
+    /// Canonical managed unix socket permission map.
     pub unix_sockets: Option<BTreeMap<String, NetworkUnixSocketPermission>>,
     /// Legacy compatibility view derived from `unix_sockets`.
     pub allow_unix_sockets: Option<Vec<String>>,
@@ -580,6 +836,10 @@ pub enum ResidencyRequirement {
 #[serde(rename_all = "camelCase")]
 #[ts(export_to = "v2/")]
 pub struct ConfigRequirementsReadResponse {
+    /// Whether Fast and Ultra Fast requirements are enforced independently.
+    /// Older servers omit this field and use Fast mode as a shared speed gate.
+    #[serde(default)]
+    pub supports_independent_speed_modes: Option<bool>,
     /// Null if no requirements are configured (e.g. no requirements.toml/MDM entries).
     #[experimental(nested)]
     pub requirements: Option<ConfigRequirements>,
@@ -714,6 +974,8 @@ pub struct ExternalAgentConfigMigrationItem {
 #[ts(export_to = "v2/")]
 pub struct ExternalAgentConfigDetectResponse {
     pub items: Vec<ExternalAgentConfigMigrationItem>,
+    #[serde(default)]
+    pub connectors: Vec<ExternalAgentDetectedConnectorCandidate>,
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq, JsonSchema, TS)]
@@ -787,6 +1049,9 @@ pub struct ExternalAgentConfigImportItemTypeSuccess {
     pub cwd: Option<PathBuf>,
     pub source: Option<String>,
     pub target: Option<String>,
+    /// Original title for an imported session; null for other item types.
+    #[serde(default)]
+    pub title: Option<String>,
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq, JsonSchema, TS)]
@@ -801,11 +1066,34 @@ pub struct ExternalAgentConfigImportTypeResult {
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq, JsonSchema, TS)]
 #[serde(rename_all = "camelCase")]
 #[ts(export_to = "v2/")]
+pub struct ExternalAgentConfigImportHistoryRecordSuccessParams {
+    pub item_type: ExternalAgentConfigMigrationItemType,
+    pub cwd: Option<PathBuf>,
+    pub source: Option<String>,
+    pub target: Option<String>,
+    /// Original title for an imported session, when available.
+    #[serde(default)]
+    #[ts(optional = nullable)]
+    pub title: Option<String>,
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq, JsonSchema, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(export_to = "v2/")]
+pub struct ExternalAgentConfigImportHistoryRecordTypeResultParams {
+    pub item_type: ExternalAgentConfigMigrationItemType,
+    pub successes: Vec<ExternalAgentConfigImportHistoryRecordSuccessParams>,
+    pub failures: Vec<ExternalAgentConfigImportItemTypeFailure>,
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq, JsonSchema, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(export_to = "v2/")]
 pub struct ExternalAgentConfigImportHistoryRecordParams {
     /// Opaque provider identifier for the externally completed import.
     pub provider_id: String,
     /// Completed results grouped by imported item type.
-    pub item_type_results: Vec<ExternalAgentConfigImportTypeResult>,
+    pub item_type_results: Vec<ExternalAgentConfigImportHistoryRecordTypeResultParams>,
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq, JsonSchema, TS)]
@@ -850,6 +1138,23 @@ pub struct ExternalAgentImportedConnectorCandidate {
     pub source: ExternalAgentImportedConnectorSource,
 }
 
+#[derive(Serialize, Deserialize, Debug, Clone, Copy, PartialEq, Eq, JsonSchema, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(export_to = "v2/")]
+pub enum ExternalAgentDetectedConnectorSource {
+    RemoteMcpServersConfig,
+    SessionToolUse,
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq, JsonSchema, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(export_to = "v2/")]
+pub struct ExternalAgentDetectedConnectorCandidate {
+    pub name: String,
+    pub session_count: u32,
+    pub source: ExternalAgentDetectedConnectorSource,
+}
+
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq, JsonSchema, TS)]
 #[serde(rename_all = "camelCase")]
 #[ts(export_to = "v2/")]
@@ -891,8 +1196,8 @@ pub struct ConfigBatchWriteParams {
     #[ts(optional = nullable)]
     pub expected_version: Option<String>,
     /// When true, hot-reload updated runtime settings into loaded threads after writing.
-    /// Session-static model, reasoning-effort, Plan-mode reasoning-effort, service-tier, and
-    /// personality defaults are not reloaded.
+    /// Session-static model, reasoning-effort, Plan-mode reasoning-effort, and service-tier
+    /// defaults are not reloaded. The deprecated personality setting is also not reloaded.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub reload_user_config: bool,
 }
@@ -941,3 +1246,7 @@ pub struct ConfigWarningNotification {
     #[ts(optional)]
     pub range: Option<TextRange>,
 }
+
+#[cfg(test)]
+#[path = "config_tests.rs"]
+mod tests;

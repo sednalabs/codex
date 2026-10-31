@@ -1,14 +1,16 @@
 use super::ContextualUserFragment;
+use codex_prompts::ResolvedModelMessages;
 use codex_protocol::config_types::MultiAgentMode;
+use codex_protocol::models::ContentItem;
+use codex_protocol::models::ContentItemKind;
+use codex_protocol::models::input_text;
 use codex_protocol::protocol::MULTI_AGENT_MODE_CLOSE_TAG;
 use codex_protocol::protocol::MULTI_AGENT_MODE_OPEN_TAG;
 
-const EXPLICIT_REQUEST_ONLY_MULTI_AGENT_MODE_TEXT: &str = "Any earlier instruction enabling proactive multi-agent delegation no longer applies. Do not spawn sub-agents unless the user or applicable AGENTS.md/skill instructions explicitly ask for sub-agents, delegation, or parallel agent work.";
-const PROACTIVE_MULTI_AGENT_MODE_TEXT: &str = "Proactive multi-agent delegation is active. Any earlier instruction requiring an explicit user request before spawning sub-agents no longer applies. Use sub-agents when parallel work would materially improve speed or quality. This mode remains active until a later multi-agent mode developer message changes it.";
-
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub(super) struct MultiAgentModeInstructions {
+pub(crate) struct MultiAgentModeInstructions {
     multi_agent_mode: MultiAgentMode,
+    client_owned: bool,
 }
 
 impl MultiAgentModeInstructions {
@@ -20,11 +22,30 @@ impl MultiAgentModeInstructions {
             return None;
         }
 
-        Some(Self { multi_agent_mode })
+        Some(Self {
+            multi_agent_mode,
+            client_owned: false,
+        })
+    }
+
+    pub(crate) fn with_client_ownership(mut self, client_owned: bool) -> Self {
+        self.client_owned = client_owned;
+        self
     }
 }
 
 impl ContextualUserFragment for MultiAgentModeInstructions {
+    fn content_kind(&self) -> ContentItemKind {
+        ContentItemKind(
+            if self.client_owned {
+                "client.multi_agent.mode_instructions"
+            } else {
+                "multi_agent.mode_instructions"
+            }
+            .to_string(),
+        )
+    }
+
     fn role(&self) -> &'static str {
         "developer"
     }
@@ -37,13 +58,17 @@ impl ContextualUserFragment for MultiAgentModeInstructions {
         (MULTI_AGENT_MODE_OPEN_TAG, MULTI_AGENT_MODE_CLOSE_TAG)
     }
 
-    fn body(&self) -> String {
-        match &self.multi_agent_mode {
-            MultiAgentMode::Custom(hint_text) => hint_text.clone(),
-            MultiAgentMode::ExplicitRequestOnly => {
-                EXPLICIT_REQUEST_ONLY_MULTI_AGENT_MODE_TEXT.to_string()
+    fn body(&self) -> ContentItem {
+        // `effective_multi_agent_mode` carries configured and catalog overrides as `Custom`.
+        // The other variants explicitly select bundled text.
+        let bundled = ResolvedModelMessages::bundled().multi_agent();
+        input_text(
+            match &self.multi_agent_mode {
+                MultiAgentMode::Custom(hint_text) => hint_text.as_str(),
+                MultiAgentMode::ExplicitRequestOnly => bundled.explicit.text(),
+                MultiAgentMode::Proactive => bundled.proactive.text(),
             }
-            MultiAgentMode::Proactive => PROACTIVE_MULTI_AGENT_MODE_TEXT.to_string(),
-        }
+            .to_owned(),
+        )
     }
 }

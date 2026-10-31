@@ -18,7 +18,7 @@ from Job job, string invariant
 where
   jobHasOfficialReleaseSink(job, _) and
   not repoOfficialReleaseJob(job) and
-  invariant = "only the sedna-release publish-release job may publish official GitHub Releases"
+  invariant = "only tag publishers downstream of the Rust or rusty-v8 release validation jobs may publish official GitHub Releases"
   or
   job.getARunsOnLabel() = "self-hosted" and
   invariant = "public workflows must not use self-hosted runners"

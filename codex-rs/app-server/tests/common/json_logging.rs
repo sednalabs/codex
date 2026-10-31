@@ -23,29 +23,20 @@ impl JsonLogCapture {
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
             .push(line);
-        self.updated.notify_waiters();
+        self.updated.notify_one();
     }
 
-    pub(crate) async fn wait_for_event(&self, event_name: &str) -> Result<Value> {
-        let mut events = self.wait_for_events(event_name, /*count*/ 1).await?;
-        Ok(events.remove(0))
-    }
-
-    pub(crate) async fn wait_for_events(
+    pub(crate) async fn wait_for_event(
         &self,
-        event_name: &str,
-        count: usize,
-    ) -> Result<Vec<Value>> {
-        let result = tokio::time::timeout(Duration::from_secs(10), async {
+        description: &str,
+        predicate: impl Fn(&Value) -> bool,
+        timeout: Duration,
+    ) -> Result<Value> {
+        let result = tokio::time::timeout(timeout, async {
             loop {
                 let updated = self.updated.notified();
-                let events = self
-                    .events()
-                    .into_iter()
-                    .filter(|event| event["fields"]["event.name"].as_str() == Some(event_name))
-                    .collect::<Vec<_>>();
-                if events.len() >= count {
-                    return Ok(events);
+                if let Some(event) = self.events()?.into_iter().find(&predicate) {
+                    return Ok(event);
                 }
                 updated.await;
             }
@@ -60,21 +51,18 @@ impl JsonLogCapture {
                     .unwrap_or_else(std::sync::PoisonError::into_inner)
                     .join("\n");
                 anyhow::bail!(
-                    "timed out waiting for {count} JSON log event(s) named `{event_name}`; captured stderr:\n{lines}"
+                    "timed out waiting for a JSON log event {description}; captured stderr:\n{lines}"
                 )
             }
         }
     }
 
-    pub(crate) fn events(&self) -> Vec<Value> {
+    pub(crate) fn events(&self) -> Result<Vec<Value>> {
         let lines = self
             .lines
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
-        lines
-            .iter()
-            .filter_map(|line| parse_json_log_event(line).ok())
-            .collect()
+        json_log_events(lines.iter().map(String::as_str))
     }
 }
 
@@ -119,21 +107,22 @@ fn json_log_events<'a>(lines: impl IntoIterator<Item = &'a str>) -> Result<Vec<V
     lines
         .into_iter()
         .filter(|line| !line.is_empty())
-        .map(parse_json_log_event)
+        .map(|line| {
+            let event = serde_json::from_str::<Value>(line)
+                .with_context(|| format!("log line was not JSON: {line}"))?;
+            anyhow::ensure!(
+                event["level"].is_string()
+                    && event["fields"].is_object()
+                    && event["target"].is_string(),
+                "JSON log event did not include level, fields, and target: {line}"
+            );
+            let timestamp = event["timestamp"]
+                .as_str()
+                .with_context(|| format!("JSON log event did not include a timestamp: {line}"))?;
+            chrono::DateTime::parse_from_rfc3339(timestamp).with_context(|| {
+                format!("JSON log event timestamp was not RFC 3339: {timestamp}")
+            })?;
+            Ok(event)
+        })
         .collect()
-}
-
-fn parse_json_log_event(line: &str) -> Result<Value> {
-    let event = serde_json::from_str::<Value>(line)
-        .with_context(|| format!("log line was not JSON: {line}"))?;
-    anyhow::ensure!(
-        event["level"].is_string() && event["fields"].is_object() && event["target"].is_string(),
-        "JSON log event did not include level, fields, and target: {line}"
-    );
-    let timestamp = event["timestamp"]
-        .as_str()
-        .with_context(|| format!("JSON log event did not include a timestamp: {line}"))?;
-    chrono::DateTime::parse_from_rfc3339(timestamp)
-        .with_context(|| format!("JSON log event timestamp was not RFC 3339: {timestamp}"))?;
-    Ok(event)
 }

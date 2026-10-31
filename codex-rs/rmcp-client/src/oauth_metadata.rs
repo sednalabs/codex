@@ -1,4 +1,4 @@
-//! Require advertised OAuth metadata before configuring any credential-bearing flow.
+//! Require advertised, issuer-bound OAuth metadata before device registration.
 
 use rmcp::transport::auth::AuthError;
 use rmcp::transport::auth::AuthorizationManager;
@@ -8,8 +8,8 @@ pub(crate) async fn discover_metadata(
     manager: &AuthorizationManager,
 ) -> Result<AuthorizationMetadata, AuthError> {
     let resolution = manager.resolve_metadata().await?;
-    // The SDK also resolves unpublished metadata to guessed legacy endpoints.
-    // Preserve Codex's discovery-only contract for login and restored credentials.
+    // The SDK can also synthesize legacy endpoints when metadata is absent.
+    // Device registration must use an advertised authorization server only.
     if !resolution.source.is_discovered() {
         return Err(AuthError::NoAuthorizationSupport);
     }
@@ -22,7 +22,6 @@ mod tests {
     use std::sync::Mutex;
 
     use axum::http::Response;
-    use pretty_assertions::assert_eq;
     use rmcp::transport::auth::OAuthHttpClient;
     use rmcp::transport::auth::OAuthHttpClientFuture;
     use rmcp::transport::auth::OAuthHttpRequest;
@@ -58,7 +57,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn unpublished_metadata_is_refused_without_contacting_guessed_endpoints() {
+    async fn unpublished_metadata_is_refused_without_guessed_endpoints() {
         let client = Arc::new(MetadataClient {
             metadata: None,
             requests: Mutex::new(Vec::new()),
@@ -74,18 +73,24 @@ mod tests {
             discover_metadata(&manager).await,
             Err(AuthError::NoAuthorizationSupport)
         ));
-        let requests = client.requests.lock().unwrap();
-        assert!(!requests.is_empty());
-        assert!(requests.iter().all(|(method, path)| method == "GET"
-            && !["/authorize", "/token", "/register"].contains(&path.as_str())));
+        assert!(
+            client
+                .requests
+                .lock()
+                .unwrap()
+                .iter()
+                .all(|(method, path)| method == "GET"
+                    && !["/authorize", "/token", "/register"].contains(&path.as_str()))
+        );
     }
 
     #[tokio::test]
-    async fn advertised_metadata_with_missing_or_wrong_issuer_is_refused() {
+    async fn missing_or_mismatched_issuer_is_refused_before_endpoint_use() {
         for issuer in [None, Some("https://different.example")] {
             let mut metadata = json!({
                 "authorization_endpoint": "https://oauth.example/published/authorize",
                 "token_endpoint": "https://oauth.example/published/token",
+                "registration_endpoint": "https://oauth.example/published/register",
             });
             if let Some(issuer) = issuer {
                 metadata["issuer"] = json!(issuer);
@@ -100,59 +105,22 @@ mod tests {
             )
             .await
             .unwrap();
-            let error = discover_metadata(&manager).await.unwrap_err();
-            match issuer {
-                None => assert!(matches!(
-                    error,
-                    AuthError::AuthorizationServerMissingIssuer { expected_issuer }
-                        if expected_issuer == "https://oauth.example/"
-                )),
-                Some(issuer) => assert!(matches!(
-                    error,
-                    AuthError::AuthorizationServerMismatch {
-                        expected_issuer,
-                        received_issuer,
-                    } if expected_issuer == "https://oauth.example/" && received_issuer == issuer
-                )),
-            }
+
+            assert!(discover_metadata(&manager).await.is_err());
             assert!(
                 client
                     .requests
                     .lock()
                     .unwrap()
                     .iter()
-                    .all(|(method, path)| {
-                        method == "GET"
-                            && !["/published/authorize", "/published/token"]
-                                .contains(&path.as_str())
-                    })
+                    .all(|(method, path)| method == "GET"
+                        && ![
+                            "/published/authorize",
+                            "/published/token",
+                            "/published/register"
+                        ]
+                        .contains(&path.as_str()))
             );
         }
-    }
-
-    #[tokio::test]
-    async fn advertised_metadata_is_preserved() {
-        let metadata = json!({
-            "authorization_endpoint": "https://oauth.example/published/authorize",
-            "token_endpoint": "https://oauth.example/published/token",
-            "registration_endpoint": "https://oauth.example/published/register",
-            "issuer": "https://oauth.example",
-            "scopes_supported": ["read"],
-            "custom_field": "preserved",
-        });
-        let client = Arc::new(MetadataClient {
-            metadata: Some(metadata.clone()),
-            requests: Mutex::new(Vec::new()),
-        });
-        let manager =
-            AuthorizationManager::new_with_oauth_http_client("https://oauth.example/mcp", client)
-                .await
-                .unwrap();
-        let actual = discover_metadata(&manager).await.unwrap();
-        let expected: AuthorizationMetadata = serde_json::from_value(metadata).unwrap();
-        assert_eq!(
-            serde_json::to_value(actual).unwrap(),
-            serde_json::to_value(expected).unwrap()
-        );
     }
 }

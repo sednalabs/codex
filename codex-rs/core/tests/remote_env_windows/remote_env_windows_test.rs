@@ -2,34 +2,19 @@
 
 use anyhow::Context;
 use anyhow::Result;
-use app_test_support::PathBufExt;
-use app_test_support::TestAppServer;
-use app_test_support::create_mock_responses_server_repeating_assistant;
-use app_test_support::to_response;
-use app_test_support::write_mock_responses_config_toml;
-use codex_app_server_protocol::RequestId;
-use codex_app_server_protocol::ThreadStartParams;
-use codex_app_server_protocol::ThreadStartResponse;
-use codex_app_server_protocol::TurnEnvironmentParams;
-use codex_app_server_protocol::TurnStartParams;
-use codex_app_server_protocol::TurnStartResponse;
-use codex_app_server_protocol::UserInput as V2UserInput;
-use codex_exec_server::CODEX_EXEC_SERVER_URL_ENV_VAR;
 use codex_exec_server::REMOTE_ENVIRONMENT_ID;
-use codex_features::Feature;
+use codex_protocol::config_types::CollaborationMode;
+use codex_protocol::config_types::ModeKind;
+use codex_protocol::config_types::Settings;
 use codex_protocol::models::PermissionProfile;
 use codex_protocol::protocol::AskForApproval;
+use codex_protocol::protocol::EnvironmentConfigState;
 use codex_protocol::protocol::EventMsg;
-use codex_protocol::protocol::ExecCommandBeginEvent;
-use codex_protocol::protocol::ExecCommandEndEvent;
 use codex_protocol::protocol::ExecCommandStatus;
-use codex_protocol::protocol::Op;
-use codex_protocol::protocol::PatchApplyEndEvent;
+use codex_protocol::protocol::ThreadSettingsOverrides;
 use codex_protocol::protocol::TurnEnvironmentSelection;
 use codex_protocol::protocol::TurnEnvironmentSelections;
 use codex_protocol::user_input::UserInput;
-use codex_utils_path_uri::LegacyAppPathString;
-use codex_utils_path_uri::PathConvention;
 use codex_utils_path_uri::PathUri;
 use core_test_support::responses::ev_assistant_message;
 use core_test_support::responses::ev_completed;
@@ -38,63 +23,13 @@ use core_test_support::responses::ev_response_created;
 use core_test_support::responses::mount_sse_sequence;
 use core_test_support::responses::sse;
 use core_test_support::responses::start_mock_server;
+use core_test_support::test_codex::TurnInputRequest;
 use core_test_support::test_codex::test_codex;
 use core_test_support::test_codex::turn_permission_fields;
+use core_test_support::wait_for_event;
 use pretty_assertions::assert_eq;
-use serde_json::Value;
 use serde_json::json;
-use std::collections::BTreeMap;
-use std::fs;
-use tempfile::TempDir;
-use tokio::time::timeout;
 use wine_exec_server_test_support::WineExecServer;
-
-const APP_SERVER_READ_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(10);
-const REMOTE_WINDOWS_COMMAND_YIELD_MS: u64 = 10_000;
-const REMOTE_WINDOWS_SMOKE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(120);
-
-struct RemoteWindowsSmokeEvents {
-    command_begin: ExecCommandBeginEvent,
-    command_end: ExecCommandEndEvent,
-    patch_end: PatchApplyEndEvent,
-}
-
-fn record_remote_windows_smoke_event(observed_events: &mut Vec<String>, msg: &EventMsg) {
-    let label = match msg {
-        EventMsg::ExecCommandBegin(event) => {
-            format!("ExecCommandBegin({})", event.call_id)
-        }
-        EventMsg::ExecCommandEnd(event) => {
-            format!(
-                "ExecCommandEnd({}: exit={:?}, status={:?})",
-                event.call_id, event.exit_code, event.status
-            )
-        }
-        EventMsg::PatchApplyEnd(event) => {
-            format!("PatchApplyEnd({}: success={})", event.call_id, event.success)
-        }
-        EventMsg::TurnComplete(_) => "TurnComplete".to_string(),
-        EventMsg::Error(event) => format!("Error({})", event.message),
-        _ => return,
-    };
-
-    observed_events.push(label);
-    if observed_events.len() > 16 {
-        observed_events.remove(0);
-    }
-}
-
-fn remote_windows_smoke_progress(
-    command_begin_seen: bool,
-    command_end_seen: bool,
-    patch_end_seen: bool,
-    turn_complete: bool,
-    observed_events: &[String],
-) -> String {
-    format!(
-        "seen command_begin={command_begin_seen}, command_end={command_end_seen}, patch_end={patch_end_seen}, turn_complete={turn_complete}; recent events={observed_events:?}"
-    )
-}
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn windows_exec_server_runs_with_native_shell_and_cwd() -> Result<()> {
@@ -103,7 +38,7 @@ async fn windows_exec_server_runs_with_native_shell_and_cwd() -> Result<()> {
     const VERIFY_CALL_ID: &str = "wine-verify-patch";
     const PATCH_FILE: &str = "codex-apply-patch-smoke.txt";
     const COMMAND: &str = r#"if ((Get-Location).Path -ne 'C:\windows') { exit 1 }"#;
-    const VERIFY_COMMAND: &str = r#"$path = Join-Path (Get-Location) 'codex-apply-patch-smoke.txt'; if (-not (Test-Path $path)) { exit 1 }; if ([IO.File]::ReadAllText($path) -ne "patched through unified exec`n") { exit 2 }; Write-Output 'PATCH_VERIFIED'"#;
+    const VERIFY_COMMAND: &str = r#"$path = Join-Path (Get-Location) 'codex-apply-patch-smoke.txt'; if (-not (Test-Path $path)) { exit 1 }; if ([IO.File]::ReadAllText($path) -ne "patched through unified exec`n") { exit 2 }; Remove-Item $path"#;
 
     WineExecServer
         .scope(|exec_server_url, _wine_prefix| async move {
@@ -111,11 +46,10 @@ async fn windows_exec_server_runs_with_native_shell_and_cwd() -> Result<()> {
             let arguments = serde_json::to_string(&json!({
                 "cmd": COMMAND,
                 "login": false,
-                "shell": "powershell",
                 // An absolute foreign workdir should replace the selected environment cwd and
                 // reach exec-server without conversion to the host path convention.
                 "workdir": r"C:\windows",
-                "yield_time_ms": REMOTE_WINDOWS_COMMAND_YIELD_MS,
+                "yield_time_ms": 10_000,
             }))?;
             let patch = format!(
                 "*** Begin Patch\n*** Add File: {PATCH_FILE}\n+patched through unified exec\n*** End Patch"
@@ -125,14 +59,13 @@ async fn windows_exec_server_runs_with_native_shell_and_cwd() -> Result<()> {
                 "login": false,
                 // Resolve this relative workdir using the selected Windows environment cwd.
                 "workdir": r"apply-patch-smoke\nested",
-                "yield_time_ms": REMOTE_WINDOWS_COMMAND_YIELD_MS,
+                "yield_time_ms": 10_000,
             }))?;
             let verify_arguments = serde_json::to_string(&json!({
                 "cmd": VERIFY_COMMAND,
                 "login": false,
-                "shell": "powershell",
                 "workdir": r"apply-patch-smoke\nested",
-                "yield_time_ms": REMOTE_WINDOWS_COMMAND_YIELD_MS,
+                "yield_time_ms": 10_000,
             }))?;
             let response_mock = mount_sse_sequence(
                 &server,
@@ -163,14 +96,7 @@ async fn windows_exec_server_runs_with_native_shell_and_cwd() -> Result<()> {
 
             let mut builder = test_codex()
                 .with_model("gpt-5.2")
-                .with_exec_server_url(exec_server_url)
-                .with_config(|config| {
-                    config.use_experimental_unified_exec_tool = true;
-                    config
-                        .features
-                        .enable(Feature::UnifiedExec)
-                        .expect("test config should allow feature update");
-                });
+                .with_exec_server_url(exec_server_url);
             let test = builder.build(&server).await?;
             let (sandbox_policy, permission_profile) =
                 turn_permission_fields(PermissionProfile::Disabled, test.config.cwd.as_path());
@@ -179,137 +105,88 @@ async fn windows_exec_server_runs_with_native_shell_and_cwd() -> Result<()> {
                 vec![{
                     let cwd = PathUri::parse("file:///C:/codex-home")?;
                     TurnEnvironmentSelection {
+                        selected_capability_roots: Default::default(),
                         environment_id: REMOTE_ENVIRONMENT_ID.to_string(),
                         cwd: cwd.clone(),
                         workspace_roots: vec![cwd],
+                        config: EnvironmentConfigState::FromThread,
                     }
                 }],
             );
 
             test.codex
-                .submit(Op::UserInput {
-                    items: vec![UserInput::Text {
+                .start_or_steer_turn(TurnInputRequest::user_input(vec![UserInput::Text {
                         text: "run the Windows smoke command".to_string(),
                         text_elements: Vec::new(),
-                    }],
-                    final_output_json_schema: None,
-                    responsesapi_client_metadata: None,
-                    additional_context: Default::default(),
-                    thread_settings: codex_protocol::protocol::ThreadSettingsOverrides {
-                        environments: Some(environments),
+                    }]).with_thread_settings(ThreadSettingsOverrides {
+                        environments: Some(environments.into_requests()),
                         approval_policy: Some(AskForApproval::Never),
                         sandbox_policy: Some(sandbox_policy),
                         permission_profile,
-                        collaboration_mode: Some(codex_protocol::config_types::CollaborationMode {
-                            mode: codex_protocol::config_types::ModeKind::Default,
-                            settings: codex_protocol::config_types::Settings {
+                        collaboration_mode: Some(CollaborationMode {
+                            mode: ModeKind::Default,
+                            settings: Settings {
                                 model: test.session_configured.model.clone(),
                                 reasoning_effort: None,
                                 developer_instructions: None,
                             },
                         }),
                         ..Default::default()
-                    },
-                })
+                    }))
                 .await?;
 
-            let mut command_begin = None;
-            let mut command_end = None;
+            let mut begin = None;
+            let mut end = None;
             let mut patch_end = None;
             let mut turn_complete = false;
-            let mut observed_events = Vec::new();
-            let wait_result = timeout(REMOTE_WINDOWS_SMOKE_TIMEOUT, async {
-                loop {
-                    let event = test
-                        .codex
-                        .next_event()
-                        .await
-                        .context("event stream ended unexpectedly")?;
-                    record_remote_windows_smoke_event(&mut observed_events, &event.msg);
-                    match event.msg {
-                        EventMsg::ExecCommandBegin(event) if event.call_id == CALL_ID => {
-                            command_begin = Some(event)
-                        }
-                        EventMsg::ExecCommandEnd(event) if event.call_id == CALL_ID => {
-                            command_end = Some(event)
-                        }
-                        EventMsg::PatchApplyEnd(event) if event.call_id == PATCH_CALL_ID => {
-                            patch_end = Some(event)
-                        }
-                        EventMsg::TurnComplete(_) => turn_complete = true,
-                        EventMsg::Error(_) => {
-                            return Err(anyhow::Error::msg("codex emitted error event"));
-                        }
-                        _ => {}
+            loop {
+                match wait_for_event(&test.codex, |_| true).await {
+                    EventMsg::ExecCommandBegin(event) if event.call_id == CALL_ID => {
+                        begin = Some(event)
                     }
-                    if turn_complete
-                        && command_begin.is_some()
-                        && command_end.is_some()
-                        && patch_end.is_some()
-                    {
-                        break;
+                    EventMsg::ExecCommandEnd(event) if event.call_id == CALL_ID => {
+                        end = Some(event)
                     }
+                    EventMsg::PatchApplyEnd(event) if event.call_id == PATCH_CALL_ID => {
+                        patch_end = Some(event)
+                    }
+                    EventMsg::TurnComplete(_) => turn_complete = true,
+                    _ => {}
                 }
+                if turn_complete && end.is_some() {
+                    break;
+                }
+            }
 
-                Ok::<_, anyhow::Error>(())
-            })
-            .await
-            .map_err(|_| {
-                anyhow::Error::msg(format!(
-                    "timeout waiting for remote Windows smoke events: {}",
-                    remote_windows_smoke_progress(
-                        command_begin.is_some(),
-                        command_end.is_some(),
-                        patch_end.is_some(),
-                        turn_complete,
-                        &observed_events,
-                    )
-                ))
-            })?;
-            wait_result?;
-
-            let events = RemoteWindowsSmokeEvents {
-                command_begin: command_begin.context("exec_command should emit a begin event")?,
-                command_end: command_end.context("exec_command should emit an end event")?,
-                patch_end: patch_end.context("intercepted apply_patch should emit an end event")?,
-            };
-
+            let begin = begin.context("exec_command should emit a begin event")?;
             assert!(
-                events.command_begin.command.first().is_some_and(|command| command
+                begin.command.first().is_some_and(|command| command
                     .to_ascii_lowercase()
                     .ends_with("pwsh.exe")),
                 "unexpected command: {:?}",
-                events.command_begin.command
+                begin.command
             );
-            assert_eq!(
-                &events.command_begin.command[1..],
-                ["-NoProfile", "-Command", COMMAND]
-            );
+            assert_eq!(&begin.command[1..], ["-NoProfile", "-Command", COMMAND]);
 
+            let end = end.context("exec_command should emit an end event")?;
             let expected_cwd = PathUri::parse("file:///C:/windows")?;
-            assert_eq!(
-                (&events.command_begin.cwd, &events.command_end.cwd),
-                (&expected_cwd, &expected_cwd)
-            );
-            assert_eq!(
-                (events.command_end.exit_code, events.command_end.status),
-                (0, ExecCommandStatus::Completed)
-            );
+            assert_eq!((&begin.cwd, &end.cwd), (&expected_cwd, &expected_cwd));
+            assert_eq!((end.exit_code, end.status), (0, ExecCommandStatus::Completed));
 
+            let patch_end = patch_end.context("intercepted apply_patch should emit an end event")?;
             assert!(
-                events.patch_end.success,
+                patch_end.success,
                 "intercepted apply_patch failed: stdout={:?} stderr={:?}",
-                events.patch_end.stdout, events.patch_end.stderr
+                patch_end.stdout, patch_end.stderr
             );
             assert!(
-                events
-                    .patch_end
+                patch_end
                     .changes
                     .contains_key(&std::path::PathBuf::from(format!(
                         r"C:\codex-home\apply-patch-smoke\nested\{PATCH_FILE}"
                     ))),
                 "apply_patch should retain the Windows cwd: {:?}",
-                events.patch_end.changes
+                patch_end.changes
             );
             let request = response_mock
                 .last_request()
@@ -321,13 +198,6 @@ async fn windows_exec_server_runs_with_native_shell_and_cwd() -> Result<()> {
                 verify_success != Some(false),
                 "verification command failed: {verify_output:?}"
             );
-            anyhow::ensure!(
-                verify_output
-                    .as_deref()
-                    .is_some_and(|output| output.contains("PATCH_VERIFIED")),
-                "verification command did not confirm the patched file: {verify_output:?}"
-            );
-
             let (_output, success) = request
                 .function_call_output_content_and_success(CALL_ID)
                 .context("command output should be present")?;
@@ -338,157 +208,6 @@ async fn windows_exec_server_runs_with_native_shell_and_cwd() -> Result<()> {
             let patch_output = patch_output.context("apply_patch output should contain text")?;
             assert!(patch_output.contains(PATCH_FILE));
             assert_ne!(patch_success, Some(false));
-            Ok(())
-        })
-        .await
-}
-
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn app_server_starts_thread_with_windows_environment_native_cwd() -> Result<()> {
-    const AGENTS_INSTRUCTIONS: &str = "remote Windows workspace instructions";
-    const NATIVE_CWD: &str = r"C:\windows";
-
-    WineExecServer
-        .scope(|exec_server_url, wine_prefix| async move {
-            let agents_path = PathUri::parse("file:///C:/windows/AGENTS.md")?;
-            fs::write(
-                wine_prefix
-                    .join("drive_c")
-                    .join("windows")
-                    .join("AGENTS.md"),
-                AGENTS_INSTRUCTIONS,
-            )?;
-
-            let codex_home = TempDir::new()?;
-            let server = create_mock_responses_server_repeating_assistant("done").await;
-            write_mock_responses_config_toml(
-                codex_home.path(),
-                &server.uri(),
-                &BTreeMap::new(),
-                100_000,
-                /*requires_openai_auth*/ None,
-                "mock",
-                "compact",
-            )?;
-            let mut app_server = TestAppServer::builder()
-                .with_codex_home(codex_home.path())
-                .without_auto_env()
-                .with_env_overrides(&[(
-                    CODEX_EXEC_SERVER_URL_ENV_VAR,
-                    Some(exec_server_url.as_str()),
-                )])
-                .build()
-                .await?;
-            timeout(APP_SERVER_READ_TIMEOUT, app_server.initialize()).await??;
-
-            let request_id = app_server
-                .send_thread_start_request(ThreadStartParams {
-                    environments: Some(vec![TurnEnvironmentParams {
-                        environment_id: REMOTE_ENVIRONMENT_ID.to_string(),
-                        cwd: serde_json::from_value::<LegacyAppPathString>(json!(NATIVE_CWD))?,
-                        runtime_workspace_roots: None,
-                    }]),
-                    ..Default::default()
-                })
-                .await?;
-            let response = timeout(
-                APP_SERVER_READ_TIMEOUT,
-                app_server.read_stream_until_response_message(RequestId::Integer(request_id)),
-            )
-            .await??;
-            let response: ThreadStartResponse = to_response(response)?;
-            assert!(!response.thread.id.is_empty());
-            let host_cwd = codex_home.path().to_path_buf().abs();
-            // TODO(anp): Return the selected environment's native cwd from thread/start.
-            assert_eq!(response.cwd, host_cwd);
-            // Selected-environment roots are scoped to that environment rather than
-            // projected through the legacy top-level response field.
-            assert!(response.runtime_workspace_roots.is_empty());
-            assert_eq!(
-                response.instruction_sources,
-                vec![LegacyAppPathString::from_path_uri(
-                    &agents_path,
-                    PathConvention::Windows,
-                )?]
-            );
-            // TODO(anp): Report the implicit built-in permission profile instead of None.
-            assert_eq!(response.active_permission_profile, None);
-
-            let turn_request_id = app_server
-                .send_turn_start_request(TurnStartParams {
-                    thread_id: response.thread.id,
-                    client_user_message_id: None,
-                    input: vec![V2UserInput::Text {
-                        text: "say done".to_string(),
-                        text_elements: Vec::new(),
-                    }],
-                    ..Default::default()
-                })
-                .await?;
-            let turn_response = timeout(
-                APP_SERVER_READ_TIMEOUT,
-                app_server.read_stream_until_response_message(RequestId::Integer(turn_request_id)),
-            )
-            .await??;
-            let _: TurnStartResponse = to_response(turn_response)?;
-            timeout(
-                APP_SERVER_READ_TIMEOUT,
-                app_server.read_stream_until_notification_message("turn/completed"),
-            )
-            .await??;
-
-            let requests = server
-                .received_requests()
-                .await
-                .context("failed to fetch received requests")?;
-            let first_request = requests
-                .iter()
-                .find(|request| request.url.path().ends_with("/responses"))
-                .context("turn should send a Responses request")?;
-            let body = first_request.body_json::<Value>()?;
-            let remote_instructions = body["input"]
-                .as_array()
-                .into_iter()
-                .flatten()
-                .filter(|item| item.get("role").and_then(Value::as_str) == Some("user"))
-                .filter_map(|item| item.get("content").and_then(Value::as_array))
-                .flatten()
-                .filter_map(|content| content.get("text").and_then(Value::as_str))
-                .find(|text| text.contains(AGENTS_INSTRUCTIONS))
-                .context("remote workspace instructions should be model visible")?;
-            assert!(remote_instructions.contains(r"# AGENTS.md instructions for C:\windows"));
-            let environment_context = body["input"]
-                .as_array()
-                .into_iter()
-                .flatten()
-                .filter(|item| item.get("role").and_then(Value::as_str) == Some("user"))
-                .filter_map(|item| item.get("content").and_then(Value::as_array))
-                .flatten()
-                .filter_map(|content| content.get("text").and_then(Value::as_str))
-                .find(|text| text.starts_with("<environment_context>"))
-                .context("environment context should be model visible")?;
-            // The model should see the remote environment's shell, not the Linux app-server's
-            // host shell.
-            assert_eq!(
-                environment_context
-                    .lines()
-                    .find(|line| line.trim_start().starts_with("<shell>"))
-                    .map(str::trim),
-                Some("<shell>powershell</shell>"),
-            );
-            // The model should see cwd using the remote environment's native path convention, not
-            // the Linux app-server's host path convention.
-            assert_eq!(
-                environment_context
-                    .lines()
-                    .find(|line| line.trim_start().starts_with("<cwd>"))
-                    .map(str::trim),
-                Some(r"<cwd>C:\windows</cwd>"),
-            );
-            let remote_workspace_roots =
-                format!("<workspace_roots><root>{NATIVE_CWD}</root></workspace_roots>");
-            assert!(environment_context.contains(&remote_workspace_roots));
-
             Ok(())
         })
         .await

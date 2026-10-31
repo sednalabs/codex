@@ -1,14 +1,32 @@
+use super::SessionTask;
+use super::SessionTaskResult;
 use super::TASK_COMPACT_METRIC;
 use super::emit_compact_metric;
 use super::emit_turn_memory_metric;
 use super::emit_turn_network_proxy_metric;
+use crate::session::TurnInput;
+use crate::session::session::Session;
+use crate::session::tests::make_session_and_context_with_rx;
+use crate::session::turn_context::TurnContext;
+use crate::state::TaskKind;
 use codex_otel::MetricsClient;
 use codex_otel::MetricsConfig;
 use codex_otel::SessionTelemetry;
 use codex_otel::TURN_MEMORY_METRIC;
 use codex_otel::TURN_NETWORK_PROXY_METRIC;
+use codex_otel::TURN_TOKEN_USAGE_METRIC;
+use codex_otel::TURN_TOOL_CALL_METRIC;
+use codex_otel::TURN_UNIFIED_EXEC_RUNNING_PROCESSES_METRIC;
 use codex_protocol::ThreadId;
+use codex_protocol::error::CodexErr;
+use codex_protocol::models::AudioReference;
+use codex_protocol::models::ContentItem;
+use codex_protocol::models::ResponseItem;
+use codex_protocol::protocol::CodexErrorInfo;
+use codex_protocol::protocol::EventMsg;
 use codex_protocol::protocol::SessionSource;
+use codex_protocol::protocol::TokenUsage;
+use codex_protocol::user_input::UserInput;
 use opentelemetry::KeyValue;
 use opentelemetry_sdk::metrics::InMemoryMetricExporter;
 use opentelemetry_sdk::metrics::data::AggregatedMetrics;
@@ -17,6 +35,112 @@ use opentelemetry_sdk::metrics::data::MetricData;
 use opentelemetry_sdk::metrics::data::ResourceMetrics;
 use pretty_assertions::assert_eq;
 use std::collections::BTreeMap;
+use std::sync::Arc;
+use tokio_util::sync::CancellationToken;
+
+struct PendingTask;
+
+impl SessionTask for PendingTask {
+    fn kind(&self) -> TaskKind {
+        TaskKind::Regular
+    }
+
+    fn span_name(&self) -> &'static str {
+        "session_task.pending"
+    }
+
+    async fn run(
+        self: Arc<Self>,
+        _session: Arc<Session>,
+        _turn_context: Arc<TurnContext>,
+        _input: Vec<TurnInput>,
+        _cancellation_token: CancellationToken,
+    ) -> SessionTaskResult {
+        std::future::pending().await
+    }
+}
+
+#[tokio::test]
+async fn task_finish_rejects_uploaded_audio_without_losing_other_pending_input() {
+    let (session, turn_context, receiver) = make_session_and_context_with_rx().await;
+    session
+        .spawn_task(Arc::clone(&turn_context), Vec::new(), PendingTask)
+        .await;
+    while receiver.try_recv().is_ok() {}
+
+    let turn_state = {
+        let active_turn = session.active_turn.lock().await;
+        Arc::clone(
+            &active_turn
+                .as_ref()
+                .expect("active pending task")
+                .turn_state,
+        )
+    };
+    session
+        .input_queue
+        .extend_pending_input_for_turn_state(
+            turn_state.as_ref(),
+            vec![TurnInput::UserInput {
+                content: vec![
+                    UserInput::Text {
+                        text: "preserve pending text".to_string(),
+                        text_elements: Vec::new(),
+                    },
+                    UserInput::Audio {
+                        audio: AudioReference::File {
+                            file_id: "file_disabled_at_finish".to_string(),
+                        },
+                    },
+                ],
+                client_id: None,
+                metadata: Default::default(),
+            }],
+        )
+        .await;
+
+    session
+        .on_task_finished(Arc::clone(&turn_context), /*task_result*/ Ok(None))
+        .await;
+
+    let history = session.clone_history().await;
+    assert!(history.raw_items().any(|item| {
+        matches!(item, ResponseItem::Message { content, .. } if content.iter().any(|part| {
+            matches!(part, ContentItem::InputText { text } if text == "preserve pending text")
+        }))
+    }));
+    assert!(history.raw_items().all(|item| {
+        !matches!(item, ResponseItem::Message { content, .. } if content.iter().any(|part| {
+            matches!(part, ContentItem::InputAudio {
+                audio: AudioReference::File { file_id, .. },
+            } if file_id == "file_disabled_at_finish")
+        }))
+    }));
+
+    let (saw_error, completed) = tokio::time::timeout(std::time::Duration::from_secs(2), async {
+        let mut saw_error = false;
+        loop {
+            match receiver.recv().await.expect("event channel open").msg {
+                EventMsg::Error(error) => {
+                    saw_error = true;
+                    assert_eq!(error.codex_error_info, Some(CodexErrorInfo::BadRequest));
+                }
+                EventMsg::TurnComplete(completed) => break (saw_error, completed),
+                _ => {}
+            }
+        }
+    })
+    .await
+    .expect("task finish events");
+    assert!(saw_error, "the rejected drain should emit an error event");
+    assert_eq!(
+        completed
+            .error
+            .as_ref()
+            .and_then(|error| error.codex_error_info.clone()),
+        Some(CodexErrorInfo::BadRequest)
+    );
+}
 
 fn test_session_telemetry() -> SessionTelemetry {
     let exporter = InMemoryMetricExporter::default();
@@ -73,6 +197,250 @@ fn metric_point(resource_metrics: &ResourceMetrics, name: &str) -> (BTreeMap<Str
         },
         _ => panic!("unexpected counter data type"),
     }
+}
+
+#[derive(Clone, Copy)]
+enum UsageScenario {
+    ResponseOnly,
+    ResponseAfterStepSwitch,
+    CompactThenResponse,
+    CompactThenStop,
+    NoResponse,
+}
+
+#[test_case::test_case(UsageScenario::ResponseOnly; "response_only")]
+#[test_case::test_case(UsageScenario::ResponseAfterStepSwitch; "response_after_step_switch")]
+#[test_case::test_case(UsageScenario::CompactThenResponse; "compact_then_response")]
+#[test_case::test_case(UsageScenario::CompactThenStop; "compact_then_stop")]
+#[test_case::test_case(UsageScenario::NoResponse; "no_response")]
+#[tokio::test]
+async fn turn_completion_metrics_follow_model_switch(scenario: UsageScenario) {
+    let metrics = MetricsClient::new(
+        MetricsConfig::in_memory(
+            "test",
+            "codex-core",
+            env!("CARGO_PKG_VERSION"),
+            InMemoryMetricExporter::default(),
+        )
+        .with_runtime_reader(),
+    )
+    .expect("in-memory metrics client");
+    let (mut session, mut turn_context, receiver) = make_session_and_context_with_rx().await;
+    let session_telemetry = session
+        .services
+        .session_telemetry
+        .clone()
+        .with_metrics(metrics.clone());
+    Arc::get_mut(&mut session)
+        .expect("session should be uniquely owned")
+        .services
+        .session_telemetry = session_telemetry.clone();
+    Arc::get_mut(&mut turn_context)
+        .expect("turn context should be uniquely owned")
+        .session_telemetry = session_telemetry;
+
+    let next_model = if turn_context.model_info().slug == "gpt-5.4" {
+        "gpt-5.2"
+    } else {
+        "gpt-5.4"
+    };
+    let previous_context = turn_context;
+    let turn_context = Arc::new(
+        previous_context
+            .with_model(next_model.to_string(), &session.services.models_manager)
+            .await,
+    );
+    // Earlier session usage must not leak into this turn's per-model samples.
+    session
+        .update_token_usage_info(
+            &previous_context,
+            Some(&TokenUsage {
+                input_tokens: 1_000,
+                total_tokens: 1_000,
+                ..TokenUsage::default()
+            }),
+            /*includes_reasoning*/ false,
+        )
+        .await
+        .expect("earlier session usage should be recorded");
+    session
+        .spawn_task(Arc::clone(&turn_context), Vec::new(), PendingTask)
+        .await;
+    let mut expected_usage = Vec::new();
+    if matches!(
+        scenario,
+        UsageScenario::CompactThenResponse | UsageScenario::CompactThenStop
+    ) {
+        let compaction_usage = TokenUsage {
+            input_tokens: 100,
+            cached_input_tokens: 30,
+            cache_write_input_tokens: 20,
+            output_tokens: 70,
+            reasoning_output_tokens: 40,
+            total_tokens: 170,
+            codex_rollout_budget_units: None,
+        };
+        // Local pre-turn compaction records usage with the previous model's context.
+        session
+            .update_token_usage_info(
+                &previous_context,
+                Some(&compaction_usage),
+                /*includes_reasoning*/ false,
+            )
+            .await
+            .expect("compaction usage should be recorded");
+        expected_usage.push((previous_context.model_info().slug.clone(), compaction_usage));
+    }
+    if matches!(
+        scenario,
+        UsageScenario::ResponseOnly
+            | UsageScenario::ResponseAfterStepSwitch
+            | UsageScenario::CompactThenResponse
+    ) {
+        let response_context = if matches!(scenario, UsageScenario::ResponseAfterStepSwitch) {
+            &previous_context
+        } else {
+            &turn_context
+        };
+        let response_usage = TokenUsage {
+            input_tokens: 10,
+            cached_input_tokens: 3,
+            cache_write_input_tokens: 2,
+            output_tokens: 7,
+            reasoning_output_tokens: 4,
+            total_tokens: 17,
+            codex_rollout_budget_units: None,
+        };
+        // Multiple requests for one model must still produce one turn histogram sample.
+        for _ in 0..2 {
+            session
+                .record_token_usage_info(
+                    &turn_context,
+                    &response_context.initial_settings,
+                    Some(&response_usage),
+                    crate::session::TokenUsageContext::Sampling {
+                        includes_reasoning: false,
+                        input_item_count: 0,
+                    },
+                )
+                .await
+                .expect("response usage should be recorded");
+        }
+        let mut total_usage = response_usage.clone();
+        total_usage.add_assign(&response_usage);
+        expected_usage.push((response_context.model_info().slug.clone(), total_usage));
+    }
+    if matches!(scenario, UsageScenario::NoResponse) {
+        expected_usage.push((next_model.to_string(), TokenUsage::default()));
+    }
+
+    let task_result = if matches!(scenario, UsageScenario::CompactThenStop) {
+        // A PostCompact hook can stop the turn before the new model samples.
+        Err(CodexErr::TurnAborted)
+    } else {
+        Ok(None)
+    };
+    let expected_root = turn_context.root_turn_id();
+    session.on_task_finished(turn_context, task_result).await;
+    let mut terminal_root = None;
+    while let Ok(event) = receiver.try_recv() {
+        match event.msg {
+            codex_protocol::protocol::EventMsg::TurnComplete(event) => {
+                terminal_root = event.root_turn_id;
+            }
+            codex_protocol::protocol::EventMsg::TurnAborted(event) => {
+                terminal_root = event.root_turn_id;
+            }
+            _ => {}
+        }
+    }
+    assert_eq!(terminal_root, Some(expected_root));
+
+    let snapshot = metrics.snapshot().expect("runtime metrics snapshot");
+    let token_usage_metric = find_metric(&snapshot, TURN_TOKEN_USAGE_METRIC);
+    let AggregatedMetrics::F64(MetricData::Histogram(histogram)) = token_usage_metric.data() else {
+        panic!("expected token usage histogram");
+    };
+    let mut token_usage_points = histogram
+        .data_points()
+        .map(|point| {
+            let mut attributes = attributes_to_map(point.attributes());
+            (
+                (
+                    attributes
+                        .remove("token_type")
+                        .expect("token usage metric should include a token type"),
+                    attributes
+                        .remove("model")
+                        .expect("token usage metric should include a model"),
+                ),
+                point.count(),
+                point.sum(),
+            )
+        })
+        .collect::<Vec<_>>();
+    let mut expected_points = expected_usage
+        .into_iter()
+        .flat_map(|(model, usage)| {
+            [
+                ("cache_write_input", usage.cache_write_input_tokens),
+                ("cached_input", usage.cached_input()),
+                ("input", usage.input_tokens),
+                ("output", usage.output_tokens),
+                ("reasoning_output", usage.reasoning_output_tokens),
+                ("total", usage.total_tokens),
+            ]
+            .map(|(token_type, value)| ((token_type.to_string(), model.clone()), 1, value as f64))
+        })
+        .collect::<Vec<_>>();
+    token_usage_points.sort_by(|left, right| left.0.cmp(&right.0));
+    expected_points.sort_by(|left, right| left.0.cmp(&right.0));
+    assert_eq!(token_usage_points, expected_points);
+
+    let tool_call_metric = find_metric(&snapshot, TURN_TOOL_CALL_METRIC);
+    let AggregatedMetrics::F64(MetricData::Histogram(histogram)) = tool_call_metric.data() else {
+        panic!("expected tool call histogram");
+    };
+    let tool_call_models = histogram
+        .data_points()
+        .map(|point| {
+            attributes_to_map(point.attributes())
+                .remove("model")
+                .expect("tool call metric should include a model")
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(tool_call_models, vec![next_model.to_string()]);
+
+    let counter_models = [
+        TURN_MEMORY_METRIC,
+        TURN_NETWORK_PROXY_METRIC,
+        TURN_UNIFIED_EXEC_RUNNING_PROCESSES_METRIC,
+    ]
+    .into_iter()
+    .map(|name| {
+        let (mut attributes, _value) = metric_point(&snapshot, name);
+        (
+            name.to_string(),
+            attributes
+                .remove("model")
+                .expect("turn counter should include a model"),
+        )
+    })
+    .collect::<BTreeMap<_, _>>();
+    assert_eq!(
+        counter_models,
+        BTreeMap::from([
+            (TURN_MEMORY_METRIC.to_string(), next_model.to_string()),
+            (
+                TURN_NETWORK_PROXY_METRIC.to_string(),
+                next_model.to_string(),
+            ),
+            (
+                TURN_UNIFIED_EXEC_RUNNING_PROCESSES_METRIC.to_string(),
+                next_model.to_string(),
+            ),
+        ])
+    );
 }
 
 #[test]
@@ -220,5 +588,75 @@ fn emit_compact_metric_records_auto_local() {
             ("manual".to_string(), "false".to_string()),
             ("type".to_string(), "local".to_string()),
         ])
+    );
+}
+
+struct UncooperativeTimedTask {
+    entered: Arc<tokio::sync::Notify>,
+}
+
+impl SessionTask for UncooperativeTimedTask {
+    fn kind(&self) -> TaskKind {
+        TaskKind::Regular
+    }
+    fn span_name(&self) -> &'static str {
+        "session_task.uncooperative_timing"
+    }
+    async fn run(
+        self: Arc<Self>,
+        _session: Arc<Session>,
+        context: Arc<TurnContext>,
+        _input: Vec<TurnInput>,
+        _cancellation_token: CancellationToken,
+    ) -> SessionTaskResult {
+        let timing = &context.turn_timing_state;
+        timing.enable_critical_path();
+        let batch = codex_direct_tool_timing::ToolBatchTiming::default();
+        let now = std::time::Instant::now();
+        let _blocking;
+        let _work = timing.direct_tool_timings.start_turn_direct_call(
+            "uncooperative",
+            &context.sub_id,
+            batch.clone(),
+            now,
+            timing.snapshot_path(now),
+        );
+        _blocking = timing.begin_tool_blocking(Some(batch));
+        let _review = _work.start_review();
+        self.entered.notify_one();
+        std::future::pending().await
+    }
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn hard_abort_drops_timing_guards_before_profile_completion() {
+    let (session, context, _receiver) = make_session_and_context_with_rx().await;
+    let entered = Arc::new(tokio::sync::Notify::new());
+    session
+        .spawn_task(
+            Arc::clone(&context),
+            Vec::new(),
+            UncooperativeTimedTask {
+                entered: Arc::clone(&entered),
+            },
+        )
+        .await;
+    entered.notified().await;
+    session
+        .abort_all_tasks(codex_protocol::protocol::TurnAbortReason::Interrupted)
+        .await;
+    // The task's review and tool guards are gone before abort completion.
+    assert!(
+        context
+            .turn_timing_state
+            .direct_tool_timings
+            .owner_for_turn("uncooperative", &context.sub_id)
+            .is_none()
+    );
+    assert_eq!(
+        context
+            .turn_timing_state
+            .snapshot_path(std::time::Instant::now()),
+        None
     );
 }

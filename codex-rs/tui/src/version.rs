@@ -1,78 +1,44 @@
-/// The current Codex release version used for semver comparisons and persistence.
-pub const CODEX_CLI_VERSION: &str = codex_utils_version::RELEASE_VERSION;
+use std::sync::OnceLock;
 
-/// The human-readable version label shown in user-facing surfaces.
-pub const CODEX_DISPLAY_VERSION: &str = codex_utils_version::DISPLAY_VERSION;
+/// The current Codex CLI version as embedded at compile time.
+pub const CODEX_CLI_VERSION: &str = env!("CARGO_PKG_VERSION");
+static CODEX_CLI_DISPLAY_VERSION: OnceLock<String> = OnceLock::new();
 
-/// The GitHub repository used for release/update checks.
-pub const CODEX_RELEASE_REPOSITORY: &str = match option_env!("CODEX_RELEASE_REPOSITORY") {
-    Some(repository) => repository,
-    None => "sednalabs/codex",
-};
-
-/// The tag prefix used to derive a version string from release tags.
-#[cfg_attr(debug_assertions, allow(dead_code))]
-pub const CODEX_RELEASE_TAG_PREFIX: &str = match option_env!("CODEX_RELEASE_TAG_PREFIX") {
-    Some(prefix) => prefix,
-    None => "v",
-};
-
-/// The npm package used for self-update guidance when the binary is npm-managed.
-#[cfg_attr(debug_assertions, allow(dead_code))]
-pub const CODEX_UPDATE_NPM_PACKAGE: &str = match option_env!("CODEX_UPDATE_NPM_PACKAGE") {
-    Some(package) => package,
-    None => "@openai/codex",
-};
-
-/// The brew cask used for self-update guidance when the binary is brew-managed.
-#[cfg_attr(debug_assertions, allow(dead_code))]
-pub const CODEX_UPDATE_BREW_CASK: &str = match option_env!("CODEX_UPDATE_BREW_CASK") {
-    Some(cask) => cask,
-    None => "codex",
-};
-
-/// Whether this binary was compiled for the Sedna release/update channel.
-#[cfg_attr(debug_assertions, allow(dead_code))]
-pub fn is_sedna_release_channel() -> bool {
-    codex_utils_version::is_sedna_release_identity(
-        option_env!("CODEX_RELEASE_REPOSITORY"),
-        option_env!("CODEX_RELEASE_TAG_PREFIX"),
-    )
+/// The version shown in local UI surfaces, including the installed package identity.
+pub(crate) fn display_version() -> &'static str {
+    CODEX_CLI_DISPLAY_VERSION
+        .get_or_init(|| display_version_from(&codex_build_info::BuildInfo::get()))
+        .as_str()
 }
 
-#[cfg_attr(debug_assertions, allow(dead_code))]
-pub fn installation_options_url() -> String {
-    format!("https://github.com/{CODEX_RELEASE_REPOSITORY}")
-}
-
-#[cfg_attr(debug_assertions, allow(dead_code))]
-pub fn latest_release_api_url() -> String {
-    format!("https://api.github.com/repos/{CODEX_RELEASE_REPOSITORY}/releases/latest")
-}
-
-#[cfg_attr(debug_assertions, allow(dead_code))]
-pub fn latest_release_notes_url() -> String {
-    format!("https://github.com/{CODEX_RELEASE_REPOSITORY}/releases/latest")
+fn display_version_from(build_info: &codex_build_info::BuildInfo) -> String {
+    if build_info.is_source_build() {
+        CODEX_CLI_VERSION.to_string()
+    } else {
+        build_info.version().to_string()
+    }
 }
 
 #[cfg(test)]
 mod tests {
+    use super::CODEX_CLI_VERSION;
+    use super::display_version_from;
+    use codex_build_info::BuildInfo;
+
     #[test]
-    fn sedna_update_identity_requires_both_explicit_build_values() {
-        assert!(codex_utils_version::is_sedna_release_identity(
-            Some("sednalabs/codex"),
-            Some("v")
-        ));
-        for identity in [
-            (None, None),
-            (Some("sednalabs/codex"), None),
-            (None, Some("v")),
-            (Some("openai/codex"), Some("v")),
-            (Some("sednalabs/codex"), Some("rust-v")),
-        ] {
-            assert!(!codex_utils_version::is_sedna_release_identity(
-                identity.0, identity.1
-            ));
-        }
+    fn source_build_display_uses_workspace_version() {
+        assert_eq!(
+            display_version_from(&BuildInfo::from_version("0.0.0")),
+            CODEX_CLI_VERSION
+        );
+    }
+
+    #[test]
+    fn installed_display_uses_full_package_manifest_version() {
+        let version = "0.164.0-dev.distro.1+build.1";
+        assert_eq!(
+            display_version_from(&BuildInfo::from_version(version)),
+            version
+        );
     }
 }

@@ -1,5 +1,6 @@
 {
-  "$defs": {
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "definitions": {
     "WorkspaceMessage": {
       "properties": {
         "archivedAt": {
@@ -25,13 +26,13 @@
           "type": "string"
         },
         "messageType": {
-          "$ref": "#/$defs/WorkspaceMessageType"
+          "$ref": "#/definitions/WorkspaceMessageType"
         }
       },
       "required": [
+        "messageBody",
         "messageId",
-        "messageType",
-        "messageBody"
+        "messageType"
       ],
       "type": "object"
     },
@@ -44,7 +45,6 @@
       "type": "string"
     }
   },
-  "$schema": "https://json-schema.org/draft/2020-12/schema",
   "properties": {
     "featureEnabled": {
       "description": "Whether the workspace-message backend route is available for this client.",
@@ -53,7 +53,7 @@
     "messages": {
       "description": "Active workspace messages returned by the backend.",
       "items": {
-        "$ref": "#/$defs/WorkspaceMessage"
+        "$ref": "#/definitions/WorkspaceMessage"
       },
       "type": "array"
     }

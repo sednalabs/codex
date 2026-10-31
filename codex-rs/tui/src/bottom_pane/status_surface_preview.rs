@@ -1,8 +1,9 @@
 use std::collections::BTreeMap;
 
-use ratatui::text::Line;
+use super::footer_content::FooterContent;
+use codex_protocol::ThreadId;
 
-use super::status_line_from_segments;
+use super::status_line_content::StatusLineRenderer;
 use super::status_line_setup::StatusLineItem;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Ord, PartialOrd)]
@@ -11,7 +12,9 @@ pub(crate) enum StatusSurfacePreviewItem {
     ProjectName,
     ProjectRoot,
     CurrentDir,
+    Hostname,
     Status,
+    ThreadName,
     ThreadTitle,
     GitBranch,
     PullRequestNumber,
@@ -27,13 +30,18 @@ pub(crate) enum StatusSurfacePreviewItem {
     UsedTokens,
     TotalInputTokens,
     TotalOutputTokens,
+    ThreadCredits,
+    EstimatedThreadCost,
     SessionId,
     FastMode,
+    Daybreak,
     RawOutput,
     WorkspaceHeadline,
     Model,
     ModelWithReasoning,
     Reasoning,
+    Profile,
+    Provider,
     TaskProgress,
 }
 
@@ -44,7 +52,9 @@ impl StatusSurfacePreviewItem {
             StatusSurfacePreviewItem::ProjectName => "my-project",
             StatusSurfacePreviewItem::ProjectRoot => "my-project",
             StatusSurfacePreviewItem::CurrentDir => "~/my-project/subdir",
+            StatusSurfacePreviewItem::Hostname => "my-host",
             StatusSurfacePreviewItem::Status => "Working",
+            StatusSurfacePreviewItem::ThreadName => "thread name",
             StatusSurfacePreviewItem::ThreadTitle => "thread title",
             StatusSurfacePreviewItem::GitBranch => "feat/awesome-feature",
             StatusSurfacePreviewItem::PullRequestNumber => "PR #123",
@@ -60,13 +70,18 @@ impl StatusSurfacePreviewItem {
             StatusSurfacePreviewItem::UsedTokens => "0 used",
             StatusSurfacePreviewItem::TotalInputTokens => "0 in",
             StatusSurfacePreviewItem::TotalOutputTokens => "0 out",
+            StatusSurfacePreviewItem::ThreadCredits => "5.2 credits",
+            StatusSurfacePreviewItem::EstimatedThreadCost => "~$1.82",
             StatusSurfacePreviewItem::SessionId => "550e8400-e29b-41d4",
-            StatusSurfacePreviewItem::FastMode => "Fast on",
+            StatusSurfacePreviewItem::FastMode => "Fast",
+            StatusSurfacePreviewItem::Daybreak => "Daybreak off",
             StatusSurfacePreviewItem::RawOutput => "raw output",
             StatusSurfacePreviewItem::WorkspaceHeadline => "Workspace headline",
             StatusSurfacePreviewItem::Model => "gpt-5.2-codex",
             StatusSurfacePreviewItem::ModelWithReasoning => "gpt-5.2-codex medium",
             StatusSurfacePreviewItem::Reasoning => "medium",
+            StatusSurfacePreviewItem::Profile => "profile: <name>",
+            StatusSurfacePreviewItem::Provider => "provider: <id>",
             StatusSurfacePreviewItem::TaskProgress => "Tasks 0/0",
         }
     }
@@ -77,7 +92,9 @@ impl StatusSurfacePreviewItem {
             Self::ProjectName,
             Self::ProjectRoot,
             Self::CurrentDir,
+            Self::Hostname,
             Self::Status,
+            Self::ThreadName,
             Self::ThreadTitle,
             Self::GitBranch,
             Self::PullRequestNumber,
@@ -93,13 +110,18 @@ impl StatusSurfacePreviewItem {
             Self::UsedTokens,
             Self::TotalInputTokens,
             Self::TotalOutputTokens,
+            Self::ThreadCredits,
+            Self::EstimatedThreadCost,
             Self::SessionId,
             Self::FastMode,
+            Self::Daybreak,
             Self::RawOutput,
             Self::WorkspaceHeadline,
             Self::Model,
             Self::ModelWithReasoning,
             Self::Reasoning,
+            Self::Profile,
+            Self::Provider,
             Self::TaskProgress,
         ]
         .into_iter()
@@ -114,12 +136,18 @@ struct PreviewValue {
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(crate) struct StatusSurfacePreviewData {
+    pub(crate) thread_id: Option<ThreadId>,
+    pub(crate) renderer: StatusLineRenderer,
+    pub(crate) pull_request_url: Option<String>,
     values: BTreeMap<StatusSurfacePreviewItem, PreviewValue>,
 }
 
 impl Default for StatusSurfacePreviewData {
     fn default() -> Self {
         let mut data = Self {
+            thread_id: None,
+            renderer: StatusLineRenderer::Native,
+            pull_request_url: None,
             values: BTreeMap::new(),
         };
         for item in StatusSurfacePreviewItem::iter() {
@@ -222,15 +250,25 @@ impl StatusSurfacePreviewData {
         &self,
         items: I,
         use_theme_colors: bool,
-    ) -> Option<Line<'static>>
+    ) -> Option<FooterContent>
     where
         I: IntoIterator<Item = StatusLineItem>,
     {
-        let segments = items.into_iter().filter_map(|item| {
-            self.value_for(item.preview_item())
-                .map(|value| (item, value.to_string()))
-        });
-        status_line_from_segments(segments, use_theme_colors)
+        let mut segments = items
+            .into_iter()
+            .filter_map(|item| {
+                self.value_for(item.preview_item())
+                    .map(|value| (item, value.to_string()))
+            })
+            .peekable();
+        segments.peek()?;
+        self.renderer.content(
+            segments,
+            use_theme_colors,
+            self.thread_id,
+            self.live_value_for(StatusSurfacePreviewItem::PullRequestNumber)
+                .and(self.pull_request_url.as_deref()),
+        )
     }
 }
 

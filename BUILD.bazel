@@ -67,26 +67,20 @@ toolchain(
     toolchain_type = "@bazel_tools//tools/test:default_test_toolchain_type",
 )
 
-# The generated rules_rs wrapper remains the implementation of the Rust
-# toolchain. Keep this native selector's execution constraints explicit so the
-# ARM64 gnullvm health aquery cannot fall through to the same-CPU MSVC
-# toolchain. Keep this selector limited to non-BPF actions; the generated
-# wrapper supplies the target compatibility for the requested platform.
 toolchain(
-    name = "windows_aarch64_gnullvm_rust_toolchain_for_health",
-    exec_compatible_with = [
-        "@platforms//cpu:aarch64",
-        "@platforms//os:windows",
-        "@llvm//constraints/windows/abi:gnullvm",
-        "@llvm//constraints/windows/crt:msvcrt",
-    ],
-    target_settings = [
-        "@rules_rust//rust/private:bootstrapped",
-        "@rules_rust//rust/toolchain/channel:stable",
-        "@rules_rs//rs/toolchains:non_bpf_targets",
-    ],
-    toolchain = "@default_rust_toolchains//:windows_aarch64_gnullvm_1_95_0_rust_toolchain",
-    toolchain_type = "@rules_rust//rust:toolchain_type",
+    name = "linux_local_tests_toolchain",
+    exec_compatible_with = ["@platforms//os:linux"],
+    target_compatible_with = ["@platforms//os:linux"],
+    toolchain = "@bazel_tools//tools/test:empty_toolchain",
+    toolchain_type = "@bazel_tools//tools/test:default_test_toolchain_type",
+)
+
+toolchain(
+    name = "macos_local_tests_toolchain",
+    exec_compatible_with = ["@platforms//os:macos"],
+    target_compatible_with = ["@platforms//os:macos"],
+    toolchain = "@bazel_tools//tools/test:empty_toolchain",
+    toolchain_type = "@bazel_tools//tools/test:default_test_toolchain_type",
 )
 
 alias(
@@ -95,15 +89,6 @@ alias(
 )
 
 exports_files([
-    "AGENTS.md",
     "workspace_root_test_launcher.bat.tpl",
     "workspace_root_test_launcher.sh.tpl",
 ])
-
-exports_files(
-    [
-        "scripts/codex_usage_report.py",
-        "scripts/test_codex_usage_report.py",
-    ],
-    visibility = ["//codex-rs/state:__pkg__"],
-)

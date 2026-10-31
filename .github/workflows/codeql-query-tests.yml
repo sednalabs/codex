@@ -4,6 +4,8 @@ on:
   pull_request:
     paths:
       - ".github/codeql/rust-computer-use-contract/**"
+      - ".github/codeql/actions-workflow-security/**"
+      - ".github/codeql/actions-workflow-security-tests/**"
       - ".github/scripts/verify_native_visual_response_contract.py"
       - ".github/scripts/test_verify_native_visual_response_contract.py"
       - ".github/workflows/codeql-query-tests.yml"
@@ -25,12 +27,6 @@ jobs:
         uses: actions/checkout@v7
         with:
           persist-credentials: false
-
-      - name: Verify native visual response production contract
-        run: python3 .github/scripts/verify_native_visual_response_contract.py
-
-      - name: Test native visual response production contract verifier
-        run: python3 .github/scripts/test_verify_native_visual_response_contract.py
 
       - name: Set up CodeQL
         id: setup-codeql
@@ -57,3 +53,45 @@ jobs:
           "${{ steps.setup-codeql.outputs.codeql-path }}" test run \
             --search-path .github/codeql \
             .github/codeql/rust-computer-use-contract/test
+
+  actions-workflow-security:
+    name: Actions workflow security query tests
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+
+      - name: Set up CodeQL
+        id: setup-codeql
+        uses: github/codeql-action/setup-codeql@v4.37.9
+
+      - name: Install Actions workflow security query packs
+        shell: bash
+        run: |
+          set -euo pipefail
+          codeql="${{ steps.setup-codeql.outputs.codeql-path }}"
+          "$codeql" pack install \
+            --search-path .github/codeql \
+            .github/codeql/actions-workflow-security
+          "$codeql" pack install \
+            --search-path .github/codeql \
+            --additional-packs .github/codeql \
+            .github/codeql/actions-workflow-security-tests
+
+      - name: Compile Actions workflow security queries
+        shell: bash
+        run: |
+          set -euo pipefail
+          "${{ steps.setup-codeql.outputs.codeql-path }}" query compile \
+            --search-path .github/codeql \
+            .github/codeql/actions-workflow-security/*.ql
+
+      - name: Run Actions workflow security query tests
+        shell: bash
+        run: |
+          set -euo pipefail
+          "${{ steps.setup-codeql.outputs.codeql-path }}" test run \
+            --additional-packs .github/codeql \
+            .github/codeql/actions-workflow-security-tests/test

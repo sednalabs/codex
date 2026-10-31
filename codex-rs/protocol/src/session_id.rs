@@ -1,9 +1,8 @@
-use std::borrow::Cow;
 use std::fmt::Display;
 
 use schemars::JsonSchema;
-use schemars::Schema;
-use schemars::SchemaGenerator;
+use schemars::r#gen::SchemaGenerator;
+use schemars::schema::Schema;
 use serde::Deserialize;
 use serde::Serialize;
 use ts_rs::TS;
@@ -98,8 +97,8 @@ impl<'de> Deserialize<'de> for SessionId {
 }
 
 impl JsonSchema for SessionId {
-    fn schema_name() -> Cow<'static, str> {
-        "SessionId".into()
+    fn schema_name() -> String {
+        "SessionId".to_string()
     }
 
     fn json_schema(generator: &mut SchemaGenerator) -> Schema {

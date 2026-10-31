@@ -1,0 +1,6 @@
+name: sednalabs/actions-workflow-security-tests
+version: 0.0.0
+dependencies:
+  sednalabs/actions-workflow-security: "*"
+extractor: actions
+tests: .

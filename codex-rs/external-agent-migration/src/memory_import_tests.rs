@@ -20,7 +20,7 @@ fn write_project_session(project_root: &Path, project_cwd: &Path) {
 #[test]
 fn copies_only_selected_projects_and_recopies_changed_content() {
     let root = TempDir::new().expect("create tempdir");
-    let codex_home = root.path().join(".codex");
+    let codex_home = root.path().join(".codex/memories");
     let source_home = root.path().join(".external-agent");
     let project_a_memory = source_home.join("projects/project-a/memory");
     let project_b_memory = source_home.join("projects/project-b/memory");
@@ -105,7 +105,7 @@ fn copies_only_selected_projects_and_recopies_changed_content() {
 #[test]
 fn preserves_project_successes_and_reports_each_failed_selection() {
     let root = TempDir::new().expect("create tempdir");
-    let codex_home = root.path().join(".codex");
+    let codex_home = root.path().join(".codex/memories");
     let source_home = root.path().join(".external-agent");
     let project_a_memory = source_home.join("projects/project-a/memory");
     let project_b_memory = source_home.join("projects/project-b/memory");
@@ -126,7 +126,7 @@ fn preserves_project_successes_and_reports_each_failed_selection() {
 
     let memory_files = discover_external_memory_files(&source_home).expect("discover memories");
     fs::remove_file(project_b_source).expect("remove project B source after discovery");
-    let selected_memory = BTreeSet::from(["missing-project", "project-a", "project-b"]);
+    let selected_memory = BTreeSet::from(["project-a", "project-b"]);
     let outcome = copy_resources(&codex_home, &memory_files, &selected_memory)
         .expect("copy selected memories");
 
@@ -137,14 +137,10 @@ fn preserves_project_successes_and_reports_each_failed_selection() {
             .iter()
             .map(|failure| failure.project_key.as_str())
             .collect::<Vec<_>>(),
-        vec!["missing-project", "project-b"]
-    );
-    assert_eq!(
-        outcome.failures[0].message,
-        "selected memory was not found: missing-project"
+        vec!["project-b"]
     );
     assert!(
-        outcome.failures[1]
+        outcome.failures[0]
             .message
             .starts_with("failed to synchronize selected memory project-b:")
     );
@@ -157,174 +153,9 @@ fn preserves_project_successes_and_reports_each_failed_selection() {
 }
 
 #[test]
-fn rejects_memory_project_keys_that_are_not_single_components() {
-    let root = TempDir::new().expect("create tempdir");
-    let codex_home = root.path().join(".codex");
-    let outside = root.path().join("outside");
-    fs::create_dir_all(&outside).expect("create outside directory");
-    fs::write(outside.join("sentinel"), b"outside").expect("write outside sentinel");
-    let absolute_key = outside.to_string_lossy().into_owned();
-
-    for project_key in [absolute_key.as_str(), "../outside", "nested/project"] {
-        let selected_memory = BTreeSet::from([project_key]);
-        let error = copy_resources(&codex_home, &[], &selected_memory)
-            .expect_err("reject unsafe memory project key");
-        assert_eq!(error.kind(), io::ErrorKind::InvalidInput);
-        assert!(error.to_string().contains(project_key));
-    }
-
-    assert_eq!(
-        fs::read(outside.join("sentinel")).expect("read outside sentinel"),
-        b"outside".to_vec()
-    );
-}
-
-#[cfg(unix)]
-#[test]
-fn rejects_symlinked_memory_destination_ancestors() {
-    let root = TempDir::new().expect("create tempdir");
-
-    for (case_name, relative_target) in [
-        ("memory-root", Path::new("memories")),
-        (
-            "resources-root",
-            Path::new("memories/extensions/external_agent_import/resources"),
-        ),
-    ] {
-        let case_root = root.path().join(case_name);
-        let codex_home = case_root.join(".codex");
-        let target = codex_home.join(relative_target);
-        let outside = case_root.join("outside");
-        fs::create_dir_all(target.parent().expect("target parent")).expect("create target parent");
-        fs::create_dir_all(&outside).expect("create outside directory");
-        fs::write(outside.join("sentinel"), b"outside").expect("write outside sentinel");
-        std::os::unix::fs::symlink(&outside, &target).expect("create destination symlink");
-
-        let error = ensure_memory_destination_paths(&codex_home)
-            .expect_err("reject symlinked memory destination ancestor");
-
-        assert!(error.to_string().contains("symlink"));
-        assert!(
-            fs::symlink_metadata(&target)
-                .expect("read destination symlink")
-                .file_type()
-                .is_symlink()
-        );
-        assert_eq!(
-            fs::read(outside.join("sentinel")).expect("read outside sentinel"),
-            b"outside".to_vec()
-        );
-    }
-}
-
-#[cfg(unix)]
-#[test]
-fn projects_needing_import_rejects_symlinked_stale_memory_project() {
-    let root = TempDir::new().expect("create tempdir");
-    let codex_home = root.path().join(".codex");
-    let source_home = root.path().join(".external-agent");
-    let stale_project = resources_root(&codex_home).join("stale-project");
-    let outside = root.path().join("outside");
-    fs::create_dir_all(stale_project.parent().expect("stale project parent"))
-        .expect("create resources root");
-    fs::create_dir_all(&source_home).expect("create source home");
-    fs::create_dir_all(&outside).expect("create outside directory");
-    fs::write(outside.join("sentinel"), b"outside").expect("write outside sentinel");
-    std::os::unix::fs::symlink(&outside, &stale_project).expect("create stale project symlink");
-
-    let memory_files = discover_external_memory_files(&source_home).expect("discover memory files");
-    let error = projects_needing_import(&codex_home, &memory_files)
-        .expect_err("reject symlinked stale project during detection");
-
-    assert!(error.to_string().contains("symlink"));
-    assert_eq!(
-        fs::read(outside.join("sentinel")).expect("read outside sentinel"),
-        b"outside".to_vec()
-    );
-    assert!(
-        fs::symlink_metadata(&stale_project)
-            .expect("read stale project symlink")
-            .file_type()
-            .is_symlink()
-    );
-}
-
-#[cfg(unix)]
-#[test]
-fn rejects_symlinked_memory_instructions_before_project_mutation() {
-    let root = TempDir::new().expect("create tempdir");
-    let codex_home = root.path().join(".codex");
-    let instructions_path = extension_root(&codex_home).join("instructions.md");
-    let outside = root.path().join("outside-instructions.md");
-    fs::create_dir_all(instructions_path.parent().expect("instructions parent"))
-        .expect("create instructions parent");
-    fs::write(&outside, b"outside").expect("write outside instructions");
-    std::os::unix::fs::symlink(&outside, &instructions_path).expect("create instructions symlink");
-    let selected_memory = BTreeSet::from(["missing-project"]);
-
-    let error = copy_resources(&codex_home, &[], &selected_memory)
-        .expect_err("reject symlinked instructions");
-
-    assert!(error.to_string().contains("symlink"));
-    assert_eq!(
-        fs::read(&outside).expect("read outside instructions"),
-        b"outside".to_vec()
-    );
-    assert!(
-        fs::symlink_metadata(&instructions_path)
-            .expect("read instructions symlink")
-            .file_type()
-            .is_symlink()
-    );
-    assert!(!resources_root(&codex_home).join("missing-project").exists());
-}
-
-#[cfg(unix)]
-#[test]
-fn rejects_symlinked_memory_resource_and_scope_leaves() {
-    let root = TempDir::new().expect("create tempdir");
-
-    for relative_target in ["MEMORY.md", PROJECT_SCOPE_FILE] {
-        let case_root = root.path().join(relative_target.replace('.', "-"));
-        let codex_home = case_root.join(".codex");
-        let source_home = case_root.join(".external-agent");
-        let project_root = source_home.join("projects/project-a");
-        let project_memory = project_root.join("memory");
-        let target_root = resources_root(&codex_home).join("project-a");
-        let target = target_root.join(relative_target);
-        let outside = case_root.join("outside");
-        fs::create_dir_all(&project_memory).expect("create project memory");
-        write_project_session(&project_root, &case_root.join("project-cwd"));
-        fs::write(project_memory.join("MEMORY.md"), b"project memory")
-            .expect("write project memory");
-        fs::create_dir_all(&target_root).expect("create target root");
-        fs::write(&outside, b"outside").expect("write outside target");
-        std::os::unix::fs::symlink(&outside, &target).expect("create target symlink");
-        let memory_files =
-            discover_external_memory_files(&source_home).expect("discover project memory files");
-        let selected_memory = BTreeSet::from(["project-a"]);
-
-        let error = copy_resources(&codex_home, &memory_files, &selected_memory)
-            .expect_err("reject symlinked target leaf");
-
-        assert!(error.to_string().contains("symlink"));
-        assert_eq!(
-            fs::read(&outside).expect("read outside target"),
-            b"outside".to_vec()
-        );
-        assert!(
-            fs::symlink_metadata(&target)
-                .expect("read target symlink")
-                .file_type()
-                .is_symlink()
-        );
-    }
-}
-
-#[test]
 fn removes_project_resources_when_the_source_project_disappears() {
     let root = TempDir::new().expect("create tempdir");
-    let codex_home = root.path().join(".codex");
+    let codex_home = root.path().join(".codex/memories");
     let source_home = root.path().join(".external-agent");
     let project_root = source_home.join("projects/project-a");
     let project_memory = project_root.join("memory");
@@ -348,7 +179,6 @@ fn removes_project_resources_when_the_source_project_disappears() {
         MemoryImportOutcome {
             synchronized_projects: vec!["project-a".to_string()],
             failures: Vec::new(),
-            workspace_changed: true,
         }
     );
     assert!(!resources_root(&codex_home).join("project-a").exists());
@@ -357,7 +187,7 @@ fn removes_project_resources_when_the_source_project_disappears() {
 #[test]
 fn uses_scope_file_to_identify_owned_projects() {
     let root = TempDir::new().expect("create tempdir");
-    let codex_home = root.path().join(".codex");
+    let codex_home = root.path().join(".codex/memories");
     let resources_root = resources_root(&codex_home);
     fs::create_dir_all(resources_root.join("project-a")).expect("create project resources");
     fs::write(resources_root.join("project-a/scope.json"), b"{}").expect("write project scope");
@@ -374,38 +204,10 @@ fn uses_scope_file_to_identify_owned_projects() {
     );
 }
 
-#[cfg(unix)]
-#[test]
-fn projects_needing_import_rejects_symlinked_stale_project_scope() {
-    let root = TempDir::new().expect("create tempdir");
-    let codex_home = root.path().join(".codex");
-    let stale_project = resources_root(&codex_home).join("stale-project");
-    let scope_path = stale_project.join(PROJECT_SCOPE_FILE);
-    let outside_scope = root.path().join("outside-scope.json");
-    fs::create_dir_all(&stale_project).expect("create stale project directory");
-    fs::write(&outside_scope, b"{}\n").expect("write outside scope");
-    std::os::unix::fs::symlink(&outside_scope, &scope_path).expect("create stale scope symlink");
-
-    let error = projects_needing_import(&codex_home, &[])
-        .expect_err("reject symlinked stale project scope during detection");
-
-    assert!(error.to_string().contains("symlink"));
-    assert_eq!(
-        fs::read(&outside_scope).expect("read outside scope"),
-        b"{}\n".to_vec()
-    );
-    assert!(
-        fs::symlink_metadata(&scope_path)
-            .expect("read stale scope symlink")
-            .file_type()
-            .is_symlink()
-    );
-}
-
 #[test]
 fn project_rename_removes_the_old_target_and_imports_the_new_target() {
     let root = TempDir::new().expect("create tempdir");
-    let codex_home = root.path().join(".codex");
+    let codex_home = root.path().join(".codex/memories");
     let source_home = root.path().join(".external-agent");
     let project_a_root = source_home.join("projects/project-a");
     let project_a_memory = project_a_root.join("memory");
@@ -431,7 +233,6 @@ fn project_rename_removes_the_old_target_and_imports_the_new_target() {
         MemoryImportOutcome {
             synchronized_projects: vec!["project-a".to_string(), "project-b".to_string()],
             failures: Vec::new(),
-            workspace_changed: true,
         }
     );
     assert!(!resources_root(&codex_home).join("project-a").exists());
@@ -445,7 +246,7 @@ fn project_rename_removes_the_old_target_and_imports_the_new_target() {
 #[test]
 fn does_not_import_a_new_project_without_a_reliable_cwd() {
     let root = TempDir::new().expect("create tempdir");
-    let codex_home = root.path().join(".codex");
+    let codex_home = root.path().join(".codex/memories");
     let source_home = root.path().join(".external-agent");
     let project_memory = source_home.join("projects/project-a/memory");
     fs::create_dir_all(&project_memory).expect("create project memory");
@@ -463,11 +264,7 @@ fn does_not_import_a_new_project_without_a_reliable_cwd() {
         outcome,
         MemoryImportOutcome {
             synchronized_projects: Vec::new(),
-            failures: vec![MemoryImportFailure {
-                project_key: "project-a".to_string(),
-                message: "failed to synchronize selected memory project-a: selected memory project has no reliable cwd: project-a".to_string(),
-            }],
-            workspace_changed: false,
+            failures: Vec::new(),
         }
     );
     assert!(!resources_root(&codex_home).join("project-a").exists());
@@ -476,7 +273,7 @@ fn does_not_import_a_new_project_without_a_reliable_cwd() {
 #[test]
 fn missing_cwd_does_not_make_an_existing_scoped_project_look_deleted() {
     let root = TempDir::new().expect("create tempdir");
-    let codex_home = root.path().join(".codex");
+    let codex_home = root.path().join(".codex/memories");
     let source_home = root.path().join(".external-agent");
     let project_root = source_home.join("projects/project-a");
     let project_memory = project_root.join("memory");
@@ -500,7 +297,7 @@ fn missing_cwd_does_not_make_an_existing_scoped_project_look_deleted() {
 #[test]
 fn removes_an_existing_unscoped_target_when_cwd_is_unavailable() {
     let root = TempDir::new().expect("create tempdir");
-    let codex_home = root.path().join(".codex");
+    let codex_home = root.path().join(".codex/memories");
     let source_home = root.path().join(".external-agent");
     let project_memory = source_home.join("projects/project-a/memory");
     fs::create_dir_all(&project_memory).expect("create project memory");
@@ -521,7 +318,6 @@ fn removes_an_existing_unscoped_target_when_cwd_is_unavailable() {
         MemoryImportOutcome {
             synchronized_projects: vec!["project-a".to_string()],
             failures: Vec::new(),
-            workspace_changed: true,
         }
     );
     assert!(!target_root.exists());

@@ -3,7 +3,7 @@ use codex_terminal_detection::TerminalName;
 use codex_terminal_detection::terminal_info;
 use ratatui::style::Color;
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
 pub enum StdoutColorLevel {
     TrueColor,
     Ansi256,
@@ -41,6 +41,11 @@ pub fn best_color_for_level(target: (u8, u8, u8), color_level: StdoutColorLevel)
 }
 
 pub(crate) fn effective_stdout_color_level() -> StdoutColorLevel {
+    #[cfg(test)]
+    if TEST_DEFAULT_COLORS.with(|colors| colors.get().flatten().is_some()) {
+        return StdoutColorLevel::TrueColor;
+    }
+
     stdout_color_level_for_terminal(
         stdout_color_level(),
         terminal_info().name,
@@ -89,8 +94,38 @@ pub struct DefaultColors {
     bg: (u8, u8, u8),
 }
 
+#[cfg(test)]
+thread_local! {
+    static TEST_DEFAULT_COLORS: std::cell::Cell<Option<Option<DefaultColors>>> = const {
+        std::cell::Cell::new(None)
+    };
+}
+
 pub fn default_colors() -> Option<DefaultColors> {
+    #[cfg(test)]
+    if let Some(colors) = TEST_DEFAULT_COLORS.with(std::cell::Cell::get) {
+        return colors;
+    }
+
     imp::default_colors()
+}
+
+/// Scope a terminal palette (or its absence) to the current test thread while rendering a widget.
+#[cfg(test)]
+pub(crate) fn with_test_default_colors<T>(
+    colors: impl Into<Option<crate::terminal_probe::DefaultColors>>,
+    render: impl FnOnce() -> T,
+) -> T {
+    TEST_DEFAULT_COLORS.with(|override_colors| {
+        let colors = colors.into().map(|colors| DefaultColors {
+            fg: colors.fg,
+            bg: colors.bg,
+        });
+        let previous = override_colors.replace(Some(colors));
+        let result = render();
+        override_colors.set(previous);
+        result
+    })
 }
 
 pub fn default_fg() -> Option<(u8, u8, u8)> {
@@ -108,7 +143,7 @@ pub(crate) fn set_default_colors_from_startup_probe(
     imp::set_default_colors_from_startup_probe(colors);
 }
 
-#[cfg(all(unix, not(test)))]
+#[cfg(any(all(unix, not(test)), windows))]
 mod imp {
     use super::DefaultColors;
     use std::sync::Mutex;
@@ -166,70 +201,6 @@ mod imp {
     /// The palette cache treats `None` as an attempted-but-unavailable result, so this function
     /// collapses I/O errors and missing responses into the same fallback path used for terminals
     /// that simply do not support OSC 10/11 queries.
-    fn query_default_colors() -> Option<DefaultColors> {
-        crate::terminal_probe::default_colors(crate::terminal_probe::DEFAULT_TIMEOUT)
-            .ok()
-            .flatten()
-            .map(|colors| DefaultColors {
-                fg: colors.fg,
-                bg: colors.bg,
-            })
-    }
-}
-
-#[cfg(windows)]
-mod imp {
-    use super::DefaultColors;
-    use std::sync::Mutex;
-    use std::sync::OnceLock;
-
-    struct Cache<T> {
-        attempted: bool,
-        value: Option<T>,
-    }
-
-    impl<T> Default for Cache<T> {
-        fn default() -> Self {
-            Self {
-                attempted: false,
-                value: None,
-            }
-        }
-    }
-
-    impl<T: Copy> Cache<T> {
-        fn get_or_init_with(&mut self, mut init: impl FnMut() -> Option<T>) -> Option<T> {
-            if !self.attempted {
-                self.value = init();
-                self.attempted = true;
-            }
-            self.value
-        }
-    }
-
-    fn default_colors_cache() -> &'static Mutex<Cache<DefaultColors>> {
-        static CACHE: OnceLock<Mutex<Cache<DefaultColors>>> = OnceLock::new();
-        CACHE.get_or_init(|| Mutex::new(Cache::default()))
-    }
-
-    pub(super) fn default_colors() -> Option<DefaultColors> {
-        let cache = default_colors_cache();
-        let mut cache = cache.lock().ok()?;
-        cache.get_or_init_with(query_default_colors)
-    }
-
-    pub(super) fn set_default_colors_from_startup_probe(
-        colors: Option<crate::terminal_probe::DefaultColors>,
-    ) {
-        if let Ok(mut cache) = default_colors_cache().lock() {
-            cache.value = colors.map(|colors| DefaultColors {
-                fg: colors.fg,
-                bg: colors.bg,
-            });
-            cache.attempted = true;
-        }
-    }
-
     fn query_default_colors() -> Option<DefaultColors> {
         crate::terminal_probe::default_colors(crate::terminal_probe::DEFAULT_TIMEOUT)
             .ok()

@@ -1,6 +1,9 @@
 use crate::policy::is_non_public_ip;
+use crate::runtime::HostAuthorization;
 use crate::runtime::HostBlockDecision;
 use crate::state::NetworkProxyState;
+#[cfg(target_os = "macos")]
+use crate::system_dns::SystemDnsResolver;
 use rama_core::Service;
 use rama_core::error::BoxError;
 use rama_core::error::ErrorExt as _;
@@ -18,6 +21,8 @@ use std::io;
 use std::net::SocketAddr;
 use std::sync::Arc;
 
+/// Connects traffic whose host policy has already allowed the request.
+/// Resolved non-public targets still undergo explicit-deny and local-address checks.
 #[derive(Clone)]
 pub(crate) struct TargetCheckedTcpConnector {
     state: Arc<NetworkProxyState>,
@@ -38,8 +43,12 @@ where
     type Error = BoxError;
 
     async fn serve(&self, input: Input) -> Result<Self::Output, Self::Error> {
+        let connector = TcpConnector::new();
+        #[cfg(target_os = "macos")]
+        let connector = connector.with_dns(SystemDnsResolver);
+
         if input.extensions().get::<ProxyAddress>().is_some() {
-            return TcpConnector::new().serve(input).await;
+            return connector.serve(input).await;
         }
 
         let target = input
@@ -48,7 +57,7 @@ where
             .host_with_port()
             .ok_or_else(|| OpaqueError::from_display("network target is missing a port"))?;
 
-        TcpConnector::new()
+        connector
             .with_connector(TargetCheckedStreamConnector {
                 state: self.state.clone(),
                 target,
@@ -99,7 +108,12 @@ impl TargetCheckedStreamConnector {
         }
 
         self.state
-            .host_blocked(&self.target.host.to_string(), self.target.port)
+            .host_blocked_with_local_binding(
+                &self.target.host.to_string(),
+                self.target.port,
+                /*allow_local_binding*/ None,
+                HostAuthorization::Approved,
+            )
             .await
             .map(|decision| decision == HostBlockDecision::Allowed)
             .map_err(|err| {
@@ -172,7 +186,7 @@ mod tests {
         let target = listener.local_addr().expect("local addr");
         let connector = TargetCheckedTcpConnector::new(Arc::new(network_proxy_state_for_policy(
             NetworkProxyConfig {
-                allow_local_binding: true,
+                allow_local_binding: Some(true),
                 ..NetworkProxyConfig::default()
             },
         )));
@@ -192,8 +206,9 @@ mod tests {
         let target = listener.local_addr().expect("local addr");
         let mut config = NetworkProxyConfig::default();
         config.set_allowed_domains(vec![target.ip().to_string()]);
-        let connector =
-            TargetCheckedTcpConnector::new(Arc::new(network_proxy_state_for_policy(config)));
+        config.review_domains = vec![target.ip().to_string()];
+        let state = Arc::new(network_proxy_state_for_policy(config));
+        let connector = TargetCheckedTcpConnector::new(Arc::clone(&state));
 
         let request: rama_tcp::client::Request =
             rama_tcp::client::Request::new(HostWithPort::from(target));
@@ -203,6 +218,12 @@ mod tests {
             result.is_ok(),
             "explicitly allowlisted local target should be allowed: {result:?}"
         );
+        state
+            .add_denied_domain(&target.ip().to_string())
+            .await
+            .unwrap();
+        let request = rama_tcp::client::Request::new(HostWithPort::from(target));
+        assert!(Service::serve(&connector, request).await.is_err());
     }
 
     #[tokio::test(flavor = "current_thread")]
@@ -213,6 +234,7 @@ mod tests {
         let target = listener.local_addr().expect("local addr");
         let mut config = NetworkProxyConfig::default();
         config.set_allowed_domains(vec!["localhost".to_string()]);
+        config.review_domains = vec!["localhost".to_string()];
         let connector =
             TargetCheckedTcpConnector::new(Arc::new(network_proxy_state_for_policy(config)));
 

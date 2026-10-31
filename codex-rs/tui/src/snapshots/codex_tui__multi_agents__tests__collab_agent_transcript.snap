@@ -2,13 +2,13 @@
 source: tui/src/multi_agents.rs
 expression: snapshot
 ---
-• Spawned · primitive: spawn_agent · Robie [explorer] (gpt-5 high)
+• Spawned Robie [explorer] (gpt-5 high)
   └ Compute 11! and reply with just the integer result.
 
 • Sent input to Robie [explorer]
   └ Please continue and return the answer only.
 
-• Waiting on · primitive: wait_agent · Robie [explorer]
+• Waiting for Robie [explorer]
 
 • Finished waiting
   └ Robie [explorer]: Completed - 39916800
