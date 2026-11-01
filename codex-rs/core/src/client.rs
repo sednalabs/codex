@@ -2638,6 +2638,11 @@ impl ModelClientSession {
         }
     }
 
+    /// Whether a WebSocket request failed before a connection was established.
+    pub(crate) fn websocket_connection_unavailable(&self) -> bool {
+        self.client.responses_websocket_enabled() && self.websocket_session.connection.is_none()
+    }
+
     /// Permanently disables WebSockets for this Codex session and resets WebSocket state.
     ///
     /// This is used after exhausting the provider retry budget, to force subsequent requests onto

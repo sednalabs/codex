@@ -137,9 +137,11 @@ pub(crate) async fn handle_response_stream_error(
         .await;
         codex_client::record_retry!(attempt, delay, operation);
         tokio::time::sleep_until(retry_at).await;
-        // Exhausting a WebSocket retry budget changes transport, not the
-        // indefinite capacity-retry policy. Respect the retry deadline first.
-        if attempt == max_retries.saturating_add(1)
+        // A rejected WebSocket connection can fall back to HTTP without ending
+        // indefinite capacity retries. An overload on an established socket
+        // should keep retrying that transport. Respect the deadline first.
+        if attempt > max_retries
+            && client_session.websocket_connection_unavailable()
             && client_session.try_switch_fallback_transport(
                 &turn_context.session_telemetry,
                 turn_context.model_info(),
