@@ -252,7 +252,8 @@ pub(super) async fn handle(
         .map_err(|message| CodexErr::InvalidRequest(message.to_owned()))?;
     let result = match mode {
         TurnInputMode::StartOrSteer => start_or_steer(session, request, submission_id).await,
-        TurnInputMode::StartIfIdle => {
+        mode @ (TurnInputMode::StartIfIdle | TurnInputMode::StartIfIdleUnlessInterrupted) => {
+            let respect_interrupt = matches!(mode, TurnInputMode::StartIfIdleUnlessInterrupted);
             let kind = match &request.request.input {
                 SubmittedTurnInput::UserInput { content, .. } if !content.is_empty() => {
                     TurnStartKind::User
@@ -268,6 +269,7 @@ pub(super) async fn handle(
                 submission_id,
                 kind,
                 /*expected_previous_turn_id*/ None,
+                respect_interrupt,
             )
             .await
         }
@@ -288,6 +290,7 @@ pub(super) async fn handle(
                 submission_id,
                 TurnStartKind::Recovery,
                 Some(expected_previous_turn_id),
+                /*respect_interrupt*/ false,
             )
             .await
         }
@@ -333,6 +336,7 @@ pub(super) async fn handle_recovery(
         submission_id,
         TurnStartKind::Recovery,
         /*expected_previous_turn_id*/ None,
+        /*respect_interrupt*/ false,
     )
     .await;
     if let Ok(TurnInputSubmission::Started { turn_id, .. }) = &result {
@@ -484,6 +488,7 @@ async fn start_if_idle(
     submission_id: String,
     kind: TurnStartKind,
     expected_previous_turn_id: Option<String>,
+    respect_interrupt: bool,
 ) -> CodexResult<TurnInputSubmission> {
     let WithTurnExtensionData {
         request,
@@ -539,6 +544,11 @@ async fn start_if_idle(
         if active_turn.is_some() {
             return Ok(TurnInputSubmission::NotSubmitted {
                 reason: NotSubmittedReason::NotIdle,
+            });
+        }
+        if respect_interrupt && session.is_interrupted() {
+            return Ok(TurnInputSubmission::NotSubmitted {
+                reason: NotSubmittedReason::Superseded,
             });
         }
         if let Some(expected) = expected_previous_turn_id
