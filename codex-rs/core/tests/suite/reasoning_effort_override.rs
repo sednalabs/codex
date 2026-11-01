@@ -17,6 +17,7 @@ use codex_login::CodexAuth;
 use codex_protocol::models::ResponseItem;
 use codex_protocol::openai_models::ReasoningEffort;
 use codex_protocol::openai_models::ReasoningEffortPreset;
+use codex_protocol::protocol::CodexErrorInfo;
 use codex_protocol::protocol::EventMsg;
 use codex_protocol::protocol::InternalSessionSource;
 use codex_protocol::protocol::Op;
@@ -560,7 +561,7 @@ async fn reasoning_effort_override_recovery_sends_latest_tail_update(
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn reasoning_effort_override_capacity_retry_keeps_latest_adjacent_update()
+async fn reasoning_effort_override_retry_after_terminal_error_keeps_latest_adjacent_update()
 -> anyhow::Result<()> {
     skip_if_no_network!(Ok(()));
     let server = responses::start_mock_server().await;
@@ -571,9 +572,8 @@ async fn reasoning_effort_override_capacity_retry_keeps_latest_adjacent_update()
     .await;
     let failed = responses::mount_response_once(
         &server,
-        ResponseTemplate::new(503)
-            .insert_header("Retry-After", "60")
-            .set_body_json(serde_json::json!({"error": {"code": "server_is_overloaded"}})),
+        ResponseTemplate::new(400)
+            .set_body_json(serde_json::json!({"error": {"code": "invalid_prompt"}})),
     )
     .await;
     let retried = responses::mount_sse_once(
@@ -606,20 +606,21 @@ async fn reasoning_effort_override_capacity_retry_keeps_latest_adjacent_update()
             }),
         )
         .await?;
-    // Capacity errors retry automatically; interrupt the retry backoff before
-    // exercising a later user-initiated retry with updated settings.
-    let retry = wait_for_event(&test.codex, |event| {
-        matches!(event, EventMsg::StreamError(_))
+    // Capacity errors retry automatically; use a terminal provider error to
+    // exercise an explicit subsequent retry without an interruption marker.
+    let completed = wait_for_event(&test.codex, |event| {
+        matches!(event, EventMsg::TurnComplete(_))
     })
     .await;
-    let EventMsg::StreamError(retry) = retry else {
-        unreachable!("waited for retry notification");
+    let EventMsg::TurnComplete(completed) = completed else {
+        unreachable!("waited for turn completion");
     };
-    assert!(retry.message.contains("Model at capacity"));
-    test.codex.submit(Op::Interrupt).await?;
-    wait_for_event(&test.codex, |event| matches!(event, EventMsg::TurnAborted(_))).await;
+    assert_eq!(
+        completed.error.and_then(|error| error.codex_error_info),
+        Some(CodexErrorInfo::InvalidPrompt)
+    );
 
-    // The app's capacity Retry action uses current settings without adding a user message.
+    // A later retry uses current settings without adding a user message.
     test.codex
         .start_or_steer_turn(
             TurnInputRequest::user_input(Vec::new()).with_thread_settings(
