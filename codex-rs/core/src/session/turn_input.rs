@@ -738,11 +738,17 @@ pub(super) async fn steer_external_if_active(
     {
         return false;
     }
+    // Serialize the mode check with configuration changes until the wake is
+    // queued. Do not await a turn-state lock while holding the config guard.
+    let state = session.state.lock().await;
+    if !TurnStartKind::Automatic
+        .permits_mode(state.session_configuration.step_settings.collaboration_mode.mode)
+    {
+        return false;
+    }
     session
         .input_queue
-        .enqueue_external_wake(active_turn.turn_state.as_ref(), item.into())
-        .await;
-    true
+        .try_enqueue_external_wake(active_turn.turn_state.as_ref(), item.into())
 }
 
 impl Session {

@@ -139,6 +139,44 @@ async fn external_invalidation_steers_only_the_exact_regular_turn() {
     );
 }
 
+#[tokio::test]
+async fn external_invalidation_does_not_steer_after_switching_to_plan() {
+    let (session, turn_context) = make_session_and_context().await;
+    let session = Arc::new(session);
+    let turn_context = Arc::new(turn_context);
+    session
+        .spawn_task(
+            Arc::clone(&turn_context),
+            Vec::new(),
+            NeverEndingTask {
+                kind: TaskKind::Regular,
+                listen_to_cancellation_token: true,
+            },
+        )
+        .await;
+    {
+        let mut state = session.state.lock().await;
+        Arc::make_mut(&mut state.session_configuration.step_settings)
+            .collaboration_mode
+            .mode = ModeKind::Plan;
+    }
+    let item: ResponseItem = serde_json::from_value(serde_json::json!({
+        "type": "function_call_output",
+        "name": "external_event",
+        "output": "A source has unread data."
+    }))
+    .expect("valid standalone output");
+    assert!(
+        !steer_external_if_active(
+            &session,
+            SubmittedTurnInput::ResponseItem(item),
+            &turn_context.sub_id,
+        )
+        .await
+    );
+    session.abort_all_tasks(TurnAbortReason::Interrupted).await;
+}
+
 #[test_case(TaskKind::Review; "review")]
 #[test_case(TaskKind::Compact; "compact")]
 #[tokio::test]

@@ -158,13 +158,9 @@ where
                 )
             });
             runtime.set_enabled(enabled);
-            if enabled {
-                input.thread_store.insert(runtime.admission_lock());
-            } else {
-                input
-                    .thread_store
-                    .remove::<codex_core::GoalStateAdmissionLock>();
-            }
+            // Keep the same serialization guard even when goal processing is
+            // disabled: an in-flight operation may still hold a clone of it.
+            input.thread_store.insert(runtime.admission_lock());
             self.goal_service.register_runtime(&runtime);
         })
     }
@@ -234,11 +230,7 @@ where
         thread_store.insert(config);
         if let Some(runtime) = goal_runtime_handle(thread_store) {
             runtime.set_enabled(enabled);
-            if enabled {
-                thread_store.insert(runtime.admission_lock());
-            } else {
-                thread_store.remove::<codex_core::GoalStateAdmissionLock>();
-            }
+            thread_store.insert(runtime.admission_lock());
         }
     }
 }

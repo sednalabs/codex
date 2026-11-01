@@ -128,8 +128,8 @@ async fn run(
     guard: SocketGuard,
 ) {
     let mut data = [0u8; 128];
-    // A fresh registration always asks the consumer to reconcile its saved
-    // cursor, including messages received while this session was stopped.
+    // The source must reconcile its durable cursor at registration and send a
+    // hint if unread events exist. Empty starts must not create model turns.
     let mut state = PendingState::default();
     let mut retry_at = tokio::time::Instant::now();
     let mut retry_seconds = 30u64;
@@ -205,7 +205,7 @@ struct PendingState {
 impl Default for PendingState {
     fn default() -> Self {
         Self {
-            pending: true,
+            pending: false,
             inflight: None,
             last_acked: None,
         }
@@ -375,7 +375,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn independent_event_can_start_with_goal_runtime_but_no_goal() {
+    async fn independent_event_can_start_with_goal_lock_and_no_state_db() {
         let (session, _, _rx) = make_session_and_context_with_rx().await;
         assert!(session.services.state_db.is_none());
         session
@@ -504,6 +504,8 @@ mod tests {
     #[test]
     fn repeated_hints_coalesce_until_the_exact_token_is_acknowledged() {
         let mut state = PendingState::default();
+        assert!(!state.pending);
+        assert_eq!(state.receive(b"1"), None);
         assert!(state.pending);
         state.accepted("first".to_string());
         assert_eq!(state.receive(b"1"), None);

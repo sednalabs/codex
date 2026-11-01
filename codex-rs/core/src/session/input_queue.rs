@@ -421,13 +421,15 @@ impl InputQueue {
     }
 
     /// Queue an already admitted native wake with in-memory-only provenance.
-    pub(super) async fn enqueue_external_wake(
+    pub(super) fn try_enqueue_external_wake(
         &self,
         turn_state: &Mutex<TurnState>,
         item: ResponseItemEnvelope,
-    ) {
+    ) -> bool {
         {
-            let mut turn_state = turn_state.lock().await;
+            let Ok(mut turn_state) = turn_state.try_lock() else {
+                return false;
+            };
             turn_state.pending_input.external_wake_pending = true;
             turn_state.pending_input.notified_activity = Some(InputQueueActivity::Steer);
             turn_state
@@ -437,6 +439,7 @@ impl InputQueue {
             turn_state.accept_mailbox_delivery_for_current_turn();
         }
         self.activity_tx.send_replace(InputQueueActivity::Steer);
+        true
     }
 
     pub(crate) async fn extend_pending_input_for_turn_state(
@@ -585,7 +588,10 @@ mod tests {
             TurnInput::FunctionCallOutput(item) => item,
             _ => unreachable!(),
         };
-        input_queue.enqueue_external_wake(&turn_state, item).await;
+        let held = turn_state.lock().await;
+        assert!(!input_queue.try_enqueue_external_wake(&turn_state, item.clone()));
+        drop(held);
+        assert!(input_queue.try_enqueue_external_wake(&turn_state, item));
         assert!(turn_state.lock().await.pending_input.has_preempting_input());
         assert_eq!(
             input_queue

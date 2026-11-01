@@ -100,17 +100,16 @@ async fn installed_goal_tools_create_goal_and_fill_empty_preview() -> anyhow::Re
 }
 
 #[tokio::test]
-async fn disabled_goal_extension_does_not_publish_wake_admission() -> anyhow::Result<()> {
+async fn disabled_goal_extension_retains_serialization_guard() -> anyhow::Result<()> {
     let runtime = test_runtime().await?;
     let thread_id = test_thread_id()?;
     let harness =
         GoalExtensionHarness::new_with_enabled(runtime, thread_id, /*enabled*/ false).await?;
-    assert!(
-        harness
-            .thread_store
-            .get::<codex_core::GoalStateAdmissionLock>()
-            .is_none()
-    );
+    let guard = harness
+        .thread_store
+        .get::<codex_core::GoalStateAdmissionLock>()
+        .expect("goal runtime retains its serialization guard");
+    assert!(!guard.1.load(std::sync::atomic::Ordering::Acquire));
     Ok(())
 }
 
@@ -159,11 +158,10 @@ async fn goal_config_changes_update_wake_admission() -> anyhow::Result<()> {
             /*new_config*/ &false,
         );
     }
-    assert!(
-        thread_store
-            .get::<codex_core::GoalStateAdmissionLock>()
-            .is_none()
-    );
+    let disabled_admission = thread_store
+        .get::<codex_core::GoalStateAdmissionLock>()
+        .expect("disabled goal runtime keeps the guard");
+    assert!(Arc::ptr_eq(&admission.0, &disabled_admission.0));
     assert!(!admission.1.load(std::sync::atomic::Ordering::Acquire));
     for contributor in registry.config_contributors() {
         contributor.on_config_changed(
