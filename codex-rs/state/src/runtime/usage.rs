@@ -195,8 +195,8 @@ mod tests {
             root_thread_id,
             &SessionSource::Cli,
             Some(&ThreadSource::User),
-            None,
-            None,
+            /*parent_thread_id*/ None,
+            /*fork_parent_thread_id*/ None,
         )
         .await
         .expect("create root usage logger")
@@ -230,7 +230,7 @@ mod tests {
             &SessionSource::SubAgent(SubAgentSource::Other("test".to_string())),
             Some(&ThreadSource::Subagent),
             Some(root_thread_id),
-            None,
+            /*fork_parent_thread_id*/ None,
         )
         .await
         .expect("create subagent usage logger")
@@ -261,7 +261,7 @@ mod tests {
             &SessionSource::SubAgent(SubAgentSource::Other("test".to_string())),
             Some(&ThreadSource::Subagent),
             Some(root_thread_id),
-            None,
+            /*fork_parent_thread_id*/ None,
         )
         .await
         .expect("create second writer for the subagent thread")
