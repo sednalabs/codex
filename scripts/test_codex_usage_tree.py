@@ -439,6 +439,21 @@ class UsageTreeTests(unittest.TestCase):
             self.assertEqual(exit_code, 2)
             self.assertNotIn("threads", aggregate_only)
             self.assertEqual(len(aggregate_only["recordedAggregate"]["groups"]), 2)
+
+            class InterruptedConnection(sqlite3.Connection):
+                def set_progress_handler(self, callback, count):
+                    return super().set_progress_handler(
+                        (lambda: 1) if callback is not None else None, 1
+                    )
+
+            def connect_interrupted(*args, **kwargs):
+                return real_connect(*args, factory=InterruptedConnection, **kwargs)
+
+            with patch(
+                "codex_usage_tree.sqlite3.connect", side_effect=connect_interrupted
+            ):
+                with self.assertRaisesRegex(UsageError, "exceeded its time limit"):
+                    collect_database_tree("root", str(database), load_rates(None))
             self.assertEqual(database.read_bytes(), original_bytes)
 
     def test_a_list_cap_marks_lineage_incomplete_instead_of_claiming_full_tree(self):

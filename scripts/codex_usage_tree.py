@@ -1145,6 +1145,10 @@ def collect_database_tree(
         )
         # Keep the recursive row outermost and remove its TEXT affinity: SQLite
         # can then search the existing parent/fork expression index per child.
+        deadline = time.monotonic() + 4.0
+        connection.set_progress_handler(
+            lambda: int(time.monotonic() >= deadline), 10000
+        )
         thread_rows = connection.execute(
             f"""
             WITH RECURSIVE lineage(thread_id, depth, visited) AS (
@@ -1195,6 +1199,7 @@ def collect_database_tree(
                 MAX_DATABASE_THREADS + 1,
             ),
         ).fetchall()
+        connection.set_progress_handler(None, 0)
         threads_truncated = len(thread_rows) > MAX_DATABASE_THREADS
         thread_rows = thread_rows[:MAX_DATABASE_THREADS]
         thread_ids = [row["thread_id"] for row in thread_rows]
@@ -1250,6 +1255,10 @@ def collect_database_tree(
                 "recordedAggregate": aggregate_result,
                 "actualDebitObserved": False,
             }
+        deadline = time.monotonic() + 4.0
+        connection.set_progress_handler(
+            lambda: int(time.monotonic() >= deadline), 10000
+        )
         call_rows = connection.execute(
             f"""
             SELECT provider_call_id, thread_id, {", ".join(expressions)}
@@ -1260,11 +1269,14 @@ def collect_database_tree(
             """,
             (*thread_ids, MAX_DATABASE_CALLS + 1),
         ).fetchall()
+        connection.set_progress_handler(None, 0)
         calls_truncated = len(call_rows) > MAX_DATABASE_CALLS
         call_rows = call_rows[:MAX_DATABASE_CALLS]
     except UsageError:
         raise
     except (OSError, sqlite3.Error, ValueError) as exc:
+        if getattr(exc, "sqlite_errorcode", None) == sqlite3.SQLITE_INTERRUPT:
+            raise UsageError("usage database query exceeded its time limit") from exc
         raise UsageError(
             "could not read the explicitly supplied usage database in read-only mode"
         ) from exc
