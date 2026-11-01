@@ -1,0 +1,19 @@
+name: usage-rate-preview
+on:
+  push:
+    branches: [validation/w14939-rate-scenario-eb94a1b2]
+permissions:
+  contents: read
+jobs:
+  usage-tree-tests:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd
+        with:
+          ref: eb94a1b27d57981b0b3fc32279d1724a5b0564e2
+          persist-credentials: false
+      - name: Test usage tree report
+        run: |
+          test "$(git rev-parse HEAD)" = eb94a1b27d57981b0b3fc32279d1724a5b0564e2
+          python3 -m unittest discover -s scripts -p 'test_codex_usage_tree.py'
