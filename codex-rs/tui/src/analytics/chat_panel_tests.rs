@@ -158,7 +158,7 @@ fn empty_chat_page_with_cursor_does_not_claim_no_chats_exist() {
     });
     let output = screen(&mut business, /*width*/ 110, /*height*/ 24);
     assert!(output.contains("No recent roots in this creation-ordered page"));
-    assert!(output.contains("Press n to continue"));
+    assert!(output.contains("Continue with n"));
 }
 
 #[tokio::test]
