@@ -35,20 +35,24 @@ impl AnalyticsView {
             return (lines, 0..1);
         };
         if chats.truncated {
-            let coverage = if chats.rows.len() == super::chats::MAX_RECENT_ROOT_THREADS {
-                "Partial ranking · newest 100 roots shown; additional chats may be omitted"
-                    .to_string()
+            let continuation = if chats.next_cursor.is_some() {
+                "Press n to load another local-thread page."
             } else {
-                format!(
-                    "Partial ranking · newest {} roots discovered; additional chats may be omitted",
-                    chats.rows.len()
-                )
+                "Press R to restart at the newest page."
             };
-            lines.extend(wrap(vec![coverage.set_style(secondary_style()).into()]));
+            lines.extend(wrap(vec![
+                format!("Partial ranking · this creation-ordered page only; lifetime-credit order is page-local. Older active roots may appear on later pages. {continuation}")
+                    .set_style(secondary_style())
+                    .into(),
+            ]));
         }
         if chats.rows.is_empty() {
             lines.extend(wrap(vec![if chats.truncated {
-                "No roots found in the bounded scan; more chats may exist."
+                if chats.next_cursor.is_some() {
+                    "No recent roots in this creation-ordered page; later pages may contain active chats. Press n to continue."
+                } else {
+                    "No recent roots on this page. Press R to restart at the newest page."
+                }
                     .set_style(secondary_style())
                     .into()
             } else {

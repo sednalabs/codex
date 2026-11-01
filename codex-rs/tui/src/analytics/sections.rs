@@ -245,25 +245,56 @@ impl AnalyticsView {
             let live = std::sync::Arc::clone(live);
             self.plan.report = Load::start(async move { live.plan_history().await }, frame.clone());
         }
-        if visible.contains(&Section::Chats) && !self.business() {
-            if let (Some((_, handle, frame)), Some(live)) = (&self.connection, &self.live) {
-                self.tasks = Load::start_with_timeout(
-                    super::tasks::read(handle.clone(), std::sync::Arc::clone(live)),
-                    frame.clone(),
-                    std::time::Duration::from_secs(/*secs*/ 120),
-                );
-            }
-        } else if visible.contains(&Section::Chats) {
+        if visible.contains(&Section::Chats) {
+            self.start_chat_sample();
+        }
+    }
+
+    /// Load the next creation-ordered, scan-and-repair page when the current page has a cursor.
+    pub(super) fn load_next_chat_page(&mut self) {
+        let cursor = if self.business() {
+            self.chats
+                .ready()
+                .and_then(|chats| chats.next_cursor.clone())
+        } else {
+            self.tasks
+                .ready()
+                .and_then(|chats| chats.next_cursor.clone())
+        };
+        let Some(cursor) = cursor else { return };
+        self.chat_cursor = Some(cursor);
+        self.chats = Load::Unavailable;
+        self.tasks = Load::Unavailable;
+        self.sections[Section::Chats].cursor = 0;
+        self.sections[Section::Chats].detail = None;
+        self.sections[Section::Chats].scroll_offset = 0;
+        self.follow_selection = false;
+        self.invalidate_mouse_targets();
+        self.start_chat_sample();
+    }
+
+    fn start_chat_sample(&mut self) {
+        if !self.visible_sections().contains(&Section::Chats) {
+            return;
+        }
+        let cursor = self.chat_cursor.clone();
+        if self.business() {
             self.chats =
                 if let (Some((_, handle, frame)), Some(live)) = (&self.connection, &self.live) {
                     Load::start_with_timeout(
-                        chats::read(handle.clone(), std::sync::Arc::clone(live)),
+                        chats::read(handle.clone(), std::sync::Arc::clone(live), cursor),
                         frame.clone(),
                         std::time::Duration::from_secs(/*secs*/ 90),
                     )
                 } else {
                     Load::Unavailable
                 };
+        } else if let (Some((_, handle, frame)), Some(live)) = (&self.connection, &self.live) {
+            self.tasks = Load::start_with_timeout(
+                super::tasks::read(handle.clone(), std::sync::Arc::clone(live), cursor),
+                frame.clone(),
+                std::time::Duration::from_secs(/*secs*/ 120),
+            );
         }
     }
 

@@ -63,6 +63,7 @@ pub(crate) struct AnalyticsView {
     sections: SectionStates,
     chats: Load<chats::Chats>,
     tasks: Load<tasks::Chats>,
+    chat_cursor: Option<String>,
     chat_metric: usize,
     profile: Load<codex_backend_client::AccountProfile>,
     plan: plan::State,
@@ -104,6 +105,7 @@ impl AnalyticsView {
             sections: SectionStates(std::array::from_fn(|_| SectionState::default())),
             chats: Load::Unavailable,
             tasks: Load::Unavailable,
+            chat_cursor: None,
             chat_metric: 0,
             profile: Load::Unavailable,
             plan: plan::State::default(),
@@ -175,6 +177,7 @@ impl AnalyticsView {
         self.sections[Section::Chats].detail = None;
         self.chats = Load::Unavailable;
         self.tasks = Load::Unavailable;
+        self.chat_cursor = None;
         self.profile = Load::Unavailable;
         self.plan.report = Load::Unavailable;
         self.reports_started = false;
@@ -209,6 +212,7 @@ impl AnalyticsView {
         }
         self.chats = Load::Unavailable;
         self.tasks = Load::Unavailable;
+        self.chat_cursor = None;
         self.profile = Load::Unavailable;
         self.plan.report = Load::Unavailable;
         self.account = Load::Unavailable;
@@ -350,6 +354,13 @@ impl AnalyticsView {
         }
         if self.show_help {
             self.summary_action(action);
+            return;
+        }
+        if self.section == Section::Chats
+            && action.is_none()
+            && key_hint::plain(KeyCode::Char('n')).is_press(key)
+        {
+            self.load_next_chat_page();
             return;
         }
         if key_hint::plain(KeyCode::Char('z')).is_press(key)

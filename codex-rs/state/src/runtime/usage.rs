@@ -5,7 +5,6 @@ use codex_protocol::ThreadId;
 use codex_protocol::protocol::SessionSource;
 use codex_protocol::protocol::ThreadSource;
 use codex_protocol::protocol::TokenUsageRecord;
-use sqlx::Row;
 use sqlx::SqlitePool;
 use std::sync::Arc;
 
@@ -172,6 +171,7 @@ mod tests {
     use codex_protocol::protocol::TokenUsage;
     use codex_utils_absolute_path::test_support::PathExt;
     use pretty_assertions::assert_eq;
+    use sqlx::Row;
 
     #[tokio::test]
     async fn response_projection_is_idempotent_and_keeps_requested_unknown_actual_and_tokens() {
@@ -195,8 +195,8 @@ mod tests {
             root_thread_id,
             &SessionSource::Cli,
             Some(&ThreadSource::User),
-            None,
-            None,
+            /*parent_thread_id*/ None,
+            /*fork_parent_thread_id*/ None,
         )
         .await
         .expect("create root usage logger")
@@ -230,7 +230,7 @@ mod tests {
             &SessionSource::SubAgent(SubAgentSource::Other("test".to_string())),
             Some(&ThreadSource::Subagent),
             Some(root_thread_id),
-            None,
+            /*fork_parent_thread_id*/ None,
         )
         .await
         .expect("create subagent usage logger")
@@ -261,7 +261,7 @@ mod tests {
             &SessionSource::SubAgent(SubAgentSource::Other("test".to_string())),
             Some(&ThreadSource::Subagent),
             Some(root_thread_id),
-            None,
+            /*fork_parent_thread_id*/ None,
         )
         .await
         .expect("create second writer for the subagent thread")
@@ -279,8 +279,10 @@ mod tests {
             r#"SELECT thread_id, turn_id, requested_model, actual_model_used,
                       input_tokens_uncached, input_tokens_cached, input_tokens_cache_write,
                       output_tokens, total_tokens, provider_reported_credits, request_id, status
-               FROM usage_provider_calls"#,
+               FROM usage_provider_calls
+               WHERE provider_call_id = ?"#,
         )
+        .bind(format!("{child_thread_id}:{}", child_record.response_id))
         .fetch_one(pool.as_ref())
         .await
         .expect("projected call row");

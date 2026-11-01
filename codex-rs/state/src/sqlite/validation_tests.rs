@@ -107,6 +107,62 @@ async fn runtime_opens_recover_or_report_corruption_by_database_policy() -> anyh
             continue;
         }
 
+        if path == sqlite.usage_db_path() {
+            // The usage ledger is optional and has no automatic recovery policy.
+            // Preserve the corrupt database and any SQLite sidecars byte-for-byte,
+            // while allowing the rest of the state runtime to initialize.
+            let probe = sqlite
+                .open_read_only_pool(&path, Some(Duration::from_secs(/*secs*/ 5)))
+                .await?;
+            let complete_probe =
+                quick_check(&probe, Instant::now() + Duration::from_secs(/*secs*/ 5)).await?;
+            let bounded_probe = quick_check(
+                &probe,
+                Instant::now() + Duration::from_millis(/*millis*/ 100),
+            )
+            .await?;
+            probe.close().await;
+            assert_eq!(complete_probe, QuickCheckOutcome::CorruptedNeedsFixed);
+            let database_before = tokio::fs::read(&path).await?;
+            let sidecars = ["-wal", "-shm", "-journal"]
+                .into_iter()
+                .map(|suffix| {
+                    let mut sidecar_path = path.as_os_str().to_os_string();
+                    sidecar_path.push(suffix);
+                    std::path::PathBuf::from(sidecar_path)
+                })
+                .collect::<Vec<_>>();
+            let mut sidecars_before = Vec::new();
+            for sidecar in &sidecars {
+                let contents = format!("preserve {}", sidecar.display()).into_bytes();
+                tokio::fs::write(sidecar, &contents).await?;
+                sidecars_before.push(contents);
+            }
+
+            let sidecar_probe = sqlite
+                .open_read_only_pool(&path, Some(Duration::from_secs(/*secs*/ 5)))
+                .await?;
+            let with_sidecars = quick_check(
+                &sidecar_probe,
+                Instant::now() + Duration::from_millis(/*millis*/ 100),
+            )
+            .await?;
+            sidecar_probe.close().await;
+
+            let runtime = StateRuntime::init(sqlite.clone(), "openai".to_string()).await?;
+            assert!(
+                runtime.usage_ledger_pool().is_none(),
+                "usage ledger opened a corrupt fixture; bounded probe: {bounded_probe:?}, with sidecars: {with_sidecars:?}"
+            );
+            runtime.close().await;
+
+            assert_eq!(tokio::fs::read(&path).await?, database_before);
+            for (sidecar, contents_before) in sidecars.iter().zip(sidecars_before) {
+                assert_eq!(tokio::fs::read(sidecar).await?, contents_before);
+            }
+            continue;
+        }
+
         // Recovery happens inside the database opener, without a CLI or app server.
         for _ in 0..2 {
             let runtime = StateRuntime::init(sqlite.clone(), "openai".to_string()).await?;

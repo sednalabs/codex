@@ -125,13 +125,40 @@ fn partial_chat_ranking_discloses_the_recent_root_limit() {
     let mut view = fixture::view(models::AccountKind::Enterprise);
     let mut chats = fixture::chats();
     chats.truncated = true;
+    chats.next_cursor = Some("next".into());
     view.section = Section::Chats;
     view.chats = Load::Ready(chats);
 
     let output = screen(&mut view, /*width*/ 110, /*height*/ 24);
 
     assert!(output.contains("Partial ranking"));
-    assert!(output.contains("additional chats may be omitted"));
+    assert!(output.contains("creation-ordered page only"));
+    assert!(output.contains("Press n to load another local-thread page"));
+}
+
+#[test]
+fn empty_chat_page_with_cursor_does_not_claim_no_chats_exist() {
+    let mut consumer = fixture::view(models::AccountKind::Consumer);
+    consumer.section = Section::Chats;
+    consumer.tasks = Load::Ready(tasks::Chats {
+        truncated: true,
+        next_cursor: Some("older".into()),
+        ..tasks::Chats::default()
+    });
+    let output = screen(&mut consumer, /*width*/ 110, /*height*/ 24);
+    assert!(output.contains("No recent roots in this creation-ordered page"));
+    assert!(output.contains("Continue with n"));
+
+    let mut business = fixture::view(models::AccountKind::Enterprise);
+    business.section = Section::Chats;
+    business.chats = Load::Ready(chats::Chats {
+        truncated: true,
+        next_cursor: Some("older".into()),
+        ..chats::Chats::default()
+    });
+    let output = screen(&mut business, /*width*/ 110, /*height*/ 24);
+    assert!(output.contains("No recent roots in this creation-ordered page"));
+    assert!(output.contains("Press n to continue"));
 }
 
 #[tokio::test]
@@ -146,6 +173,7 @@ async fn unavailable_chats_do_not_open_invisible_details() {
                 2 => Load::Ready(chats::Chats::default()),
                 3 => Load::Ready(chats::Chats {
                     truncated: false,
+                    next_cursor: None,
                     rows: vec![chats::Chat {
                         title: "Another workspace's private title".into(),
                         usage: None,
@@ -167,6 +195,7 @@ fn unavailable_chat_titles_are_hidden_in_panel_and_overview() {
     view.section = Section::Chats;
     view.chats = Load::Ready(chats::Chats {
         truncated: false,
+        next_cursor: None,
         rows: vec![chats::Chat {
             title: "Another workspace's private title".into(),
             usage: None,

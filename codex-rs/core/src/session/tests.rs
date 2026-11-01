@@ -111,6 +111,7 @@ use codex_rollout_trace::ThreadStartedTraceMetadata;
 use codex_rollout_trace::ThreadTraceContext;
 use codex_rollout_trace::replay_bundle;
 use codex_tools::ToolSpec;
+use codex_utils_absolute_path::test_support::PathExt;
 use codex_utils_path_uri::PathUri;
 use std::collections::BTreeMap;
 use tracing::Span;
@@ -200,7 +201,6 @@ use codex_protocol::protocol::UserMessageEvent;
 use codex_protocol::protocol::W3cTraceContext;
 use codex_rmcp_client::ElicitationAction;
 use core_test_support::PathBufExt;
-use core_test_support::PathExt;
 use core_test_support::context_snapshot;
 use core_test_support::context_snapshot::ContextSnapshotOptions;
 use core_test_support::responses;
@@ -3587,6 +3587,9 @@ fn latest_token_usage_record_stops_at_compaction_checkpoint() {
         None
     );
 }
+
+#[path = "usage_recording_tests.rs"]
+mod usage_recording_tests;
 
 #[tokio::test]
 async fn recompute_token_usage_uses_session_base_instructions() {

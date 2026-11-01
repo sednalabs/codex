@@ -228,6 +228,10 @@ impl SessionState {
         self.history.set_token_info(info);
     }
 
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "usage records retain distinct thread, turn, response and model identities"
+    )]
     pub(crate) fn record_token_usage(
         &mut self,
         thread_id: ThreadId,

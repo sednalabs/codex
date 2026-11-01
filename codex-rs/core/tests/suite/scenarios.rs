@@ -3820,9 +3820,22 @@ async fn async_compaction_reuses_pending_work(
             })
             .expect("persisted usage")
     };
-    assert!(history.items.iter().all(|item| !matches!(item,
-        RolloutItem::TokenUsageRecord(record) if record.response_id == "background"
-    )));
+    let background_usage = history
+        .items
+        .iter()
+        .filter_map(|item| match item {
+            RolloutItem::TokenUsageRecord(record) if record.response_id == "background" => {
+                Some(record)
+            }
+            _ => None,
+        })
+        .collect::<Vec<_>>();
+    if has_background {
+        assert_eq!(background_usage.len(), 1);
+        assert_eq!(background_usage[0].usage.total_tokens, 3_000);
+    } else {
+        assert!(background_usage.is_empty());
+    }
     let continuation = usage("continuation");
     assert_eq!(
         (
@@ -3831,6 +3844,10 @@ async fn async_compaction_reuses_pending_work(
         ),
         if over_budget {
             (12_010, 14_010)
+        } else if manual && outcome == PendingCompactionOutcome::Failure {
+            // The failed background response, synchronous retry and continuation
+            // each completed with 3,000 tokens and all count toward thread usage.
+            (3_000, seed_tokens + 9_000)
         } else if manual {
             (3_000, seed_tokens + if succeeds { 3_000 } else { 6_000 })
         } else if succeeds {

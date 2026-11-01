@@ -51,6 +51,23 @@ pub(super) async fn quick_check(
     pool: &SqlitePool,
     deadline: Instant,
 ) -> anyhow::Result<QuickCheckOutcome> {
+    quick_check_inner(pool, deadline, /*strict_errors*/ false).await
+}
+
+/// Usage has no automatic recovery: only an interrupted check is inconclusive;
+/// other errors must stop its optional writer before it can alter the database.
+pub(super) async fn quick_check_usage(
+    pool: &SqlitePool,
+    deadline: Instant,
+) -> anyhow::Result<QuickCheckOutcome> {
+    quick_check_inner(pool, deadline, /*strict_errors*/ true).await
+}
+
+async fn quick_check_inner(
+    pool: &SqlitePool,
+    deadline: Instant,
+    strict_errors: bool,
+) -> anyhow::Result<QuickCheckOutcome> {
     let mut connection = pool.acquire().await?;
     connection
         .lock_handle()
@@ -69,6 +86,17 @@ pub(super) async fn quick_check(
         Ok(_) => Ok(QuickCheckOutcome::CorruptedNeedsFixed),
         Err(error) if crate::is_sqlite_corruption_error(&error) => {
             Ok(QuickCheckOutcome::CorruptedNeedsFixed)
+        }
+        Err(error)
+            if strict_errors
+                && error
+                    .downcast_ref::<sqlx::Error>()
+                    .and_then(sqlx::Error::as_database_error)
+                    .and_then(|error| error.code())
+                    .as_deref()
+                    != Some("9") =>
+        {
+            Err(error.into())
         }
         // timeouts or other unhandled errors
         Err(_) => Ok(QuickCheckOutcome::Incomplete),

@@ -1801,8 +1801,8 @@ impl Session {
                     thread_id,
                     &session_configuration.session_source,
                     session_configuration.thread_source.as_ref(),
-                    session_configuration.parent_thread_id.clone(),
-                    session_configuration.forked_from_thread_id.clone(),
+                    session_configuration.parent_thread_id,
+                    session_configuration.forked_from_thread_id,
                 )
                 .await
                 {

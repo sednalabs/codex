@@ -28,6 +28,10 @@ const CODE_MODE_DELIVERY_INCOMPLETE: &str = "codex:code-mode-delivery:v1:incompl
 const CODE_MODE_DELIVERY_UNAVAILABLE: &str = "The content of a confirmed assistant message is unavailable. Do not infer what was asked or authorized.";
 
 /// Persisted rollout item used by core history and rollout storage.
+#[expect(
+    clippy::large_enum_variant,
+    reason = "the wire representation borrows payloads without a separate allocation"
+)]
 #[derive(Serialize, Deserialize, JsonSchema)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub(super) enum RolloutItemWire<'a> {

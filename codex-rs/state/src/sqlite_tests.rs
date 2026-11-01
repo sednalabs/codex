@@ -7,6 +7,7 @@ use sqlx::sqlite::SqliteAutoVacuum;
 use sqlx::sqlite::SqliteConnectOptions;
 use sqlx::sqlite::SqliteJournalMode;
 use sqlx::sqlite::SqlitePoolOptions;
+use std::time::Duration;
 
 #[tokio::test]
 async fn configured_log_directory_is_initialized_on_use_and_retries_after_failure()
@@ -54,6 +55,87 @@ async fn configured_log_directory_is_initialized_on_use_and_retries_after_failur
         pool.close().await;
     }
     assert_eq!(modes, vec!["delete".to_string(), "wal".to_string()]);
+    Ok(())
+}
+
+#[tokio::test]
+async fn incomplete_integrity_check_keeps_a_large_valid_usage_database_available()
+-> anyhow::Result<()> {
+    let sqlite_home = crate::runtime::test_support::unique_temp_dir();
+    tokio::fs::create_dir_all(&sqlite_home).await?;
+    let _cleanup = scopeguard::guard(sqlite_home.clone(), |sqlite_home| {
+        let _ = std::fs::remove_dir_all(sqlite_home);
+    });
+    let sqlite = SqliteConfig::new_for_testing(sqlite_home.as_path().abs());
+    let usage_path = sqlite.usage_db_path();
+    let pool = sqlite.open_read_write_pool(&usage_path).await?;
+    sqlx::raw_sql(
+        "CREATE TABLE slow_valid_fixture(id INTEGER PRIMARY KEY, payload BLOB NOT NULL);
+         WITH RECURSIVE rows(id) AS (
+             VALUES(1) UNION ALL SELECT id + 1 FROM rows WHERE id < 32768
+         )
+         INSERT INTO slow_valid_fixture SELECT id, zeroblob(1024) FROM rows;",
+    )
+    .execute(&pool)
+    .await?;
+    pool.close().await;
+
+    let read_pool = sqlite
+        .open_read_only_pool(&usage_path, Some(Duration::from_secs(/*secs*/ 5)))
+        .await?;
+    assert_eq!(
+        super::validation::quick_check(&read_pool, std::time::Instant::now()).await?,
+        super::validation::QuickCheckOutcome::Incomplete
+    );
+    SqliteConfig::validate_existing_usage_db(
+        &read_pool,
+        std::time::Instant::now(),
+        /*telemetry_override*/ None,
+    )
+    .await?;
+    read_pool.close().await;
+
+    let runtime = crate::StateRuntime::init(sqlite, "openai".to_string()).await?;
+    let usage_pool = runtime
+        .usage_ledger_pool()
+        .expect("a timed-out integrity check must not disable a valid usage ledger");
+    assert_eq!(
+        sqlx::query_scalar::<_, i64>("SELECT COUNT(*) FROM slow_valid_fixture")
+            .fetch_one(usage_pool.as_ref())
+            .await?,
+        32_768
+    );
+    runtime.close().await;
+    Ok(())
+}
+
+#[tokio::test]
+async fn detected_usage_database_corruption_is_not_rebuilt() -> anyhow::Result<()> {
+    let sqlite_home = crate::runtime::test_support::unique_temp_dir();
+    tokio::fs::create_dir_all(&sqlite_home).await?;
+    let _cleanup = scopeguard::guard(sqlite_home.clone(), |sqlite_home| {
+        let _ = std::fs::remove_dir_all(sqlite_home);
+    });
+    let sqlite = SqliteConfig::new_for_testing(sqlite_home.as_path().abs());
+    let usage_path = sqlite.usage_db_path();
+    let pool = sqlite.open_read_write_pool(&usage_path).await?;
+    sqlx::raw_sql(
+        "CREATE TABLE damaged(value INTEGER);
+         INSERT INTO damaged VALUES (NULL);
+         PRAGMA writable_schema=ON;
+         UPDATE sqlite_schema SET sql='CREATE TABLE damaged(value INTEGER NOT NULL)' WHERE name='damaged';
+         PRAGMA writable_schema=OFF;",
+    )
+    .execute(&pool)
+    .await?;
+    pool.close().await;
+    let original_bytes = tokio::fs::read(&usage_path).await?;
+
+    let runtime = crate::StateRuntime::init(sqlite, "openai".to_string()).await?;
+
+    assert!(runtime.usage_ledger_pool().is_none());
+    assert_eq!(tokio::fs::read(usage_path).await?, original_bytes);
+    runtime.close().await;
     Ok(())
 }
 

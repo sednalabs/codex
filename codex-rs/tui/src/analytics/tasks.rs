@@ -35,11 +35,13 @@ pub(super) struct Chats {
     pub rows: Vec<Chat>,
     pub truncated: bool,
     pub updated_at: Option<chrono::DateTime<chrono::Utc>>,
+    pub next_cursor: Option<String>,
 }
 
 pub(super) async fn read(
     handle: AppServerRequestHandle,
     live: Arc<Live>,
+    cursor: Option<String>,
 ) -> Result<Option<Chats>, String> {
     let session = live.session().await?;
     if session.kind != super::models::AccountKind::Consumer {
@@ -48,19 +50,20 @@ pub(super) async fn read(
     live.ensure_identity().await?;
     let roots = tokio::time::timeout(
         std::time::Duration::from_secs(/*secs*/ 60),
-        super::chats::roots(&handle),
+        super::chats::roots(&handle, cursor),
     )
     .await
     .map_err(|_| "Chat listing timed out. Press R to retry.".to_string());
     live.ensure_identity().await?;
     let root_threads = roots??;
     let mut roots = root_threads.threads;
+    let truncated = root_threads.truncated || roots.len() > super::chats::MAX_RECENT_ROOT_THREADS;
+    let next_cursor = root_threads.next_cursor;
     roots.sort_by(|a, b| {
         b.updated_at
             .cmp(&a.updated_at)
             .then_with(|| a.id.cmp(&b.id))
     });
-    let truncated = root_threads.truncated || roots.len() > super::chats::MAX_RECENT_ROOT_THREADS;
     roots.truncate(super::chats::MAX_RECENT_ROOT_THREADS);
     let discoveries = roots
         .iter()
@@ -153,6 +156,7 @@ pub(super) async fn read(
     live.ensure_identity().await?;
     Ok(Some(Chats {
         truncated,
+        next_cursor,
         updated_at: if freshness.iter().all(Option::is_some) {
             freshness.into_iter().flatten().min()
         } else {
@@ -195,7 +199,7 @@ async fn descendants(
                         archived: Some(archived),
                         cursor,
                         limit: Some(100),
-                        ..super::chats::list_params()
+                        ..super::chats::list_params(/*cursor*/ None)
                     },
                 })
                 .await

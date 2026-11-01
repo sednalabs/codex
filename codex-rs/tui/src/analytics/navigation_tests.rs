@@ -201,6 +201,30 @@ fn vim_chat_navigation_expands_collapses_and_moves_like_arrows() {
 }
 
 #[test]
+fn next_chat_page_uses_the_current_report_cursor() {
+    for kind in [AccountKind::Consumer, AccountKind::Business] {
+        let mut view = fixture::view(kind);
+        view.section = Section::Chats;
+        if kind == AccountKind::Consumer {
+            view.tasks = Load::Ready(tasks::Chats {
+                next_cursor: Some("older-page".into()),
+                ..tasks::Chats::default()
+            });
+        } else {
+            view.chats = Load::Ready(chats::Chats {
+                next_cursor: Some("older-page".into()),
+                ..chats::Chats::default()
+            });
+        }
+
+        press(&mut view, KeyCode::Char('n'));
+
+        assert_eq!(view.chat_cursor.as_deref(), Some("older-page"));
+        assert_eq!(view.sections[Section::Chats].cursor, 0);
+    }
+}
+
+#[test]
 fn configured_dashboard_accept_precedes_report_shortcuts() {
     for binding in ["r", "g", "m", "R", "tab", "1"] {
         let mut config = TuiKeymap::default();
