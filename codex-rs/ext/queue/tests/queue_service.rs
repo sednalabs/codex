@@ -517,8 +517,8 @@ async fn interrupted_turns_pause_queued_messages_but_failed_turns_drain_them() -
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn stale_completed_idle_does_not_drain_after_interrupt_but_explicit_start_can() -> anyhow::Result<()>
-{
+async fn stale_completed_idle_does_not_drain_after_interrupt_but_explicit_start_can()
+-> anyhow::Result<()> {
     let (_release, response_gate) = oneshot::channel();
     let (server, _completions) = start_streaming_sse_server(vec![
         vec![
