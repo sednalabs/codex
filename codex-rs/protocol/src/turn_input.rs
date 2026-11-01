@@ -194,6 +194,8 @@ pub enum TurnInputMode {
     StartOrSteer,
     /// Start only when the thread is idle.
     StartIfIdle,
+    /// Automatically start only when idle and not explicitly interrupted.
+    StartIfIdleUnlessInterrupted,
     /// Start an internal continuation when idle.
     /// Reject if another task has started since the expected previous turn.
     ContinueIfIdle { expected_previous_turn_id: String },
@@ -289,7 +291,7 @@ pub enum SteerSubmission {
 /// Why Core did not accept submitted turn input for turn processing.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum NotSubmittedReason {
-    /// New work superseded the expected previous turn of an internal continuation.
+    /// New work or an interrupt superseded a conditional automatic start.
     Superseded,
 
     /// The host is draining and no longer permits new regular turns.

@@ -437,10 +437,12 @@ impl QueuedItemService {
             }
 
             match thread
-                .start_turn_if_idle(TurnInputRequest::new(input).on_start(TurnStartOptions {
-                    turn_trigger: Some("queue".to_string()),
-                    ..Default::default()
-                }))
+                .start_turn_if_idle_unless_interrupted(
+                    TurnInputRequest::new(input).on_start(TurnStartOptions {
+                        turn_trigger: Some("queue".to_string()),
+                        ..Default::default()
+                    }),
+                )
                 .await
             {
                 Ok(StartIfIdleSubmission::Started { .. }) => {
