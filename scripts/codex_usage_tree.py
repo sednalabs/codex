@@ -10,6 +10,7 @@ import sqlite3
 import subprocess
 import threading
 import time
+from datetime import datetime
 from decimal import Decimal, InvalidOperation
 from pathlib import Path
 from typing import Any
@@ -201,6 +202,64 @@ def load_rates(path: str | None) -> dict[str, Any]:
             "rates must be finite, non-negative credits per million"
         ) from exc
     return {"source": raw["source"], "date": raw["date"], "models": models}
+
+
+def load_ledger_standard_rates(database_path: str, at: str) -> dict[str, Any]:
+    """Select an explicit standard-rate scenario, not a provider debit."""
+    connection = None
+    try:
+        instant = datetime.fromisoformat(at.replace("Z", "+00:00"))
+        if instant.tzinfo is None or instant.utcoffset() is None:
+            raise UsageError("ledger rate scenario needs a timestamp with a timezone")
+        uri = Path(database_path).resolve(strict=True).as_uri() + "?mode=ro"
+        connection = sqlite3.connect(uri, uri=True, timeout=5.0)
+        connection.execute("PRAGMA query_only = ON")
+        if connection.execute("SELECT julianday(?)", (at,)).fetchone()[0] is None:
+            raise UsageError("ledger rate scenario needs a valid SQLite date/time")
+        rows = connection.execute(
+            """SELECT model, credits_per_1m_uncached_input,
+                      credits_per_1m_cached_input, credits_per_1m_output
+               FROM usage_codex_credit_rates
+               WHERE provider = 'openai' AND service_tier = 'default'
+                 AND speed_mode = 'standard' AND rate_card_kind = 'codex_token_based'
+                 AND julianday(effective_from) <= julianday(?)
+                 AND (effective_to IS NULL OR julianday(effective_to) > julianday(?))
+               LIMIT 1001""",
+            (at, at),
+        ).fetchall()
+        if len(rows) > 1000:
+            raise UsageError("ledger rate scenario exceeds the 1,000-row bound")
+        candidates: dict[str, set[tuple[Decimal, Decimal, Decimal]]] = {}
+        for model, uncached, cached, output in rows:
+            if not isinstance(model, str) or not model.strip():
+                continue
+            values = tuple(Decimal(str(value)) for value in (uncached, cached, output))
+            if any(not value.is_finite() or value < 0 for value in values):
+                raise UsageError("ledger scenario contains an invalid rate")
+            candidates.setdefault(model, set()).add(values)
+        models = {}
+        for model, choices in candidates.items():
+            if len(choices) != 1:
+                continue  # Never choose between conflicting overlapping rates.
+            uncached, cached, output = next(iter(choices))
+            models[model] = {
+                "input": uncached,
+                "cached_input": cached,
+                "output": output,
+            }
+        return {
+            "source": (
+                "local ledger standard-rate scenario; effective call tier, speed and "
+                "debit are not established; historical calls may use different rates"
+            ),
+            "date": at,
+            "models": models,
+        }
+    except (OSError, sqlite3.Error, InvalidOperation, TypeError, ValueError) as exc:
+        raise UsageError("could not read the requested ledger rate scenario") from exc
+    finally:
+        if connection is not None:
+            connection.close()
 
 
 def _optional_int(value: Any, field: str) -> int | None:
@@ -1513,6 +1572,10 @@ def main(argv: list[str] | None = None) -> int:
         "--rates-json", help="rate map JSON replacing the embedded dated map"
     )
     parser.add_argument(
+        "--standard-ledger-rates-at",
+        help="use ledger default/standard rates at this date/time as an explicit scenario",
+    )
+    parser.add_argument(
         "--max-threads-per-state", type=int, default=DEFAULT_MAX_THREADS_PER_STATE
     )
     parser.add_argument("--timeout-seconds", type=int, default=20)
@@ -1524,6 +1587,8 @@ def main(argv: list[str] | None = None) -> int:
         parser.error("--database and --rollout-file select different local query modes")
     if args.database and args.allow_local_app_server_startup:
         parser.error("read-only database mode does not start an app-server")
+    if args.standard_ledger_rates_at and (not args.database or args.rates_json):
+        parser.error("--standard-ledger-rates-at requires --database and no --rates-json")
     if args.rollout_file and args.allow_local_app_server_startup:
         parser.error("local rollout mode does not start an app-server")
     if args.expected_child_id and not args.rollout_file:
@@ -1545,7 +1610,11 @@ def main(argv: list[str] | None = None) -> int:
         )
     client = None
     try:
-        rates = load_rates(args.rates_json)
+        rates = (
+            load_ledger_standard_rates(args.database, args.standard_ledger_rates_at)
+            if args.standard_ledger_rates_at
+            else load_rates(args.rates_json)
+        )
         if args.rollout_file:
             result = collect_local_tree(
                 args.thread_id,

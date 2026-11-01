@@ -10,11 +10,13 @@ from unittest.mock import patch
 
 from codex_usage_tree import (
     RpcError,
+    UsageError,
     app_server_argv,
     collect_database_tree,
     collect_local_tree,
     collect_tree,
     error_document,
+    load_ledger_standard_rates,
     load_rates,
     main,
     rpc_request_document,
@@ -97,6 +99,47 @@ class SyntheticErrorAppServer:
 
 
 class UsageTreeTests(unittest.TestCase):
+    def test_ledger_rates_are_dated_standard_and_skip_ambiguous_models(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            database = Path(temp_dir) / "usage.sqlite"
+            connection = sqlite3.connect(database)
+            connection.executescript(
+                """
+                CREATE TABLE usage_codex_credit_rates (
+                    model TEXT, provider TEXT, service_tier TEXT, speed_mode TEXT,
+                    rate_card_kind TEXT, credits_per_1m_uncached_input REAL,
+                    credits_per_1m_cached_input REAL, credits_per_1m_output REAL,
+                    effective_from TEXT, effective_to TEXT
+                );
+                INSERT INTO usage_codex_credit_rates VALUES
+                    ('priced', 'openai', 'default', 'standard', 'codex_token_based',
+                     10, 1, 50, '2026-01-01', '2026-10-01'),
+                    ('priced', 'openai', 'default', 'standard', 'codex_token_based',
+                     20, 2, 100, '2026-10-01', NULL),
+                    ('priced', 'openai', 'priority', 'fast', 'codex_token_based',
+                     40, 4, 200, '2026-10-01', NULL),
+                    ('ambiguous', 'openai', 'default', 'standard', 'codex_token_based',
+                     1, 1, 1, '2026-01-01', NULL),
+                    ('ambiguous', 'openai', 'default', 'standard', 'codex_token_based',
+                     2, 2, 2, '2026-01-01', NULL),
+                    ('image', 'openai', 'default', 'standard', 'codex_token_based_image',
+                     3, 3, 3, '2026-01-01', NULL);
+                """
+            )
+            connection.commit()
+            connection.close()
+            before = database.read_bytes()
+            rates = load_ledger_standard_rates(str(database), "2026-10-15T00:00:00Z")
+            self.assertEqual(rates["models"]["priced"]["input"], Decimal("20.0"))
+            self.assertNotIn("ambiguous", rates["models"])
+            self.assertNotIn("image", rates["models"])
+            self.assertIn("not established", rates["source"])
+            earlier = load_ledger_standard_rates(str(database), "2026-09-15T00:00:00Z")
+            self.assertEqual(earlier["models"]["priced"]["input"], Decimal("10.0"))
+            with self.assertRaises(UsageError):
+                load_ledger_standard_rates(str(database), "2026-10-15")
+            self.assertEqual(database.read_bytes(), before)
+
     def test_supported_cli_argv_and_wire_field_names(self):
         self.assertEqual(
             app_server_argv("codex"),
