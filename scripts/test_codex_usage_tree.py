@@ -254,6 +254,9 @@ class UsageTreeTests(unittest.TestCase):
                     thread_source TEXT,
                     created_at TEXT NOT NULL
                 );
+                CREATE INDEX usage_threads_reporting_parent_idx ON usage_threads(
+                    COALESCE(NULLIF(parent_thread_id, ''), NULLIF(fork_parent_thread_id, ''))
+                );
                 CREATE TABLE usage_provider_calls (
                     provider_call_id TEXT PRIMARY KEY,
                     thread_id TEXT NOT NULL,
@@ -290,7 +293,29 @@ class UsageTreeTests(unittest.TestCase):
             connection.close()
             original_bytes = database.read_bytes()
 
-            result = collect_database_tree("root", str(database), load_rates(None))
+            plans = []
+
+            class TracingConnection(sqlite3.Connection):
+                def execute(self, sql, parameters=()):
+                    if "WITH RECURSIVE lineage" in sql:
+                        plans.extend(
+                            row[3]
+                            for row in super().execute("EXPLAIN QUERY PLAN " + sql, parameters)
+                        )
+                    return super().execute(sql, parameters)
+
+            real_connect = sqlite3.connect
+
+            def connect_with_plan(*args, **kwargs):
+                return real_connect(*args, factory=TracingConnection, **kwargs)
+
+            with patch("codex_usage_tree.sqlite3.connect", side_effect=connect_with_plan):
+                result = collect_database_tree("root", str(database), load_rates(None))
+
+            self.assertTrue(
+                any("SEARCH child USING INDEX usage_threads_reporting_parent_idx" in p for p in plans),
+                plans,
+            )
 
             self.assertEqual(result["status"], "partial")
             self.assertFalse(result["completeness"]["historicalCoverageComplete"])

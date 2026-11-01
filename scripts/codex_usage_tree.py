@@ -1008,6 +1008,8 @@ def collect_database_tree(
             if "thread_source" in thread_columns
             else 'NULL AS "thread_source"'
         )
+        # Keep the recursive row outermost and remove its TEXT affinity: SQLite
+        # can then search the existing parent/fork expression index per child.
         thread_rows = connection.execute(
             f"""
             WITH RECURSIVE lineage(thread_id, depth, visited) AS (
@@ -1016,13 +1018,13 @@ def collect_database_tree(
                 UNION ALL
                 SELECT child.thread_id, lineage.depth + 1,
                        lineage.visited || child.thread_id || ','
-                FROM usage_threads AS child
-                JOIN lineage
-                  ON COALESCE(
+                FROM lineage
+                CROSS JOIN usage_threads AS child
+                WHERE COALESCE(
                       NULLIF(child.parent_thread_id, ''),
                       NULLIF(child.fork_parent_thread_id, '')
-                  ) = lineage.thread_id
-                WHERE instr(lineage.visited, ',' || child.thread_id || ',') = 0
+                  ) = +lineage.thread_id
+                  AND instr(lineage.visited, ',' || child.thread_id || ',') = 0
                   AND lineage.depth < ?
                 LIMIT ?
             ),
