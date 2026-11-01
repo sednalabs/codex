@@ -300,7 +300,9 @@ class UsageTreeTests(unittest.TestCase):
                     if "WITH RECURSIVE lineage" in sql:
                         plans.extend(
                             row[3]
-                            for row in super().execute("EXPLAIN QUERY PLAN " + sql, parameters)
+                            for row in super().execute(
+                                "EXPLAIN QUERY PLAN " + sql, parameters
+                            )
                         )
                     return super().execute(sql, parameters)
 
@@ -313,7 +315,10 @@ class UsageTreeTests(unittest.TestCase):
                 result = collect_database_tree("root", str(database), load_rates(None))
 
             self.assertTrue(
-                any("SEARCH child USING INDEX usage_threads_reporting_parent_idx" in p for p in plans),
+                any(
+                    "SEARCH child USING INDEX usage_threads_reporting_parent_idx" in p
+                    for p in plans
+                ),
                 plans,
             )
 
