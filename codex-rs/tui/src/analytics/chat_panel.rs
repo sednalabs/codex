@@ -49,7 +49,7 @@ impl AnalyticsView {
         if chats.rows.is_empty() {
             lines.extend(wrap(vec![if chats.truncated {
                 if chats.next_cursor.is_some() {
-                    "No recent roots in this creation-ordered page; later pages may contain active chats. Continue with n."
+                    "No recent roots in this creation-ordered page. Continue with n for older pages."
                 } else {
                     "No recent roots on this page. Press R to restart at the newest page."
                 }
