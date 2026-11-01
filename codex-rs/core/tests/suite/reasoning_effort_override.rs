@@ -573,6 +573,7 @@ async fn reasoning_effort_override_capacity_retry_keeps_latest_adjacent_update()
     let failed = responses::mount_response_once(
         &server,
         ResponseTemplate::new(503)
+            .insert_header("Retry-After", "60")
             .set_body_json(serde_json::json!({"error": {"code": "server_is_overloaded"}})),
     )
     .await;
@@ -606,17 +607,21 @@ async fn reasoning_effort_override_capacity_retry_keeps_latest_adjacent_update()
             }),
         )
         .await?;
-    let completed = wait_for_event(&test.codex, |event| {
-        matches!(event, EventMsg::TurnComplete(_))
+    // Capacity errors retry automatically; interrupt the retry backoff before
+    // exercising a later user-initiated retry with updated settings.
+    let retry = wait_for_event(&test.codex, |event| {
+        matches!(event, EventMsg::StreamError(_))
     })
     .await;
-    let EventMsg::TurnComplete(completed) = completed else {
-        unreachable!("waited for turn completion");
+    let EventMsg::StreamError(retry) = retry else {
+        unreachable!("waited for retry notification");
     };
     assert_eq!(
-        completed.error.and_then(|error| error.codex_error_info),
+        retry.codex_error_info,
         Some(CodexErrorInfo::ServerOverloaded)
     );
+    test.codex.submit(Op::Interrupt).await?;
+    wait_for_event(&test.codex, |event| matches!(event, EventMsg::TurnAborted(_))).await;
 
     // The app's capacity Retry action uses current settings without adding a user message.
     test.codex
