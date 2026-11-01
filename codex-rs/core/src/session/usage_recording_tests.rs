@@ -15,8 +15,8 @@ async fn failed_optional_usage_projection_does_not_fail_response_recording() {
         session.thread_id(),
         &source,
         Some(&thread_source),
-        None,
-        None,
+        /*parent_thread_id*/ None,
+        /*fork_parent_thread_id*/ None,
     )
     .await
     .expect("create usage logger")

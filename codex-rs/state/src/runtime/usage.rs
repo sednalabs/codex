@@ -171,6 +171,7 @@ mod tests {
     use codex_protocol::protocol::TokenUsage;
     use codex_utils_absolute_path::test_support::PathExt;
     use pretty_assertions::assert_eq;
+    use sqlx::Row;
 
     #[tokio::test]
     async fn response_projection_is_idempotent_and_keeps_requested_unknown_actual_and_tokens() {
