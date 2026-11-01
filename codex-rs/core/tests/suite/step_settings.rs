@@ -383,11 +383,13 @@ async fn tool_result_history_keeps_originating_model_across_switch_and_replay() 
         .await?;
     let mut raw_outputs = Vec::new();
     for call_id in ["call-a", "call-b"] {
+        eprintln!("diagnostic: waiting for request {call_id}");
         let call = wait_for_event_match(&test.codex, |event| match event {
             EventMsg::DynamicToolCallRequest(request) => Some(request.clone()),
             _ => None,
         })
         .await;
+        eprintln!("diagnostic: received request {call_id}");
         assert_eq!(call.call_id, call_id);
         if call_id == "call-a" {
             // Apply B while A's result is pending in the same turn.
@@ -410,6 +412,7 @@ async fn tool_result_history_keeps_originating_model_across_switch_and_replay() 
                 response: response.clone(),
             })
             .await?;
+        eprintln!("diagnostic: waiting for raw result {call_id}");
         raw_outputs.push(
             wait_for_event_match(&test.codex, |event| match event {
                 EventMsg::RawResponseItem(event)
@@ -421,7 +424,9 @@ async fn tool_result_history_keeps_originating_model_across_switch_and_replay() 
             })
             .await,
         );
+        eprintln!("diagnostic: received raw result {call_id}");
     }
+    eprintln!("diagnostic: waiting for paused request");
     let paused_request = wait_for_event_match(&test.codex, |event| match event {
         EventMsg::RequestUserInput(request) => Some(request.clone()),
         _ => None,
