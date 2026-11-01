@@ -16,10 +16,10 @@ jobs:
     steps:
       - uses: actions/checkout@v7
         with:
-          ref: e8c77bc655ef52dee689c90e002d09f51446872e
+          ref: e8521829371abb092fd84d629c0fa04b92364c21
           persist-credentials: false
       - name: Verify exact candidate
-        run: test "$(git rev-parse HEAD)" = e8c77bc655ef52dee689c90e002d09f51446872e
+        run: test "$(git rev-parse HEAD)" = e8521829371abb092fd84d629c0fa04b92364c21
       - uses: dtolnay/rust-toolchain@e081816240890017053eacbb1bdf337761dc5582
         with:
           toolchain: 1.95.0
@@ -28,3 +28,8 @@ jobs:
         env:
           RUST_MIN_STACK: "8388608"
         run: cargo test --locked -p codex-core --test all incremental_tools_append_changed_catalog_without_rewriting_history -- --nocapture
+      - name: Run capacity retry and effort regression
+        working-directory: codex-rs
+        env:
+          RUST_MIN_STACK: "8388608"
+        run: cargo test --locked -p codex-core --test all reasoning_effort_override_capacity_retry_keeps_latest_adjacent_update -- --nocapture
