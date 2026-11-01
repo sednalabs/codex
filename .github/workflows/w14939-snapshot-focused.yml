@@ -16,20 +16,20 @@ jobs:
     steps:
       - uses: actions/checkout@v7
         with:
-          ref: 1229c1099fe3a2a049112b72a17f9e776ec7b41b
+          ref: 5ae837e79194f68546423b462ba5aa46a6f88b40
           persist-credentials: false
       - name: Verify exact candidate
-        run: test "$(git rev-parse HEAD)" = 1229c1099fe3a2a049112b72a17f9e776ec7b41b
+        run: test "$(git rev-parse HEAD)" = 5ae837e79194f68546423b462ba5aa46a6f88b40
       - uses: dtolnay/rust-toolchain@e081816240890017053eacbb1bdf337761dc5582
         with:
           toolchain: 1.95.0
-      - name: Run model-switch integration variants
+      - name: Run turn usage accounting tests
         working-directory: codex-rs
         env:
           RUST_MIN_STACK: "8388608"
-        run: cargo test --locked -p codex-core --test all incremental_tools_append_changed_catalog_without_rewriting_history -- --nocapture
-      - name: Run capacity retry and effort regression
+        run: cargo test --locked -p codex-core --lib record_token_usage_ -- --nocapture
+      - name: Run overlapping compaction integration scenarios
         working-directory: codex-rs
         env:
           RUST_MIN_STACK: "8388608"
-        run: cargo test --locked -p codex-core --test all reasoning_effort_override_retry_after_terminal_error_keeps_latest_adjacent_update -- --nocapture
+        run: cargo test --locked -p codex-core --test all async_compaction_reuses_pending_work -- --nocapture
