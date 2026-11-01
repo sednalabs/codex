@@ -1,6 +1,9 @@
 name: Temporary model-switch snapshot proof
 
 on:
+  push:
+    branches:
+      - validation/w14939-snapshot-c51a477
   workflow_dispatch:
 
 permissions:
