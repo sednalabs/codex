@@ -17,7 +17,6 @@ use codex_login::CodexAuth;
 use codex_protocol::models::ResponseItem;
 use codex_protocol::openai_models::ReasoningEffort;
 use codex_protocol::openai_models::ReasoningEffortPreset;
-use codex_protocol::protocol::CodexErrorInfo;
 use codex_protocol::protocol::EventMsg;
 use codex_protocol::protocol::InternalSessionSource;
 use codex_protocol::protocol::Op;
@@ -616,10 +615,7 @@ async fn reasoning_effort_override_capacity_retry_keeps_latest_adjacent_update()
     let EventMsg::StreamError(retry) = retry else {
         unreachable!("waited for retry notification");
     };
-    assert_eq!(
-        retry.codex_error_info,
-        Some(CodexErrorInfo::ServerOverloaded)
-    );
+    assert!(retry.message.contains("Model at capacity"));
     test.codex.submit(Op::Interrupt).await?;
     wait_for_event(&test.codex, |event| matches!(event, EventMsg::TurnAborted(_))).await;
 
