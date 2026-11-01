@@ -11,6 +11,7 @@ from unittest.mock import patch
 from codex_usage_tree import (
     RpcError,
     UsageError,
+    _database_compact_aggregate,
     app_server_argv,
     collect_database_tree,
     collect_local_tree,
@@ -99,6 +100,49 @@ class SyntheticErrorAppServer:
 
 
 class UsageTreeTests(unittest.TestCase):
+    def test_recorded_aggregate_preserves_unknowns_and_other_descendants(self):
+        connection = sqlite3.connect(":memory:")
+        connection.row_factory = sqlite3.Row
+        connection.executescript(
+            """
+            CREATE TABLE usage_threads (thread_id TEXT PRIMARY KEY);
+            CREATE TABLE usage_provider_calls (
+                thread_id TEXT, requested_model TEXT, input_tokens_uncached INTEGER,
+                input_tokens_cached INTEGER, input_tokens_cache_write INTEGER,
+                output_tokens INTEGER
+            );
+            INSERT INTO usage_threads VALUES ('other');
+            INSERT INTO usage_provider_calls VALUES
+                ('other', 'gpt-6-luna', 100, NULL, 0, 1);
+            """
+        )
+        result = _database_compact_aggregate(
+            connection,
+            ["other"],
+            "root",
+            load_rates(None),
+            {
+                "requested_model",
+                "input_tokens_uncached",
+                "input_tokens_cached",
+                "input_tokens_cache_write",
+                "output_tokens",
+            },
+            {"thread_id"},
+        )
+        connection.close()
+        group = result["groups"][0]
+        self.assertEqual(group["role"], "other_descendant")
+        self.assertIsNone(group["providerEffectiveModel"])
+        self.assertEqual(
+            group["tokenTotals"]["input_tokens_cached"]["missingValues"], 1
+        )
+        self.assertIsNone(group["calculatedCreditEstimate"]["value"])
+        self.assertEqual(
+            group["calculatedCreditEstimate"]["knownSubtotal"], "0.0002625"
+        )
+        self.assertFalse(result["actualDebitObserved"])
+
     def test_ledger_rates_are_dated_standard_and_skip_ambiguous_models(self):
         with tempfile.TemporaryDirectory() as temp_dir:
             database = Path(temp_dir) / "usage.sqlite"
@@ -354,11 +398,47 @@ class UsageTreeTests(unittest.TestCase):
                 "cacheWriteInputTokens",
                 child_group["calculatedCreditEstimate"]["missingTokenDimensions"],
             )
+            with patch("codex_usage_tree.MAX_DATABASE_CALLS", 1):
+                bounded = collect_database_tree(
+                    "root", str(database), load_rates(None), aggregate=True
+                )
+            self.assertTrue(bounded["usage"]["truncated"])
+            aggregate_groups = {
+                group["role"]: group for group in bounded["recordedAggregate"]["groups"]
+            }
+            self.assertEqual(set(aggregate_groups), {"root", "subagent"})
+            self.assertEqual(
+                aggregate_groups["root"]["calculatedCreditEstimate"]["value"], "302.5"
+            )
+            self.assertIsNone(
+                aggregate_groups["subagent"]["calculatedCreditEstimate"]["value"]
+            )
+            self.assertIn(
+                "cache_write_pricing",
+                aggregate_groups["subagent"]["calculatedCreditEstimate"][
+                    "missingTokenDimensions"
+                ],
+            )
             output = io.StringIO()
             with contextlib.redirect_stdout(output):
                 exit_code = main(["--thread-id", "root", "--database", str(database)])
             self.assertEqual(exit_code, 2)
             self.assertEqual(json.loads(output.getvalue())["status"], "partial")
+            output = io.StringIO()
+            with contextlib.redirect_stdout(output):
+                exit_code = main(
+                    [
+                        "--thread-id",
+                        "root",
+                        "--database",
+                        str(database),
+                        "--aggregate-recorded",
+                    ]
+                )
+            aggregate_only = json.loads(output.getvalue())
+            self.assertEqual(exit_code, 2)
+            self.assertNotIn("threads", aggregate_only)
+            self.assertEqual(len(aggregate_only["recordedAggregate"]["groups"]), 2)
             self.assertEqual(database.read_bytes(), original_bytes)
 
     def test_a_list_cap_marks_lineage_incomplete_instead_of_claiming_full_tree(self):

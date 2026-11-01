@@ -952,8 +952,143 @@ def _database_model_groups(
     return groups
 
 
+def _database_compact_aggregate(
+    connection: sqlite3.Connection,
+    thread_ids: list[str],
+    root_id: str,
+    rates: dict[str, Any],
+    call_columns: set[str],
+    thread_columns: set[str],
+) -> dict[str, Any]:
+    """Bound a summary independently from the number of detailed call records."""
+
+    def call_field(name: str) -> str:
+        return f'c."{name}"' if name in call_columns else "NULL"
+
+    source = 't."source"' if "source" in thread_columns else "NULL"
+    kind = 't."thread_source"' if "thread_source" in thread_columns else "NULL"
+    fields = (
+        "input_tokens_uncached",
+        "input_tokens_cached",
+        "input_tokens_cache_write",
+        "output_tokens",
+        "total_tokens",
+    )
+    dimensions = []
+    for field in fields:
+        value = call_field(field)
+        dimensions.extend(
+            [
+                f"SUM({value}) AS {field}",
+                f"SUM(CASE WHEN {value} IS NULL THEN 1 ELSE 0 END) AS {field}_missing",
+                f"SUM(CASE WHEN {value} IS NOT NULL AND "
+                f"(typeof({value}) != 'integer' OR {value} < 0) THEN 1 ELSE 0 END) AS {field}_invalid",
+            ]
+        )
+    uncached = call_field("input_tokens_uncached")
+    cache_write = call_field("input_tokens_cache_write")
+    requested = call_field("requested_model")
+    actual = call_field("actual_model_used")
+    final = call_field("final_model")
+    placeholders = ", ".join("?" for _ in thread_ids)
+    sql = f"""
+        SELECT CASE WHEN c.thread_id = ? THEN 'root'
+                    WHEN {kind} = 'subagent' OR lower(COALESCE({source}, '')) LIKE '%subagent%'
+                    THEN 'subagent' ELSE 'other_descendant' END AS role,
+               {requested} AS requested_model, {actual} AS actual_model,
+               {final} AS final_model, COUNT(*) AS calls,
+               {", ".join(dimensions)},
+               SUM(CASE WHEN {cache_write} = 0 THEN {uncached} ELSE 0 END) AS priced_uncached,
+               SUM(CASE WHEN {cache_write} IS NULL OR {cache_write} != 0 THEN 1 ELSE 0 END) AS unpriced_cache_write
+        FROM usage_provider_calls c JOIN usage_threads t ON t.thread_id = c.thread_id
+        WHERE c.thread_id IN ({placeholders})
+        GROUP BY role, requested_model, actual_model, final_model
+        LIMIT 101
+    """
+    deadline = time.monotonic() + 4.0
+    connection.set_progress_handler(lambda: int(time.monotonic() >= deadline), 10000)
+    try:
+        rows = connection.execute(sql, (root_id, *thread_ids)).fetchall()
+    except sqlite3.OperationalError as exc:
+        if "interrupt" not in str(exc).lower():
+            raise
+        return {"status": "unavailable", "reason": "aggregate_time_limit"}
+    finally:
+        connection.set_progress_handler(None, 0)
+
+    groups = []
+    for row in rows[:100]:
+        if any(row[f"{field}_invalid"] for field in fields):
+            raise UsageError("usage database contains invalid aggregate token values")
+        requested_model = (
+            _optional_text(row["requested_model"], "requested_model") or None
+        )
+        actual_model = _optional_text(row["actual_model"], "actual_model_used") or None
+        final_model = _optional_text(row["final_model"], "final_model") or None
+        effective = final_model or actual_model
+        model = effective or requested_model
+        missing = [field for field in fields if row[f"{field}_missing"]]
+        if row["unpriced_cache_write"]:
+            missing.append("cache_write_pricing")
+        cost = _cost(
+            {
+                "model": model,
+                "netNewInputTokens": row["priced_uncached"] or 0,
+                "cachedInputTokens": row["input_tokens_cached"] or 0,
+                "outputTokens": row["output_tokens"] or 0,
+            },
+            rates,
+        )
+        complete_estimate = not missing and cost["complete"]
+        groups.append(
+            {
+                "role": row["role"],
+                "requestedModel": requested_model,
+                "providerEffectiveModel": effective,
+                "providerEffectiveModelSource": "final_model"
+                if final_model
+                else "actual_model_used"
+                if actual_model
+                else None,
+                "responseUsageRecordCount": row["calls"],
+                "tokenTotals": {
+                    field: {
+                        "knownSubtotal": row[field] or 0,
+                        "missingValues": row[f"{field}_missing"],
+                    }
+                    for field in fields
+                },
+                "calculatedCreditEstimate": {
+                    "value": cost["credits"] if complete_estimate else None,
+                    "knownSubtotal": cost["knownSubtotal"],
+                    "rateModel": model,
+                    "completeForSelectedRecordedRows": complete_estimate,
+                    "rateModelBasis": "provider_effective_model"
+                    if effective
+                    else "requested_model_fallback"
+                    if requested_model
+                    else "unknown_model",
+                    "missingTokenDimensions": missing,
+                    "missingRates": cost["missingRates"],
+                },
+            }
+        )
+    return {
+        "status": "partial" if len(rows) > 100 else "recorded_rows_only",
+        "groups": groups,
+        "groupsTruncated": len(rows) > 100,
+        "actualDebitObserved": False,
+        "note": "Only selected recorded threads; historical lineage and actual debits remain unproven.",
+    }
+
+
 def collect_database_tree(
-    root_id: str, database_path: str, rates: dict[str, Any]
+    root_id: str,
+    database_path: str,
+    rates: dict[str, Any],
+    *,
+    aggregate: bool = False,
+    aggregate_only: bool = False,
 ) -> dict[str, Any]:
     """Read an explicitly named usage database without startup, migration, or writes."""
     if not isinstance(root_id, str) or not root_id.strip():
@@ -1088,6 +1223,33 @@ def collect_database_tree(
             for field in selected_fields
         ]
         placeholders = ", ".join("?" for _ in thread_ids)
+        aggregate_result = (
+            _database_compact_aggregate(
+                connection, thread_ids, root_id, rates, call_columns, thread_columns
+            )
+            if aggregate or aggregate_only
+            else None
+        )
+        if aggregate_only:
+            return {
+                "schema": "codex-usage-tree/v1",
+                "status": "partial",
+                "scope": "root_and_known_descendants",
+                "rootThreadId": root_id,
+                "lineage": {
+                    "knownThreadCount": len(thread_rows),
+                    "truncated": threads_truncated,
+                    "complete": False,
+                    "coverageNote": "Unrecorded or historical descendants are unknown.",
+                },
+                "rateMap": {
+                    "source": rates["source"],
+                    "date": rates["date"],
+                    "unit": "credits per 1,000,000 exact-model tokens",
+                },
+                "recordedAggregate": aggregate_result,
+                "actualDebitObserved": False,
+            }
         call_rows = connection.execute(
             f"""
             SELECT provider_call_id, thread_id, {", ".join(expressions)}
@@ -1248,6 +1410,7 @@ def collect_database_tree(
         "status": "partial",
         "scope": "root_and_known_descendants",
         "rootThreadId": root_id,
+        "recordedAggregate": aggregate_result,
         "lineage": {
             "source": "usage_threads parent, fork-parent, and root fields",
             "knownThreadCount": len(thread_rows),
@@ -1559,6 +1722,11 @@ def main(argv: list[str] | None = None) -> int:
         ),
     )
     parser.add_argument(
+        "--aggregate-recorded",
+        action="store_true",
+        help="show a time-bounded aggregate without loading detailed call records",
+    )
+    parser.add_argument(
         "--expected-child-id",
         action="append",
         default=[],
@@ -1589,6 +1757,8 @@ def main(argv: list[str] | None = None) -> int:
         parser.error("--database and --rollout-file select different local query modes")
     if args.database and args.allow_local_app_server_startup:
         parser.error("read-only database mode does not start an app-server")
+    if args.aggregate_recorded and not args.database:
+        parser.error("--aggregate-recorded requires --database")
     if args.standard_ledger_rates_at and (not args.database or args.rates_json):
         parser.error(
             "--standard-ledger-rates-at requires --database and no --rates-json"
@@ -1633,6 +1803,7 @@ def main(argv: list[str] | None = None) -> int:
                 args.thread_id,
                 args.database,
                 rates,
+                aggregate_only=args.aggregate_recorded,
             )
             print(json.dumps(result, indent=2, sort_keys=True))
             return 0 if result["status"] == "complete" else 2

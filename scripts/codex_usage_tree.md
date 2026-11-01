@@ -135,6 +135,14 @@ zero-token response. Current limits are 900 known threads and 10,000 response
 rows; reaching either limit is reported as truncation. The response-level rows
 include request/turn identifiers, token classes, status, requested/effective
 model identity, and any provider-reported credits present in the ledger.
+
+Add `--aggregate-recorded` to request a model and role summary over the
+selected recorded threads instead of loading detailed rows. This is
+an estimate using the selected rate map, not an account debit; requested-model
+fallback and missing token dimensions are labelled. The aggregate has a
+four-second query limit and a 100-group output limit, and remains partial if
+lineage is incomplete or truncated. Normal detailed reports remain separately
+bounded.
 `selectedLedgerRowsComplete` and the separate lineage/response truncation flags
 show whether those bounded queried rows were fully read; they do not change the
 always-false `historicalCoverageComplete` claim.
