@@ -22,7 +22,7 @@ impl AnalyticsView {
         let width = row_width.saturating_sub(/*rhs*/ 1).max(/*other*/ 1);
         let wrap = |lines: Vec<Line<'static>>| word_wrap_lines(lines, RtOptions::new(width));
         let mut lines = wrap(vec![
-            "Active in past 30 days · sorted by lifetime credits"
+            "Active in past 30 days · estimated lifetime credits"
                 .set_style(secondary_style())
                 .into(),
         ]);
@@ -81,11 +81,11 @@ impl AnalyticsView {
         lines.extend(wrap(vec![columns(
             "  Chat".bold().into(),
             if stacked_amounts {
-                "Est. $ / credits"
+                "Est. $ / est. credits"
             } else if show_usd {
-                "Est. $ spent  Lifetime credits"
+                "Est. $ spent  Est. lifetime credits"
             } else {
-                "Lifetime credits"
+                "Est. lifetime credits"
             }
             .bold()
             .into(),
@@ -199,7 +199,7 @@ impl AnalyticsView {
                                     .set_style(secondary_style())
                                     .into()
                             },
-                            "Credits".bold().into(),
+                            "Est. credits".bold().into(),
                             width,
                         ));
                     }

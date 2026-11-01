@@ -99,7 +99,7 @@ impl AnalyticsView {
                     }
                     Section::Chats => {
                         content.push(
-                            "30d active · lifetime credits"
+                            "30d active · estimated lifetime credits"
                                 .set_style(secondary_style())
                                 .into(),
                         );
