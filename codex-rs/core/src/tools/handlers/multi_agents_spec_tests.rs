@@ -393,6 +393,7 @@ fn wait_agent_tool_v2_hides_mailbox_selectors_when_mailbox_is_disabled() {
     let ToolSpec::Function(ResponsesApiTool {
         description,
         parameters,
+        output_schema,
         ..
     }) = create_wait_agent_tool_v2(
         WaitAgentTimeoutOptions {
@@ -415,6 +416,18 @@ fn wait_agent_tool_v2_hides_mailbox_selectors_when_mailbox_is_disabled() {
     );
     assert!(description.contains("Wait for a mailbox update from any live agent"));
     assert!(!description.contains("selected durable work references"));
+    let output_schema = output_schema.expect("wait output schema").to_value();
+    assert!(
+        output_schema["properties"]
+            .get("mailbox_wait_report")
+            .is_none()
+    );
+    assert_eq!(
+        output_schema["properties"]["message"]["description"],
+        json!(
+            "Brief wait summary without the agent's final content, including any timeout adjustment."
+        )
+    );
 }
 
 #[test]

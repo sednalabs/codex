@@ -341,7 +341,7 @@ pub fn create_wait_agent_tool_v2(
         strict: false,
         defer_loading: None,
         parameters: wait_agent_tool_parameters_v2(options, mailbox_enabled),
-        output_schema: Some(wait_output_schema_v2().into()),
+        output_schema: Some(wait_output_schema_v2(mailbox_enabled).into()),
     })
 }
 
@@ -578,7 +578,24 @@ fn wait_output_schema_v1() -> Value {
     })
 }
 
-fn wait_output_schema_v2() -> Value {
+fn wait_output_schema_v2(mailbox_enabled: bool) -> Value {
+    if !mailbox_enabled {
+        return json!({
+            "type": "object",
+            "properties": {
+                "message": {
+                    "type": "string",
+                    "description": "Brief wait summary without the agent's final content, including any timeout adjustment."
+                },
+                "timed_out": {
+                    "type": "boolean",
+                    "description": "Whether the wait call returned because no mailbox update arrived before the timeout."
+                }
+            },
+            "required": ["message", "timed_out"],
+            "additionalProperties": false
+        });
+    }
     json!({
         "type": "object",
         "properties": {
