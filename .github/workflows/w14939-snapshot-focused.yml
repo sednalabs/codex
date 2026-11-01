@@ -16,10 +16,10 @@ jobs:
     steps:
       - uses: actions/checkout@v7
         with:
-          ref: 5ae837e79194f68546423b462ba5aa46a6f88b40
+          ref: c0b4d623d31e4f06929d9f5177e68b1ffe097c31
           persist-credentials: false
       - name: Verify exact candidate
-        run: test "$(git rev-parse HEAD)" = 5ae837e79194f68546423b462ba5aa46a6f88b40
+        run: test "$(git rev-parse HEAD)" = c0b4d623d31e4f06929d9f5177e68b1ffe097c31
       - uses: dtolnay/rust-toolchain@e081816240890017053eacbb1bdf337761dc5582
         with:
           toolchain: 1.95.0
