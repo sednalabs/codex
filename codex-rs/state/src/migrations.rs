@@ -96,6 +96,11 @@ const T10_USAGE_MIGRATION_HISTORY: &[(i64, &str, &str)] = &[
         "usage standard rate scenarios",
         "0baffd0cc7dd86d306907b40c324eb92f72e908ade298629385aa7dc399a39db47c2f8b7d3898cd08fc688ac577b89fb",
     ),
+    (
+        20,
+        "usage automatic turn reference",
+        "5fc5e1559fdfc2e381fa173dd46bdad14f0161df7b109951ba9660261dad0b88b0d0840975b38388758b39a2d7c344ac",
+    ),
 ];
 
 /// Preserve the exact T10 usage-history variants without rewriting their

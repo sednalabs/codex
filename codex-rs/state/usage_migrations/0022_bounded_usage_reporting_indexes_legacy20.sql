@@ -1,0 +1,12 @@
+-- Historical ledgers can already have a different, recognized migration 20.
+-- Repeat the idempotent indexes at a later version without rewriting its history.
+CREATE INDEX IF NOT EXISTS usage_provider_calls_started_at_idx
+ON usage_provider_calls(started_at);
+
+CREATE INDEX IF NOT EXISTS usage_provider_calls_thread_started_at_idx
+ON usage_provider_calls(thread_id, started_at);
+
+DROP INDEX IF EXISTS usage_provider_calls_thread_idx;
+
+CREATE INDEX IF NOT EXISTS usage_threads_reporting_parent_idx
+ON usage_threads(COALESCE(NULLIF(parent_thread_id,''), NULLIF(fork_parent_thread_id,'')));
