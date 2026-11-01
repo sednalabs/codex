@@ -373,6 +373,8 @@ pub struct TurnContext {
     pub(crate) turn_metadata_state: Arc<TurnMetadataState>,
     pub(crate) extension_data: Arc<codex_extension_api::ExtensionData>,
     pub(crate) turn_timing_state: Arc<TurnTimingState>,
+    /// Accumulated response usage for this turn, including when background work overlaps it.
+    pub(crate) recorded_turn_usage: Arc<StdMutex<Option<TokenUsage>>>,
     pub(crate) terminal_error: Arc<Mutex<Option<ErrorEvent>>>,
     /// Captured before a regular turn starts so a terminal result cannot bind to later control.
     pub(crate) agent_goal_control_snapshot:
@@ -871,6 +873,7 @@ impl TurnContext {
             turn_metadata_state: self.turn_metadata_state.clone(),
             extension_data: Arc::clone(&self.extension_data),
             turn_timing_state: Arc::clone(&self.turn_timing_state),
+            recorded_turn_usage: Arc::clone(&self.recorded_turn_usage),
             terminal_error: Arc::clone(&self.terminal_error),
             agent_goal_control_snapshot: Arc::clone(&self.agent_goal_control_snapshot),
             session_grants: Arc::clone(&self.session_grants),
@@ -1156,6 +1159,7 @@ impl Session {
             turn_metadata_state,
             extension_data,
             turn_timing_state: Arc::new(TurnTimingState::default()),
+            recorded_turn_usage: Arc::default(),
             terminal_error: Arc::new(Mutex::new(None)),
             agent_goal_control_snapshot: Arc::new(tokio::sync::OnceCell::new()),
             session_grants,
