@@ -415,8 +415,10 @@ async fn tool_result_history_keeps_originating_model_across_switch_and_replay() 
         // the full sharded suite; keep a bounded wait without relaxing assertions.
         let raw = wait_for_event_with_timeout(
             &test.codex,
-            |event| matches!(event, EventMsg::RawResponseItem(event)
-                if matches!(&event.item, ResponseItem::FunctionCallOutput { .. })),
+            |event| {
+                matches!(event, EventMsg::RawResponseItem(event)
+                if matches!(&event.item, ResponseItem::FunctionCallOutput { .. }))
+            },
             std::time::Duration::from_secs(60),
         )
         .await;

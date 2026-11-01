@@ -69,18 +69,19 @@ async fn record_token_usage_preserves_turn_totals_when_turns_interleave() {
     let mut state = SessionState::new(make_session_configuration_for_tests().await);
     let mut foreground_usage = None;
     let mut background_usage = None;
-    let mut record = |turn: &str, response: &str, tokens, recorded_usage: &mut Option<TokenUsage>| {
-        state.record_token_usage(
-            thread_id,
-            turn,
-            session_id,
-            turn.to_string(),
-            response.to_string(),
-            None,
-            recorded_usage,
-            &usage(tokens),
-        )
-    };
+    let mut record =
+        |turn: &str, response: &str, tokens, recorded_usage: &mut Option<TokenUsage>| {
+            state.record_token_usage(
+                thread_id,
+                turn,
+                session_id,
+                turn.to_string(),
+                response.to_string(),
+                None,
+                recorded_usage,
+                &usage(tokens),
+            )
+        };
     record("foreground", "first", 91_000, &mut foreground_usage);
     record("background", "compaction", 3_000, &mut background_usage);
     let continuation = record("foreground", "continuation", 3_000, &mut foreground_usage);

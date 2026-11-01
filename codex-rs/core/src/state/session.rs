@@ -247,7 +247,9 @@ impl SessionState {
             self.latest_token_usage_record
                 .as_ref()
                 .filter(|record| record.turn_id == turn_id)
-                .map_or_else(TokenUsage::default, |record| record.turn_token_usage.clone())
+                .map_or_else(TokenUsage::default, |record| {
+                    record.turn_token_usage.clone()
+                })
         });
         turn_token_usage.add_assign(usage);
         let mut thread_token_usage = self
