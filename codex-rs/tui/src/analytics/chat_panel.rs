@@ -22,7 +22,7 @@ impl AnalyticsView {
         let width = row_width.saturating_sub(/*rhs*/ 1).max(/*other*/ 1);
         let wrap = |lines: Vec<Line<'static>>| word_wrap_lines(lines, RtOptions::new(width));
         let mut lines = wrap(vec![
-            "Active in past 30 days · estimated lifetime credits"
+            "Indexed chats may be incomplete · estimated credits"
                 .set_style(secondary_style())
                 .into(),
         ]);

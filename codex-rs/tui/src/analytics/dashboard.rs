@@ -99,7 +99,7 @@ impl AnalyticsView {
                     }
                     Section::Chats => {
                         content.push(
-                            "30d active · estimated lifetime credits"
+                            "Indexed chats may be incomplete · est. credits"
                                 .set_style(secondary_style())
                                 .into(),
                         );
