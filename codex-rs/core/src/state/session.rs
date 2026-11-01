@@ -240,15 +240,15 @@ impl SessionState {
         root_turn_id: String,
         response_id: String,
         requested_model: Option<String>,
+        recorded_turn_usage: &mut Option<TokenUsage>,
         usage: &TokenUsage,
     ) -> TokenUsageRecord {
-        let mut turn_token_usage = self
-            .latest_token_usage_record
-            .as_ref()
-            .filter(|record| record.turn_id == turn_id)
-            .map_or_else(TokenUsage::default, |record| {
-                record.turn_token_usage.clone()
-            });
+        let turn_token_usage = recorded_turn_usage.get_or_insert_with(|| {
+            self.latest_token_usage_record
+                .as_ref()
+                .filter(|record| record.turn_id == turn_id)
+                .map_or_else(TokenUsage::default, |record| record.turn_token_usage.clone())
+        });
         turn_token_usage.add_assign(usage);
         let mut thread_token_usage = self
             .latest_token_usage_record
@@ -267,7 +267,7 @@ impl SessionState {
             // Upstream token records do not expose a per-response actual model.
             actual_model_used: None,
             usage: usage.clone(),
-            turn_token_usage,
+            turn_token_usage: turn_token_usage.clone(),
             thread_token_usage,
         };
         self.latest_token_usage_record = Some(record.clone());

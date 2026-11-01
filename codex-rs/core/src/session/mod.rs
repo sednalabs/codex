@@ -5773,18 +5773,26 @@ impl Session {
         let Some(usage) = usage else {
             return;
         };
-        let record = self.state.lock().await.record_token_usage(
-            self.thread_id,
-            &turn_context.sub_id,
-            self.session_id(),
-            turn_context
-                .turn_metadata_state
-                .root_turn_id()
-                .unwrap_or_else(|| turn_context.sub_id.clone()),
-            response_id.to_string(),
-            requested_model.map(str::to_string),
-            usage,
-        );
+        let record = {
+            let mut state = self.state.lock().await;
+            let mut turn_usage = turn_context
+                .recorded_turn_usage
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            state.record_token_usage(
+                self.thread_id,
+                &turn_context.sub_id,
+                self.session_id(),
+                turn_context
+                    .turn_metadata_state
+                    .root_turn_id()
+                    .unwrap_or_else(|| turn_context.sub_id.clone()),
+                response_id.to_string(),
+                requested_model.map(str::to_string),
+                &mut turn_usage,
+                usage,
+            )
+        };
         self.persist_rollout_items(&[RolloutItem::TokenUsageRecord(record.clone())])
             .await;
         if let Some(usage_logger) = &self.services.usage_logger
