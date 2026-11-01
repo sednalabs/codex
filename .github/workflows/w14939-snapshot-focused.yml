@@ -1,0 +1,25 @@
+name: Temporary model-switch snapshot proof
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  snapshot:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: c51a477e6ac674e1fd4e6f9fa19302cd50ef621e
+          persist-credentials: false
+      - name: Verify exact candidate
+        run: test "$(git rev-parse HEAD)" = c51a477e6ac674e1fd4e6f9fa19302cd50ef621e
+      - uses: dtolnay/rust-toolchain@e081816240890017053eacbb1bdf337761dc5582
+        with:
+          toolchain: 1.95.0
+      - name: Run model-switch integration variants
+        working-directory: codex-rs
+        run: cargo test --locked -p codex-core --test all incremental_tools_append_changed_catalog_without_rewriting_history -- --nocapture
