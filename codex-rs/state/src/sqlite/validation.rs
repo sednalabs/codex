@@ -92,11 +92,11 @@ async fn quick_check_inner(
                 && error
                     .downcast_ref::<sqlx::Error>()
                     .and_then(sqlx::Error::as_database_error)
-                    .and_then(|error| error.code())
+                    .and_then(sqlx::error::DatabaseError::code)
                     .as_deref()
                     != Some("9") =>
         {
-            Err(error.into())
+            Err(error)
         }
         // timeouts or other unhandled errors
         Err(_) => Ok(QuickCheckOutcome::Incomplete),
