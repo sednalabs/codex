@@ -19,9 +19,18 @@ const CUSTOM_THREAD_SECTION_ID: &str = "01984de2-8f74-7c91-a3b2-5c5e937cf317";
 
 #[tokio::test]
 async fn usage_migrator_preserves_known_legacy_twenty_and_retains_index_repair() {
-    let pool = sqlx::SqlitePool::connect("sqlite::memory:")
+    let sqlite_home = crate::runtime::test_support::unique_temp_dir();
+    tokio::fs::create_dir_all(&sqlite_home)
         .await
-        .expect("in-memory database");
+        .expect("sqlite home should be created");
+    let _cleanup = scopeguard::guard(sqlite_home.clone(), |sqlite_home| {
+        let _ = std::fs::remove_dir_all(sqlite_home);
+    });
+    let sqlite = crate::SqliteConfig::new_for_testing(sqlite_home.as_path().abs());
+    let pool = sqlite
+        .open_read_write_pool(&sqlite.usage_db_path())
+        .await
+        .expect("usage database should open");
     sqlx::query(
         "CREATE TABLE _sqlx_migrations (version BIGINT PRIMARY KEY, description TEXT NOT NULL, success BOOLEAN NOT NULL, checksum BLOB NOT NULL)",
     )
@@ -69,6 +78,7 @@ async fn usage_migrator_preserves_known_legacy_twenty_and_retains_index_repair()
             .await
             .is_err()
     );
+    pool.close().await;
 }
 
 fn migrator_through(version: i64) -> Migrator {
