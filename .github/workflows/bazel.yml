@@ -108,6 +108,20 @@ jobs:
             ./.github/scripts/run-bazel-ci.sh \
               --print-failed-test-logs \
               --print-failed-action-summary \
+              -- test --test_output=all \
+              --test_arg=wait_agent_tool_v2_ \
+              -- //codex-rs/core:core-unit-tests || focused_status=$?
+            ./.github/scripts/run-bazel-ci.sh \
+              --print-failed-test-logs \
+              --print-failed-action-summary \
+              -- test --test_output=all \
+              --test_arg=--exact \
+              --test_arg=suite::scenarios::indirect_namespace_prefixes::catalog_namespace_prefixes_follow_the_selected_model::code_mode_only \
+              -- //codex-rs/core:core-all-test || focused_status=$?
+            exit "${focused_status}"
+            ./.github/scripts/run-bazel-ci.sh \
+              --print-failed-test-logs \
+              --print-failed-action-summary \
               -- \
               test \
               --test_tag_filters=-argument-comment-lint \
