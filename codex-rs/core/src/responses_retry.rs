@@ -137,6 +137,22 @@ pub(crate) async fn handle_response_stream_error(
         .await;
         codex_client::record_retry!(attempt, delay, operation);
         tokio::time::sleep_until(retry_at).await;
+        // Exhausting a WebSocket retry budget changes transport, not the
+        // indefinite capacity-retry policy. Respect the retry deadline first.
+        if attempt == max_retries.saturating_add(1)
+            && client_session.try_switch_fallback_transport(
+                &turn_context.session_telemetry,
+                turn_context.model_info(),
+            )
+        {
+            sess.send_event(
+                turn_context,
+                EventMsg::Warning(WarningEvent {
+                    message: "Falling back from WebSockets to HTTPS transport after repeated provider unavailability.".to_string(),
+                }),
+            )
+            .await;
+        }
         return Ok(());
     }
     let retry_count = retry_state.retries.saturating_add(1);
