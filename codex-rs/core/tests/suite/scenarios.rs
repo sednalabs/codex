@@ -3843,17 +3843,22 @@ async fn async_compaction_reuses_pending_work(
             continuation.thread_token_usage.total_tokens,
         ),
         if over_budget {
-            (12_010, 14_010)
+            (12_010, 17_010)
         } else if manual && outcome == PendingCompactionOutcome::Failure {
             // The failed background response, synchronous retry and continuation
             // each completed with 3,000 tokens and all count toward thread usage.
             (3_000, seed_tokens + 9_000)
         } else if manual {
-            (3_000, seed_tokens + if succeeds { 3_000 } else { 6_000 })
+            (
+                3_000,
+                seed_tokens
+                    + if succeeds { 3_000 } else { 6_000 }
+                    + if has_background { 3_000 } else { 0 },
+            )
         } else if succeeds {
-            (94_000, 164_000)
+            (94_000, 167_000)
         } else {
-            (97_000, 167_000)
+            (97_000, 170_000)
         },
     );
 
