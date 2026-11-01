@@ -311,7 +311,9 @@ class UsageTreeTests(unittest.TestCase):
             def connect_with_plan(*args, **kwargs):
                 return real_connect(*args, factory=TracingConnection, **kwargs)
 
-            with patch("codex_usage_tree.sqlite3.connect", side_effect=connect_with_plan):
+            with patch(
+                "codex_usage_tree.sqlite3.connect", side_effect=connect_with_plan
+            ):
                 result = collect_database_tree("root", str(database), load_rates(None))
 
             self.assertTrue(
