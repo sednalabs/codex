@@ -550,7 +550,11 @@ async fn stale_completed_idle_does_not_drain_after_interrupt_but_explicit_start_
             text_elements: Vec::new(),
         }]))
         .await?;
-    tokio::time::timeout(Duration::from_secs(5), server.wait_for_request_count(1)).await?;
+    tokio::time::timeout(
+        Duration::from_secs(5),
+        server.wait_for_request_count(/*count*/ 1),
+    )
+    .await?;
     let queued = service
         .enqueue(thread_id, user_input("keep this queued"))
         .await?;
@@ -566,7 +570,7 @@ async fn stale_completed_idle_does_not_drain_after_interrupt_but_explicit_start_
 
     // An explicit start is an operator action and must still work.
     let started = service
-        .start(test.codex.as_ref(), Some(queued.id), None)
+        .start(test.codex.as_ref(), Some(queued.id), /*trace*/ None)
         .await?;
     assert!(matches!(started, StartIfIdleSubmission::Started { .. }));
     assert!(service.list(thread_id).await?.is_empty());
