@@ -3,7 +3,7 @@ name: exact-source package preview
 on:
   push:
     branches:
-      - validation/codex-package-preview-02a2ab19
+      - validation/codex-package-preview-e03a4039
 
 permissions:
   contents: read
@@ -24,13 +24,13 @@ jobs:
           - runner: ubuntu-24.04-arm
             target: aarch64-unknown-linux-gnu
     env:
-      PRODUCT_SHA: 02a2ab19b776af09d3cfdcd30b815814858a8075
+      PRODUCT_SHA: e03a40398272ee4b0e6cdb694e390498c86ac7d9
       TARGET: ${{ matrix.target }}
 
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
         with:
-          ref: 02a2ab19b776af09d3cfdcd30b815814858a8075
+          ref: e03a40398272ee4b0e6cdb694e390498c86ac7d9
           fetch-depth: 0
           persist-credentials: false
 
@@ -124,7 +124,7 @@ jobs:
 
       - uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f # v7.0.0
         with:
-          name: codex-package-${{ matrix.target }}-02a2ab19
+          name: codex-package-${{ matrix.target }}-e03a4039
           path: dist/${{ matrix.target }}
           if-no-files-found: error
           compression-level: 0
