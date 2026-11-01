@@ -182,7 +182,16 @@ impl AnalyticsView {
             .into(),
         ]);
         if chats.rows.is_empty() {
-            lines.push("No recent local chats.".into());
+            lines.extend(wrap(vec![if chats.truncated {
+                if chats.next_cursor.is_some() {
+                    "No recent roots in this creation-ordered page; later pages may contain active chats. Continue with n."
+                } else {
+                    "No recent roots on this page. Press R to restart at the newest page."
+                }
+            } else {
+                "No recent local chats."
+            }
+            .into()]));
             return (lines, 0..1);
         }
         let missing = chats
@@ -379,17 +388,6 @@ impl AnalyticsView {
                     .set_style(secondary_style())
                     .into(),
             );
-            if chats.rows.is_empty() {
-                coverage.push(
-                    if chats.next_cursor.is_some() {
-                        "No recent roots in this creation-ordered page; later pages may contain active chats. Continue with n."
-                    } else {
-                        "No recent roots on this page. Press R to restart at the newest page."
-                    }
-                        .set_style(secondary_style())
-                        .into(),
-                );
-            }
         }
         if let Some(time) = chats.updated_at {
             coverage.push(

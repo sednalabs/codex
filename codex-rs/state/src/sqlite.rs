@@ -454,7 +454,7 @@ impl SqliteConfig {
         deadline: Instant,
         telemetry_override: Option<&dyn DbTelemetry>,
     ) -> anyhow::Result<()> {
-        match validation::quick_check(pool, deadline).await? {
+        match validation::quick_check_usage(pool, deadline).await? {
             validation::QuickCheckOutcome::Complete => Ok(()),
             validation::QuickCheckOutcome::CorruptedNeedsFixed => {
                 telemetry::record_corruption(telemetry_override, Some(DbKind::Usage));
