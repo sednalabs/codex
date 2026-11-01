@@ -1588,7 +1588,9 @@ def main(argv: list[str] | None = None) -> int:
     if args.database and args.allow_local_app_server_startup:
         parser.error("read-only database mode does not start an app-server")
     if args.standard_ledger_rates_at and (not args.database or args.rates_json):
-        parser.error("--standard-ledger-rates-at requires --database and no --rates-json")
+        parser.error(
+            "--standard-ledger-rates-at requires --database and no --rates-json"
+        )
     if args.rollout_file and args.allow_local_app_server_startup:
         parser.error("local rollout mode does not start an app-server")
     if args.expected_child_id and not args.rollout_file:
