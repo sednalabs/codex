@@ -289,21 +289,20 @@ pub(super) async fn deliver(
     token: &str,
     idle_only: bool,
 ) -> EventAdmission {
-    // Use the same permit as goal control and goal continuation. Never wait for
-    // it while holding the interrupt gate: retry if a goal mutation is active.
-    let Some(goal_lock) = session
+    // An independent notification is not goal continuation: a paused or absent
+    // goal must not suppress it. When a goal runtime is present, serialize with
+    // its mutations without waiting while holding the interrupt gate.
+    let goal_lock = session
         .services
         .thread_extension_data
-        .get::<crate::GoalStateAdmissionLock>()
-    else {
-        return EventAdmission::Deferred;
+        .get::<crate::GoalStateAdmissionLock>();
+    let _goal_permit = match goal_lock.as_ref() {
+        Some(lock) => match lock.0.try_acquire() {
+            Ok(permit) => Some(permit),
+            Err(_) => return EventAdmission::Deferred,
+        },
+        None => None,
     };
-    let Ok(_goal_permit) = goal_lock.0.try_acquire() else {
-        return EventAdmission::Deferred;
-    };
-    if !goal_lock.1.load(std::sync::atomic::Ordering::Acquire) {
-        return EventAdmission::Deferred;
-    }
     let enabled = session.external_event_gate.lock().await;
     if !*enabled {
         return EventAdmission::Deferred;
@@ -311,27 +310,7 @@ pub(super) async fn deliver(
     let Some(request) = event_request(source, token) else {
         return EventAdmission::Deferred;
     };
-    // Refuse automatic work if the goal state cannot be determined. In
-    // particular, never turn a paused or limited goal back into an active one.
-    let Some(state_db) = session.services.state_db.as_ref() else {
-        return EventAdmission::Deferred;
-    };
-    match state_db
-        .thread_goals()
-        .get_thread_goal(session.thread_id)
-        .await
-    {
-        Ok(Some(goal)) if goal.status.is_active() => {}
-        Ok(_) => return EventAdmission::Deferred,
-        Err(error) => {
-            tracing::warn!(thread_id = %session.thread_id, %error, "external wake deferred: goal state unavailable");
-            return EventAdmission::Deferred;
-        }
-    }
     if session.collaboration_mode().await.mode == ModeKind::Plan {
-        return EventAdmission::Deferred;
-    }
-    if !goal_lock.1.load(std::sync::atomic::Ordering::Acquire) {
         return EventAdmission::Deferred;
     }
 
@@ -373,6 +352,8 @@ pub(super) async fn deliver(
 mod tests {
     use super::*;
     use crate::session::tests::make_session_and_context;
+    use crate::session::tests::make_session_and_context_with_rx;
+    use codex_protocol::protocol::TurnAbortReason;
 
     #[test]
     fn source_name_is_bounded_and_cannot_supply_input_text() {
@@ -383,19 +364,36 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn unavailable_goal_state_never_starts_a_turn() {
-        let (session, _) = make_session_and_context().await;
-        let session = Arc::new(session);
+    async fn independent_event_can_start_without_a_goal_runtime() {
+        let (session, _, _rx) = make_session_and_context_with_rx().await;
         assert!(session.services.state_db.is_none());
         assert_eq!(
             deliver(&session, "irc", "token", /*idle_only*/ false).await,
-            EventAdmission::Deferred
+            EventAdmission::Accepted
         );
-        assert!(session.active_turn.lock().await.is_none());
+        session.abort_all_tasks(TurnAbortReason::Interrupted).await;
     }
 
     #[tokio::test]
-    async fn persisted_paused_goal_defers_wake_after_state_reopen() {
+    async fn independent_event_can_start_with_goal_runtime_but_no_goal() {
+        let (session, _, _rx) = make_session_and_context_with_rx().await;
+        assert!(session.services.state_db.is_none());
+        session
+            .services
+            .thread_extension_data
+            .insert(crate::GoalStateAdmissionLock(
+                Arc::new(tokio::sync::Semaphore::new(1)),
+                Arc::new(std::sync::atomic::AtomicBool::new(true)),
+            ));
+        assert_eq!(
+            deliver(&session, "irc", "token", /*idle_only*/ false).await,
+            EventAdmission::Accepted
+        );
+        session.abort_all_tasks(TurnAbortReason::Interrupted).await;
+    }
+
+    #[tokio::test]
+    async fn independent_event_preserves_paused_goal_after_state_reopen() {
         let home = tempfile::tempdir().expect("state home");
         let sqlite = codex_state::SqliteConfig::new_for_testing(
             codex_utils_absolute_path::AbsolutePathBuf::try_from(home.path()).expect("absolute"),
@@ -439,9 +437,23 @@ mod tests {
         let session = Arc::new(session);
         assert_eq!(
             deliver(&session, "irc", "token", /*idle_only*/ false).await,
-            EventAdmission::Deferred
+            EventAdmission::Accepted
         );
-        assert!(session.active_turn.lock().await.is_none());
+        assert_eq!(
+            session
+                .services
+                .state_db
+                .as_ref()
+                .expect("state")
+                .thread_goals()
+                .get_thread_goal(session.thread_id)
+                .await
+                .expect("read goal")
+                .expect("goal persisted")
+                .status,
+            codex_state::ThreadGoalStatus::Paused
+        );
+        session.abort_all_tasks(TurnAbortReason::Interrupted).await;
     }
 
     #[tokio::test]
