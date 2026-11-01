@@ -461,6 +461,7 @@ impl TurnContext {
             turn_metadata_state,
             extension_data,
             turn_timing_state: Arc::new(TurnTimingState::default()),
+            recorded_turn_usage: Arc::default(),
             terminal_error: Arc::new(Mutex::new(None)),
             agent_goal_control_snapshot: Arc::new(tokio::sync::OnceCell::new()),
             session_grants: Arc::clone(&self.session_grants),
