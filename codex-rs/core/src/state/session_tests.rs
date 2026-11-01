@@ -77,7 +77,7 @@ async fn record_token_usage_preserves_turn_totals_when_turns_interleave() {
                 session_id,
                 turn.to_string(),
                 response.to_string(),
-                None,
+                /* requested_model */ None,
                 recorded_usage,
                 &usage(tokens),
             )
