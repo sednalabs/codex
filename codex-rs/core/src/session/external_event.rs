@@ -367,6 +367,10 @@ mod tests {
         assert!(event_request(&"x".repeat(49), "token").is_none());
     }
 
+    #[expect(
+        clippy::await_holding_invalid_type,
+        reason = "the test holds the gate to verify that interrupt acknowledgement waits for it"
+    )]
     #[tokio::test]
     async fn startup_interrupt_ack_waits_for_external_notice_gate_to_close() {
         let (session, _, _rx) = make_session_and_context_with_rx().await;
