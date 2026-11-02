@@ -827,9 +827,18 @@ async fn start_if_idle(
         }
     }
     if external_reservation {
-        session
-            .start_external_task(Arc::clone(&turn_context), task_input, RegularTask::new())
-            .await;
+        if !session
+            .start_external_task(
+                Arc::clone(&turn_context),
+                task_input,
+                RegularTask::new(),
+                Arc::clone(&turn_state),
+            )
+            .await
+        {
+            session.clear_reserved_idle_turn(&turn_state).await;
+            return Err(CodexErr::InvalidRequest("goal admission unavailable".to_string()));
+        }
     } else {
         session
             .start_task(Arc::clone(&turn_context), task_input, RegularTask::new())

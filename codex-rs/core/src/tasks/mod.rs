@@ -299,7 +299,7 @@ impl Session {
         input: Vec<TurnInput>,
         task: T,
     ) {
-        self.start_task_inner(turn_context, input, task, MailboxStart::Drain)
+        self.start_task_inner(turn_context, input, task, MailboxStart::Drain, None)
             .await;
     }
 
@@ -309,9 +309,16 @@ impl Session {
         turn_context: Arc<TurnContext>,
         input: Vec<TurnInput>,
         task: T,
-    ) {
-        self.start_task_inner(turn_context, input, task, MailboxStart::Defer)
-            .await;
+        reservation: Arc<Mutex<TurnState>>,
+    ) -> bool {
+        self.start_task_inner(
+            turn_context,
+            input,
+            task,
+            MailboxStart::Defer,
+            Some(reservation),
+        )
+        .await
     }
 
     #[expect(
@@ -324,7 +331,8 @@ impl Session {
         input: Vec<TurnInput>,
         task: T,
         mailbox_start: MailboxStart,
-    ) {
+        reservation: Option<Arc<Mutex<TurnState>>>,
+    ) -> bool {
         // Replace the cache; in-flight acquisitions retain their previous Arc.
         self.services
             .thread_extension_data
@@ -365,6 +373,13 @@ impl Session {
         };
         let turn_state = {
             let mut active = self.active_turn.lock().await;
+            if let Some(expected) = reservation.as_ref()
+                && active.as_ref().is_none_or(|turn| {
+                    turn.task.is_some() || !Arc::ptr_eq(&turn.turn_state, expected)
+                })
+            {
+                return false;
+            }
             let turn = active.get_or_insert_with(ActiveTurn::default);
             debug_assert!(turn.task.is_none());
             turn.finishing = None;
@@ -393,14 +408,74 @@ impl Session {
         }
 
         let mut active = self.active_turn.lock().await;
+        let is_external = reservation.is_some();
+        if !is_external {
+            // Record lineage only when the task starts: settings changes can invalidate a reservation.
+            self.record_started_turn(
+                &turn_context.sub_id,
+                (task_kind == TaskKind::Regular).then(|| turn_context.attribution()),
+            )
+            .await;
+        }
+        // Acquire the in-memory state before the bounded SQLite writer lock, so
+        // registration itself has no await between the final check and spawn.
+        let mut state = if is_external {
+            Some(self.state.lock().await)
+        } else {
+            None
+        };
+        let goal_guard = if is_external {
+            if let Some(db) = self.services.state_db.as_ref() {
+                tokio::time::timeout(
+                    Duration::from_millis(250),
+                    db.thread_goals().lock_admission(self.thread_id),
+                )
+                .await
+                .ok()
+                .and_then(Result::ok)
+            } else {
+                None
+            }
+        } else {
+            None
+        };
+        let goal_runtime = is_external
+            .then(|| self.services.thread_extension_data.get::<crate::GoalStateAdmissionLock>())
+            .flatten();
+        let enabled = goal_runtime.as_ref().and_then(|runtime| runtime.1.read().ok());
+        let admitted = !is_external
+            || (goal_guard
+                .as_ref()
+                .is_some_and(|guard| guard.status() == Some(codex_state::ThreadGoalStatus::Active))
+                && enabled.as_ref().is_some_and(|value| **value)
+                && active.as_ref().is_some_and(|turn| {
+                    turn.task.is_none()
+                        && reservation
+                            .as_ref()
+                            .is_some_and(|expected| Arc::ptr_eq(&turn.turn_state, expected))
+                }));
+        if !admitted {
+            drop(enabled);
+            drop(state);
+            drop(active);
+            if let Some(guard) = goal_guard {
+                let _ = guard.release().await;
+            }
+            self.emit_turn_abort_lifecycle(
+                TurnAbortReason::Replaced,
+                turn_context.extension_data.as_ref(),
+            )
+            .await;
+            return false;
+        }
+        if let Some(state) = state.as_mut() {
+            state.last_started_turn_id = Some(turn_context.sub_id.clone());
+            if task_kind == TaskKind::Regular {
+                state.turn_attribution = Some(turn_context.attribution());
+            }
+        }
         let turn = active.get_or_insert_with(ActiveTurn::default);
         debug_assert!(turn.task.is_none());
-        // Record lineage only when the task starts: settings changes can invalidate a reservation.
-        self.record_started_turn(
-            &turn_context.sub_id,
-            (task_kind == TaskKind::Regular).then(|| turn_context.attribution()),
-        )
-        .await;
         let agent_execution_guard = self.services.agent_control.admit_turn(
             turn_context.multi_agent_version,
             &turn_context.session_source,
@@ -485,6 +560,17 @@ impl Session {
             _timer: timer,
         };
         turn.task = Some(running_task);
+        drop(enabled);
+        drop(state);
+        drop(active);
+        if let Some(guard) = goal_guard
+            && let Err(error) = guard.release().await
+        {
+            // The task is already registered: never turn an accepted notice
+            // into a deferral merely because transaction release failed.
+            warn!(%error, "failed to release external admission guard");
+        }
+        true
     }
 
     /// Returns whether an extension has marked this thread as durably asleep.
