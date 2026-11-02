@@ -394,7 +394,7 @@ mod tests {
         let candidate = Arc::clone(&session);
         let caller =
             tokio::spawn(
-                async move { deliver(&candidate, "irc", "cancelled-caller", false).await },
+                async move { deliver(&candidate, "irc", "cancelled-caller", /*idle_only*/ false).await },
             );
         tokio::time::timeout(std::time::Duration::from_secs(5), entered.notified())
             .await
@@ -404,7 +404,7 @@ mod tests {
             codex_protocol::AgentPath::root(),
             Vec::new(),
             "unrelated pending message".to_string(),
-            false,
+            /*trigger_turn*/ false,
         );
         session
             .input_queue
@@ -565,7 +565,7 @@ mod tests {
         let session = Arc::new(session);
         *session.external_event_gate.lock().await = false;
         assert_eq!(
-            deliver(&session, "irc", "restored-interrupt", false).await,
+            deliver(&session, "irc", "restored-interrupt", /*idle_only*/ false).await,
             EventAdmission::Deferred
         );
     }
@@ -577,7 +577,7 @@ mod tests {
         session.mark_interrupted(); // BudgetLimited also maps to this status.
         assert!(*session.external_event_gate.lock().await);
         assert_eq!(
-            deliver(&session, "irc", "budget-status", false).await,
+            deliver(&session, "irc", "budget-status", /*idle_only*/ false).await,
             EventAdmission::Accepted
         );
         session.abort_all_tasks(TurnAbortReason::Interrupted).await;

@@ -261,7 +261,7 @@ pub(super) async fn handle(
     mode: TurnInputMode,
     submission_id: String,
 ) -> CodexResult<TurnInputSubmission> {
-    handle_inner(session, request.into(), mode, submission_id, false).await
+    handle_inner(session, request.into(), mode, submission_id, /*independent_notice*/ false).await
 }
 
 #[cfg(any(unix, test))]
@@ -275,7 +275,7 @@ pub(super) async fn handle_external(
         request.into(),
         TurnInputMode::StartIfIdle,
         submission_id,
-        true,
+        /*independent_notice*/ true,
     )
     .await
 }
@@ -338,7 +338,7 @@ async fn handle_inner(
                 submission_id,
                 TurnStartKind::Recovery,
                 Some(expected_previous_turn_id),
-                false,
+                /*independent_notice*/ false,
             )
             .await
         }
@@ -384,7 +384,7 @@ pub(super) async fn handle_recovery(
         submission_id,
         TurnStartKind::Recovery,
         /*expected_previous_turn_id*/ None,
-        false,
+        /*independent_notice*/ false,
     )
     .await;
     if let Ok(TurnInputSubmission::Started { turn_id, .. }) = &result {

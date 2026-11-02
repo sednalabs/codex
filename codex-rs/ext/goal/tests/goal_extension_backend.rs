@@ -353,7 +353,7 @@ async fn independent_notice_preserves_paused_goal_and_continuation_deferral() ->
             thread_id,
             "paused goal",
             codex_state::ThreadGoalStatus::Paused,
-            None,
+            /*token_budget*/ None,
         )
         .await?;
     let goal = runtime

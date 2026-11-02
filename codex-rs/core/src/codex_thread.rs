@@ -513,7 +513,7 @@ impl CodexThread {
         Ok(crate::session::external_event::deliver_request(
             &self.session,
             TurnInputRequest::new(TurnInput::ResponseItem(item)),
-            false,
+            /*idle_only*/ false,
         )
         .await)
     }
