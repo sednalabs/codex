@@ -31,6 +31,37 @@ use tokio::time::Duration;
 use tokio::time::timeout;
 
 #[tokio::test]
+async fn startup_interrupt_acknowledges_closed_notice_admission() -> Result<()> {
+    let gateway = create_mock_responses_server_repeating_assistant("Done").await;
+    let home = TempDir::new()?;
+    MockResponsesConfig::new(&gateway.uri()).write(home.path())?;
+    let mut server = TestAppServer::builder()
+        .with_codex_home(home.path())
+        .build_initialized()
+        .await?;
+    let thread = server
+        .start_thread(ThreadStartParams::default())
+        .await?
+        .thread;
+    let id = server
+        .send_turn_interrupt_request(TurnInterruptParams {
+            thread_id: thread.id.clone(),
+            turn_id: String::new(),
+        })
+        .await?;
+    let _: TurnInterruptResponse = timeout(Duration::from_secs(60), server.read_response(id)).await??;
+    let id = server
+        .send_raw_request(
+            "turn/externalNotice",
+            Some(json!({"threadId": thread.id, "source": "irc", "notice": "after stop"})),
+        )
+        .await?;
+    let receipt: TurnExternalNoticeResponse = server.read_response(id).await?;
+    assert_eq!(receipt.turn_id, None);
+    Ok(())
+}
+
+#[tokio::test]
 async fn independent_notice_starts_with_paused_goal() -> Result<()> {
     let gateway = create_mock_responses_server_repeating_assistant("Done").await;
     let home = TempDir::new()?;

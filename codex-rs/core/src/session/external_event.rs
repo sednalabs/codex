@@ -368,6 +368,30 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn startup_interrupt_ack_waits_for_external_notice_gate_to_close() {
+        let (session, _, _rx) = make_session_and_context_with_rx().await;
+        let session = Arc::new(session);
+        let gate = session.external_event_gate.lock().await;
+        let (reply, mut closed) = tokio::sync::oneshot::channel();
+        let target = Arc::clone(&session);
+        let task = tokio::spawn(async move {
+            super::super::handlers::interrupt_with_ack(&target, reply).await;
+        });
+        tokio::task::yield_now().await;
+        assert!(matches!(
+            closed.try_recv(),
+            Err(tokio::sync::oneshot::error::TryRecvError::Empty)
+        ));
+        drop(gate);
+        closed.await.expect("interrupt acknowledged");
+        assert_eq!(
+            deliver(&session, "irc", "after-stop", /*idle_only*/ false).await,
+            EventAdmission::Deferred
+        );
+        task.await.expect("interrupt task completed");
+    }
+
+    #[tokio::test]
     async fn independent_event_can_start_without_a_goal_runtime() {
         let (session, _, _rx) = make_session_and_context_with_rx().await;
         assert!(session.services.state_db.is_none());
