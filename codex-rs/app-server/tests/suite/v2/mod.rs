@@ -71,6 +71,8 @@ mod experimental_feature_list;
 mod external_agent_config;
 mod external_agent_import_sync;
 mod external_agent_memory_concurrency;
+#[cfg(unix)]
+mod external_notice;
 mod feedback;
 mod frozen_cloud_skills;
 mod fs;

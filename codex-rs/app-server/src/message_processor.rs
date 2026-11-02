@@ -1037,6 +1037,7 @@ impl MessageProcessor {
             ClientRequest::ThreadSample { .. }
             | ClientRequest::ThreadGuardianReview { .. }
             | ClientRequest::TurnStart { .. }
+            | ClientRequest::TurnExternalNotice { .. }
             | ClientRequest::TurnSteer { .. }
             | ClientRequest::ReviewStart { .. }
             | ClientRequest::ThreadCompactStart { .. }
@@ -1708,6 +1709,11 @@ impl MessageProcessor {
                         app_server_client_name.clone(),
                         client_version.clone(),
                     )
+                    .await
+            }
+            ClientRequest::TurnExternalNotice { params, .. } => {
+                self.turn_processor
+                    .turn_external_notice(&request_id, params)
                     .await
             }
             ClientRequest::ThreadGuardianReview { params, .. } => {

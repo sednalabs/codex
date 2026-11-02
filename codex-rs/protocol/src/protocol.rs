@@ -698,6 +698,10 @@ pub enum Op {
     /// This server sends [`EventMsg::TurnAborted`] in response.
     Interrupt,
 
+    /// Close external notice admission before acknowledging a startup interrupt.
+    #[debug("InterruptWithAck")]
+    InterruptWithAck { reply: oneshot::Sender<()> },
+
     /// Interrupt the named turn only if no input is queued for it.
     /// The decision is acknowledged before cancellation finishes.
     #[debug("InterruptIfNoPendingInput {{ turn_id: {turn_id:?} }}")]
@@ -1090,6 +1094,7 @@ impl Op {
     pub fn kind(&self) -> &'static str {
         match self {
             Self::Interrupt => "interrupt",
+            Self::InterruptWithAck { .. } => "interrupt_with_ack",
             Self::InterruptIfNoPendingInput { .. } => "interrupt_if_no_pending_input",
             Self::CleanBackgroundTerminals => "clean_background_terminals",
             Self::RealtimeConversationStart(_) => "realtime_conversation_start",
