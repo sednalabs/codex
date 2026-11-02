@@ -12,6 +12,11 @@ on:
         required: false
         type: boolean
         default: false
+      w18854_resource_probe:
+        description: Run isolated Linux release-build memory diagnostic
+        required: false
+        type: boolean
+        default: false
 
 permissions:
   contents: read
@@ -24,6 +29,7 @@ concurrency:
 
 jobs:
   test:
+    if: ${{ github.event_name != 'workflow_dispatch' || !inputs.w18854_resource_probe }}
     # PRs use the sharded Windows cross-compiled test jobs below. Post-merge
     # pushes to main also run the native Windows test job for broader Windows
     # signal without putting PR latency back on the critical path. When
@@ -376,7 +382,7 @@ jobs:
   test-windows:
     # Preserve the existing required-check surface while the real work happens
     # in the sharded Windows jobs above.
-    if: always() && (github.event_name != 'workflow_dispatch' || !inputs.w14939_focused_tests)
+    if: always() && (github.event_name != 'workflow_dispatch' || (!inputs.w14939_focused_tests && !inputs.w18854_resource_probe))
     needs: test-windows-shard
     runs-on: ubuntu-24.04
     name: ${{ github.repository == 'sednalabs/codex' && 'Windows Bazel CI deferred (unqualified)' || 'Bazel test on windows-latest for x86_64-pc-windows-gnullvm' }}
@@ -481,7 +487,7 @@ jobs:
         uses: ./.github/actions/check-clean-worktree
 
   clippy:
-    if: ${{ github.event_name != 'workflow_dispatch' || !inputs.w14939_focused_tests }}
+    if: ${{ github.event_name != 'workflow_dispatch' || (!inputs.w14939_focused_tests && !inputs.w18854_resource_probe) }}
     timeout-minutes: ${{ matrix.os == 'macos-15' && 90 || 30 }}
     strategy:
       fail-fast: false
@@ -587,16 +593,17 @@ jobs:
 
   verify-release-build:
     if: ${{ github.event_name != 'workflow_dispatch' || !inputs.w14939_focused_tests }}
-    timeout-minutes: ${{ matrix.os == 'macos-15' && 90 || 30 }}
+    timeout-minutes: ${{ inputs.w18854_resource_probe && 90 || (matrix.os == 'macos-15' && 90 || 30) }}
     strategy:
       fail-fast: false
       matrix:
         include: >-
-          ${{ fromJSON(github.repository == 'sednalabs/codex' &&
+          ${{ fromJSON((github.event_name == 'workflow_dispatch' && inputs.w18854_resource_probe) &&
+            '[{"os":"ubuntu-24.04","target":"x86_64-unknown-linux-gnu","probe":"baseline"},{"os":"ubuntu-24.04","target":"x86_64-unknown-linux-gnu","probe":"serial"}]' || github.repository == 'sednalabs/codex' &&
             '[{"os":"ubuntu-24.04","target":"x86_64-unknown-linux-gnu"},{"os":"macos-15","target":"aarch64-apple-darwin"}]' ||
             '[{"os":"ubuntu-24.04","target":"x86_64-unknown-linux-gnu"},{"os":"macos-15","target":"aarch64-apple-darwin"},{"os":"windows-2022","target":"x86_64-pc-windows-gnullvm"}]') }}
     runs-on: ${{ matrix.os }}
-    name: Verify release build on ${{ matrix.os }} for ${{ matrix.target }}
+    name: Verify release build on ${{ matrix.os }} for ${{ matrix.target }} (${{ matrix.probe || 'normal' }})
     env:
       BAZEL_MSVC_RUNTIME_VISUAL_STUDIO_EULA: ${{ matrix.os == 'windows-2022' && '1' || '' }}
     environment:
@@ -626,8 +633,23 @@ jobs:
       - name: bazel build verify-release-build targets
         env:
           BUILDBUDDY_API_KEY: ${{ secrets.BUILDBUDDY_API_KEY }}
+          RESOURCE_PROBE: ${{ matrix.probe || '' }}
         shell: bash
         run: |
+          if [[ -n "$RESOURCE_PROBE" ]]; then
+            (
+              while true; do
+                printf 'RESOURCE_PROBE mode=%s time=%s ' "$RESOURCE_PROBE" "$(date -u +%FT%TZ)"
+                awk '/^(MemTotal|MemAvailable|SwapTotal|SwapFree):/ {printf "%s%s_kib=%s", sep, $1, $2; sep=" "} END {print ""}' /proc/meminfo
+                for p in /sys/fs/cgroup/memory.current /sys/fs/cgroup/memory.max /sys/fs/cgroup/memory.events; do
+                  if [[ -r "$p" ]]; then printf 'RESOURCE_PROBE %s ' "${p##*/}"; tr '\n' ' ' < "$p"; printf '\n'; fi
+                done
+                sleep 15
+              done
+            ) &
+            probe_pid=$!
+            trap 'kill "$probe_pid" 2>/dev/null || true; wait "$probe_pid" 2>/dev/null || true' EXIT
+          fi
           # This job exists to compile Rust code behind
           # `cfg(not(debug_assertions))` so PR CI catches failures that would
           # otherwise show up only in a release build. We do not need the full
@@ -651,6 +673,8 @@ jobs:
             --build_metadata=TAG_job=verify-release-build
             --build_metadata=TAG_rust_debug_assertions=off
           )
+          if [[ -n "$RESOURCE_PROBE" ]]; then bazel_build_args+=(--remote_upload_local_results=false); fi
+          if [[ "$RESOURCE_PROBE" == serial ]]; then bazel_build_args+=(--jobs=1); fi
 
           bazel_target_lines="$(bash ./scripts/list-bazel-release-targets.sh)"
           bazel_targets=()
