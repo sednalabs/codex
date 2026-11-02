@@ -496,6 +496,12 @@ pub(super) struct PostReservationTestBarrier {
     pub release: Arc<tokio::sync::Notify>,
 }
 
+#[cfg(test)]
+pub(super) struct GoalRuntimeCheckTestBarrier {
+    pub entered: Arc<tokio::sync::Notify>,
+    pub release: Arc<tokio::sync::Notify>,
+}
+
 /// Clear only this still-empty external reservation if its admission future is
 /// cancelled after releasing the database transaction but before task startup.
 struct ExternalReservationCleanup {
@@ -672,12 +678,34 @@ async fn start_if_idle(
         let goal_admission = lock_goal_admission(session, goal_admission)
             .await
             .map_err(|_| CodexErr::InvalidRequest("goal admission unavailable".to_string()))?;
+        // Configuration changes are synchronous. Serialize the final enabled
+        // check with the slot reservation, without holding this lock over an
+        // await or over lifecycle hooks.
+        let goal_runtime = if external_reservation {
+            Some(session.services.thread_extension_data.get::<crate::GoalStateAdmissionLock>()
+                .ok_or_else(|| CodexErr::InvalidRequest("goal runtime unavailable".to_string()))?)
+        } else {
+            None
+        };
         let mut reservation = GuardedIdleReservation {
             active: active_turn,
             keep: false,
         };
-        let active_turn = reservation.active.get_or_insert_with(ActiveTurn::default);
-        let turn_state = Arc::clone(&active_turn.turn_state);
+        #[cfg(test)]
+        if external_reservation
+            && let Some(barrier) = session.services.thread_extension_data.get::<GoalRuntimeCheckTestBarrier>()
+        {
+            barrier.entered.notify_one();
+            barrier.release.notified().await;
+        }
+        let turn_state = {
+            let enabled = goal_runtime.as_ref().map(|runtime| runtime.1.read());
+            if enabled.as_ref().is_some_and(|result| !result.as_ref().is_ok_and(|value| **value)) {
+                return Err(CodexErr::InvalidRequest("goal runtime disabled".to_string()));
+            }
+            let active_turn = reservation.active.get_or_insert_with(ActiveTurn::default);
+            Arc::clone(&active_turn.turn_state)
+        };
         if let Some(goal_admission) = goal_admission {
             #[cfg(test)]
             if let Some(barrier) = session
@@ -940,9 +968,28 @@ async fn steer_external_if_active_inner(
         Ok(guard) => guard,
         Err(()) => return false,
     };
-    let accepted = session
-        .input_queue
-        .try_enqueue_external_wake(active_turn.turn_state.as_ref(), item.into());
+    let goal_runtime = if goal_admission.is_some() {
+        let Some(runtime) = session.services.thread_extension_data.get::<crate::GoalStateAdmissionLock>() else {
+            return false;
+        };
+        Some(runtime)
+    } else {
+        None
+    };
+    #[cfg(test)]
+    if goal_runtime.is_some()
+        && let Some(barrier) = session.services.thread_extension_data.get::<GoalRuntimeCheckTestBarrier>()
+    {
+        barrier.entered.notify_one();
+        barrier.release.notified().await;
+    }
+    let accepted = {
+        let enabled = goal_runtime.as_ref().map(|runtime| runtime.1.read());
+        if enabled.as_ref().is_some_and(|result| !result.as_ref().is_ok_and(|value| **value)) {
+            return false;
+        }
+        session.input_queue.try_enqueue_external_wake(active_turn.turn_state.as_ref(), item.into())
+    };
     drop(state);
     drop(active);
     if let Some(guard) = goal_admission {

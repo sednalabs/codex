@@ -299,7 +299,7 @@ pub(super) async fn deliver(
     let Ok(_goal_permit) = goal_lock.0.try_acquire() else {
         return EventAdmission::Deferred;
     };
-    if !goal_lock.1.load(std::sync::atomic::Ordering::Acquire) {
+    if !goal_lock.1.read().is_ok_and(|enabled| *enabled) {
         return EventAdmission::Deferred;
     }
     let enabled = session.external_event_gate.lock().await;
@@ -412,7 +412,7 @@ mod tests {
             .thread_extension_data
             .insert(crate::GoalStateAdmissionLock(
                 Arc::new(tokio::sync::Semaphore::new(1)),
-                Arc::new(std::sync::atomic::AtomicBool::new(true)),
+                Arc::new(std::sync::RwLock::new(true)),
             ));
         assert_eq!(
             deliver(&session, "irc", "token", /*idle_only*/ false).await,
@@ -461,7 +461,7 @@ mod tests {
             .thread_extension_data
             .insert(crate::GoalStateAdmissionLock(
                 Arc::new(tokio::sync::Semaphore::new(1)),
-                Arc::new(std::sync::atomic::AtomicBool::new(true)),
+                Arc::new(std::sync::RwLock::new(true)),
             ));
         let session = Arc::new(session);
         assert_eq!(
@@ -512,7 +512,7 @@ mod tests {
             .thread_extension_data
             .insert(crate::GoalStateAdmissionLock(
                 Arc::clone(&lock),
-                Arc::new(std::sync::atomic::AtomicBool::new(true)),
+                Arc::new(std::sync::RwLock::new(true)),
             ));
         let session = Arc::new(session);
         assert_eq!(
@@ -544,6 +544,40 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn runtime_disabled_during_admission_does_not_start_a_turn() {
+        let home = tempfile::tempdir().expect("state home");
+        let sqlite = codex_state::SqliteConfig::new_for_testing(
+            codex_utils_absolute_path::AbsolutePathBuf::try_from(home.path()).expect("absolute"),
+        );
+        let state = codex_state::StateRuntime::init(sqlite, "test".to_string())
+            .await
+            .expect("state");
+        let (mut session, _) = make_session_and_context().await;
+        state.thread_goals().replace_thread_goal(
+            session.thread_id, "test admission", codex_state::ThreadGoalStatus::Active, None,
+        ).await.expect("persist active goal");
+        session.services.state_db = Some(state);
+        let enabled = Arc::new(std::sync::RwLock::new(true));
+        session.services.thread_extension_data.insert(crate::GoalStateAdmissionLock(
+            Arc::new(tokio::sync::Semaphore::new(1)), Arc::clone(&enabled),
+        ));
+        let entered = Arc::new(tokio::sync::Notify::new());
+        let release = Arc::new(tokio::sync::Notify::new());
+        session.services.thread_extension_data.insert(super::super::turn_input::GoalRuntimeCheckTestBarrier {
+            entered: Arc::clone(&entered), release: Arc::clone(&release),
+        });
+        let session = Arc::new(session);
+        let candidate = Arc::clone(&session);
+        let task = tokio::spawn(async move { deliver(&candidate, "irc", "token", false).await });
+        tokio::time::timeout(std::time::Duration::from_secs(5), entered.notified())
+            .await.expect("admission reached final runtime check");
+        *enabled.write().expect("goal runtime lock") = false;
+        release.notify_one();
+        assert_eq!(task.await.expect("delivery task"), EventAdmission::Deferred);
+        assert!(session.active_turn.lock().await.is_none());
+    }
+
+    #[tokio::test]
     async fn absent_goal_does_not_start_an_idle_turn() {
         let home = tempfile::tempdir().expect("state home");
         let sqlite = codex_state::SqliteConfig::new_for_testing(
@@ -559,7 +593,7 @@ mod tests {
             .thread_extension_data
             .insert(crate::GoalStateAdmissionLock(
                 Arc::new(tokio::sync::Semaphore::new(1)),
-                Arc::new(std::sync::atomic::AtomicBool::new(true)),
+                Arc::new(std::sync::RwLock::new(true)),
             ));
         let session = Arc::new(session);
         assert_eq!(
@@ -585,7 +619,7 @@ mod tests {
             .thread_extension_data
             .insert(crate::GoalStateAdmissionLock(
                 Arc::new(tokio::sync::Semaphore::new(1)),
-                Arc::new(std::sync::atomic::AtomicBool::new(true)),
+                Arc::new(std::sync::RwLock::new(true)),
             ));
         let session = Arc::new(session);
         session
@@ -595,6 +629,40 @@ mod tests {
             deliver(&session, "irc", "token", /*idle_only*/ false).await,
             EventAdmission::Accepted
         );
+        session.abort_all_tasks(TurnAbortReason::Interrupted).await;
+    }
+
+    #[tokio::test]
+    async fn runtime_disabled_during_admission_does_not_steer_a_turn() {
+        let home = tempfile::tempdir().expect("state home");
+        let sqlite = codex_state::SqliteConfig::new_for_testing(
+            codex_utils_absolute_path::AbsolutePathBuf::try_from(home.path()).expect("absolute"),
+        );
+        let state = codex_state::StateRuntime::init(sqlite, "test".to_string())
+            .await
+            .expect("state");
+        let (mut session, turn_context) = make_session_and_context().await;
+        session.services.state_db = Some(state);
+        let enabled = Arc::new(std::sync::RwLock::new(true));
+        session.services.thread_extension_data.insert(crate::GoalStateAdmissionLock(
+            Arc::new(tokio::sync::Semaphore::new(1)), Arc::clone(&enabled),
+        ));
+        let entered = Arc::new(tokio::sync::Notify::new());
+        let release = Arc::new(tokio::sync::Notify::new());
+        session.services.thread_extension_data.insert(super::super::turn_input::GoalRuntimeCheckTestBarrier {
+            entered: Arc::clone(&entered), release: Arc::clone(&release),
+        });
+        let session = Arc::new(session);
+        session.spawn_task(Arc::new(turn_context), Vec::new(), WaitingTask).await;
+        let candidate = Arc::clone(&session);
+        let task = tokio::spawn(async move { deliver(&candidate, "irc", "token", false).await });
+        tokio::time::timeout(std::time::Duration::from_secs(5), entered.notified())
+            .await.expect("steering reached final runtime check");
+        *enabled.write().expect("goal runtime lock") = false;
+        release.notify_one();
+        assert_eq!(task.await.expect("delivery task"), EventAdmission::Deferred);
+        assert!(session.active_turn.lock().await.is_some());
+        assert!(!session.input_queue.has_pending_input(&session.active_turn).await);
         session.abort_all_tasks(TurnAbortReason::Interrupted).await;
     }
 
@@ -627,7 +695,7 @@ mod tests {
             .thread_extension_data
             .insert(crate::GoalStateAdmissionLock(
                 Arc::new(tokio::sync::Semaphore::new(1)),
-                Arc::new(std::sync::atomic::AtomicBool::new(true)),
+                Arc::new(std::sync::RwLock::new(true)),
             ));
         let entered = Arc::new(tokio::sync::Notify::new());
         session.services.thread_extension_data.insert(
@@ -710,7 +778,7 @@ mod tests {
             .thread_extension_data
             .insert(crate::GoalStateAdmissionLock(
                 Arc::new(tokio::sync::Semaphore::new(1)),
-                Arc::new(std::sync::atomic::AtomicBool::new(true)),
+                Arc::new(std::sync::RwLock::new(true)),
             ));
         let entered = Arc::new(tokio::sync::Notify::new());
         session.services.thread_extension_data.insert(
@@ -776,7 +844,7 @@ mod tests {
             .thread_extension_data
             .insert(crate::GoalStateAdmissionLock(
                 Arc::new(tokio::sync::Semaphore::new(1)),
-                Arc::new(std::sync::atomic::AtomicBool::new(true)),
+                Arc::new(std::sync::RwLock::new(true)),
             ));
         let after_reservation = Arc::new(tokio::sync::Notify::new());
         let allow_start = Arc::new(tokio::sync::Notify::new());
@@ -846,7 +914,7 @@ mod tests {
             .thread_extension_data
             .insert(crate::GoalStateAdmissionLock(
                 Arc::clone(&lock),
-                Arc::new(std::sync::atomic::AtomicBool::new(true)),
+                Arc::new(std::sync::RwLock::new(true)),
             ));
         let _mutation = lock.acquire().await.unwrap();
         assert_eq!(
@@ -870,7 +938,7 @@ mod tests {
             .thread_extension_data
             .insert(crate::GoalStateAdmissionLock(
                 Arc::new(tokio::sync::Semaphore::new(1)),
-                Arc::new(std::sync::atomic::AtomicBool::new(true)),
+                Arc::new(std::sync::RwLock::new(true)),
             ));
         assert!(*session.external_event_gate.lock().await);
         super::super::handlers::interrupt(&session).await;

@@ -63,7 +63,7 @@ pub use session::turn_context::TurnContext;
 #[derive(Clone, Debug)]
 pub struct GoalStateAdmissionLock(
     pub std::sync::Arc<tokio::sync::Semaphore>,
-    pub std::sync::Arc<std::sync::atomic::AtomicBool>,
+    pub std::sync::Arc<std::sync::RwLock<bool>>,
 );
 pub use thread_startup_metadata::ThreadStartupMetadata;
 mod agent;

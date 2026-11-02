@@ -109,7 +109,7 @@ async fn disabled_goal_extension_retains_serialization_guard() -> anyhow::Result
         .thread_store
         .get::<codex_core::GoalStateAdmissionLock>()
         .expect("goal runtime retains its serialization guard");
-    assert!(!guard.1.load(std::sync::atomic::Ordering::Acquire));
+    assert!(!*guard.1.read().expect("goal runtime lock"));
     Ok(())
 }
 
@@ -162,7 +162,7 @@ async fn goal_config_changes_update_wake_admission() -> anyhow::Result<()> {
         .get::<codex_core::GoalStateAdmissionLock>()
         .expect("disabled goal runtime keeps the guard");
     assert!(Arc::ptr_eq(&admission.0, &disabled_admission.0));
-    assert!(!admission.1.load(std::sync::atomic::Ordering::Acquire));
+    assert!(!*admission.1.read().expect("goal runtime lock"));
     for contributor in registry.config_contributors() {
         contributor.on_config_changed(
             &session_store,
@@ -176,7 +176,7 @@ async fn goal_config_changes_update_wake_admission() -> anyhow::Result<()> {
             .get::<codex_core::GoalStateAdmissionLock>()
             .is_some()
     );
-    assert!(admission.1.load(std::sync::atomic::Ordering::Acquire));
+    assert!(*admission.1.read().expect("goal runtime lock"));
     Ok(())
 }
 
