@@ -38,12 +38,25 @@ async fn external_notice_requires_experimental_api_capability() -> Result<()> {
         .await?;
     mcp.initialize_with_capabilities(
         default_client_info(),
-        Some(InitializeCapabilities { experimental_api: false, ..Default::default() }),
-    ).await?;
-    let request_id = mcp.send_raw_request("turn/externalNotice", Some(serde_json::json!({
-        "threadId": "not-a-thread", "source": "irc", "notice": "notice"
-    }))).await?;
-    let error = timeout(DEFAULT_TIMEOUT, mcp.read_stream_until_error_message(RequestId::Integer(request_id))).await??;
+        Some(InitializeCapabilities {
+            experimental_api: false,
+            ..Default::default()
+        }),
+    )
+    .await?;
+    let request_id = mcp
+        .send_raw_request(
+            "turn/externalNotice",
+            Some(serde_json::json!({
+                "threadId": "not-a-thread", "source": "irc", "notice": "notice"
+            })),
+        )
+        .await?;
+    let error = timeout(
+        DEFAULT_TIMEOUT,
+        mcp.read_stream_until_error_message(RequestId::Integer(request_id)),
+    )
+    .await??;
     assert_experimental_capability_error(error, "turn/externalNotice");
     Ok(())
 }
