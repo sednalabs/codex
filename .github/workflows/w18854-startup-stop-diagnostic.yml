@@ -1,0 +1,61 @@
+name: IRC startup interrupt diagnostic
+on:
+  push:
+    branches: [validation/w18854-startup-stop-20261103]
+permissions:
+  contents: read
+jobs:
+  format:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd
+        with:
+          ref: 6500631ddca59d43350d06f9a6e7cff1ae2f6663
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@e081816240890017053eacbb1bdf337761dc5582
+        with:
+          components: rustfmt
+      - name: Generate formatting patch
+        working-directory: codex-rs
+        run: |
+          cargo fmt -- --config imports_granularity=Item
+          git diff --binary -- . > "$RUNNER_TEMP/irc-startup-format.patch"
+      - uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f
+        with:
+          name: irc-startup-format-patch
+          path: ${{ runner.temp }}/irc-startup-format.patch
+          if-no-files-found: error
+  test:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
+    environment:
+      name: bazel
+      deployment: false
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd
+        with:
+          ref: 6500631ddca59d43350d06f9a6e7cff1ae2f6663
+          persist-credentials: false
+      - name: Verify candidate identity
+        run: test "$(git rev-parse HEAD)" = 6500631ddca59d43350d06f9a6e7cff1ae2f6663
+      - name: Prepare Bazel CI
+        uses: ./.github/actions/prepare-bazel-ci
+        with:
+          target: x86_64-unknown-linux-gnu
+          cache-scope: bazel-test
+      - name: Run interrupt ordering and notice regressions
+        env:
+          BUILDBUDDY_API_KEY: ${{ secrets.BUILDBUDDY_API_KEY }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          for spec in \
+            '//codex-rs/core:core-unit-tests|session::external_event::tests::' \
+            '//codex-rs/app-server:app-server-all-test|suite::v2::external_notice::'; do
+            target="${spec%%|*}"
+            selector="${spec#*|}"
+            ./.github/scripts/run-bazel-ci.sh \
+              --print-failed-test-logs --print-failed-action-summary -- test \
+              --jobs=1 --test_tag_filters=-argument-comment-lint --test_output=all \
+              --test_arg="${selector}" -- "${target}"
+          done
