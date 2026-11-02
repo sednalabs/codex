@@ -98,7 +98,8 @@ async fn automatic_notice_starts_idle_thread_with_active_goal() -> Result<()> {
     let receipt: TurnExternalNoticeResponse = timeout(Duration::from_secs(60), server.read_response(id)).await??;
     assert!(receipt.turn_id.is_some());
     timeout(Duration::from_secs(60), server.read_stream_until_notification_message("turn/completed")).await??;
-    assert!(timeout(Duration::from_secs(2), gateway.wait_for_request_count(2)).await.is_err(),
+    tokio::time::sleep(Duration::from_secs(2)).await;
+    assert_eq!(gateway.received_requests().await.expect("captured requests").len(), 1,
         "independent notice must not trigger goal continuation");
     Ok(())
 }
