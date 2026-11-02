@@ -392,10 +392,15 @@ mod tests {
         );
         let session = Arc::new(session);
         let candidate = Arc::clone(&session);
-        let caller =
-            tokio::spawn(
-                async move { deliver(&candidate, "irc", "cancelled-caller", /*idle_only*/ false).await },
-            );
+        let caller = tokio::spawn(async move {
+            deliver(
+                &candidate,
+                "irc",
+                "cancelled-caller",
+                /*idle_only*/ false,
+            )
+            .await
+        });
         tokio::time::timeout(std::time::Duration::from_secs(5), entered.notified())
             .await
             .expect("admission reached barrier");
@@ -565,7 +570,13 @@ mod tests {
         let session = Arc::new(session);
         *session.external_event_gate.lock().await = false;
         assert_eq!(
-            deliver(&session, "irc", "restored-interrupt", /*idle_only*/ false).await,
+            deliver(
+                &session,
+                "irc",
+                "restored-interrupt",
+                /*idle_only*/ false
+            )
+            .await,
             EventAdmission::Deferred
         );
     }

@@ -261,7 +261,14 @@ pub(super) async fn handle(
     mode: TurnInputMode,
     submission_id: String,
 ) -> CodexResult<TurnInputSubmission> {
-    handle_inner(session, request.into(), mode, submission_id, /*independent_notice*/ false).await
+    handle_inner(
+        session,
+        request.into(),
+        mode,
+        submission_id,
+        /*independent_notice*/ false,
+    )
+    .await
 }
 
 #[cfg(any(unix, test))]
