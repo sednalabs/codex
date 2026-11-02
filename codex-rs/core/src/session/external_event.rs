@@ -854,6 +854,77 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn cross_process_pause_after_reservation_prevents_automatic_start() {
+        let home = tempfile::tempdir().expect("state home");
+        let sqlite = codex_state::SqliteConfig::new_for_testing(
+            codex_utils_absolute_path::AbsolutePathBuf::try_from(home.path()).expect("absolute"),
+        );
+        let first = codex_state::StateRuntime::init(sqlite.clone(), "test".to_string())
+            .await
+            .expect("first state");
+        let second = codex_state::StateRuntime::init(sqlite, "test".to_string())
+            .await
+            .expect("second state");
+        let (mut session, _) = make_session_and_context().await;
+        first
+            .thread_goals()
+            .replace_thread_goal(
+                session.thread_id,
+                "test pause after reservation",
+                codex_state::ThreadGoalStatus::Active,
+                /*token_budget*/ None,
+            )
+            .await
+            .expect("active goal");
+        session.services.state_db = Some(first);
+        session.services.thread_extension_data.insert(crate::GoalStateAdmissionLock(
+            Arc::new(tokio::sync::Semaphore::new(1)),
+            Arc::new(std::sync::RwLock::new(true)),
+        ));
+        let entered = Arc::new(tokio::sync::Notify::new());
+        let release = Arc::new(tokio::sync::Notify::new());
+        session.services.thread_extension_data.insert(
+            super::turn_input::PostReservationTestBarrier {
+                entered: Arc::clone(&entered),
+                release: Arc::clone(&release),
+            },
+        );
+        let session = Arc::new(session);
+        let candidate = Arc::clone(&session);
+        let admission = tokio::spawn(async move {
+            deliver(&candidate, "irc", "pause-race", /*idle_only*/ false).await
+        });
+        tokio::time::timeout(std::time::Duration::from_secs(5), entered.notified())
+            .await
+            .expect("post-reservation barrier reached");
+        let paused = second
+            .thread_goals()
+            .update_thread_goal_for_control(
+                session.thread_id,
+                codex_state::GoalUpdate {
+                    objective: None,
+                    status: Some(codex_state::ThreadGoalStatus::Paused),
+                    token_budget: None,
+                    expected_goal_id: None,
+                },
+            )
+            .await
+            .expect("pause after reservation")
+            .expect("goal exists");
+        assert_eq!(paused.status, codex_state::ThreadGoalStatus::Paused);
+        release.notify_one();
+        let result = tokio::time::timeout(std::time::Duration::from_secs(5), admission)
+            .await
+            .expect("admission returned")
+            .expect("admission task");
+        if result == EventAdmission::Accepted {
+            session.abort_all_tasks(TurnAbortReason::Interrupted).await;
+        }
+        assert_eq!(result, EventAdmission::Deferred);
+        assert!(session.active_turn.lock().await.is_none());
+    }
+
+    #[tokio::test]
     async fn cancellation_before_task_registration_preserves_pending_mail() {
         let home = tempfile::tempdir().expect("state home");
         let sqlite = codex_state::SqliteConfig::new_for_testing(
