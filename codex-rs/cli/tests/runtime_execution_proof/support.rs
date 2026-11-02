@@ -827,7 +827,6 @@ impl ProtectedRuntimeFixture {
             chown_to_runner(&home.join("sessions"))?;
             chown_to_runner(&home.join("tmp/arg0"))?;
         }
-        chown_to_runner(&state)?;
         chown_to_runner(&work)?;
         chown_to_runner(&root.join("logs"))?;
         if launcher_layout {
