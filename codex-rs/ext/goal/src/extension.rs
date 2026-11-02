@@ -505,6 +505,9 @@ where
 {
     fn on_tool_finish<'a>(&'a self, input: ToolFinishInput<'a>) -> ToolLifecycleFuture<'a> {
         Box::pin(async move {
+            if input.turn_store.get::<IndependentExternalNotice>().is_some() {
+                return;
+            }
             let Some(runtime) = goal_runtime_handle(input.thread_store) else {
                 return;
             };
@@ -527,9 +530,6 @@ where
                         ..Default::default()
                     });
                 }
-            }
-            if input.turn_store.get::<IndependentExternalNotice>().is_some() {
-                return;
             }
             runtime.accounting_state().record_tool_outcome(
                 input.turn_id,
