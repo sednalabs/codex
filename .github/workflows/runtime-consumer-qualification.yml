@@ -6,33 +6,69 @@ on:
 
 permissions:
   contents: read
+  actions: read
 
 jobs:
   targeted:
     runs-on: ubuntu-24.04
-    timeout-minutes: 90
+    timeout-minutes: 180
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd
         with:
           persist-credentials: false
+          fetch-depth: 3
       - uses: dtolnay/rust-toolchain@ebb3d1676050bfd0971c36c1e215b5751473994d
         with:
           toolchain: 1.96.0
-      - name: Build and run targeted consumer checks
+      - name: Compile fixture while producer builds
         working-directory: codex-rs
         shell: bash
         run: |
           set -euo pipefail
           git rev-parse HEAD
-          cargo test --locked --release -p codex-exec --lib protected_runtime_accepts_only_the_fixed_four_tool_profile
-          cargo test --locked --release -p codex-cli --test runtime_execution_proof --no-run --message-format=json > "$RUNNER_TEMP/consumer-build.jsonl"
+          git diff --quiet 88cfde32a125da761877ffe726c4604be970c89d HEAD -- codex-rs ':(exclude)codex-rs/cli/tests/runtime_execution_proof.rs' ':(exclude)codex-rs/cli/tests/runtime_execution_proof/support.rs'
+          export CARGO_BUILD_JOBS=2
+          cargo test --locked -p codex-exec --lib protected_runtime_accepts_only_the_fixed_four_tool_profile
+          cargo test --locked -p codex-cli --test runtime_execution_proof --no-run --message-format=json > "$RUNNER_TEMP/consumer-build.jsonl"
+      - name: Await exact producer package
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh run watch 41481489004 --repo "$GITHUB_REPOSITORY" --interval 120 --exit-status
+      - name: Download exact producer package
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          github-token: ${{ github.token }}
+          run-id: 41481489004
+          name: sedna-branch-88cfde32a125da761877ffe726c4604be970c89d-88cfde32-x86_64-unknown-linux-gnu
+          path: ${{ runner.temp }}/producer-package
+      - name: Bind package to corrected consumer source
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd "$RUNNER_TEMP/producer-package"
+          mapfile -t manifests < <(find . -maxdepth 1 -name '*.json' -type f)
+          mapfile -t archives < <(find . -maxdepth 1 -name '*.tar.gz' -type f)
+          test "${#manifests[@]}" -eq 1
+          test "${#archives[@]}" -eq 1
+          jq -e '.commit == "88cfde32a125da761877ffe726c4604be970c89d"' "${manifests[0]}" >/dev/null
+          mkdir -p "$RUNNER_TEMP/producer-unpacked"
+          tar -xzf "${archives[0]}" -C "$RUNNER_TEMP/producer-unpacked"
+          sha256sum "${archives[0]}" "$RUNNER_TEMP/producer-unpacked/codex" "$RUNNER_TEMP/producer-unpacked/codex-runtime-proof-launcher" "$RUNNER_TEMP/producer-unpacked/install_runtime_proof_launcher" "$RUNNER_TEMP/producer-unpacked/systemd/codex-runtime-proof-claim.service"
+          test "$(sha256sum "$RUNNER_TEMP/producer-unpacked/codex-runtime-proof-launcher" | cut -d' ' -f1)" = "$(jq -r .runtimeProofLauncherSha256 "${manifests[0]}")"
+          test "$(sha256sum "$RUNNER_TEMP/producer-unpacked/install_runtime_proof_launcher" | cut -d' ' -f1)" = "$(jq -r .runtimeProofLauncherInstallerSha256 "${manifests[0]}")"
+          test "$(sha256sum "$RUNNER_TEMP/producer-unpacked/systemd/codex-runtime-proof-claim.service" | cut -d' ' -f1)" = "$(git -C "$GITHUB_WORKSPACE" show 88cfde32a125da761877ffe726c4604be970c89d:codex-rs/runtime-proof/systemd/codex-runtime-proof-claim.service | sha256sum | cut -d' ' -f1)"
+      - name: Build and run targeted consumer checks
+        working-directory: codex-rs
+        shell: bash
+        run: |
+          set -euo pipefail
           test_binary="$(jq -r 'select(.reason == "compiler-artifact" and .target.name == "runtime_execution_proof" and .profile.test == true and .executable != null) | .executable' "$RUNNER_TEMP/consumer-build.jsonl")"
           test -n "$test_binary"
-          test -f target/release/codex
+          test -f "$RUNNER_TEMP/producer-unpacked/codex"
           sudo install -d -m 0755 /usr/local/libexec/codex-consumer-fixture
           sudo install -m 0755 "$test_binary" /usr/local/libexec/codex-consumer-fixture/test
-          sudo install -m 0755 target/release/codex /usr/local/libexec/codex-consumer-fixture/codex
-          sha256sum target/release/codex
+          sudo install -m 0755 "$RUNNER_TEMP/producer-unpacked/codex" /usr/local/libexec/codex-consumer-fixture/codex
+          test "$(sha256sum "$RUNNER_TEMP/producer-unpacked/codex" | cut -d' ' -f1)" = "$(sha256sum /usr/local/libexec/codex-consumer-fixture/codex | cut -d' ' -f1)"
           printf '%s' synthetic | sudo tee /usr/local/libexec/codex-consumer-fixture/credential >/dev/null
           printf '%s' '{}' | sudo tee /usr/local/libexec/codex-consumer-fixture/policy.json >/dev/null
           if getent group codex-runtime-proof >/dev/null; then exit 1; fi
