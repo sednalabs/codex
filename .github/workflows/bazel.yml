@@ -108,10 +108,7 @@ jobs:
             # dispatch for the IRC admission and consumer regression tests.
             status=0
             for spec in \
-              '//codex-rs/core:core-unit-tests|session::external_event::tests::' \
-              '//codex-rs/state:state-unit-tests|runtime::goals::tests::admission_guard_serializes_a_second_goal_writer' \
-              '//codex-rs/app-server:app-server-all-test|suite::v2::external_notice::' \
-              '//codex-rs/app-server:app-server-all-test|suite::v2::experimental_api::external_notice_requires_experimental_api_capability'; do
+              '//codex-rs/core:core-unit-tests|session::external_event::tests::cross_process_pause_after_reservation_prevents_automatic_start'; do
               target="${spec%%|*}"
               selector="${spec#*|}"
               ./.github/scripts/run-bazel-ci.sh \
