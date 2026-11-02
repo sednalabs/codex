@@ -3,6 +3,7 @@
 #[path = "runtime_execution_proof/support.rs"]
 mod runtime_execution_proof_support;
 
+use anyhow::Context;
 use anyhow::Result;
 use base64::Engine;
 use base64::engine::general_purpose::URL_SAFE_NO_PAD;
@@ -24,10 +25,13 @@ use runtime_execution_proof_support::ProtectedRuntimeFixture;
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 #[ignore = "requires an explicitly invoked disposable Linux root fixture"]
 async fn protected_cli_starts_with_launcher_home_and_four_tool_profile() -> Result<()> {
-    let fixture = ProtectedRuntimeFixture::start_launcher_layout().await?;
+    let fixture = ProtectedRuntimeFixture::start_launcher_layout()
+        .await
+        .context("start launcher-layout runtime fixture")?;
     let result = fixture
         .run_cli_with_prompt("Reply with a short acknowledgement.")
-        .await?;
+        .await
+        .context("execute packaged consumer CLI")?;
     let [initialize, _, tools_list, _, _] = fixture.mcp_phase_counts();
     eprintln!(
         "launcher-layout-result:exit={};mcp_initialize={initialize};mcp_tools_list={tools_list};model_requests={}",
