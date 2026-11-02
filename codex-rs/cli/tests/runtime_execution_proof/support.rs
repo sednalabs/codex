@@ -794,11 +794,11 @@ impl ProtectedRuntimeFixture {
             &installation_id_path,
             "11111111-1111-4111-8111-111111111111",
         )?;
-        chown_to_runner(&installation_id_path)?;
         fs::set_permissions(
             &installation_id_path,
             fs::Permissions::from_mode(if launcher_layout { 0o600 } else { 0o644 }),
         )?;
+        chown_to_runner(&installation_id_path)?;
         if launcher_layout {
             chown_group_to_runner(&home.join("config.toml"))?;
         }
