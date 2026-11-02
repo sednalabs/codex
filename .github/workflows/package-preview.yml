@@ -24,13 +24,13 @@ jobs:
           - runner: ubuntu-24.04-arm
             target: aarch64-unknown-linux-gnu
     env:
-      PRODUCT_SHA: e6b001ca0e6ee13a79b147a2662375ca123f2e5b
+      PRODUCT_SHA: 7c02e650a7536df032a3ee688b070d3ea89af9a3
       TARGET: ${{ matrix.target }}
 
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
         with:
-          ref: e6b001ca0e6ee13a79b147a2662375ca123f2e5b
+          ref: 7c02e650a7536df032a3ee688b070d3ea89af9a3
           fetch-depth: 0
           persist-credentials: false
 
@@ -124,7 +124,7 @@ jobs:
 
       - uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f # v7.0.0
         with:
-          name: codex-package-${{ matrix.target }}-e6b001ca
+          name: codex-package-${{ matrix.target }}-7c02e650
           path: dist/${{ matrix.target }}
           if-no-files-found: error
           compression-level: 0
