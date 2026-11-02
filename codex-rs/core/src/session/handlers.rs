@@ -59,8 +59,30 @@ use tracing::info;
 use tracing::warn;
 
 pub async fn interrupt(sess: &Arc<Session>) {
-    *sess.external_event_gate.lock().await = false;
+    let mut gate = sess.external_event_gate.lock().await;
+    *gate = false;
+    let durable = persist_external_notice_stop(sess, true).await;
+    drop(gate);
+    if !durable {
+        warn_external_notice_persistence(sess).await;
+    }
     sess.interrupt_task().await;
+}
+
+async fn persist_external_notice_stop(sess: &Session, stopped: bool) -> bool {
+    match sess.services.state_db.as_ref() {
+        Some(db) => db.set_external_notice_stopped(sess.thread_id, stopped).await.is_ok(),
+        None => sess.get_config().await.ephemeral,
+    }
+}
+
+async fn warn_external_notice_persistence(sess: &Session) {
+    sess.send_event_raw(Event {
+        id: String::new(),
+        msg: EventMsg::Warning(WarningEvent {
+            message: "Could not persist external notice control; notices remain disabled now, but the stop state may be stale after restart.".to_string(),
+        }),
+    }).await;
 }
 
 pub async fn clean_background_terminals(sess: &Arc<Session>) {
@@ -608,7 +630,13 @@ pub(super) async fn submission_loop(
                                 )
                         )
                     {
-                        *sess.external_event_gate.lock().await = true;
+                        let mut gate = sess.external_event_gate.lock().await;
+                        let durable = persist_external_notice_stop(&sess, false).await;
+                        *gate = durable;
+                        drop(gate);
+                        if !durable {
+                            warn_external_notice_persistence(&sess).await;
+                        }
                     }
                     let _ = reply.send(result);
                     false

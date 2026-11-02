@@ -43,6 +43,7 @@ use tracing::warn;
 
 mod backfill;
 mod external_agent_config_imports;
+mod external_notice_gate;
 mod goals;
 mod guardian_feedback;
 mod logs;
