@@ -9,6 +9,7 @@ use codex_extension_api::ExtensionData;
 use codex_extension_api::ExtensionEventSink;
 use codex_extension_api::ExtensionFuture;
 use codex_extension_api::ExtensionRegistryBuilder;
+use codex_extension_api::ExternalAutomaticNotice;
 use codex_extension_api::ThreadIdleInput;
 use codex_extension_api::ThreadLifecycleContributor;
 use codex_extension_api::ThreadResumeInput;
@@ -257,13 +258,15 @@ where
             let Ok(_turn_start_permit) = accounting.turn_start_permit().await else {
                 return;
             };
-            if let Err(err) = self
-                .state_dbs
-                .thread_goals()
-                .clear_thread_goal_continuation_deferral(runtime.thread_id())
-                .await
-            {
-                tracing::warn!("failed to clear deferred goal continuation: {err}");
+            if input.turn_store.get::<ExternalAutomaticNotice>().is_none() {
+                if let Err(err) = self
+                    .state_dbs
+                    .thread_goals()
+                    .clear_thread_goal_continuation_deferral(runtime.thread_id())
+                    .await
+                {
+                    tracing::warn!("failed to clear deferred goal continuation: {err}");
+                }
             }
 
             accounting.start_turn(
@@ -388,6 +391,9 @@ where
             };
             if !runtime.is_enabled() {
                 runtime.accounting_state().reset_empty_responses();
+                if input.turn_store.get::<ExternalAutomaticNotice>().is_some() {
+                    runtime.accounting_state().finish_turn(input.turn_store.level_id());
+                }
                 return;
             }
 

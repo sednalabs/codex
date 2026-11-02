@@ -45,6 +45,7 @@ use codex_protocol::protocol::EventMsg;
 use codex_protocol::protocol::NonSteerableTurnKind;
 use codex_protocol::protocol::SessionSource;
 use codex_protocol::protocol::SubAgentSource;
+use codex_protocol::protocol::TurnAbortReason;
 use codex_protocol::protocol::ThreadSettingsOverrides;
 use codex_protocol::turn_input::AnnotatedResponseItem;
 use codex_protocol::turn_input::NotSubmittedReason;
@@ -58,6 +59,7 @@ use codex_protocol::user_input::UserInput;
 use serde_json::Value;
 use std::collections::BTreeMap;
 use std::sync::Arc;
+use std::sync::atomic::Ordering;
 use uuid::Uuid;
 
 #[cfg(test)]
@@ -507,24 +509,42 @@ pub(super) struct GoalRuntimeCheckTestBarrier {
 struct ExternalReservationCleanup {
     session: std::sync::Weak<Session>,
     turn_state: Arc<tokio::sync::Mutex<TurnState>>,
+    turn_context: Option<Arc<TurnContext>>,
+    lifecycle: Arc<crate::tasks::ExternalStartLifecycle>,
     armed: bool,
+}
+
+impl ExternalReservationCleanup {
+    fn schedule(&mut self) -> Option<tokio::task::JoinHandle<()>> {
+        if !self.armed || self.lifecycle.registered.load(Ordering::Acquire) {
+            self.armed = false;
+            return None;
+        }
+        self.armed = false;
+        let session = self.session.upgrade()?;
+        let runtime = tokio::runtime::Handle::try_current().ok()?;
+        let turn_state = Arc::clone(&self.turn_state);
+        let turn_context = self.turn_context.clone();
+        let lifecycle = Arc::clone(&self.lifecycle);
+        Some(runtime.spawn(async move {
+            if lifecycle.hooks_started.load(Ordering::Acquire)
+                && let Some(turn_context) = turn_context
+            {
+                session
+                    .emit_turn_abort_lifecycle(
+                        TurnAbortReason::Replaced,
+                        turn_context.extension_data.as_ref(),
+                    )
+                    .await;
+            }
+            session.clear_reserved_idle_turn(&turn_state).await;
+        }))
+    }
 }
 
 impl Drop for ExternalReservationCleanup {
     fn drop(&mut self) {
-        if !self.armed {
-            return;
-        }
-        let Some(session) = self.session.upgrade() else {
-            return;
-        };
-        let Ok(runtime) = tokio::runtime::Handle::try_current() else {
-            return;
-        };
-        let turn_state = Arc::clone(&self.turn_state);
-        drop(runtime.spawn(async move {
-            session.clear_reserved_idle_turn(&turn_state).await;
-        }));
+        drop(self.schedule());
     }
 }
 
@@ -553,7 +573,11 @@ async fn lock_goal_admission(
     .map_err(|_| ())?
     .map_err(|_| ())?;
     match (policy, guard.status()) {
-        (_, Some(codex_state::ThreadGoalStatus::Active)) => Ok(Some(guard)),
+        #[cfg(any(unix, test))]
+        (GoalAdmission::Active, Some(codex_state::ThreadGoalStatus::Active))
+            if !guard.continuation_deferred() => Ok(Some(guard)),
+        #[cfg(any(unix, test))]
+        (GoalAdmission::ActiveOrAbsent, Some(codex_state::ThreadGoalStatus::Active)) => Ok(Some(guard)),
         #[cfg(any(unix, test))]
         (GoalAdmission::ActiveOrAbsent, None) => Ok(Some(guard)),
         _ => Err(()),
@@ -727,6 +751,8 @@ async fn start_if_idle(
     let mut reservation_cleanup = external_reservation.then(|| ExternalReservationCleanup {
         session: Arc::downgrade(session),
         turn_state: Arc::clone(&turn_state),
+        turn_context: None,
+        lifecycle: Arc::new(crate::tasks::ExternalStartLifecycle::default()),
         armed: true,
     });
     #[cfg(test)]
@@ -827,16 +853,25 @@ async fn start_if_idle(
         }
     }
     if external_reservation {
+        turn_context
+            .extension_data
+            .insert(codex_extension_api::ExternalAutomaticNotice);
+        let cleanup = reservation_cleanup.as_mut().expect("external reservation cleanup");
+        cleanup.turn_context = Some(Arc::clone(&turn_context));
+        let lifecycle = Arc::clone(&cleanup.lifecycle);
         if !session
             .start_external_task(
                 Arc::clone(&turn_context),
                 task_input,
                 RegularTask::new(),
                 Arc::clone(&turn_state),
+                lifecycle,
             )
             .await
         {
-            session.clear_reserved_idle_turn(&turn_state).await;
+            if let Some(cleanup) = cleanup.schedule() {
+                let _ = cleanup.await;
+            }
             return Err(CodexErr::InvalidRequest("goal admission unavailable".to_string()));
         }
     } else {

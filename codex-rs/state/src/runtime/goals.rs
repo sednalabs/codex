@@ -16,12 +16,18 @@ pub struct GoalStore {
 pub struct GoalAdmissionGuard {
     transaction: sqlx::Transaction<'static, sqlx::Sqlite>,
     status: Option<crate::ThreadGoalStatus>,
+    continuation_deferred: bool,
 }
 
 impl GoalAdmissionGuard {
     /// Goal status observed while the cross-process writer lock is held.
     pub fn status(&self) -> Option<crate::ThreadGoalStatus> {
         self.status
+    }
+
+    /// Whether an inherited or explicitly deferred goal is ineligible to auto-continue.
+    pub fn continuation_deferred(&self) -> bool {
+        self.continuation_deferred
     }
 
     /// Release the read-only admission transaction after the caller reserves work.
@@ -82,9 +88,16 @@ impl GoalStore {
             .as_deref()
             .map(crate::ThreadGoalStatus::try_from)
             .transpose()?;
+        let continuation_deferred: bool = sqlx::query_scalar(
+            "SELECT EXISTS(SELECT 1 FROM thread_goal_continuation_deferrals WHERE thread_id = ?)",
+        )
+        .bind(thread_id.to_string())
+        .fetch_one(&mut *transaction)
+        .await?;
         Ok(GoalAdmissionGuard {
             transaction,
             status,
+            continuation_deferred,
         })
     }
 

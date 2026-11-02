@@ -855,15 +855,20 @@ mod tests {
 
     #[tokio::test]
     async fn cross_process_pause_after_reservation_prevents_automatic_start() {
-        cross_process_pause_prevents_automatic_start(/*after_hooks*/ false).await;
+        cross_process_change_prevents_automatic_start(/*after_hooks*/ false, /*defer*/ false).await;
     }
 
     #[tokio::test]
     async fn cross_process_pause_after_hooks_prevents_automatic_start() {
-        cross_process_pause_prevents_automatic_start(/*after_hooks*/ true).await;
+        cross_process_change_prevents_automatic_start(/*after_hooks*/ true, /*defer*/ false).await;
     }
 
-    async fn cross_process_pause_prevents_automatic_start(after_hooks: bool) {
+    #[tokio::test]
+    async fn cross_process_continuation_deferral_after_hooks_prevents_automatic_start() {
+        cross_process_change_prevents_automatic_start(/*after_hooks*/ true, /*defer*/ true).await;
+    }
+
+    async fn cross_process_change_prevents_automatic_start(after_hooks: bool, defer: bool) {
         let home = tempfile::tempdir().expect("state home");
         let sqlite = codex_state::SqliteConfig::new_for_testing(
             codex_utils_absolute_path::AbsolutePathBuf::try_from(home.path()).expect("absolute"),
@@ -915,21 +920,29 @@ mod tests {
         tokio::time::timeout(std::time::Duration::from_secs(5), entered.notified())
             .await
             .expect("post-reservation barrier reached");
-        let paused = second
-            .thread_goals()
-            .update_thread_goal_for_control(
-                session.thread_id,
-                codex_state::GoalUpdate {
-                    objective: None,
-                    status: Some(codex_state::ThreadGoalStatus::Paused),
-                    token_budget: None,
-                    expected_goal_id: None,
-                },
-            )
-            .await
-            .expect("pause after reservation")
-            .expect("goal exists");
-        assert_eq!(paused.status, codex_state::ThreadGoalStatus::Paused);
+        if defer {
+            let goal = second.thread_goals().get_thread_goal(session.thread_id)
+                .await.expect("read goal").expect("goal exists");
+            second.thread_goals().replace_thread_goal_snapshot(&goal)
+                .await
+                .expect("defer goal continuation");
+        } else {
+            let paused = second
+                .thread_goals()
+                .update_thread_goal_for_control(
+                    session.thread_id,
+                    codex_state::GoalUpdate {
+                        objective: None,
+                        status: Some(codex_state::ThreadGoalStatus::Paused),
+                        token_budget: None,
+                        expected_goal_id: None,
+                    },
+                )
+                .await
+                .expect("pause after reservation")
+                .expect("goal exists");
+            assert_eq!(paused.status, codex_state::ThreadGoalStatus::Paused);
+        }
         release.notify_one();
         let result = tokio::time::timeout(std::time::Duration::from_secs(5), admission)
             .await
@@ -940,6 +953,10 @@ mod tests {
         }
         assert_eq!(result, EventAdmission::Deferred);
         assert!(session.active_turn.lock().await.is_none());
+        if defer {
+            assert!(second.thread_goals().has_thread_goal_continuation_deferral(session.thread_id)
+                .await.expect("read continuation deferral"));
+        }
     }
 
     #[tokio::test]

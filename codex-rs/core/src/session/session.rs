@@ -66,7 +66,7 @@ pub(crate) struct Session {
     /// transferring ownership of the private session's event receiver.
     pub(crate) parent_observer_event_tx: OnceLock<Sender<Event>>,
     pub(super) agent_status: watch::Sender<AgentStatus>,
-    pub(super) state: Mutex<SessionState>,
+    pub(crate) state: Mutex<SessionState>,
     /// Orders accepted settings commits and their persisted events with compaction checkpoints.
     /// Keep this separate from `state` so storage I/O does not block runtime state access.
     pub(super) thread_settings_persistence: Semaphore,

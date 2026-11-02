@@ -9,6 +9,10 @@ mod tool_policy;
 mod turn_admission;
 mod user_instructions;
 
+/// Marks an automatically admitted external notice, not an explicit user turn.
+#[derive(Clone, Copy, Debug)]
+pub struct ExternalAutomaticNotice;
+
 pub use message_lifecycle::MessageLifecycleContributor;
 pub use message_lifecycle::MessageLifecycleInput;
 pub use session_isolation::IsolatedSessionExtensions;

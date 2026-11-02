@@ -87,7 +87,7 @@ impl Session {
         }
     }
 
-    pub(super) async fn emit_turn_abort_lifecycle(
+    pub(crate) async fn emit_turn_abort_lifecycle(
         &self,
         reason: TurnAbortReason,
         turn_store: &ExtensionData,

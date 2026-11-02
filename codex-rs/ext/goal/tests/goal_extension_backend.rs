@@ -340,6 +340,36 @@ async fn installed_goal_tools_only_replace_complete_goal() -> anyhow::Result<()>
 }
 
 #[tokio::test]
+async fn automatic_notice_does_not_clear_goal_continuation_deferral() -> anyhow::Result<()> {
+    let runtime = test_runtime().await?;
+    let thread_id = test_thread_id()?;
+    seed_thread_metadata(runtime.as_ref(), thread_id).await?;
+    let harness = GoalExtensionHarness::new(runtime.clone(), thread_id).await?;
+    runtime.thread_goals().replace_thread_goal(
+        thread_id, "deferred goal", codex_state::ThreadGoalStatus::Active, None,
+    ).await?;
+    let goal = runtime.thread_goals().get_thread_goal(thread_id).await?.expect("goal");
+    runtime.thread_goals().replace_thread_goal_snapshot(&goal).await?;
+
+    let turn_store = ExtensionData::new("automatic-notice");
+    turn_store.insert(codex_extension_api::ExternalAutomaticNotice);
+    for contributor in harness.registry.turn_lifecycle_contributors() {
+        contributor.on_turn_start(TurnStartInput {
+            turn_id: "automatic-notice",
+            collaboration_mode: &default_collaboration_mode(),
+            token_usage_at_turn_start: None,
+            session_store: &harness.session_store,
+            thread_store: &harness.thread_store,
+            turn_store: &turn_store,
+        }).await;
+    }
+    assert!(runtime.thread_goals().has_thread_goal_continuation_deferral(thread_id).await?);
+    harness.start_turn("ordinary-turn", &TokenUsage::default()).await;
+    assert!(!runtime.thread_goals().has_thread_goal_continuation_deferral(thread_id).await?);
+    Ok(())
+}
+
+#[tokio::test]
 async fn create_goal_resets_baseline_before_turn_stop_accounting() -> anyhow::Result<()> {
     let runtime = test_runtime().await?;
     let thread_id = test_thread_id()?;

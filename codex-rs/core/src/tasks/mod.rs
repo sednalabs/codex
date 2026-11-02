@@ -5,6 +5,8 @@ mod review;
 mod user_shell;
 
 use std::sync::Arc;
+use std::sync::atomic::AtomicBool;
+use std::sync::atomic::Ordering;
 use std::time::Duration;
 use std::time::Instant;
 
@@ -275,6 +277,12 @@ enum MailboxStart {
     Defer,
 }
 
+#[derive(Default)]
+pub(crate) struct ExternalStartLifecycle {
+    pub hooks_started: AtomicBool,
+    pub registered: AtomicBool,
+}
+
 #[cfg(test)]
 pub(crate) struct ExternalTaskRegistrationTestBarrier {
     pub entered: Arc<tokio::sync::Notify>,
@@ -299,7 +307,7 @@ impl Session {
         input: Vec<TurnInput>,
         task: T,
     ) {
-        self.start_task_inner(turn_context, input, task, MailboxStart::Drain, None)
+        self.start_task_inner(turn_context, input, task, MailboxStart::Drain, None, None)
             .await;
     }
 
@@ -310,6 +318,7 @@ impl Session {
         input: Vec<TurnInput>,
         task: T,
         reservation: Arc<Mutex<TurnState>>,
+        lifecycle: Arc<ExternalStartLifecycle>,
     ) -> bool {
         self.start_task_inner(
             turn_context,
@@ -317,6 +326,7 @@ impl Session {
             task,
             MailboxStart::Defer,
             Some(reservation),
+            Some(lifecycle),
         )
         .await
     }
@@ -332,6 +342,7 @@ impl Session {
         task: T,
         mailbox_start: MailboxStart,
         reservation: Option<Arc<Mutex<TurnState>>>,
+        lifecycle: Option<Arc<ExternalStartLifecycle>>,
     ) -> bool {
         // Replace the cache; in-flight acquisitions retain their previous Arc.
         self.services
@@ -389,6 +400,9 @@ impl Session {
         self.input_queue
             .extend_pending_input_for_turn_state(turn_state.as_ref(), pending_items)
             .await;
+        if let Some(lifecycle) = &lifecycle {
+            lifecycle.hooks_started.store(true, Ordering::Release);
+        }
         self.emit_turn_start_lifecycle(
             turn_context.as_ref(),
             Some(&token_usage_at_turn_start),
@@ -446,7 +460,10 @@ impl Session {
         let admitted = !is_external
             || (goal_guard
                 .as_ref()
-                .is_some_and(|guard| guard.status() == Some(codex_state::ThreadGoalStatus::Active))
+                .is_some_and(|guard| {
+                    guard.status() == Some(codex_state::ThreadGoalStatus::Active)
+                        && !guard.continuation_deferred()
+                })
                 && enabled.as_ref().is_some_and(|value| **value)
                 && active.as_ref().is_some_and(|turn| {
                     turn.task.is_none()
@@ -461,11 +478,6 @@ impl Session {
             if let Some(guard) = goal_guard {
                 let _ = guard.release().await;
             }
-            self.emit_turn_abort_lifecycle(
-                TurnAbortReason::Replaced,
-                turn_context.extension_data.as_ref(),
-            )
-            .await;
             return false;
         }
         if let Some(state) = state.as_mut() {
@@ -560,6 +572,9 @@ impl Session {
             _timer: timer,
         };
         turn.task = Some(running_task);
+        if let Some(lifecycle) = &lifecycle {
+            lifecycle.registered.store(true, Ordering::Release);
+        }
         drop(enabled);
         drop(state);
         drop(active);
