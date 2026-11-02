@@ -7,9 +7,13 @@ use codex_app_server_protocol::ThreadGoalGetResponse;
 use codex_app_server_protocol::ThreadGoalSetResponse;
 use codex_app_server_protocol::ThreadGoalStatus;
 use codex_app_server_protocol::ThreadReadResponse;
+use codex_app_server_protocol::ThreadResumeParams;
+use codex_app_server_protocol::ThreadResumeResponse;
 use codex_app_server_protocol::ThreadStartParams;
 use codex_app_server_protocol::ThreadStatus;
 use codex_app_server_protocol::TurnExternalNoticeResponse;
+use codex_app_server_protocol::TurnInterruptParams;
+use codex_app_server_protocol::TurnInterruptResponse;
 use codex_app_server_protocol::TurnStartParams;
 use codex_app_server_protocol::TurnStartResponse;
 use codex_app_server_protocol::UserInput;
@@ -42,6 +46,64 @@ async fn independent_notice_starts_with_paused_goal() -> Result<()> {
     let id = server.send_raw_request("thread/goal/get", Some(json!({"threadId": thread.id}))).await?;
     let goal: ThreadGoalGetResponse = server.read_response(id).await?;
     assert_eq!(goal.goal.expect("paused goal").status, ThreadGoalStatus::Paused);
+    Ok(())
+}
+
+#[tokio::test]
+async fn independent_notice_respects_interruption_across_session_restart() -> Result<()> {
+    let (release_first, first_gate) = oneshot::channel();
+    let (release_second, second_gate) = oneshot::channel();
+    let (gateway, _) = start_streaming_sse_server(vec![
+        vec![
+            StreamingSseChunk { gate: None, body: responses::sse(vec![responses::ev_response_created("first")]) },
+            StreamingSseChunk { gate: Some(first_gate), body: responses::sse(vec![responses::ev_completed("first")]) },
+        ],
+        vec![
+            StreamingSseChunk { gate: None, body: responses::sse(vec![responses::ev_response_created("second")]) },
+            StreamingSseChunk { gate: Some(second_gate), body: responses::sse(vec![responses::ev_completed("second")]) },
+        ],
+    ]).await;
+    let home = TempDir::new()?;
+    MockResponsesConfig::new(gateway.uri()).enable_feature(Feature::Goals).write(home.path())?;
+    let mut server = TestAppServer::builder().with_codex_home(home.path()).build_initialized().await?;
+    let thread = server.start_thread(ThreadStartParams::default()).await?.thread;
+    let id = server.send_turn_start_request(TurnStartParams {
+        thread_id: thread.id.clone(),
+        input: vec![UserInput::Text { text: "Start work".to_string(), text_elements: Vec::new() }],
+        ..Default::default()
+    }).await?;
+    let first: TurnStartResponse = server.read_response(id).await?;
+    timeout(Duration::from_secs(60), gateway.wait_for_request_count(1)).await?;
+    let id = server.send_turn_interrupt_request(TurnInterruptParams {
+        thread_id: thread.id.clone(), turn_id: first.turn.id,
+    }).await?;
+    let _: TurnInterruptResponse = server.read_response(id).await?;
+    timeout(Duration::from_secs(60), server.read_stream_until_notification_message("turn/completed")).await??;
+    let _ = release_first.send(());
+    server.shutdown_gracefully().await?;
+
+    let mut server = TestAppServer::builder().with_codex_home(home.path()).build_initialized().await?;
+    let id = server.send_thread_resume_request(ThreadResumeParams {
+        thread_id: thread.id.clone(), ..Default::default()
+    }).await?;
+    let _: ThreadResumeResponse = server.read_response(id).await?;
+    let notice = json!({"threadId": thread.id, "source": "irc", "notice": "retained message"});
+    let id = server.send_raw_request("turn/externalNotice", Some(notice.clone())).await?;
+    let receipt: TurnExternalNoticeResponse = server.read_response(id).await?;
+    assert_eq!(receipt.turn_id, None, "restart must preserve explicit interruption");
+    assert_eq!(gateway.requests().await.len(), 1);
+
+    let id = server.send_turn_start_request(TurnStartParams {
+        thread_id: thread.id.clone(),
+        input: vec![UserInput::Text { text: "Resume".to_string(), text_elements: Vec::new() }],
+        ..Default::default()
+    }).await?;
+    let resumed: TurnStartResponse = server.read_response(id).await?;
+    timeout(Duration::from_secs(60), gateway.wait_for_request_count(2)).await?;
+    let id = server.send_raw_request("turn/externalNotice", Some(notice)).await?;
+    let receipt: TurnExternalNoticeResponse = server.read_response(id).await?;
+    assert_eq!(receipt.turn_id.as_deref(), Some(resumed.turn.id.as_str()));
+    let _ = release_second.send(());
     Ok(())
 }
 

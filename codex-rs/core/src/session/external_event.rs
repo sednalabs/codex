@@ -316,7 +316,9 @@ async fn deliver_request_inner(
         None => None,
     };
     let enabled = session.external_event_gate.lock().await;
-    if !*enabled || session.collaboration_mode().await.mode == ModeKind::Plan {
+    // A reconstructed session restores its interrupted status from history;
+    // the in-memory gate alone is initialized anew on each load.
+    if !*enabled || session.is_interrupted() || session.collaboration_mode().await.mode == ModeKind::Plan {
         return None;
     }
     match turn_input::handle_external(session, request.clone(), super::new_submission_id()).await {
@@ -526,6 +528,16 @@ mod tests {
             deliver(&session, "irc", "token", /*idle_only*/ false).await,
             EventAdmission::Deferred
         );
+    }
+
+    #[tokio::test]
+    async fn reconstructed_interrupted_status_defers_even_with_fresh_gate() {
+        let (session, _) = make_session_and_context().await;
+        let session = Arc::new(session);
+        assert!(*session.external_event_gate.lock().await);
+        session.mark_interrupted();
+        assert_eq!(deliver(&session, "irc", "restored-interrupt", false).await,
+            EventAdmission::Deferred);
     }
 
     #[test]
