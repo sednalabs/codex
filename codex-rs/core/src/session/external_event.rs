@@ -537,6 +537,17 @@ mod tests {
             EventAdmission::Deferred);
     }
 
+    #[tokio::test]
+    async fn interrupted_agent_status_alone_does_not_block_independent_notice() {
+        let (session, _) = make_session_and_context().await;
+        let session = Arc::new(session);
+        session.mark_interrupted(); // BudgetLimited also maps to this status.
+        assert!(*session.external_event_gate.lock().await);
+        assert_eq!(deliver(&session, "irc", "budget-status", false).await,
+            EventAdmission::Accepted);
+        session.abort_all_tasks(TurnAbortReason::Interrupted).await;
+    }
+
     #[test]
     fn repeated_hints_coalesce_until_the_exact_token_is_acknowledged() {
         let mut state = PendingState::default();
