@@ -587,7 +587,7 @@ jobs:
 
   verify-release-build:
     if: ${{ github.event_name != 'workflow_dispatch' || !inputs.w14939_focused_tests }}
-    timeout-minutes: ${{ matrix.os == 'macos-15' && 90 || 30 }}
+    timeout-minutes: ${{ matrix.os == 'windows-2022' && 30 || 90 }}
     strategy:
       fail-fast: false
       matrix:
@@ -651,6 +651,12 @@ jobs:
             --build_metadata=TAG_job=verify-release-build
             --build_metadata=TAG_rust_debug_assertions=off
           )
+          if [[ "${RUNNER_OS}" == "Linux" ]]; then
+            # The hosted Linux runner can exhaust memory and swap when several
+            # large Rust targets compile concurrently. Keep the full target set
+            # while limiting build concurrency.
+            bazel_build_args+=(--jobs=1)
+          fi
 
           bazel_target_lines="$(bash ./scripts/list-bazel-release-targets.sh)"
           bazel_targets=()

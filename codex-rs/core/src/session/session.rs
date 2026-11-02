@@ -94,6 +94,8 @@ pub(crate) struct Session {
     pub(crate) conversation: Arc<RealtimeConversationManager>,
     pub(crate) realtime_history: Option<Mutex<crate::realtime_history::RealtimeHistoryState>>,
     pub(crate) active_turn: Mutex<Option<ActiveTurn>>,
+    /// Serializes automatic external-event admission with explicit interruption.
+    pub(super) external_event_gate: Mutex<bool>,
     /// Stable durable mail IDs whose rollout append has not yet been confirmed by the writer.
     /// This only reconciles same-session retry after a failed append; SQLite remains authoritative.
     pub(super) mailbox_rollout_appends: std::sync::Mutex<std::collections::HashSet<String>>,
@@ -1952,6 +1954,7 @@ impl Session {
                 parent_observer_event_tx: OnceLock::new(),
                 agent_status,
                 state: Mutex::new(state),
+                external_event_gate: Mutex::new(true),
                 thread_settings_persistence: Semaphore::new(/*permits*/ 1),
                 code_mode_message_tasks: CodeModeMessageTasks::default(),
                 managed_network_proxy_refresh_lock: Semaphore::new(/*permits*/ 1),
