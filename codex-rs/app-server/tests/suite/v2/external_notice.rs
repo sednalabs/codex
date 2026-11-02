@@ -49,7 +49,8 @@ async fn startup_interrupt_acknowledges_closed_notice_admission() -> Result<()> 
             turn_id: String::new(),
         })
         .await?;
-    let _: TurnInterruptResponse = timeout(Duration::from_secs(60), server.read_response(id)).await??;
+    let _: TurnInterruptResponse =
+        timeout(Duration::from_secs(60), server.read_response(id)).await??;
     let id = server
         .send_raw_request(
             "turn/externalNotice",

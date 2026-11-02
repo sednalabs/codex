@@ -1529,10 +1529,12 @@ impl TurnRequestProcessor {
             let (reply, closed) = oneshot::channel();
             self.submit_core_op(request_id, thread.as_ref(), Op::InterruptWithAck { reply })
                 .await
-                .map_err(|err| internal_error(format!("failed to submit startup interrupt: {err}")))?;
-            closed
-                .await
-                .map_err(|_| internal_error("startup interrupt ended before notice admission closed"))?;
+                .map_err(|err| {
+                    internal_error(format!("failed to submit startup interrupt: {err}"))
+                })?;
+            closed.await.map_err(|_| {
+                internal_error("startup interrupt ended before notice admission closed")
+            })?;
             return Ok(Some(TurnInterruptResponse {}));
         }
 

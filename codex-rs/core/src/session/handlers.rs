@@ -63,7 +63,10 @@ pub async fn interrupt(sess: &Arc<Session>) {
     sess.interrupt_task().await;
 }
 
-pub(super) async fn interrupt_with_ack(sess: &Arc<Session>, reply: tokio::sync::oneshot::Sender<()>) {
+pub(super) async fn interrupt_with_ack(
+    sess: &Arc<Session>,
+    reply: tokio::sync::oneshot::Sender<()>,
+) {
     *sess.external_event_gate.lock().await = false;
     let _ = reply.send(());
     sess.interrupt_task().await;
