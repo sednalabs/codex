@@ -670,7 +670,6 @@ impl ProtectedRuntimeFixture {
         fs::set_permissions(&child_home, fs::Permissions::from_mode(0o700))?;
         chown_to_runner(&child_home)?;
         fs::create_dir_all(&work)?;
-        fs::set_permissions(&state, fs::Permissions::from_mode(0o700))?;
         fs::set_permissions(&work, fs::Permissions::from_mode(0o700))?;
         let output_path = root.join("stdout.jsonl");
         let errors_path = root.join("stderr.log");
