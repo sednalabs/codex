@@ -105,6 +105,8 @@ impl Session {
         let Some(turn) = self.turn_context_for_sub_id(turn_id).await else {
             return;
         };
+        let independent_notice = turn.extension_data
+            .get::<codex_extension_api::IndependentExternalNotice>().is_some();
         self.send_event(turn.as_ref(), warning).await;
         let runtime = self.services.runtime_handle.clone();
         let session = Arc::clone(self);
@@ -118,7 +120,9 @@ impl Session {
                     {
                         // Extension aborts bypass normal task completion; user interrupts do not.
                         session
-                            .emit_thread_idle_lifecycle_if_idle(ThreadIdleCause::Interrupted)
+                            .emit_thread_idle_lifecycle_with_origin_if_idle(
+                                ThreadIdleCause::Interrupted, independent_notice,
+                            )
                             .await;
                     }
                 }

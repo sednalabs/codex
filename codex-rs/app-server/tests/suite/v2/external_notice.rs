@@ -2,6 +2,7 @@ use anyhow::Result;
 use app_test_support::MockResponsesConfig;
 use app_test_support::TestAppServer;
 use app_test_support::create_mock_responses_server_repeating_assistant;
+use app_test_support::create_mock_responses_server_sequence_unchecked;
 use codex_app_server_protocol::ThreadGoalGetResponse;
 use codex_app_server_protocol::ThreadGoalSetResponse;
 use codex_app_server_protocol::ThreadGoalStatus;
@@ -41,6 +42,38 @@ async fn independent_notice_starts_with_paused_goal() -> Result<()> {
     let id = server.send_raw_request("thread/goal/get", Some(json!({"threadId": thread.id}))).await?;
     let goal: ThreadGoalGetResponse = server.read_response(id).await?;
     assert_eq!(goal.goal.expect("paused goal").status, ThreadGoalStatus::Paused);
+    Ok(())
+}
+
+#[tokio::test]
+async fn independent_notice_can_create_goal_without_starting_follow_up() -> Result<()> {
+    let gateway = create_mock_responses_server_sequence_unchecked(vec![
+        responses::sse(vec![
+            responses::ev_response_created("create"),
+            responses::ev_function_call("goal-call", "create_goal", r#"{"objective":"Explicit new goal"}"#),
+            responses::ev_completed("create"),
+        ]),
+        responses::sse(vec![
+            responses::ev_response_created("answer"),
+            responses::ev_assistant_message("answer-msg", "Created."),
+            responses::ev_completed("answer"),
+        ]),
+    ]).await;
+    let home = TempDir::new()?;
+    MockResponsesConfig::new(&gateway.uri()).enable_feature(Feature::Goals).write(home.path())?;
+    let mut server = TestAppServer::builder().with_codex_home(home.path()).build_initialized().await?;
+    let thread = server.start_thread(ThreadStartParams::default()).await?.thread;
+    let id = server.send_raw_request("turn/externalNotice", Some(json!({
+        "threadId": thread.id, "source": "irc", "notice": "Create a goal if authorized"
+    }))).await?;
+    let receipt: TurnExternalNoticeResponse = server.read_response(id).await?;
+    assert!(receipt.turn_id.is_some());
+    timeout(Duration::from_secs(60), server.read_stream_until_notification_message("turn/completed")).await??;
+    let id = server.send_raw_request("thread/goal/get", Some(json!({"threadId": thread.id}))).await?;
+    let goal: ThreadGoalGetResponse = server.read_response(id).await?;
+    assert_eq!(goal.goal.expect("created goal").status, ThreadGoalStatus::Active);
+    tokio::time::sleep(Duration::from_secs(2)).await;
+    assert_eq!(gateway.received_requests().await.expect("captured requests").len(), 2);
     Ok(())
 }
 
