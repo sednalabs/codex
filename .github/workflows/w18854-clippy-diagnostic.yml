@@ -1,4 +1,4 @@
-name: IRC Linux Clippy concurrency diagnostic
+name: IRC Linux Clippy focused regression diagnostic
 on:
   push:
     branches: [validation/w18854-clippy-serial-20261103]
@@ -14,10 +14,10 @@ jobs:
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd
         with:
-          ref: b3c375e192a3777ff60038913c5708d61331b896
+          ref: b508bfc3a8a9d04b18f0d10eab8ad57dfb097412
           persist-credentials: false
       - name: Verify candidate identity
-        run: test "$(git rev-parse HEAD)" = b3c375e192a3777ff60038913c5708d61331b896
+        run: test "$(git rev-parse HEAD)" = b508bfc3a8a9d04b18f0d10eab8ad57dfb097412
       - name: Prepare Bazel CI
         uses: ./.github/actions/prepare-bazel-ci
         with:
@@ -29,7 +29,7 @@ jobs:
         run: |
           releases="$(python3 .github/scripts/resolve_exec_server_releases.py)"
           echo "CODEX_COMPAT_RELEASES=$releases" >> "$GITHUB_ENV"
-      - name: Build the complete Clippy target set serially
+      - name: Lint the affected core unit-test target serially
         env:
           BUILDBUDDY_API_KEY: ${{ secrets.BUILDBUDDY_API_KEY }}
         shell: bash
@@ -44,12 +44,7 @@ jobs:
           ) &
           probe_pid=$!
           trap 'kill "$probe_pid" 2>/dev/null || true' EXIT
-          target_lines="$(./scripts/list-bazel-clippy-targets.sh)"
-          targets=()
-          while IFS= read -r target; do
-            targets+=("${target}")
-          done <<< "${target_lines}"
           ./.github/scripts/run-bazel-ci.sh --print-failed-action-summary -- build \
             --config=clippy --jobs=1 --remote_upload_local_results=false \
-            --build_metadata=COMMIT_SHA=b3c375e192a3777ff60038913c5708d61331b896 \
-            --build_metadata=TAG_job=clippy -- "${targets[@]}"
+            --build_metadata=COMMIT_SHA=b508bfc3a8a9d04b18f0d10eab8ad57dfb097412 \
+            --build_metadata=TAG_job=clippy -- //codex-rs/core:core-unit-tests-bin
