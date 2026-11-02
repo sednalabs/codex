@@ -7194,6 +7194,7 @@ pub(crate) async fn make_session_and_context() -> (Session, TurnContext) {
         parent_observer_event_tx: OnceLock::new(),
         agent_status: agent_status_tx,
         state: Mutex::new(state),
+        external_event_gate: Mutex::new(true),
         thread_settings_persistence: Semaphore::new(/*permits*/ 1),
         code_mode_message_tasks: Default::default(),
         managed_network_proxy_refresh_lock: Semaphore::new(/*permits*/ 1),
@@ -9534,6 +9535,7 @@ where
         parent_observer_event_tx: OnceLock::new(),
         agent_status: agent_status_tx,
         state: Mutex::new(state),
+        external_event_gate: Mutex::new(true),
         thread_settings_persistence: Semaphore::new(/*permits*/ 1),
         code_mode_message_tasks: Default::default(),
         managed_network_proxy_refresh_lock: Semaphore::new(/*permits*/ 1),
@@ -12685,33 +12687,45 @@ async fn interrupting_compaction_fallback_retains_last_known_step_context() {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn extension_interrupt_emits_thread_idle() {
-    struct ThreadIdleRecorder(async_channel::Sender<()>);
+    struct ThreadIdleRecorder(async_channel::Sender<bool>);
 
     impl codex_extension_api::ThreadLifecycleContributor<crate::config::Config> for ThreadIdleRecorder {
         fn on_thread_idle<'a>(
             &'a self,
-            _input: codex_extension_api::ThreadIdleInput<'a>,
+            input: codex_extension_api::ThreadIdleInput<'a>,
         ) -> codex_extension_api::ExtensionFuture<'a, ()> {
             Box::pin(async move {
-                self.0.send(()).await.expect("idle receiver open");
+                self.0
+                    .send(input.independent_external_notice)
+                    .await
+                    .expect("idle receiver open");
             })
         }
     }
 
-    let (mut session, turn_context) = make_session_and_context().await;
-    let (idle_tx, idle_rx) = async_channel::bounded(1);
-    let mut builder = codex_extension_api::ExtensionRegistryBuilder::<crate::config::Config>::new();
-    builder.thread_lifecycle_contributor(Arc::new(ThreadIdleRecorder(idle_tx)));
-    session.services.extensions = Arc::new(builder.build());
+    for independent in [false, true] {
+        let (mut session, turn_context) = make_session_and_context().await;
+        if independent {
+            turn_context
+                .extension_data
+                .insert(codex_extension_api::IndependentExternalNotice);
+        }
+        let (idle_tx, idle_rx) = async_channel::bounded(1);
+        let mut builder =
+            codex_extension_api::ExtensionRegistryBuilder::<crate::config::Config>::new();
+        builder.thread_lifecycle_contributor(Arc::new(ThreadIdleRecorder(idle_tx)));
+        session.services.extensions = Arc::new(builder.build());
 
-    Arc::new(session)
-        .spawn_task(Arc::new(turn_context), Vec::new(), ExtensionInterruptedTask)
-        .await;
+        Arc::new(session)
+            .spawn_task(Arc::new(turn_context), Vec::new(), ExtensionInterruptedTask)
+            .await;
 
-    timeout(StdDuration::from_secs(5), idle_rx.recv())
-        .await
-        .expect("extension interrupt should emit thread idle lifecycle")
-        .expect("idle receiver open");
+        let observed = timeout(StdDuration::from_secs(5), idle_rx.recv())
+            .await
+            .expect("extension interrupt should emit thread idle lifecycle")
+            .expect("idle receiver open");
+        assert_eq!(observed, independent);
+    }
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]

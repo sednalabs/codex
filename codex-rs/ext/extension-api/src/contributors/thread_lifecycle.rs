@@ -69,6 +69,8 @@ pub enum ThreadIdleCause {
 pub struct ThreadIdleInput<'a> {
     /// Why the thread became idle.
     pub cause: ThreadIdleCause,
+    /// Whether the completing turn handled an independent external notice.
+    pub independent_external_notice: bool,
     /// Store scoped to the host session runtime.
     pub session_store: &'a ExtensionData,
     /// Store scoped to this thread runtime.

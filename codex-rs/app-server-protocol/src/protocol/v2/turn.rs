@@ -39,6 +39,27 @@ pub enum TurnStatus {
 }
 
 // Turn APIs
+/// Automatic notification from an external retained source. The source owns
+/// its message history, retry decisions and consumption acknowledgement.
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, JsonSchema, TS)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+#[ts(export_to = "v2/")]
+pub struct TurnExternalNoticeParams {
+    pub thread_id: String,
+    /// A bounded source name used only to identify the notice.
+    pub source: String,
+    /// Notice text is untrusted source data, not a user instruction.
+    pub notice: String,
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, JsonSchema, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(export_to = "v2/")]
+pub struct TurnExternalNoticeResponse {
+    /// Null means no notice was admitted. Admission alone is not consumption.
+    pub turn_id: Option<String>,
+}
+
 /// Experimental settings changes for one running turn, not future turns.
 /// Unsupported fields are rejected rather than silently ignored.
 /// Any live task kind may accept publication. Child sessions and consumers of
