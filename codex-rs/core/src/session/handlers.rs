@@ -70,9 +70,12 @@ pub async fn interrupt(sess: &Arc<Session>) {
 }
 
 async fn persist_external_notice_stop(sess: &Session, stopped: bool) -> bool {
+    if sess.get_config().await.ephemeral {
+        return true;
+    }
     match sess.services.state_db.as_ref() {
         Some(db) => db.set_external_notice_stopped(sess.thread_id, stopped).await.is_ok(),
-        None => sess.get_config().await.ephemeral,
+        None => false,
     }
 }
 
