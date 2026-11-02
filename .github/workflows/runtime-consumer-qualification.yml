@@ -89,5 +89,11 @@ jobs:
           sudo systemctl daemon-reload
           rc=0
           sudo systemctl start "$unit" || rc=$?
-          sudo journalctl -u "$unit" --no-pager -o cat | grep -E 'runtime-proof-root-stage:|runtime-proof-root-cli-failure:|runtime-proof-root-startup-failure:|runtime-proof-root-ack-failure:|launcher-layout-|test result:' || true
+          sudo systemctl show --no-pager "$unit" \
+            --property=LoadState --property=ActiveState --property=SubState \
+            --property=ConditionResult --property=Result --property=StatusText \
+            --property=ExecMainCode --property=ExecMainStatus --property=User --property=Group || true
+          sudo journalctl -u "$unit" --no-pager -o cat |
+            grep -Ei 'runtime-proof-root-stage:|runtime-proof-root-cli-failure:|runtime-proof-root-startup-failure:|runtime-proof-root-ack-failure:|launcher-layout-|test result:|failed at step|main process exited|failed with result|failed to start|permission denied|no such file|not found|invalid argument|timed out|status=.*(failure|timeout|signal)' |
+            tail -n 80 || true
           exit "$rc"
