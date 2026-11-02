@@ -994,6 +994,7 @@ impl ProtectedRuntimeFixture {
                 Ok(())
             });
         }
+        eprintln!("runtime-proof-root-stage:cli_spawn_begin");
         let mut child = command.spawn().map_err(|error| {
             let category = match error.kind() {
                 std::io::ErrorKind::NotFound => "not_found",
@@ -1001,6 +1002,10 @@ impl ProtectedRuntimeFixture {
                 std::io::ErrorKind::InvalidInput => "invalid_input",
                 _ => "other",
             };
+            eprintln!(
+                "runtime-proof-root-stage:cli_spawn_failure:{category};errno={:?}",
+                error.raw_os_error()
+            );
             match error.raw_os_error() {
                 Some(errno) => anyhow::anyhow!(
                     "launch protected codex fixture failed: {category} (errno {errno})"
