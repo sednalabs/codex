@@ -645,6 +645,9 @@ impl ProtectedRuntimeFixture {
         launcher_layout: bool,
     ) -> Result<Self> {
         let temp = tempfile::tempdir()?;
+        if launcher_layout {
+            eprintln!("launcher-layout-stage:tempdir_ready");
+        }
         let root = temp.path();
         let home = root.join("immutable-home");
         let child_home = root.join("child-home");
@@ -671,6 +674,9 @@ impl ProtectedRuntimeFixture {
         fs::set_permissions(&work, fs::Permissions::from_mode(0o700))?;
         let output_path = root.join("stdout.jsonl");
         let errors_path = root.join("stderr.log");
+        if launcher_layout {
+            eprintln!("launcher-layout-stage:filesystem_layout_ready");
+        }
 
         let model = MockServer::start().await;
         let mcp = MockServer::start().await;
@@ -736,6 +742,9 @@ impl ProtectedRuntimeFixture {
             })
             .mount(&mcp)
             .await;
+        if launcher_layout {
+            eprintln!("launcher-layout-stage:mock_servers_ready");
+        }
 
         let executable = codex_utils_cargo_bin::cargo_bin("codex")?;
         let artifact_sha256 = hash_file(&executable)?.sha256;
@@ -749,6 +758,9 @@ impl ProtectedRuntimeFixture {
             hash_file(&executable_path)?.sha256 == artifact_sha256,
             "staged protected CLI fixture executable changed during copy"
         );
+        if launcher_layout {
+            eprintln!("launcher-layout-stage:consumer_executable_staged");
+        }
         let issuer_key = SigningKey::from_bytes(&[23_u8; 32]);
         let recipient = format!("{}/mcp", mcp.uri());
         let provider_recipient = format!("{}/v1", model.uri());
@@ -819,6 +831,9 @@ impl ProtectedRuntimeFixture {
         chown_to_runner(&state)?;
         chown_to_runner(&work)?;
         chown_to_runner(&root.join("logs"))?;
+        if launcher_layout {
+            eprintln!("launcher-layout-stage:fixture_files_ready");
+        }
 
         Ok(Self {
             _temp: temp,
