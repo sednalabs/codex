@@ -1,0 +1,55 @@
+name: IRC Linux Clippy concurrency diagnostic
+on:
+  push:
+    branches: [validation/w18854-clippy-serial-20261103]
+permissions:
+  contents: read
+jobs:
+  clippy:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
+    environment:
+      name: bazel
+      deployment: false
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd
+        with:
+          ref: b3c375e192a3777ff60038913c5708d61331b896
+          persist-credentials: false
+      - name: Verify candidate identity
+        run: test "$(git rev-parse HEAD)" = b3c375e192a3777ff60038913c5708d61331b896
+      - name: Prepare Bazel CI
+        uses: ./.github/actions/prepare-bazel-ci
+        with:
+          target: x86_64-unknown-linux-gnu
+          cache-scope: bazel-clippy
+      - name: Resolve app-server compatibility releases
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          releases="$(python3 .github/scripts/resolve_exec_server_releases.py)"
+          echo "CODEX_COMPAT_RELEASES=$releases" >> "$GITHUB_ENV"
+      - name: Build the complete Clippy target set serially
+        env:
+          BUILDBUDDY_API_KEY: ${{ secrets.BUILDBUDDY_API_KEY }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          (
+            while true; do
+              printf 'RESOURCE_PROBE time=%s ' "$(date -u +%FT%TZ)"
+              awk '/^(MemTotal|MemAvailable|SwapTotal|SwapFree):/ {printf "%s=%s ", $1, $2} END {print ""}' /proc/meminfo
+              sleep 15
+            done
+          ) &
+          probe_pid=$!
+          trap 'kill "$probe_pid" 2>/dev/null || true' EXIT
+          target_lines="$(./scripts/list-bazel-clippy-targets.sh)"
+          targets=()
+          while IFS= read -r target; do
+            targets+=("${target}")
+          done <<< "${target_lines}"
+          ./.github/scripts/run-bazel-ci.sh --print-failed-action-summary -- build \
+            --config=clippy --jobs=1 --remote_upload_local_results=false \
+            --build_metadata=COMMIT_SHA=b3c375e192a3777ff60038913c5708d61331b896 \
+            --build_metadata=TAG_job=clippy -- "${targets[@]}"
