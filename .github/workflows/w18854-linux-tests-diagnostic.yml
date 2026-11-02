@@ -1,0 +1,55 @@
+name: IRC bounded Linux test diagnostic
+on:
+  push:
+    branches: [validation/w18854-linux-tests-bounded-20261103]
+permissions:
+  contents: read
+jobs:
+  tests:
+    strategy:
+      fail-fast: false
+      matrix:
+        target: [x86_64-unknown-linux-gnu, x86_64-unknown-linux-musl]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 180
+    environment:
+      name: bazel
+      deployment: false
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd
+        with:
+          ref: b508bfc3a8a9d04b18f0d10eab8ad57dfb097412
+          persist-credentials: false
+      - name: Verify candidate identity
+        run: test "$(git rev-parse HEAD)" = b508bfc3a8a9d04b18f0d10eab8ad57dfb097412
+      - name: Prepare Bazel CI
+        uses: ./.github/actions/prepare-bazel-ci
+        with:
+          target: ${{ matrix.target }}
+          cache-scope: bazel-test
+      - name: Resolve app-server compatibility releases
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          releases="$(python3 .github/scripts/resolve_exec_server_releases.py)"
+          echo "CODEX_COMPAT_RELEASES=$releases" >> "$GITHUB_ENV"
+      - name: Run full Linux test targets with bounded concurrency
+        env:
+          BUILDBUDDY_API_KEY: ${{ secrets.BUILDBUDDY_API_KEY }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          (
+            while true; do
+              printf 'RESOURCE_PROBE time=%s ' "$(date -u +%FT%TZ)"
+              awk '/^(MemTotal|MemAvailable|SwapTotal|SwapFree):/ {printf "%s=%s ", $1, $2} END {print ""}' /proc/meminfo
+              sleep 15
+            done
+          ) &
+          probe_pid=$!
+          trap 'kill "$probe_pid" 2>/dev/null || true' EXIT
+          ./.github/scripts/run-bazel-ci.sh --print-failed-action-summary --print-failed-test-logs -- \
+            test --jobs=2 --remote_upload_local_results=false \
+            --test_tag_filters=-argument-comment-lint --test_verbose_timeout_warnings \
+            --build_metadata=COMMIT_SHA=b508bfc3a8a9d04b18f0d10eab8ad57dfb097412 \
+            -- //... -//third_party/v8:all
