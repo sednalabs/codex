@@ -973,7 +973,9 @@ impl Session {
             self.send_event(turn_context.as_ref(), event).await;
         }
         if cleared_active_turn {
-            self.emit_thread_idle_lifecycle_if_idle(idle_cause).await;
+            let independent_notice = turn_context.extension_data
+                .get::<codex_extension_api::IndependentExternalNotice>().is_some();
+            self.emit_thread_idle_lifecycle_with_origin_if_idle(idle_cause, independent_notice).await;
         }
         // Private reviewers already flushed the terminal event before delivering it.
         // Other buffering writers still need a barrier for the terminal event.

@@ -183,6 +183,9 @@ where
 
     fn on_thread_idle<'a>(&'a self, input: ThreadIdleInput<'a>) -> ExtensionFuture<'a, ()> {
         Box::pin(async move {
+            if input.independent_external_notice {
+                return;
+            }
             let Some(runtime) = goal_runtime_handle(input.thread_store) else {
                 return;
             };

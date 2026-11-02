@@ -61,6 +61,12 @@ impl Session {
     }
 
     pub(crate) async fn emit_thread_idle_lifecycle_if_idle(&self, cause: ThreadIdleCause) {
+        self.emit_thread_idle_lifecycle_with_origin_if_idle(cause, false).await;
+    }
+
+    pub(crate) async fn emit_thread_idle_lifecycle_with_origin_if_idle(
+        &self, cause: ThreadIdleCause, independent_external_notice: bool,
+    ) {
         let cause = {
             let active_turn = self.active_turn.lock().await;
             if active_turn.is_some() {
@@ -80,6 +86,7 @@ impl Session {
             contributor
                 .on_thread_idle(codex_extension_api::ThreadIdleInput {
                     cause,
+                    independent_external_notice,
                     session_store: &self.services.session_extension_data,
                     thread_store: &self.services.thread_extension_data,
                 })
