@@ -16,7 +16,7 @@ jobs:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd
         with:
           persist-credentials: false
-          fetch-depth: 5
+          fetch-depth: 3
       - uses: dtolnay/rust-toolchain@ebb3d1676050bfd0971c36c1e215b5751473994d
         with:
           toolchain: 1.96.0
@@ -26,6 +26,7 @@ jobs:
         run: |
           set -euo pipefail
           git rev-parse HEAD
+          git fetch --no-tags --depth=1 origin 88cfde32a125da761877ffe726c4604be970c89d
           git diff --quiet 88cfde32a125da761877ffe726c4604be970c89d HEAD -- codex-rs ':(exclude)codex-rs/cli/tests/runtime_execution_proof.rs' ':(exclude)codex-rs/cli/tests/runtime_execution_proof/support.rs'
           export CARGO_BUILD_JOBS=2
           cargo test --locked -p codex-exec --lib protected_runtime_accepts_only_the_fixed_four_tool_profile
