@@ -194,21 +194,11 @@ async fn run(
 }
 
 #[cfg(any(unix, test))]
+#[derive(Default)]
 struct PendingState {
     pending: bool,
     inflight: Option<String>,
     last_acked: Option<String>,
-}
-
-#[cfg(any(unix, test))]
-impl Default for PendingState {
-    fn default() -> Self {
-        Self {
-            pending: false,
-            inflight: None,
-            last_acked: None,
-        }
-    }
 }
 
 #[cfg(any(unix, test))]
@@ -305,11 +295,20 @@ pub(crate) async fn deliver_request(
     // finish rather than canceling a partial lifecycle. The caller must
     // reconcile an unknown outcome before retrying the same source batch.
     let session = Arc::clone(session);
-    tokio::spawn(async move { deliver_request_inner(&session, request, idle_only).await })
+    match tokio::spawn(async move { deliver_request_inner(&session, request, idle_only).await })
         .await
-        .expect("external notice admission task failed")
+    {
+        Ok(result) => result,
+        // A failed owned admission has an unknown outcome. Propagate failure
+        // rather than returning a deferred receipt that invites an unsafe retry.
+        Err(error) => std::panic::resume_unwind(Box::new(error)),
+    }
 }
 
+#[expect(
+    clippy::await_holding_invalid_type,
+    reason = "external admission and explicit interruption must be serialized through turn registration"
+)]
 async fn deliver_request_inner(
     session: &Arc<Session>,
     request: TurnInputRequest,
@@ -392,10 +391,15 @@ mod tests {
         );
         let session = Arc::new(session);
         let candidate = Arc::clone(&session);
-        let caller =
-            tokio::spawn(
-                async move { deliver(&candidate, "irc", "cancelled-caller", /*idle_only*/ false).await },
-            );
+        let caller = tokio::spawn(async move {
+            deliver(
+                &candidate,
+                "irc",
+                "cancelled-caller",
+                /*idle_only*/ false,
+            )
+            .await
+        });
         tokio::time::timeout(std::time::Duration::from_secs(5), entered.notified())
             .await
             .expect("admission reached barrier");
@@ -565,7 +569,13 @@ mod tests {
         let session = Arc::new(session);
         *session.external_event_gate.lock().await = false;
         assert_eq!(
-            deliver(&session, "irc", "restored-interrupt", /*idle_only*/ false).await,
+            deliver(
+                &session,
+                "irc",
+                "restored-interrupt",
+                /*idle_only*/ false
+            )
+            .await,
             EventAdmission::Deferred
         );
     }

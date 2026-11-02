@@ -186,7 +186,11 @@ async fn independent_notice_respects_interruption_across_session_restart() -> Re
         })
         .await?;
     let first: TurnStartResponse = server.read_response(id).await?;
-    timeout(Duration::from_secs(60), gateway.wait_for_request_count(/*count*/ 1)).await?;
+    timeout(
+        Duration::from_secs(60),
+        gateway.wait_for_request_count(/*count*/ 1),
+    )
+    .await?;
     let id = server
         .send_turn_interrupt_request(TurnInterruptParams {
             thread_id: thread.id.clone(),
@@ -247,7 +251,11 @@ async fn independent_notice_respects_interruption_across_session_restart() -> Re
         })
         .await?;
     let resumed: TurnStartResponse = server.read_response(id).await?;
-    timeout(Duration::from_secs(60), gateway.wait_for_request_count(/*count*/ 3)).await?;
+    timeout(
+        Duration::from_secs(60),
+        gateway.wait_for_request_count(/*count*/ 3),
+    )
+    .await?;
     let id = server
         .send_raw_request("turn/externalNotice", Some(notice))
         .await?;
@@ -361,7 +369,11 @@ async fn automatic_notice_steers_existing_turn_with_exact_receipt() -> Result<()
         .await?;
     let started: TurnStartResponse =
         timeout(Duration::from_secs(60), server.read_response(id)).await??;
-    timeout(Duration::from_secs(60), gateway.wait_for_request_count(/*count*/ 1)).await?;
+    timeout(
+        Duration::from_secs(60),
+        gateway.wait_for_request_count(/*count*/ 1),
+    )
+    .await?;
     let id = server
         .send_raw_request(
             "turn/externalNotice",

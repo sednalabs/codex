@@ -61,8 +61,10 @@ impl Session {
     }
 
     pub(crate) async fn emit_thread_idle_lifecycle_if_idle(&self, cause: ThreadIdleCause) {
-        self.emit_thread_idle_lifecycle_with_origin_if_idle(cause, /*independent_external_notice*/ false)
-            .await;
+        self.emit_thread_idle_lifecycle_with_origin_if_idle(
+            cause, /*independent_external_notice*/ false,
+        )
+        .await;
     }
 
     pub(crate) async fn emit_thread_idle_lifecycle_with_origin_if_idle(
