@@ -285,6 +285,24 @@ pub(super) async fn deliver(
     token: &str,
     idle_only: bool,
 ) -> EventAdmission {
+    let Some(request) = event_request(source, token) else {
+        return EventAdmission::Deferred;
+    };
+    if deliver_request(session, request, idle_only).await.is_some() {
+        EventAdmission::Accepted
+    } else {
+        EventAdmission::Deferred
+    }
+}
+
+/// Admit an explicitly supplied standalone source notice. The returned turn
+/// ID is a receipt for admission, not evidence that the notice was consumed.
+#[cfg(any(unix, test))]
+pub(crate) async fn deliver_request(
+    session: &Arc<Session>,
+    request: TurnInputRequest,
+    idle_only: bool,
+) -> Option<String> {
     // A notification is automatic work. Hold the goal mutation permit through
     // admission so a concurrent pause cannot win before a new turn is started.
     // A session without a goal may still receive input on an existing turn,
@@ -294,23 +312,20 @@ pub(super) async fn deliver(
         .thread_extension_data
         .get::<crate::GoalStateAdmissionLock>()
     else {
-        return EventAdmission::Deferred;
+        return None;
     };
     let Ok(_goal_permit) = goal_lock.0.try_acquire() else {
-        return EventAdmission::Deferred;
+        return None;
     };
     if !goal_lock.1.read().is_ok_and(|enabled| *enabled) {
-        return EventAdmission::Deferred;
+        return None;
     }
     let enabled = session.external_event_gate.lock().await;
     if !*enabled {
-        return EventAdmission::Deferred;
-    }
-    let Some(request) = event_request(source, token) else {
-        return EventAdmission::Deferred;
+        return None;
     };
     if session.collaboration_mode().await.mode == ModeKind::Plan {
-        return EventAdmission::Deferred;
+        return None;
     }
 
     let turn_id = {
@@ -323,7 +338,7 @@ pub(super) async fn deliver(
     };
     if let Some(expected_turn_id) = turn_id {
         if idle_only {
-            return EventAdmission::Deferred;
+            return None;
         }
         let accepted = turn_input::steer_external_if_active_with_goal(
             session,
@@ -331,11 +346,7 @@ pub(super) async fn deliver(
             &expected_turn_id,
         )
         .await;
-        return if accepted {
-            EventAdmission::Accepted
-        } else {
-            EventAdmission::Deferred
-        };
+        return accepted.then_some(expected_turn_id);
     }
     match turn_input::start_guarded_external_if_idle(
         session,
@@ -344,8 +355,8 @@ pub(super) async fn deliver(
     )
     .await
     {
-        Ok(TurnInputSubmission::Started { .. }) => EventAdmission::Accepted,
-        _ => EventAdmission::Deferred,
+        Ok(TurnInputSubmission::Started { turn_id, .. }) => Some(turn_id),
+        _ => None,
     }
 }
 
@@ -629,6 +640,30 @@ mod tests {
             deliver(&session, "irc", "token", /*idle_only*/ false).await,
             EventAdmission::Accepted
         );
+        session.abort_all_tasks(TurnAbortReason::Interrupted).await;
+    }
+
+    #[tokio::test]
+    async fn explicit_source_notice_returns_exact_active_turn_receipt() {
+        let home = tempfile::tempdir().expect("state home");
+        let sqlite = codex_state::SqliteConfig::new_for_testing(
+            codex_utils_absolute_path::AbsolutePathBuf::try_from(home.path()).expect("absolute"),
+        );
+        let state = codex_state::StateRuntime::init(sqlite, "test".to_string())
+            .await
+            .expect("state");
+        let (mut session, turn_context) = make_session_and_context().await;
+        let expected_turn_id = turn_context.sub_id.clone();
+        session.services.state_db = Some(state);
+        session.services.thread_extension_data.insert(crate::GoalStateAdmissionLock(
+            Arc::new(tokio::sync::Semaphore::new(1)),
+            Arc::new(std::sync::RwLock::new(true)),
+        ));
+        let session = Arc::new(session);
+        session.spawn_task(Arc::new(turn_context), Vec::new(), WaitingTask).await;
+        let request = event_request("irc", "source-owned-batch").expect("valid notice");
+        assert_eq!(deliver_request(&session, request, false).await, Some(expected_turn_id));
+        assert!(session.input_queue.has_pending_input(&session.active_turn).await);
         session.abort_all_tasks(TurnAbortReason::Interrupted).await;
     }
 

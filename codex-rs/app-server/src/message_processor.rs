@@ -1037,6 +1037,7 @@ impl MessageProcessor {
             ClientRequest::ThreadSample { .. }
             | ClientRequest::ThreadGuardianReview { .. }
             | ClientRequest::TurnStart { .. }
+            | ClientRequest::TurnExternalNotice { .. }
             | ClientRequest::TurnSteer { .. }
             | ClientRequest::ReviewStart { .. }
             | ClientRequest::ThreadCompactStart { .. }
@@ -1709,6 +1710,9 @@ impl MessageProcessor {
                         client_version.clone(),
                     )
                     .await
+            }
+            ClientRequest::TurnExternalNotice { params, .. } => {
+                self.turn_processor.turn_external_notice(&request_id, params).await
             }
             ClientRequest::ThreadGuardianReview { params, .. } => {
                 let cancellation = &request_context.cancellation;
