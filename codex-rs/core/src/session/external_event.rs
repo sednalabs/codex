@@ -14,11 +14,7 @@ use codex_protocol::models::FunctionCallOutputPayload;
 #[cfg(any(unix, test))]
 use codex_protocol::models::ResponseItem;
 #[cfg(any(unix, test))]
-use codex_protocol::turn_input::NotSubmittedReason;
-#[cfg(any(unix, test))]
 use codex_protocol::turn_input::TurnInput;
-#[cfg(any(unix, test))]
-use codex_protocol::turn_input::TurnInputMode;
 #[cfg(any(unix, test))]
 use codex_protocol::turn_input::TurnInputRequest;
 #[cfg(any(unix, test))]
@@ -289,20 +285,23 @@ pub(super) async fn deliver(
     token: &str,
     idle_only: bool,
 ) -> EventAdmission {
-    // An independent notification is not goal continuation: a paused or absent
-    // goal must not suppress it. When a goal runtime is present, serialize with
-    // its mutations without waiting while holding the interrupt gate.
-    let goal_lock = session
+    // A notification is automatic work. Hold the goal mutation permit through
+    // admission so a concurrent pause cannot win before a new turn is started.
+    // A session without a goal may still receive input on an existing turn,
+    // but only an active goal authorizes starting a new one.
+    let Some(goal_lock) = session
         .services
         .thread_extension_data
-        .get::<crate::GoalStateAdmissionLock>();
-    let _goal_permit = match goal_lock.as_ref() {
-        Some(lock) => match lock.0.try_acquire() {
-            Ok(permit) => Some(permit),
-            Err(_) => return EventAdmission::Deferred,
-        },
-        None => None,
+        .get::<crate::GoalStateAdmissionLock>()
+    else {
+        return EventAdmission::Deferred;
     };
+    let Ok(_goal_permit) = goal_lock.0.try_acquire() else {
+        return EventAdmission::Deferred;
+    };
+    if !goal_lock.1.load(std::sync::atomic::Ordering::Acquire) {
+        return EventAdmission::Deferred;
+    }
     let enabled = session.external_event_gate.lock().await;
     if !*enabled {
         return EventAdmission::Deferred;
@@ -314,36 +313,38 @@ pub(super) async fn deliver(
         return EventAdmission::Deferred;
     }
 
-    let result = turn_input::handle(
+    let turn_id = {
+        let active = session.active_turn.lock().await;
+        active.as_ref().and_then(|turn| {
+            turn.task
+                .as_ref()
+                .map(|task| task.turn_context.sub_id.clone())
+        })
+    };
+    if let Some(expected_turn_id) = turn_id {
+        if idle_only {
+            return EventAdmission::Deferred;
+        }
+        let accepted = turn_input::steer_external_if_active_with_goal(
+            session,
+            request.input,
+            &expected_turn_id,
+        )
+        .await;
+        return if accepted {
+            EventAdmission::Accepted
+        } else {
+            EventAdmission::Deferred
+        };
+    }
+    match turn_input::start_guarded_external_if_idle(
         session,
-        request.clone(),
-        TurnInputMode::StartIfIdle,
+        request,
         super::new_submission_id(),
     )
-    .await;
-    match result {
+    .await
+    {
         Ok(TurnInputSubmission::Started { .. }) => EventAdmission::Accepted,
-        Ok(TurnInputSubmission::NotSubmitted {
-            reason: NotSubmittedReason::NotIdle,
-        }) if !idle_only => {
-            let turn_id = {
-                let active = session.active_turn.lock().await;
-                active.as_ref().and_then(|turn| {
-                    turn.task
-                        .as_ref()
-                        .map(|task| task.turn_context.sub_id.clone())
-                })
-            };
-            let Some(expected_turn_id) = turn_id else {
-                return EventAdmission::Deferred;
-            };
-            if turn_input::steer_external_if_active(session, request.input, &expected_turn_id).await
-            {
-                EventAdmission::Accepted
-            } else {
-                EventAdmission::Deferred
-            }
-        }
         _ => EventAdmission::Deferred,
     }
 }
@@ -353,7 +354,35 @@ mod tests {
     use super::*;
     use crate::session::tests::make_session_and_context;
     use crate::session::tests::make_session_and_context_with_rx;
+    use crate::session::turn_context::TurnContext;
+    use crate::state::TaskKind;
+    use crate::tasks::SessionTask;
+    use crate::tasks::SessionTaskResult;
     use codex_protocol::protocol::TurnAbortReason;
+    use tokio_util::sync::CancellationToken;
+
+    struct WaitingTask;
+
+    impl SessionTask for WaitingTask {
+        fn kind(&self) -> TaskKind {
+            TaskKind::Regular
+        }
+
+        fn span_name(&self) -> &'static str {
+            "session_task.external_event_test"
+        }
+
+        async fn run(
+            self: Arc<Self>,
+            _session: Arc<Session>,
+            _ctx: Arc<TurnContext>,
+            _input: Vec<crate::session::TurnInput>,
+            cancellation_token: CancellationToken,
+        ) -> SessionTaskResult {
+            cancellation_token.cancelled().await;
+            Ok(None)
+        }
+    }
 
     #[test]
     fn source_name_is_bounded_and_cannot_supply_input_text() {
@@ -364,18 +393,18 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn independent_event_can_start_without_a_goal_runtime() {
+    async fn event_is_deferred_without_a_goal_runtime() {
         let (session, _, _rx) = make_session_and_context_with_rx().await;
         assert!(session.services.state_db.is_none());
         assert_eq!(
             deliver(&session, "irc", "token", /*idle_only*/ false).await,
-            EventAdmission::Accepted
+            EventAdmission::Deferred
         );
-        session.abort_all_tasks(TurnAbortReason::Interrupted).await;
+        assert!(session.active_turn.lock().await.is_none());
     }
 
     #[tokio::test]
-    async fn independent_event_can_start_with_goal_lock_and_no_state_db() {
+    async fn event_is_deferred_when_goal_state_is_unavailable() {
         let (session, _, _rx) = make_session_and_context_with_rx().await;
         assert!(session.services.state_db.is_none());
         session
@@ -387,13 +416,13 @@ mod tests {
             ));
         assert_eq!(
             deliver(&session, "irc", "token", /*idle_only*/ false).await,
-            EventAdmission::Accepted
+            EventAdmission::Deferred
         );
-        session.abort_all_tasks(TurnAbortReason::Interrupted).await;
+        assert!(session.active_turn.lock().await.is_none());
     }
 
     #[tokio::test]
-    async fn independent_event_preserves_paused_goal_after_state_reopen() {
+    async fn paused_goal_defers_event_after_state_reopen() {
         let home = tempfile::tempdir().expect("state home");
         let sqlite = codex_state::SqliteConfig::new_for_testing(
             codex_utils_absolute_path::AbsolutePathBuf::try_from(home.path()).expect("absolute"),
@@ -437,7 +466,7 @@ mod tests {
         let session = Arc::new(session);
         assert_eq!(
             deliver(&session, "irc", "token", /*idle_only*/ false).await,
-            EventAdmission::Accepted
+            EventAdmission::Deferred
         );
         assert_eq!(
             session
@@ -453,7 +482,358 @@ mod tests {
                 .status,
             codex_state::ThreadGoalStatus::Paused
         );
+        assert!(session.active_turn.lock().await.is_none());
+    }
+
+    #[tokio::test]
+    async fn active_goal_admits_idle_event_and_blocked_goal_does_not() {
+        let home = tempfile::tempdir().expect("state home");
+        let sqlite = codex_state::SqliteConfig::new_for_testing(
+            codex_utils_absolute_path::AbsolutePathBuf::try_from(home.path()).expect("absolute"),
+        );
+        let state = codex_state::StateRuntime::init(sqlite, "test".to_string())
+            .await
+            .expect("state");
+        let (mut session, _) = make_session_and_context().await;
+        state
+            .thread_goals()
+            .replace_thread_goal(
+                session.thread_id,
+                "test admission",
+                codex_state::ThreadGoalStatus::Blocked,
+                /*token_budget*/ None,
+            )
+            .await
+            .expect("persist blocked goal");
+        session.services.state_db = Some(state.clone());
+        let lock = Arc::new(tokio::sync::Semaphore::new(1));
+        session
+            .services
+            .thread_extension_data
+            .insert(crate::GoalStateAdmissionLock(
+                Arc::clone(&lock),
+                Arc::new(std::sync::atomic::AtomicBool::new(true)),
+            ));
+        let session = Arc::new(session);
+        assert_eq!(
+            deliver(&session, "irc", "blocked", /*idle_only*/ false).await,
+            EventAdmission::Deferred
+        );
+        assert!(session.active_turn.lock().await.is_none());
+        let permit = lock.acquire().await.expect("goal mutation permit");
+        state
+            .thread_goals()
+            .replace_thread_goal(
+                session.thread_id,
+                "test admission",
+                codex_state::ThreadGoalStatus::Active,
+                /*token_budget*/ None,
+            )
+            .await
+            .expect("persist active goal");
+        assert_eq!(
+            deliver(&session, "irc", "locked", /*idle_only*/ false).await,
+            EventAdmission::Deferred
+        );
+        drop(permit);
+        assert_eq!(
+            deliver(&session, "irc", "active", /*idle_only*/ false).await,
+            EventAdmission::Accepted
+        );
         session.abort_all_tasks(TurnAbortReason::Interrupted).await;
+    }
+
+    #[tokio::test]
+    async fn absent_goal_does_not_start_an_idle_turn() {
+        let home = tempfile::tempdir().expect("state home");
+        let sqlite = codex_state::SqliteConfig::new_for_testing(
+            codex_utils_absolute_path::AbsolutePathBuf::try_from(home.path()).expect("absolute"),
+        );
+        let state = codex_state::StateRuntime::init(sqlite, "test".to_string())
+            .await
+            .expect("state");
+        let (mut session, _) = make_session_and_context().await;
+        session.services.state_db = Some(state);
+        session
+            .services
+            .thread_extension_data
+            .insert(crate::GoalStateAdmissionLock(
+                Arc::new(tokio::sync::Semaphore::new(1)),
+                Arc::new(std::sync::atomic::AtomicBool::new(true)),
+            ));
+        let session = Arc::new(session);
+        assert_eq!(
+            deliver(&session, "irc", "token", /*idle_only*/ false).await,
+            EventAdmission::Deferred
+        );
+        assert!(session.active_turn.lock().await.is_none());
+    }
+
+    #[tokio::test]
+    async fn absent_goal_allows_steering_an_existing_turn() {
+        let home = tempfile::tempdir().expect("state home");
+        let sqlite = codex_state::SqliteConfig::new_for_testing(
+            codex_utils_absolute_path::AbsolutePathBuf::try_from(home.path()).expect("absolute"),
+        );
+        let state = codex_state::StateRuntime::init(sqlite, "test".to_string())
+            .await
+            .expect("state");
+        let (mut session, turn_context) = make_session_and_context().await;
+        session.services.state_db = Some(state);
+        session
+            .services
+            .thread_extension_data
+            .insert(crate::GoalStateAdmissionLock(
+                Arc::new(tokio::sync::Semaphore::new(1)),
+                Arc::new(std::sync::atomic::AtomicBool::new(true)),
+            ));
+        let session = Arc::new(session);
+        session
+            .spawn_task(Arc::new(turn_context), Vec::new(), WaitingTask)
+            .await;
+        assert_eq!(
+            deliver(&session, "irc", "token", /*idle_only*/ false).await,
+            EventAdmission::Accepted
+        );
+        session.abort_all_tasks(TurnAbortReason::Interrupted).await;
+    }
+
+    #[tokio::test]
+    async fn cancelled_reservation_releases_shared_goal_lock_and_idle_slot() {
+        let home = tempfile::tempdir().expect("state home");
+        let sqlite = codex_state::SqliteConfig::new_for_testing(
+            codex_utils_absolute_path::AbsolutePathBuf::try_from(home.path()).expect("absolute"),
+        );
+        let first = codex_state::StateRuntime::init(sqlite.clone(), "test".to_string())
+            .await
+            .expect("first state");
+        let second = codex_state::StateRuntime::init(sqlite, "test".to_string())
+            .await
+            .expect("second state");
+        let (mut session, _) = make_session_and_context().await;
+        first
+            .thread_goals()
+            .replace_thread_goal(
+                session.thread_id,
+                "test admission cancellation",
+                codex_state::ThreadGoalStatus::Active,
+                /*token_budget*/ None,
+            )
+            .await
+            .expect("active goal");
+        session.services.state_db = Some(first);
+        session
+            .services
+            .thread_extension_data
+            .insert(crate::GoalStateAdmissionLock(
+                Arc::new(tokio::sync::Semaphore::new(1)),
+                Arc::new(std::sync::atomic::AtomicBool::new(true)),
+            ));
+        let entered = Arc::new(tokio::sync::Notify::new());
+        session.services.thread_extension_data.insert(
+            super::turn_input::GoalAdmissionTestBarrier {
+                entered: Arc::clone(&entered),
+                release: Arc::new(tokio::sync::Notify::new()),
+            },
+        );
+        let session = Arc::new(session);
+        let candidate = Arc::clone(&session);
+        let admission = tokio::spawn(async move {
+            deliver(&candidate, "irc", "cancelled", /*idle_only*/ false).await
+        });
+        tokio::time::timeout(std::time::Duration::from_secs(5), entered.notified())
+            .await
+            .expect("reservation reached its barrier");
+        assert!(
+            tokio::time::timeout(
+                std::time::Duration::from_millis(100),
+                second.thread_goals().lock_admission(session.thread_id),
+            )
+            .await
+            .is_err(),
+            "another goal admission must wait for the shared SQLite writer lock"
+        );
+        admission.abort();
+        assert!(admission.await.expect_err("admission cancelled").is_cancelled());
+        assert!(session.active_turn.lock().await.is_none());
+        let guard = tokio::time::timeout(
+            std::time::Duration::from_secs(5),
+            second.thread_goals().lock_admission(session.thread_id),
+        )
+        .await
+        .expect("database lock released")
+        .expect("read goal after cancellation");
+        assert_eq!(guard.status(), Some(codex_state::ThreadGoalStatus::Active));
+        guard.release().await.expect("release test guard");
+        second
+            .thread_goals()
+            .replace_thread_goal_for_control(
+                session.thread_id,
+                "test admission cancellation",
+                codex_state::ThreadGoalStatus::Paused,
+                /*token_budget*/ None,
+            )
+            .await
+            .expect("pause after cancellation");
+        assert_eq!(
+            deliver(&session, "irc", "paused", /*idle_only*/ false).await,
+            EventAdmission::Deferred
+        );
+    }
+
+    #[tokio::test]
+    async fn cancellation_after_database_release_clears_the_idle_reservation() {
+        let home = tempfile::tempdir().expect("state home");
+        let sqlite = codex_state::SqliteConfig::new_for_testing(
+            codex_utils_absolute_path::AbsolutePathBuf::try_from(home.path()).expect("absolute"),
+        );
+        let first = codex_state::StateRuntime::init(sqlite.clone(), "test".to_string())
+            .await
+            .expect("first state");
+        let second = codex_state::StateRuntime::init(sqlite, "test".to_string())
+            .await
+            .expect("second state");
+        let (mut session, _) = make_session_and_context().await;
+        first
+            .thread_goals()
+            .replace_thread_goal(
+                session.thread_id,
+                "test post-reservation cancellation",
+                codex_state::ThreadGoalStatus::Active,
+                /*token_budget*/ None,
+            )
+            .await
+            .expect("active goal");
+        session.services.state_db = Some(first);
+        session
+            .services
+            .thread_extension_data
+            .insert(crate::GoalStateAdmissionLock(
+                Arc::new(tokio::sync::Semaphore::new(1)),
+                Arc::new(std::sync::atomic::AtomicBool::new(true)),
+            ));
+        let entered = Arc::new(tokio::sync::Notify::new());
+        session.services.thread_extension_data.insert(
+            super::turn_input::PostReservationTestBarrier {
+                entered: Arc::clone(&entered),
+                release: Arc::new(tokio::sync::Notify::new()),
+            },
+        );
+        let session = Arc::new(session);
+        let candidate = Arc::clone(&session);
+        let admission = tokio::spawn(async move {
+            deliver(&candidate, "irc", "cancelled", /*idle_only*/ false).await
+        });
+        tokio::time::timeout(std::time::Duration::from_secs(5), entered.notified())
+            .await
+            .expect("post-reservation barrier reached");
+        assert!(session.active_turn.lock().await.is_some());
+        let guard = tokio::time::timeout(
+            std::time::Duration::from_secs(5),
+            second.thread_goals().lock_admission(session.thread_id),
+        )
+        .await
+        .expect("database lock released before lifecycle")
+        .expect("read goal");
+        guard.release().await.expect("release test guard");
+        admission.abort();
+        assert!(admission.await.expect_err("admission cancelled").is_cancelled());
+        tokio::time::timeout(std::time::Duration::from_secs(5), async {
+            loop {
+                if session.active_turn.lock().await.is_none() {
+                    break;
+                }
+                tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+            }
+        })
+        .await
+        .expect("cancelled idle slot cleaned up");
+    }
+
+    #[tokio::test]
+    async fn cancellation_before_task_registration_preserves_pending_mail() {
+        let home = tempfile::tempdir().expect("state home");
+        let sqlite = codex_state::SqliteConfig::new_for_testing(
+            codex_utils_absolute_path::AbsolutePathBuf::try_from(home.path()).expect("absolute"),
+        );
+        let state = codex_state::StateRuntime::init(sqlite, "test".to_string())
+            .await
+            .expect("state");
+        let (mut session, _) = make_session_and_context().await;
+        state
+            .thread_goals()
+            .replace_thread_goal(
+                session.thread_id,
+                "preserve mailbox on cancellation",
+                codex_state::ThreadGoalStatus::Active,
+                /*token_budget*/ None,
+            )
+            .await
+            .expect("active goal");
+        session.services.state_db = Some(state);
+        session
+            .services
+            .thread_extension_data
+            .insert(crate::GoalStateAdmissionLock(
+                Arc::new(tokio::sync::Semaphore::new(1)),
+                Arc::new(std::sync::atomic::AtomicBool::new(true)),
+            ));
+        let after_reservation = Arc::new(tokio::sync::Notify::new());
+        let allow_start = Arc::new(tokio::sync::Notify::new());
+        session.services.thread_extension_data.insert(
+            super::turn_input::PostReservationTestBarrier {
+                entered: Arc::clone(&after_reservation),
+                release: Arc::clone(&allow_start),
+            },
+        );
+        let before_registration = Arc::new(tokio::sync::Notify::new());
+        session.services.thread_extension_data.insert(
+            crate::tasks::ExternalTaskRegistrationTestBarrier {
+                entered: Arc::clone(&before_registration),
+                release: Arc::new(tokio::sync::Notify::new()),
+            },
+        );
+        let session = Arc::new(session);
+        let candidate = Arc::clone(&session);
+        let admission = tokio::spawn(async move {
+            deliver(&candidate, "irc", "cancelled", /*idle_only*/ false).await
+        });
+        tokio::time::timeout(std::time::Duration::from_secs(5), after_reservation.notified())
+            .await
+            .expect("post-reservation barrier reached");
+        let communication = codex_protocol::protocol::InterAgentCommunication::new(
+            codex_protocol::AgentPath::root(),
+            codex_protocol::AgentPath::root(),
+            Vec::new(),
+            "unrelated pending message".to_string(),
+            /*trigger_turn*/ false,
+        );
+        session
+            .input_queue
+            .enqueue_mailbox_communication(communication.clone().into(), Default::default())
+            .await;
+        allow_start.notify_one();
+        tokio::time::timeout(std::time::Duration::from_secs(5), before_registration.notified())
+            .await
+            .expect("pre-registration barrier reached");
+        admission.abort();
+        assert!(admission.await.expect_err("admission cancelled").is_cancelled());
+        tokio::time::timeout(std::time::Duration::from_secs(5), async {
+            loop {
+                if session.active_turn.lock().await.is_none() {
+                    break;
+                }
+                tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+            }
+        })
+        .await
+        .expect("cancelled idle slot cleaned up");
+        assert_eq!(
+            session.input_queue.drain_mailbox_input_items().await.0,
+            vec![crate::session::TurnInput::InterAgentCommunication(
+                communication.into()
+            )]
+        );
     }
 
     #[tokio::test]

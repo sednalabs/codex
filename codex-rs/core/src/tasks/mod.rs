@@ -269,6 +269,18 @@ where
     }
 }
 
+#[derive(Clone, Copy)]
+enum MailboxStart {
+    Drain,
+    Defer,
+}
+
+#[cfg(test)]
+pub(crate) struct ExternalTaskRegistrationTestBarrier {
+    pub entered: Arc<tokio::sync::Notify>,
+    pub release: Arc<tokio::sync::Notify>,
+}
+
 impl Session {
     pub async fn spawn_task<T: SessionTask>(
         self: &Arc<Self>,
@@ -281,15 +293,37 @@ impl Session {
         self.start_task(turn_context, input, task).await;
     }
 
-    #[expect(
-        clippy::await_holding_invalid_type,
-        reason = "record the started turn atomically with task registration"
-    )]
     pub(crate) async fn start_task<T: SessionTask>(
         self: &Arc<Self>,
         turn_context: Arc<TurnContext>,
         input: Vec<TurnInput>,
         task: T,
+    ) {
+        self.start_task_inner(turn_context, input, task, MailboxStart::Drain)
+            .await;
+    }
+
+    /// Keep mailbox messages in their original queue until the new task exists.
+    pub(crate) async fn start_external_task<T: SessionTask>(
+        self: &Arc<Self>,
+        turn_context: Arc<TurnContext>,
+        input: Vec<TurnInput>,
+        task: T,
+    ) {
+        self.start_task_inner(turn_context, input, task, MailboxStart::Defer)
+            .await;
+    }
+
+    #[expect(
+        clippy::await_holding_invalid_type,
+        reason = "record the started turn atomically with task registration"
+    )]
+    async fn start_task_inner<T: SessionTask>(
+        self: &Arc<Self>,
+        turn_context: Arc<TurnContext>,
+        input: Vec<TurnInput>,
+        task: T,
+        mailbox_start: MailboxStart,
     ) {
         // Replace the cache; in-flight acquisitions retain their previous Arc.
         self.services
@@ -325,7 +359,10 @@ impl Session {
         let cancellation_token = CancellationToken::new();
         let done = Arc::new(Notify::new());
 
-        let (pending_items, _) = self.input_queue.drain_mailbox_input_items().await;
+        let pending_items = match mailbox_start {
+            MailboxStart::Drain => self.input_queue.drain_mailbox_input_items().await.0,
+            MailboxStart::Defer => Vec::new(),
+        };
         let turn_state = {
             let mut active = self.active_turn.lock().await;
             let turn = active.get_or_insert_with(ActiveTurn::default);
@@ -343,6 +380,17 @@ impl Session {
             codex_extension_api::TurnStartPhase::BeforeTaskRegistration,
         )
         .await;
+
+        #[cfg(test)]
+        if matches!(mailbox_start, MailboxStart::Defer)
+            && let Some(barrier) = self
+                .services
+                .thread_extension_data
+                .get::<ExternalTaskRegistrationTestBarrier>()
+        {
+            barrier.entered.notify_one();
+            barrier.release.notified().await;
+        }
 
         let mut active = self.active_turn.lock().await;
         let turn = active.get_or_insert_with(ActiveTurn::default);

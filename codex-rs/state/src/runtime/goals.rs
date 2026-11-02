@@ -9,6 +9,28 @@ pub struct GoalStore {
     pool: Arc<SqlitePool>,
 }
 
+/// Holds the shared goals-database writer lock during a short admission decision.
+///
+/// Release this guard before invoking turn lifecycle hooks: those hooks may
+/// write to the same database. The transaction does not alter goal state.
+pub struct GoalAdmissionGuard {
+    transaction: sqlx::Transaction<'static, sqlx::Sqlite>,
+    status: Option<crate::ThreadGoalStatus>,
+}
+
+impl GoalAdmissionGuard {
+    /// Goal status observed while the cross-process writer lock is held.
+    pub fn status(&self) -> Option<crate::ThreadGoalStatus> {
+        self.status
+    }
+
+    /// Release the read-only admission transaction after the caller reserves work.
+    pub async fn release(self) -> anyhow::Result<()> {
+        self.transaction.rollback().await?;
+        Ok(())
+    }
+}
+
 impl GoalStore {
     pub(crate) fn new(pool: Arc<SqlitePool>) -> Self {
         Self { pool }
@@ -40,6 +62,32 @@ pub enum GoalAccountingMode {
 }
 
 impl GoalStore {
+    /// Serialize a short admission decision with goal mutations in this database.
+    ///
+    /// This is a database-wide writer lock, not a persistent reservation and
+    /// not an authorization to start or steer work. Callers must bound their
+    /// critical section and release it before any database-writing lifecycle hook.
+    pub async fn lock_admission(
+        &self,
+        thread_id: ThreadId,
+    ) -> anyhow::Result<GoalAdmissionGuard> {
+        let mut transaction = self.pool.begin_immediate().await?;
+        let status: Option<String> = sqlx::query_scalar(
+            "SELECT status FROM thread_goals WHERE thread_id = ?",
+        )
+        .bind(thread_id.to_string())
+        .fetch_optional(&mut *transaction)
+        .await?;
+        let status = status
+            .as_deref()
+            .map(crate::ThreadGoalStatus::try_from)
+            .transpose()?;
+        Ok(GoalAdmissionGuard {
+            transaction,
+            status,
+        })
+    }
+
     pub async fn get_thread_goal(
         &self,
         thread_id: ThreadId,
@@ -769,6 +817,76 @@ mod tests {
             .upsert_thread(&metadata)
             .await
             .expect("test thread should be upserted");
+    }
+
+    #[tokio::test]
+    async fn admission_guard_serializes_a_second_goal_writer() {
+        let home = tempfile::tempdir().expect("temporary state home");
+        let sqlite = crate::SqliteConfig::new_for_testing(home.path().abs());
+        let first = StateRuntime::init(sqlite.clone(), "test-provider".to_string())
+            .await
+            .expect("first state runtime");
+        let second = StateRuntime::init(sqlite, "test-provider".to_string())
+            .await
+            .expect("second state runtime");
+        let thread_id = test_thread_id();
+        upsert_test_thread(&first, thread_id).await;
+        first
+            .thread_goals()
+            .replace_thread_goal_for_control(
+                thread_id,
+                "test goal",
+                crate::ThreadGoalStatus::Active,
+                /*token_budget*/ None,
+            )
+            .await
+            .expect("create active goal");
+        let guard = first
+            .thread_goals()
+            .lock_admission(thread_id)
+            .await
+            .expect("admission lock");
+        assert_eq!(guard.status(), Some(crate::ThreadGoalStatus::Active));
+
+        let mut connection = second
+            .thread_goals()
+            .pool
+            .acquire()
+            .await
+            .expect("second goal connection");
+        sqlx::query("PRAGMA busy_timeout = 0")
+            .execute(&mut *connection)
+            .await
+            .expect("disable busy wait for the direct probe");
+        let error = sqlx::query("UPDATE thread_goals SET status = 'paused' WHERE thread_id = ?")
+            .bind(thread_id.to_string())
+            .execute(&mut *connection)
+            .await
+            .expect_err("a separate writer must be refused during admission");
+        let code = error
+            .as_database_error()
+            .and_then(|error| error.code())
+            .and_then(|code| code.parse::<i32>().ok());
+        assert_eq!(code.map(|code| code & 0xff), Some(5)); // SQLITE_BUSY
+        drop(connection);
+        guard.release().await.expect("release admission lock");
+        second
+            .thread_goals()
+            .replace_thread_goal_for_control(
+                thread_id,
+                "test goal",
+                crate::ThreadGoalStatus::Paused,
+                /*token_budget*/ None,
+            )
+            .await
+            .expect("pause goal after release");
+        let after = first
+            .thread_goals()
+            .lock_admission(thread_id)
+            .await
+            .expect("second admission lock");
+        assert_eq!(after.status(), Some(crate::ThreadGoalStatus::Paused));
+        after.release().await.expect("release second lock");
     }
 
     #[tokio::test]

@@ -268,6 +268,7 @@ pub(super) async fn handle(
                 submission_id,
                 kind,
                 /*expected_previous_turn_id*/ None,
+                GoalAdmission::Unchecked,
             )
             .await
         }
@@ -288,6 +289,7 @@ pub(super) async fn handle(
                 submission_id,
                 TurnStartKind::Recovery,
                 Some(expected_previous_turn_id),
+                GoalAdmission::Unchecked,
             )
             .await
         }
@@ -333,6 +335,7 @@ pub(super) async fn handle_recovery(
         submission_id,
         TurnStartKind::Recovery,
         /*expected_previous_turn_id*/ None,
+        GoalAdmission::Unchecked,
     )
     .await;
     if let Ok(TurnInputSubmission::Started { turn_id, .. }) = &result {
@@ -474,6 +477,117 @@ async fn start_or_steer(
     }
 }
 
+/// A reserved idle slot must be removed if admission is cancelled before the
+/// shared goal transaction has been released.
+struct GuardedIdleReservation<'a> {
+    active: tokio::sync::MutexGuard<'a, Option<ActiveTurn>>,
+    keep: bool,
+}
+
+#[cfg(test)]
+pub(super) struct GoalAdmissionTestBarrier {
+    pub entered: Arc<tokio::sync::Notify>,
+    pub release: Arc<tokio::sync::Notify>,
+}
+
+#[cfg(test)]
+pub(super) struct PostReservationTestBarrier {
+    pub entered: Arc<tokio::sync::Notify>,
+    pub release: Arc<tokio::sync::Notify>,
+}
+
+/// Clear only this still-empty external reservation if its admission future is
+/// cancelled after releasing the database transaction but before task startup.
+struct ExternalReservationCleanup {
+    session: std::sync::Weak<Session>,
+    turn_state: Arc<tokio::sync::Mutex<TurnState>>,
+    armed: bool,
+}
+
+impl Drop for ExternalReservationCleanup {
+    fn drop(&mut self) {
+        if !self.armed {
+            return;
+        }
+        let Some(session) = self.session.upgrade() else {
+            return;
+        };
+        let Ok(runtime) = tokio::runtime::Handle::try_current() else {
+            return;
+        };
+        let turn_state = Arc::clone(&self.turn_state);
+        drop(runtime.spawn(async move {
+            session.clear_reserved_idle_turn(&turn_state).await;
+        }));
+    }
+}
+
+#[derive(Clone, Copy)]
+enum GoalAdmission {
+    Unchecked,
+    #[cfg(any(unix, test))]
+    Active,
+    #[cfg(any(unix, test))]
+    ActiveOrAbsent,
+}
+
+async fn lock_goal_admission(
+    session: &Session,
+    policy: GoalAdmission,
+) -> Result<Option<codex_state::GoalAdmissionGuard>, ()> {
+    if matches!(policy, GoalAdmission::Unchecked) {
+        return Ok(None);
+    }
+    let state_db = session.services.state_db.as_ref().ok_or(())?;
+    let guard = tokio::time::timeout(
+        std::time::Duration::from_millis(250),
+        state_db.thread_goals().lock_admission(session.thread_id),
+    )
+    .await
+    .map_err(|_| ())?
+    .map_err(|_| ())?;
+    match (policy, guard.status()) {
+        (_, Some(codex_state::ThreadGoalStatus::Active)) => Ok(Some(guard)),
+        #[cfg(any(unix, test))]
+        (GoalAdmission::ActiveOrAbsent, None) => Ok(Some(guard)),
+        _ => Err(()),
+    }
+}
+
+impl Drop for GuardedIdleReservation<'_> {
+    fn drop(&mut self) {
+        if !self.keep {
+            *self.active = None;
+        }
+    }
+}
+
+/// Reserve an automatic external turn while the shared goal status is locked.
+/// The database guard is released before any turn lifecycle hook can write it.
+#[cfg(any(unix, test))]
+pub(super) async fn start_guarded_external_if_idle(
+    session: &Arc<Session>,
+    request: TurnInputRequest,
+    submission_id: String,
+) -> CodexResult<TurnInputSubmission> {
+    if let SubmittedTurnInput::ResponseItem(item) = &request.input {
+        validate_injected_response_item(item)?;
+    } else {
+        return Err(CodexErr::InvalidRequest(
+            "external admission requires a standalone response item".to_string(),
+        ));
+    }
+    start_if_idle(
+        session,
+        request.into(),
+        submission_id,
+        TurnStartKind::Automatic,
+        /*expected_previous_turn_id*/ None,
+        GoalAdmission::Active,
+    )
+    .await
+}
+
 #[expect(
     clippy::await_holding_invalid_type,
     reason = "the previous turn check and idle reservation must be atomic"
@@ -484,7 +598,12 @@ async fn start_if_idle(
     submission_id: String,
     kind: TurnStartKind,
     expected_previous_turn_id: Option<String>,
+    goal_admission: GoalAdmission,
 ) -> CodexResult<TurnInputSubmission> {
+    #[cfg(any(unix, test))]
+    let external_reservation = matches!(goal_admission, GoalAdmission::Active);
+    #[cfg(not(any(unix, test)))]
+    let external_reservation = false;
     let WithTurnExtensionData {
         request,
         turn_extension_init,
@@ -548,9 +667,50 @@ async fn start_if_idle(
                 reason: NotSubmittedReason::Superseded,
             });
         }
-        let active_turn = active_turn.get_or_insert_with(ActiveTurn::default);
-        Arc::clone(&active_turn.turn_state)
+        // Wait for an in-memory slot before taking SQLite's database-wide
+        // writer lock. Contention on the database is bounded before reserving.
+        let goal_admission = lock_goal_admission(session, goal_admission)
+            .await
+            .map_err(|_| CodexErr::InvalidRequest("goal admission unavailable".to_string()))?;
+        let mut reservation = GuardedIdleReservation {
+            active: active_turn,
+            keep: false,
+        };
+        let active_turn = reservation.active.get_or_insert_with(ActiveTurn::default);
+        let turn_state = Arc::clone(&active_turn.turn_state);
+        if let Some(goal_admission) = goal_admission {
+            #[cfg(test)]
+            if let Some(barrier) = session
+                .services
+                .thread_extension_data
+                .get::<GoalAdmissionTestBarrier>()
+            {
+                barrier.entered.notify_one();
+                barrier.release.notified().await;
+            }
+            goal_admission.release().await.map_err(|_| {
+                CodexErr::InvalidRequest("goal admission release failed".to_string())
+            })?;
+        }
+        reservation.keep = true;
+        turn_state
     };
+
+    let mut reservation_cleanup = external_reservation.then(|| ExternalReservationCleanup {
+        session: Arc::downgrade(session),
+        turn_state: Arc::clone(&turn_state),
+        armed: true,
+    });
+    #[cfg(test)]
+    if external_reservation
+        && let Some(barrier) = session
+            .services
+            .thread_extension_data
+            .get::<PostReservationTestBarrier>()
+    {
+        barrier.entered.notify_one();
+        barrier.release.notified().await;
+    }
 
     if session.input_queue.has_trigger_turn_mailbox_items().await {
         session.clear_reserved_idle_turn(&turn_state).await;
@@ -638,9 +798,18 @@ async fn start_if_idle(
             }
         }
     }
-    session
-        .start_task(Arc::clone(&turn_context), task_input, RegularTask::new())
-        .await;
+    if external_reservation {
+        session
+            .start_external_task(Arc::clone(&turn_context), task_input, RegularTask::new())
+            .await;
+    } else {
+        session
+            .start_task(Arc::clone(&turn_context), task_input, RegularTask::new())
+            .await;
+    }
+    if let Some(cleanup) = reservation_cleanup.as_mut() {
+        cleanup.armed = false;
+    }
     Ok(TurnInputSubmission::Started {
         turn_id: submission_id,
         root_turn_id: turn_context.root_turn_id(),
@@ -705,15 +874,36 @@ async fn steer(
 
 /// Deliver a named, standalone external output to one exact regular turn.
 /// Unlike start-or-steer this can never create a turn after a race.
-#[cfg(any(unix, test))]
-#[expect(
-    clippy::await_holding_invalid_type,
-    reason = "active turn checks and wake admission must remain atomic"
-)]
+#[cfg(test)]
 pub(super) async fn steer_external_if_active(
     session: &Arc<Session>,
     input: SubmittedTurnInput,
     expected_turn_id: &str,
+) -> bool {
+    steer_external_if_active_inner(session, input, expected_turn_id, GoalAdmission::Unchecked).await
+}
+
+/// Steer an existing external turn only while shared goal state permits it.
+#[cfg(any(unix, test))]
+pub(super) async fn steer_external_if_active_with_goal(
+    session: &Arc<Session>,
+    input: SubmittedTurnInput,
+    expected_turn_id: &str,
+) -> bool {
+    steer_external_if_active_inner(session, input, expected_turn_id, GoalAdmission::ActiveOrAbsent)
+        .await
+}
+
+#[cfg(any(unix, test))]
+#[expect(
+    clippy::await_holding_invalid_type,
+    reason = "turn, mode and goal checks must remain atomic with the input enqueue"
+)]
+async fn steer_external_if_active_inner(
+    session: &Arc<Session>,
+    input: SubmittedTurnInput,
+    expected_turn_id: &str,
+    goal_admission: GoalAdmission,
 ) -> bool {
     let SubmittedTurnInput::ResponseItem(
         item @ ResponseItem::FunctionCallOutput {
@@ -746,9 +936,20 @@ pub(super) async fn steer_external_if_active(
     {
         return false;
     }
-    session
+    let goal_admission = match lock_goal_admission(session, goal_admission).await {
+        Ok(guard) => guard,
+        Err(()) => return false,
+    };
+    let accepted = session
         .input_queue
-        .try_enqueue_external_wake(active_turn.turn_state.as_ref(), item.into())
+        .try_enqueue_external_wake(active_turn.turn_state.as_ref(), item.into());
+    drop(state);
+    drop(active);
+    if let Some(guard) = goal_admission {
+        // Once input is queued, a release error must not cause a duplicate.
+        let _ = guard.release().await;
+    }
+    accepted
 }
 
 impl Session {
