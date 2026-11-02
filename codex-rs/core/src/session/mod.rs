@@ -1750,11 +1750,10 @@ impl Session {
             InitialHistory::Resumed(resumed_history) => {
                 let turn_context = self.new_default_turn().await;
                 let rollout_items = resumed_history.history;
-                // A fresh in-memory gate must preserve a recorded explicit
-                // interruption, without conflating it with a budget-limited goal.
-                if history_has_interrupted_last_turn(&rollout_items) {
-                    *self.external_event_gate.lock().await = false;
-                }
+                // History can be compacted and is not an authoritative stop
+                // record. A resumed session requires explicit user input before
+                // automatic external notices may start or steer work.
+                *self.external_event_gate.lock().await = false;
                 if matches!(
                     rollout_items.iter().rev().find_map(|item| match item {
                         RolloutItem::EventMsg(event) => agent_status_from_event(event),
@@ -6265,16 +6264,6 @@ async fn build_hooks_config(
         shell_program: hook_shell_program,
         shell_args: hook_shell_argv,
     }
-}
-
-fn history_has_interrupted_last_turn(items: &[RolloutItem]) -> bool {
-    items.iter().rev().find_map(|item| match item {
-        RolloutItem::EventMsg(EventMsg::TurnAborted(event)) => {
-            Some(event.reason == TurnAbortReason::Interrupted)
-        }
-        RolloutItem::EventMsg(EventMsg::TurnStarted(_) | EventMsg::TurnComplete(_)) => Some(false),
-        _ => None,
-    }).unwrap_or(false)
 }
 
 #[cfg(test)]

@@ -12722,26 +12722,6 @@ async fn extension_interrupt_emits_thread_idle() {
     }
 }
 
-#[test]
-fn resumed_notice_gate_distinguishes_interrupt_from_budget_limit() {
-    let aborted = |reason| RolloutItem::EventMsg(
-        EventMsg::TurnAborted(codex_protocol::protocol::TurnAbortedEvent {
-            root_turn_id: None,
-            turn_id: None,
-            reason,
-            error: None,
-            started_at: None,
-            completed_at: None,
-            duration_ms: None,
-        }),
-    );
-    let interrupt = aborted(TurnAbortReason::Interrupted);
-    let limited = aborted(TurnAbortReason::BudgetLimited);
-    assert!(super::history_has_interrupted_last_turn(&[interrupt.clone()]));
-    assert!(!super::history_has_interrupted_last_turn(&[limited.clone()]));
-    assert!(!super::history_has_interrupted_last_turn(&[interrupt, limited]));
-}
-
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn extension_interrupt_survives_the_calling_runtime() {
     let (sess, tc, rx) = make_session_and_context_with_rx().await;
