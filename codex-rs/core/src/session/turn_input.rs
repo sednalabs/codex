@@ -72,6 +72,30 @@ enum TurnStartKind {
     Recovery,
 }
 
+struct ExternalReservationCleanup {
+    session: std::sync::Weak<Session>,
+    turn_state: Arc<tokio::sync::Mutex<TurnState>>,
+    armed: bool,
+}
+
+impl Drop for ExternalReservationCleanup {
+    fn drop(&mut self) {
+        if !self.armed {
+            return;
+        }
+        let Some(session) = self.session.upgrade() else {
+            return;
+        };
+        let Ok(runtime) = tokio::runtime::Handle::try_current() else {
+            return;
+        };
+        let turn_state = Arc::clone(&self.turn_state);
+        drop(runtime.spawn(async move {
+            session.clear_reserved_idle_turn(&turn_state).await;
+        }));
+    }
+}
+
 impl TurnStartKind {
     fn permits_mode(self, mode: ModeKind) -> bool {
         match self {
@@ -237,7 +261,39 @@ pub(super) async fn handle(
     mode: TurnInputMode,
     submission_id: String,
 ) -> CodexResult<TurnInputSubmission> {
-    let request = request.into();
+    handle_inner(
+        session,
+        request.into(),
+        mode,
+        submission_id,
+        /*independent_notice*/ false,
+    )
+    .await
+}
+
+#[cfg(any(unix, test))]
+pub(super) async fn handle_external(
+    session: &Arc<Session>,
+    request: TurnInputRequest,
+    submission_id: String,
+) -> CodexResult<TurnInputSubmission> {
+    handle_inner(
+        session,
+        request.into(),
+        TurnInputMode::StartIfIdle,
+        submission_id,
+        /*independent_notice*/ true,
+    )
+    .await
+}
+
+async fn handle_inner(
+    session: &Arc<Session>,
+    request: WithTurnExtensionData<TurnInputRequest>,
+    mode: TurnInputMode,
+    submission_id: String,
+    independent_notice: bool,
+) -> CodexResult<TurnInputSubmission> {
     if let SubmittedTurnInput::ResponseItem(item)
     | SubmittedTurnInput::AnnotatedResponseItem(AnnotatedResponseItem { item, .. }) =
         &request.request.input
@@ -268,6 +324,7 @@ pub(super) async fn handle(
                 submission_id,
                 kind,
                 /*expected_previous_turn_id*/ None,
+                independent_notice,
             )
             .await
         }
@@ -288,6 +345,7 @@ pub(super) async fn handle(
                 submission_id,
                 TurnStartKind::Recovery,
                 Some(expected_previous_turn_id),
+                /*independent_notice*/ false,
             )
             .await
         }
@@ -333,6 +391,7 @@ pub(super) async fn handle_recovery(
         submission_id,
         TurnStartKind::Recovery,
         /*expected_previous_turn_id*/ None,
+        /*independent_notice*/ false,
     )
     .await;
     if let Ok(TurnInputSubmission::Started { turn_id, .. }) = &result {
@@ -484,6 +543,7 @@ async fn start_if_idle(
     submission_id: String,
     kind: TurnStartKind,
     expected_previous_turn_id: Option<String>,
+    independent_notice: bool,
 ) -> CodexResult<TurnInputSubmission> {
     let WithTurnExtensionData {
         request,
@@ -551,6 +611,11 @@ async fn start_if_idle(
         let active_turn = active_turn.get_or_insert_with(ActiveTurn::default);
         Arc::clone(&active_turn.turn_state)
     };
+    let mut external_cleanup = independent_notice.then(|| ExternalReservationCleanup {
+        session: Arc::downgrade(session),
+        turn_state: Arc::clone(&turn_state),
+        armed: true,
+    });
 
     if session.input_queue.has_trigger_turn_mailbox_items().await {
         session.clear_reserved_idle_turn(&turn_state).await;
@@ -592,6 +657,11 @@ async fn start_if_idle(
             return Err(error);
         }
     };
+    if independent_notice {
+        turn_context
+            .extension_data
+            .insert(codex_extension_api::IndependentExternalNotice);
+    }
     turn_context
         .turn_metadata_state
         .update_responsesapi_client_metadata(responsesapi_client_metadata);
@@ -638,9 +708,18 @@ async fn start_if_idle(
             }
         }
     }
-    session
-        .start_task(Arc::clone(&turn_context), task_input, RegularTask::new())
-        .await;
+    if independent_notice {
+        session
+            .start_external_task(Arc::clone(&turn_context), task_input, RegularTask::new())
+            .await;
+    } else {
+        session
+            .start_task(Arc::clone(&turn_context), task_input, RegularTask::new())
+            .await;
+    }
+    if let Some(cleanup) = &mut external_cleanup {
+        cleanup.armed = false;
+    }
     Ok(TurnInputSubmission::Started {
         turn_id: submission_id,
         root_turn_id: turn_context.root_turn_id(),
@@ -701,6 +780,58 @@ async fn steer(
         }
         Err(reason) => Ok(TurnInputSubmission::NotSubmitted { reason }),
     }
+}
+
+/// Deliver a named, standalone external output to one exact regular turn.
+/// Unlike start-or-steer this can never create a turn after a race.
+#[cfg(any(unix, test))]
+#[expect(
+    clippy::await_holding_invalid_type,
+    reason = "active turn checks and wake admission must remain atomic"
+)]
+pub(super) async fn steer_external_if_active(
+    session: &Arc<Session>,
+    input: SubmittedTurnInput,
+    expected_turn_id: &str,
+) -> bool {
+    let SubmittedTurnInput::ResponseItem(
+        item @ ResponseItem::FunctionCallOutput {
+            call_id: None,
+            name: Some(_),
+            ..
+        },
+    ) = input
+    else {
+        return false;
+    };
+    let active = session.active_turn.lock().await;
+    let Some(active_turn) = active.as_ref().filter(|turn| turn.finishing.is_none()) else {
+        return false;
+    };
+    let Some(task) = active_turn.task.as_ref() else {
+        return false;
+    };
+    if task.turn_context.sub_id != expected_turn_id
+        || !matches!(task.kind, crate::state::TaskKind::Regular)
+        || task.cancellation_token.is_cancelled()
+    {
+        return false;
+    }
+    // Serialize the mode check with configuration changes until the wake is
+    // queued. Do not await a turn-state lock while holding the config guard.
+    let state = session.state.lock().await;
+    if !TurnStartKind::Automatic.permits_mode(
+        state
+            .session_configuration
+            .step_settings
+            .collaboration_mode
+            .mode,
+    ) {
+        return false;
+    }
+    session
+        .input_queue
+        .try_enqueue_external_wake(active_turn.turn_state.as_ref(), item.into())
 }
 
 impl Session {

@@ -65,6 +65,8 @@ use codex_protocol::turn_input::RecoverTurnRequest;
 use codex_protocol::turn_input::StartIfIdleSubmission;
 use codex_protocol::turn_input::SteerSubmission;
 use codex_protocol::turn_input::SuspendTurnOutcome;
+#[cfg(unix)]
+use codex_protocol::turn_input::TurnInput;
 use codex_protocol::turn_input::TurnInputMode;
 use codex_protocol::turn_input::TurnInputRequest;
 use codex_protocol::turn_input::TurnInputSubmission;
@@ -486,6 +488,34 @@ impl CodexThread {
     ) -> CodexResult<TurnInputSubmission> {
         self.submit_turn_input_with_mode(request, TurnInputMode::StartOrSteer)
             .await
+    }
+
+    /// Admit an automatic standalone source notice using the shared goal and
+    /// interruption gates. A returned turn ID only confirms admission; the
+    /// caller owns durable source retention and consumption acknowledgement.
+    #[cfg(unix)]
+    pub async fn submit_external_notice(&self, item: ResponseItem) -> CodexResult<Option<String>> {
+        if !matches!(
+            &item,
+            ResponseItem::FunctionCallOutput {
+                call_id: None,
+                name: Some(_),
+                ..
+            }
+        ) {
+            return Err(CodexErr::InvalidRequest(
+                "external notice requires a named standalone tool output".to_string(),
+            ));
+        }
+        validate_injected_response_item(&item)?;
+        self.ensure_execution_capacity_for_turn_start(self.session.services.agent_control.as_ref())
+            .await?;
+        Ok(crate::session::external_event::deliver_request(
+            &self.session,
+            TurnInputRequest::new(TurnInput::ResponseItem(item)),
+            /*idle_only*/ false,
+        )
+        .await)
     }
 
     /// Starts a regular turn only when the thread is idle.

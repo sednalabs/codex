@@ -238,6 +238,7 @@ async fn emit_idle_with_cause(
     <QueuedItemService as ThreadLifecycleContributor<()>>::on_thread_idle(
         service,
         ThreadIdleInput {
+            independent_external_notice: false,
             cause,
             session_store: &session_store,
             thread_store: &thread_store,
