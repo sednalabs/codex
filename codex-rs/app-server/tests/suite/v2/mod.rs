@@ -67,6 +67,8 @@ mod executor_skills;
 #[path = "executor_skills_spawn_tests.rs"]
 mod executor_skills_spawn;
 mod experimental_api;
+#[cfg(unix)]
+mod external_notice;
 mod experimental_feature_list;
 mod external_agent_config;
 mod external_agent_import_sync;

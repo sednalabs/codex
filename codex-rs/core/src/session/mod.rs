@@ -253,7 +253,7 @@ mod daemon_recovery;
 mod environment;
 mod extension_interruption;
 pub(crate) mod extension_metrics;
-mod external_event;
+pub(crate) mod external_event;
 mod guardian_checkpoint;
 mod handlers;
 pub(crate) mod inject;

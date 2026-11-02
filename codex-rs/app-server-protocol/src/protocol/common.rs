@@ -1089,6 +1089,12 @@ client_request_definitions! {
         serialization: thread_id(params.thread_id),
         response: v2::TurnStartResponse,
     },
+    #[experimental("turn/externalNotice")]
+    TurnExternalNotice => "turn/externalNotice" {
+        params: v2::TurnExternalNoticeParams,
+        serialization: thread_id(params.thread_id),
+        response: v2::TurnExternalNoticeResponse,
+    },
     #[experimental("turn/settings/update")]
     TurnSettingsUpdate => "turn/settings/update" {
         params: v2::TurnSettingsUpdateParams,

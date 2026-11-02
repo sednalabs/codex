@@ -134,3 +134,7 @@ pub use model_request::ModelResponseError;
 pub use model_request::ModelResponseInterceptor;
 pub use model_request::ModelResponseStream;
 pub use model_request::ResponseEvent;
+
+/// A source notice that is independent of any persistent goal.
+#[derive(Clone, Copy, Debug)]
+pub struct IndependentExternalNotice;

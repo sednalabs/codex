@@ -18,7 +18,6 @@ use codex_protocol::turn_input::NotSubmittedReason;
 #[cfg(any(unix, test))]
 use codex_protocol::turn_input::TurnInput;
 #[cfg(any(unix, test))]
-use codex_protocol::turn_input::TurnInputMode;
 #[cfg(any(unix, test))]
 use codex_protocol::turn_input::TurnInputRequest;
 #[cfg(any(unix, test))]
@@ -279,72 +278,61 @@ fn event_request(source: &str, token: &str) -> Option<TurnInputRequest> {
 /// Acceptance is not model consumption. The caller must not advance the source
 /// cursor just because this function returns `Accepted`.
 #[cfg(any(unix, test))]
-// Admission and explicit interruption must be serialized across the async
-// goal lookup and turn submission; releasing this gate earlier can restart a
-// turn after the user interrupts it.
-#[allow(clippy::await_holding_invalid_type)]
 pub(super) async fn deliver(
-    session: &Arc<Session>,
-    source: &str,
-    token: &str,
-    idle_only: bool,
+    session: &Arc<Session>, source: &str, token: &str, idle_only: bool,
 ) -> EventAdmission {
-    // An independent notification is not goal continuation: a paused or absent
-    // goal must not suppress it. When a goal runtime is present, serialize with
-    // its mutations without waiting while holding the interrupt gate.
-    let goal_lock = session
-        .services
-        .thread_extension_data
-        .get::<crate::GoalStateAdmissionLock>();
-    let _goal_permit = match goal_lock.as_ref() {
-        Some(lock) => match lock.0.try_acquire() {
-            Ok(permit) => Some(permit),
-            Err(_) => return EventAdmission::Deferred,
-        },
-        None => None,
-    };
-    let enabled = session.external_event_gate.lock().await;
-    if !*enabled {
-        return EventAdmission::Deferred;
-    }
     let Some(request) = event_request(source, token) else {
         return EventAdmission::Deferred;
     };
-    if session.collaboration_mode().await.mode == ModeKind::Plan {
-        return EventAdmission::Deferred;
+    if deliver_request(session, request, idle_only).await.is_some() {
+        EventAdmission::Accepted
+    } else {
+        EventAdmission::Deferred
     }
+}
 
-    let result = turn_input::handle(
-        session,
-        request.clone(),
-        TurnInputMode::StartIfIdle,
-        super::new_submission_id(),
-    )
-    .await;
-    match result {
-        Ok(TurnInputSubmission::Started { .. }) => EventAdmission::Accepted,
-        Ok(TurnInputSubmission::NotSubmitted {
-            reason: NotSubmittedReason::NotIdle,
-        }) if !idle_only => {
+/// Admission receipt only; the source retains data until it is processed and acknowledged.
+#[cfg(any(unix, test))]
+pub(crate) async fn deliver_request(
+    session: &Arc<Session>, request: TurnInputRequest, idle_only: bool,
+) -> Option<String> {
+    // If the caller disconnects during admission, let the owned admission
+    // finish rather than canceling a partial lifecycle. The caller must
+    // reconcile an unknown outcome before retrying the same source batch.
+    let session = Arc::clone(session);
+    tokio::spawn(async move { deliver_request_inner(&session, request, idle_only).await })
+        .await.expect("external notice admission task failed")
+}
+
+async fn deliver_request_inner(
+    session: &Arc<Session>, request: TurnInputRequest, idle_only: bool,
+) -> Option<String> {
+    // An independent notice does not continue the goal. Serialize in-process
+    // goal mutations and explicit interruption without treating a paused goal
+    // as a stopped session.
+    let goal_lock = session.services.thread_extension_data.get::<crate::GoalStateAdmissionLock>();
+    let _goal_permit = match goal_lock.as_ref() {
+        Some(lock) => Some(lock.0.try_acquire().ok()?),
+        None => None,
+    };
+    let enabled = session.external_event_gate.lock().await;
+    if !*enabled || session.collaboration_mode().await.mode == ModeKind::Plan {
+        return None;
+    }
+    match turn_input::handle_external(session, request.clone(), super::new_submission_id()).await {
+        Ok(TurnInputSubmission::Started { turn_id, .. }) => Some(turn_id),
+        Ok(TurnInputSubmission::NotSubmitted { reason: NotSubmittedReason::NotIdle }) if !idle_only => {
             let turn_id = {
                 let active = session.active_turn.lock().await;
-                active.as_ref().and_then(|turn| {
-                    turn.task
-                        .as_ref()
-                        .map(|task| task.turn_context.sub_id.clone())
-                })
-            };
-            let Some(expected_turn_id) = turn_id else {
-                return EventAdmission::Deferred;
-            };
-            if turn_input::steer_external_if_active(session, request.input, &expected_turn_id).await
-            {
-                EventAdmission::Accepted
+                active.as_ref().and_then(|turn| turn.task.as_ref().map(|task| task.turn_context.sub_id.clone()))
+            }?;
+            if turn_input::steer_external_if_active(session, request.input, &turn_id).await {
+                Some(turn_id)
             } else {
-                EventAdmission::Deferred
+                None
             }
         }
-        _ => EventAdmission::Deferred,
+        _ => None,
     }
 }
 
@@ -371,6 +359,45 @@ mod tests {
             deliver(&session, "irc", "token", /*idle_only*/ false).await,
             EventAdmission::Accepted
         );
+        session.abort_all_tasks(TurnAbortReason::Interrupted).await;
+    }
+
+    #[tokio::test]
+    async fn caller_cancellation_does_not_cancel_partial_admission_or_drain_mail() {
+        let (session, _, _rx) = make_session_and_context_with_rx().await;
+        let entered = Arc::new(tokio::sync::Notify::new());
+        let release = Arc::new(tokio::sync::Notify::new());
+        session.services.thread_extension_data.insert(
+            crate::tasks::ExternalTaskRegistrationTestBarrier {
+                entered: Arc::clone(&entered),
+                release: Arc::clone(&release),
+            },
+        );
+        let session = Arc::new(session);
+        let candidate = Arc::clone(&session);
+        let caller = tokio::spawn(async move {
+            deliver(&candidate, "irc", "cancelled-caller", false).await
+        });
+        tokio::time::timeout(std::time::Duration::from_secs(5), entered.notified())
+            .await.expect("admission reached barrier");
+        let communication = codex_protocol::protocol::InterAgentCommunication::new(
+            codex_protocol::AgentPath::root(), codex_protocol::AgentPath::root(),
+            Vec::new(), "unrelated pending message".to_string(), false,
+        );
+        session.input_queue.enqueue_mailbox_communication(
+            communication.clone().into(), Default::default(),
+        ).await;
+        caller.abort();
+        assert!(caller.await.expect_err("caller canceled").is_cancelled());
+        assert_eq!(session.input_queue.drain_mailbox_input_items().await.0,
+            vec![crate::session::TurnInput::InterAgentCommunication(communication.into())]);
+        release.notify_one();
+        tokio::time::timeout(std::time::Duration::from_secs(5), async {
+            loop {
+                if session.state.lock().await.last_started_turn_id.is_some() { break; }
+                tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+            }
+        }).await.expect("owned admission completed after caller cancellation");
         session.abort_all_tasks(TurnAbortReason::Interrupted).await;
     }
 
