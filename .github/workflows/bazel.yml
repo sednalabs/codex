@@ -105,7 +105,7 @@ jobs:
           )
           if [[ "${W14939_FOCUSED_TESTS}" == "true" ]]; then
             # Private diagnostic build for isolated IRC consumer testing.
-            ./.github/scripts/run-bazel-ci.sh --print-failed-action-summary -- build \
+            ./.github/scripts/run-bazel-ci.sh --print-failed-action-summary --remote-download-toplevel -- build \
               --build_metadata="COMMIT_SHA=${GITHUB_SHA}" -- \
               //codex-rs/cli:codex \
               //codex-rs/app-server:exec-server \
