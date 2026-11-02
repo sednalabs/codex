@@ -9,6 +9,7 @@ use codex_extension_api::ExtensionData;
 use codex_extension_api::ExtensionEventSink;
 use codex_extension_api::ExtensionFuture;
 use codex_extension_api::ExtensionRegistryBuilder;
+use codex_extension_api::IndependentExternalNotice;
 use codex_extension_api::ThreadIdleInput;
 use codex_extension_api::ThreadLifecycleContributor;
 use codex_extension_api::ThreadResumeInput;
@@ -158,6 +159,9 @@ where
                 )
             });
             runtime.set_enabled(enabled);
+            // Keep the same serialization guard even when goal processing is
+            // disabled: an in-flight operation may still hold a clone of it.
+            input.thread_store.insert(runtime.admission_lock());
             self.goal_service.register_runtime(&runtime);
         })
     }
@@ -179,6 +183,9 @@ where
 
     fn on_thread_idle<'a>(&'a self, input: ThreadIdleInput<'a>) -> ExtensionFuture<'a, ()> {
         Box::pin(async move {
+            if input.independent_external_notice {
+                return;
+            }
             let Some(runtime) = goal_runtime_handle(input.thread_store) else {
                 return;
             };
@@ -227,6 +234,7 @@ where
         thread_store.insert(config);
         if let Some(runtime) = goal_runtime_handle(thread_store) {
             runtime.set_enabled(enabled);
+            thread_store.insert(runtime.admission_lock());
         }
     }
 }
@@ -237,6 +245,13 @@ where
 {
     fn on_turn_start<'a>(&'a self, input: TurnStartInput<'a>) -> ExtensionFuture<'a, ()> {
         Box::pin(async move {
+            if input
+                .turn_store
+                .get::<IndependentExternalNotice>()
+                .is_some()
+            {
+                return;
+            }
             let Some(runtime) = goal_runtime_handle(input.thread_store) else {
                 return;
             };
@@ -301,6 +316,9 @@ where
         item: &'a TurnItem,
     ) -> ExtensionFuture<'a, ()> {
         Box::pin(async move {
+            if turn_store.get::<IndependentExternalNotice>().is_some() {
+                return;
+            }
             if let Some(runtime) = goal_runtime_handle(thread_store)
                 && runtime.is_enabled()
             {
@@ -313,6 +331,13 @@ where
 
     fn on_turn_stop<'a>(&'a self, input: TurnStopInput<'a>) -> ExtensionFuture<'a, ()> {
         Box::pin(async move {
+            if input
+                .turn_store
+                .get::<IndependentExternalNotice>()
+                .is_some()
+            {
+                return;
+            }
             let Some(runtime) = goal_runtime_handle(input.thread_store) else {
                 return;
             };
@@ -379,6 +404,13 @@ where
 
     fn on_turn_abort<'a>(&'a self, input: TurnAbortInput<'a>) -> ExtensionFuture<'a, ()> {
         Box::pin(async move {
+            if input
+                .turn_store
+                .get::<IndependentExternalNotice>()
+                .is_some()
+            {
+                return;
+            }
             let Some(runtime) = goal_runtime_handle(input.thread_store) else {
                 return;
             };
@@ -422,6 +454,13 @@ where
 
     fn on_turn_error<'a>(&'a self, input: TurnErrorInput<'a>) -> ExtensionFuture<'a, ()> {
         Box::pin(async move {
+            if input
+                .turn_store
+                .get::<IndependentExternalNotice>()
+                .is_some()
+            {
+                return;
+            }
             let Some(runtime) = goal_runtime_handle(input.thread_store) else {
                 return;
             };
@@ -459,6 +498,9 @@ where
         token_usage: &'a TokenUsageInfo,
     ) -> ExtensionFuture<'a, ()> {
         Box::pin(async move {
+            if turn_store.get::<IndependentExternalNotice>().is_some() {
+                return;
+            }
             let Some(runtime) = goal_runtime_handle(thread_store) else {
                 return;
             };
@@ -482,17 +524,19 @@ where
 {
     fn on_tool_finish<'a>(&'a self, input: ToolFinishInput<'a>) -> ToolLifecycleFuture<'a> {
         Box::pin(async move {
+            if input
+                .turn_store
+                .get::<IndependentExternalNotice>()
+                .is_some()
+            {
+                return;
+            }
             let Some(runtime) = goal_runtime_handle(input.thread_store) else {
                 return;
             };
             if !runtime.is_enabled() {
                 return;
             }
-            runtime.accounting_state().record_tool_outcome(
-                input.turn_id,
-                input.tool_name,
-                input.outcome,
-            );
             if input.tool_name.is_default_namespace()
                 && input.tool_name.name == CREATE_GOAL_TOOL_NAME
                 && matches!(input.outcome, ToolCallOutcome::Completed { success: true })
@@ -510,6 +554,11 @@ where
                     });
                 }
             }
+            runtime.accounting_state().record_tool_outcome(
+                input.turn_id,
+                input.tool_name,
+                input.outcome,
+            );
             let should_count_for_goal_progress =
                 tool_attempt_counts_for_goal_progress(input.outcome)
                     && !(input.tool_name.is_default_namespace()
@@ -604,6 +653,7 @@ where
             .into_iter()
             .map(|mut tool| {
                 tool.execution_allowed = runtime.tools_available();
+                tool.admission_lock = Some(runtime.admission_lock());
                 Arc::new(tool) as Arc<dyn for<'call> ToolExecutor<ToolCall<'call>>>
             })
             .collect()
