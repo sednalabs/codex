@@ -52,6 +52,34 @@ async fn independent_notice_starts_with_paused_goal() -> Result<()> {
 }
 
 #[tokio::test]
+async fn resumed_idle_session_requires_explicit_reactivation() -> Result<()> {
+    let gateway = create_mock_responses_server_repeating_assistant("Done").await;
+    let home = TempDir::new()?;
+    MockResponsesConfig::new(&gateway.uri()).enable_feature(Feature::Goals).write(home.path())?;
+    let mut server = TestAppServer::builder().with_codex_home(home.path()).build_initialized().await?;
+    let thread = server.start_thread(ThreadStartParams::default()).await?.thread;
+    let id = server.send_turn_start_request(TurnStartParams {
+        thread_id: thread.id.clone(),
+        input: vec![UserInput::Text { text: "Start".to_string(), text_elements: Vec::new() }],
+        ..Default::default()
+    }).await?;
+    let _: TurnStartResponse = server.read_response(id).await?;
+    timeout(Duration::from_secs(60), server.read_stream_until_notification_message("turn/completed")).await??;
+    server.shutdown_gracefully().await?;
+    let mut server = TestAppServer::builder().with_codex_home(home.path()).build_initialized().await?;
+    let id = server.send_thread_resume_request(ThreadResumeParams {
+        thread_id: thread.id.clone(), ..Default::default()
+    }).await?;
+    let _: ThreadResumeResponse = server.read_response(id).await?;
+    let id = server.send_raw_request("turn/externalNotice", Some(json!({
+        "threadId": thread.id, "source": "irc", "notice": "retained message"
+    }))).await?;
+    let receipt: TurnExternalNoticeResponse = server.read_response(id).await?;
+    assert_eq!(receipt.turn_id, None);
+    Ok(())
+}
+
+#[tokio::test]
 async fn independent_notice_respects_interruption_across_session_restart() -> Result<()> {
     let (release_first, first_gate) = oneshot::channel();
     let (release_second, second_gate) = oneshot::channel();
