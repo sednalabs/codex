@@ -855,6 +855,15 @@ mod tests {
 
     #[tokio::test]
     async fn cross_process_pause_after_reservation_prevents_automatic_start() {
+        cross_process_pause_prevents_automatic_start(/*after_hooks*/ false).await;
+    }
+
+    #[tokio::test]
+    async fn cross_process_pause_after_hooks_prevents_automatic_start() {
+        cross_process_pause_prevents_automatic_start(/*after_hooks*/ true).await;
+    }
+
+    async fn cross_process_pause_prevents_automatic_start(after_hooks: bool) {
         let home = tempfile::tempdir().expect("state home");
         let sqlite = codex_state::SqliteConfig::new_for_testing(
             codex_utils_absolute_path::AbsolutePathBuf::try_from(home.path()).expect("absolute"),
@@ -883,12 +892,21 @@ mod tests {
         ));
         let entered = Arc::new(tokio::sync::Notify::new());
         let release = Arc::new(tokio::sync::Notify::new());
-        session.services.thread_extension_data.insert(
-            super::turn_input::PostReservationTestBarrier {
-                entered: Arc::clone(&entered),
-                release: Arc::clone(&release),
-            },
-        );
+        if after_hooks {
+            session.services.thread_extension_data.insert(
+                crate::tasks::ExternalTaskRegistrationTestBarrier {
+                    entered: Arc::clone(&entered),
+                    release: Arc::clone(&release),
+                },
+            );
+        } else {
+            session.services.thread_extension_data.insert(
+                super::turn_input::PostReservationTestBarrier {
+                    entered: Arc::clone(&entered),
+                    release: Arc::clone(&release),
+                },
+            );
+        }
         let session = Arc::new(session);
         let candidate = Arc::clone(&session);
         let admission = tokio::spawn(async move {
