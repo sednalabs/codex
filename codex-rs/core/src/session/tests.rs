@@ -12695,7 +12695,10 @@ async fn extension_interrupt_emits_thread_idle() {
             input: codex_extension_api::ThreadIdleInput<'a>,
         ) -> codex_extension_api::ExtensionFuture<'a, ()> {
             Box::pin(async move {
-                self.0.send(input.independent_external_notice).await.expect("idle receiver open");
+                self.0
+                    .send(input.independent_external_notice)
+                    .await
+                    .expect("idle receiver open");
             })
         }
     }
@@ -12703,10 +12706,13 @@ async fn extension_interrupt_emits_thread_idle() {
     for independent in [false, true] {
         let (mut session, turn_context) = make_session_and_context().await;
         if independent {
-            turn_context.extension_data.insert(codex_extension_api::IndependentExternalNotice);
+            turn_context
+                .extension_data
+                .insert(codex_extension_api::IndependentExternalNotice);
         }
         let (idle_tx, idle_rx) = async_channel::bounded(1);
-        let mut builder = codex_extension_api::ExtensionRegistryBuilder::<crate::config::Config>::new();
+        let mut builder =
+            codex_extension_api::ExtensionRegistryBuilder::<crate::config::Config>::new();
         builder.thread_lifecycle_contributor(Arc::new(ThreadIdleRecorder(idle_tx)));
         session.services.extensions = Arc::new(builder.build());
 

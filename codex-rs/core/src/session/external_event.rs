@@ -279,7 +279,10 @@ fn event_request(source: &str, token: &str) -> Option<TurnInputRequest> {
 /// cursor just because this function returns `Accepted`.
 #[cfg(any(unix, test))]
 pub(super) async fn deliver(
-    session: &Arc<Session>, source: &str, token: &str, idle_only: bool,
+    session: &Arc<Session>,
+    source: &str,
+    token: &str,
+    idle_only: bool,
 ) -> EventAdmission {
     let Some(request) = event_request(source, token) else {
         return EventAdmission::Deferred;
@@ -294,23 +297,31 @@ pub(super) async fn deliver(
 /// Admission receipt only; the source retains data until it is processed and acknowledged.
 #[cfg(any(unix, test))]
 pub(crate) async fn deliver_request(
-    session: &Arc<Session>, request: TurnInputRequest, idle_only: bool,
+    session: &Arc<Session>,
+    request: TurnInputRequest,
+    idle_only: bool,
 ) -> Option<String> {
     // If the caller disconnects during admission, let the owned admission
     // finish rather than canceling a partial lifecycle. The caller must
     // reconcile an unknown outcome before retrying the same source batch.
     let session = Arc::clone(session);
     tokio::spawn(async move { deliver_request_inner(&session, request, idle_only).await })
-        .await.expect("external notice admission task failed")
+        .await
+        .expect("external notice admission task failed")
 }
 
 async fn deliver_request_inner(
-    session: &Arc<Session>, request: TurnInputRequest, idle_only: bool,
+    session: &Arc<Session>,
+    request: TurnInputRequest,
+    idle_only: bool,
 ) -> Option<String> {
     // An independent notice does not continue the goal. Serialize in-process
     // goal mutations and explicit interruption without treating a paused goal
     // as a stopped session.
-    let goal_lock = session.services.thread_extension_data.get::<crate::GoalStateAdmissionLock>();
+    let goal_lock = session
+        .services
+        .thread_extension_data
+        .get::<crate::GoalStateAdmissionLock>();
     let _goal_permit = match goal_lock.as_ref() {
         Some(lock) => Some(lock.0.try_acquire().ok()?),
         None => None,
@@ -321,10 +332,16 @@ async fn deliver_request_inner(
     }
     match turn_input::handle_external(session, request.clone(), super::new_submission_id()).await {
         Ok(TurnInputSubmission::Started { turn_id, .. }) => Some(turn_id),
-        Ok(TurnInputSubmission::NotSubmitted { reason: NotSubmittedReason::NotIdle }) if !idle_only => {
+        Ok(TurnInputSubmission::NotSubmitted {
+            reason: NotSubmittedReason::NotIdle,
+        }) if !idle_only => {
             let turn_id = {
                 let active = session.active_turn.lock().await;
-                active.as_ref().and_then(|turn| turn.task.as_ref().map(|task| task.turn_context.sub_id.clone()))
+                active.as_ref().and_then(|turn| {
+                    turn.task
+                        .as_ref()
+                        .map(|task| task.turn_context.sub_id.clone())
+                })
             }?;
             if turn_input::steer_external_if_active(session, request.input, &turn_id).await {
                 Some(turn_id)
@@ -375,29 +392,43 @@ mod tests {
         );
         let session = Arc::new(session);
         let candidate = Arc::clone(&session);
-        let caller = tokio::spawn(async move {
-            deliver(&candidate, "irc", "cancelled-caller", false).await
-        });
+        let caller =
+            tokio::spawn(
+                async move { deliver(&candidate, "irc", "cancelled-caller", false).await },
+            );
         tokio::time::timeout(std::time::Duration::from_secs(5), entered.notified())
-            .await.expect("admission reached barrier");
+            .await
+            .expect("admission reached barrier");
         let communication = codex_protocol::protocol::InterAgentCommunication::new(
-            codex_protocol::AgentPath::root(), codex_protocol::AgentPath::root(),
-            Vec::new(), "unrelated pending message".to_string(), false,
+            codex_protocol::AgentPath::root(),
+            codex_protocol::AgentPath::root(),
+            Vec::new(),
+            "unrelated pending message".to_string(),
+            false,
         );
-        session.input_queue.enqueue_mailbox_communication(
-            communication.clone().into(), Default::default(),
-        ).await;
+        session
+            .input_queue
+            .enqueue_mailbox_communication(communication.clone().into(), Default::default())
+            .await;
         caller.abort();
         assert!(caller.await.expect_err("caller canceled").is_cancelled());
-        assert_eq!(session.input_queue.drain_mailbox_input_items().await.0,
-            vec![crate::session::TurnInput::InterAgentCommunication(communication.into())]);
+        assert_eq!(
+            session.input_queue.drain_mailbox_input_items().await.0,
+            vec![crate::session::TurnInput::InterAgentCommunication(
+                communication.into()
+            )]
+        );
         release.notify_one();
         tokio::time::timeout(std::time::Duration::from_secs(5), async {
             loop {
-                if session.state.lock().await.last_started_turn_id.is_some() { break; }
+                if session.state.lock().await.last_started_turn_id.is_some() {
+                    break;
+                }
                 tokio::time::sleep(std::time::Duration::from_millis(10)).await;
             }
-        }).await.expect("owned admission completed after caller cancellation");
+        })
+        .await
+        .expect("owned admission completed after caller cancellation");
         session.abort_all_tasks(TurnAbortReason::Interrupted).await;
     }
 
@@ -533,8 +564,10 @@ mod tests {
         let (session, _) = make_session_and_context().await;
         let session = Arc::new(session);
         *session.external_event_gate.lock().await = false;
-        assert_eq!(deliver(&session, "irc", "restored-interrupt", false).await,
-            EventAdmission::Deferred);
+        assert_eq!(
+            deliver(&session, "irc", "restored-interrupt", false).await,
+            EventAdmission::Deferred
+        );
     }
 
     #[tokio::test]
@@ -543,8 +576,10 @@ mod tests {
         let session = Arc::new(session);
         session.mark_interrupted(); // BudgetLimited also maps to this status.
         assert!(*session.external_event_gate.lock().await);
-        assert_eq!(deliver(&session, "irc", "budget-status", false).await,
-            EventAdmission::Accepted);
+        assert_eq!(
+            deliver(&session, "irc", "budget-status", false).await,
+            EventAdmission::Accepted
+        );
         session.abort_all_tasks(TurnAbortReason::Interrupted).await;
     }
 

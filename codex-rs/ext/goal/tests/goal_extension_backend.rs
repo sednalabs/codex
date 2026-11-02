@@ -24,8 +24,8 @@ use codex_extension_api::ToolCallSource;
 use codex_extension_api::ToolExecutor;
 use codex_extension_api::ToolFinishInput;
 use codex_extension_api::ToolPayload;
-use codex_extension_api::TurnErrorInput;
 use codex_extension_api::TurnAbortInput;
+use codex_extension_api::TurnErrorInput;
 use codex_extension_api::TurnStartInput;
 use codex_extension_api::TurnStopInput;
 use codex_goal_extension::GoalExtensionConfig;
@@ -341,36 +341,62 @@ async fn installed_goal_tools_only_replace_complete_goal() -> anyhow::Result<()>
 }
 
 #[tokio::test]
-async fn independent_notice_preserves_paused_goal_and_continuation_deferral() -> anyhow::Result<()> {
+async fn independent_notice_preserves_paused_goal_and_continuation_deferral() -> anyhow::Result<()>
+{
     let runtime = test_runtime().await?;
     let thread_id = test_thread_id()?;
     seed_thread_metadata(runtime.as_ref(), thread_id).await?;
     let harness = GoalExtensionHarness::new(runtime.clone(), thread_id).await?;
-    runtime.thread_goals().replace_thread_goal(
-        thread_id, "paused goal", codex_state::ThreadGoalStatus::Paused, None,
-    ).await?;
-    let goal = runtime.thread_goals().get_thread_goal(thread_id).await?.expect("goal");
-    runtime.thread_goals().replace_thread_goal_snapshot(&goal).await?;
+    runtime
+        .thread_goals()
+        .replace_thread_goal(
+            thread_id,
+            "paused goal",
+            codex_state::ThreadGoalStatus::Paused,
+            None,
+        )
+        .await?;
+    let goal = runtime
+        .thread_goals()
+        .get_thread_goal(thread_id)
+        .await?
+        .expect("goal");
+    runtime
+        .thread_goals()
+        .replace_thread_goal_snapshot(&goal)
+        .await?;
     let turn_store = ExtensionData::new("independent-notice");
     turn_store.insert(codex_extension_api::IndependentExternalNotice);
     for contributor in harness.registry.turn_lifecycle_contributors() {
-        contributor.on_turn_start(TurnStartInput {
-            turn_id: "independent-notice",
-            collaboration_mode: &default_collaboration_mode(),
-            token_usage_at_turn_start: Some(&TokenUsage::default()),
-            session_store: &harness.session_store,
-            thread_store: &harness.thread_store,
-            turn_store: &turn_store,
-        }).await;
-        contributor.on_turn_abort(TurnAbortInput {
-            reason: codex_protocol::protocol::TurnAbortReason::Interrupted,
-            session_store: &harness.session_store,
-            thread_store: &harness.thread_store,
-            turn_store: &turn_store,
-        }).await;
+        contributor
+            .on_turn_start(TurnStartInput {
+                turn_id: "independent-notice",
+                collaboration_mode: &default_collaboration_mode(),
+                token_usage_at_turn_start: Some(&TokenUsage::default()),
+                session_store: &harness.session_store,
+                thread_store: &harness.thread_store,
+                turn_store: &turn_store,
+            })
+            .await;
+        contributor
+            .on_turn_abort(TurnAbortInput {
+                reason: codex_protocol::protocol::TurnAbortReason::Interrupted,
+                session_store: &harness.session_store,
+                thread_store: &harness.thread_store,
+                turn_store: &turn_store,
+            })
+            .await;
     }
-    assert_eq!(runtime.thread_goals().get_thread_goal(thread_id).await?, Some(goal));
-    assert!(runtime.thread_goals().has_thread_goal_continuation_deferral(thread_id).await?);
+    assert_eq!(
+        runtime.thread_goals().get_thread_goal(thread_id).await?,
+        Some(goal)
+    );
+    assert!(
+        runtime
+            .thread_goals()
+            .has_thread_goal_continuation_deferral(thread_id)
+            .await?
+    );
     Ok(())
 }
 

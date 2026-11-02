@@ -80,9 +80,15 @@ struct ExternalReservationCleanup {
 
 impl Drop for ExternalReservationCleanup {
     fn drop(&mut self) {
-        if !self.armed { return; }
-        let Some(session) = self.session.upgrade() else { return; };
-        let Ok(runtime) = tokio::runtime::Handle::try_current() else { return; };
+        if !self.armed {
+            return;
+        }
+        let Some(session) = self.session.upgrade() else {
+            return;
+        };
+        let Ok(runtime) = tokio::runtime::Handle::try_current() else {
+            return;
+        };
         let turn_state = Arc::clone(&self.turn_state);
         drop(runtime.spawn(async move {
             session.clear_reserved_idle_turn(&turn_state).await;
@@ -260,14 +266,26 @@ pub(super) async fn handle(
 
 #[cfg(any(unix, test))]
 pub(super) async fn handle_external(
-    session: &Arc<Session>, request: TurnInputRequest, submission_id: String,
+    session: &Arc<Session>,
+    request: TurnInputRequest,
+    submission_id: String,
 ) -> CodexResult<TurnInputSubmission> {
-    handle_inner(session, request.into(), TurnInputMode::StartIfIdle, submission_id, true).await
+    handle_inner(
+        session,
+        request.into(),
+        TurnInputMode::StartIfIdle,
+        submission_id,
+        true,
+    )
+    .await
 }
 
 async fn handle_inner(
-    session: &Arc<Session>, request: WithTurnExtensionData<TurnInputRequest>,
-    mode: TurnInputMode, submission_id: String, independent_notice: bool,
+    session: &Arc<Session>,
+    request: WithTurnExtensionData<TurnInputRequest>,
+    mode: TurnInputMode,
+    submission_id: String,
+    independent_notice: bool,
 ) -> CodexResult<TurnInputSubmission> {
     if let SubmittedTurnInput::ResponseItem(item)
     | SubmittedTurnInput::AnnotatedResponseItem(AnnotatedResponseItem { item, .. }) =
@@ -633,7 +651,9 @@ async fn start_if_idle(
         }
     };
     if independent_notice {
-        turn_context.extension_data.insert(codex_extension_api::IndependentExternalNotice);
+        turn_context
+            .extension_data
+            .insert(codex_extension_api::IndependentExternalNotice);
     }
     turn_context
         .turn_metadata_state
@@ -682,9 +702,13 @@ async fn start_if_idle(
         }
     }
     if independent_notice {
-        session.start_external_task(Arc::clone(&turn_context), task_input, RegularTask::new()).await;
+        session
+            .start_external_task(Arc::clone(&turn_context), task_input, RegularTask::new())
+            .await;
     } else {
-        session.start_task(Arc::clone(&turn_context), task_input, RegularTask::new()).await;
+        session
+            .start_task(Arc::clone(&turn_context), task_input, RegularTask::new())
+            .await;
     }
     if let Some(cleanup) = &mut external_cleanup {
         cleanup.armed = false;
@@ -789,9 +813,13 @@ pub(super) async fn steer_external_if_active(
     // Serialize the mode check with configuration changes until the wake is
     // queued. Do not await a turn-state lock while holding the config guard.
     let state = session.state.lock().await;
-    if !TurnStartKind::Automatic
-        .permits_mode(state.session_configuration.step_settings.collaboration_mode.mode)
-    {
+    if !TurnStartKind::Automatic.permits_mode(
+        state
+            .session_configuration
+            .step_settings
+            .collaboration_mode
+            .mode,
+    ) {
         return false;
     }
     session
