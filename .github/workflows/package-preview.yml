@@ -1,4 +1,4 @@
-name: ARM canary helper preview
+name: ARM active-goal canary preview
 on:
   push:
     branches:
@@ -10,13 +10,13 @@ jobs:
     runs-on: ubuntu-24.04-arm
     timeout-minutes: 180
     env:
-      PRODUCT_SHA: 7c02e650a7536df032a3ee688b070d3ea89af9a3
+      PRODUCT_SHA: cf8766e90e0e2b78117894325620fde50271c235
       TARGET: aarch64-unknown-linux-gnu
       CARGO_BUILD_JOBS: "2"
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
         with:
-          ref: 7c02e650a7536df032a3ee688b070d3ea89af9a3
+          ref: cf8766e90e0e2b78117894325620fde50271c235
           fetch-depth: 0
           persist-credentials: false
       - name: Verify exact product checkout
@@ -25,18 +25,20 @@ jobs:
         run: |
           sudo apt-get update -y
           sudo DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends binutils make pkg-config libcap-dev
-      - name: Build canary helper binaries
+      - name: Build canary app-server and helpers
         uses: ./.github/actions/build-cargo-package-binaries
         with:
           target: aarch64-unknown-linux-gnu
-          binaries: codex-code-mode-host codex-exec-server
+          binaries: codex-app-server codex-code-mode-host codex-exec-server
           build-mode: release
       - name: Smoke-test and identify canary binaries
         run: |
           set -euo pipefail
           release_dir="${CARGO_TARGET_DIR}/${TARGET}/release"
+          "${release_dir}/codex-app-server" --version
           "${release_dir}/codex-code-mode-host" --help > /dev/null
           install -d dist/app-server-canary
+          install -m 0755 "${release_dir}/codex-app-server" dist/app-server-canary/codex-app-server
           install -m 0755 "${release_dir}/codex-code-mode-host" dist/app-server-canary/codex-code-mode-host
           install -m 0755 "${release_dir}/codex-exec-server" dist/app-server-canary/codex-exec-server
           install -m 0755 "${release_dir}/bwrap" dist/app-server-canary/bwrap
@@ -45,7 +47,7 @@ jobs:
           from pathlib import Path
           d = Path("dist/app-server-canary")
           binaries = {}
-          for name in ("codex-code-mode-host", "codex-exec-server", "bwrap"):
+          for name in ("codex-app-server", "codex-code-mode-host", "codex-exec-server", "bwrap"):
               p = d / name
               h = hashlib.sha256()
               with p.open("rb") as f:
@@ -53,19 +55,19 @@ jobs:
                       h.update(chunk)
               binaries[name] = {"sha256": h.hexdigest(), "size_bytes": p.stat().st_size}
           (d / "manifest.json").write_text(json.dumps({
-              "kind": "app-server-helper-canary",
+              "kind": "active-goal-arm-canary",
               "source_sha": os.environ["PRODUCT_SHA"],
               "workflow_host_sha": os.environ["GITHUB_SHA"],
               "run_id": os.environ["GITHUB_RUN_ID"],
               "target": os.environ["TARGET"],
               "build": "maintained cargo release action, CARGO_BUILD_JOBS=2",
-              "smoke": "codex-code-mode-host --help",
+              "smoke": "codex-app-server --version and codex-code-mode-host --help",
               "binaries": binaries,
           }, indent=2, sort_keys=True) + "\n")
           PY
       - uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f # v7.0.0
         with:
-          name: app-server-helper-arm-canary-7c02e650
+          name: active-goal-arm-canary-cf8766e9
           path: dist/app-server-canary
           if-no-files-found: error
           retention-days: 7
