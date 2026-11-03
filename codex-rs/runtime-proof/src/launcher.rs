@@ -113,6 +113,8 @@ struct McpLaunchConfig {
     working_directory: PathBuf,
     mcp_recipient: String,
     mcp_oauth: McpOAuthPolicy,
+    #[serde(default)]
+    model: Option<String>,
     task_prompt: String,
 }
 
@@ -742,7 +744,7 @@ fn require_root_launcher() -> Result<()> {
 }
 
 fn validate_policy(policy: &LauncherPolicy) -> Result<()> {
-    if policy.version != 2
+    if !matches!(policy.version, 2 | 3)
         || policy.principal.is_nil()
         || policy.project_id == 0
         || policy.project_id > ((1_u64 << 53) - 1)
@@ -756,6 +758,14 @@ fn validate_policy(policy: &LauncherPolicy) -> Result<()> {
     }
     match &policy.target {
         LauncherTarget::Mcp(target) => {
+            let model_selection_is_valid = match (policy.version, target.model.as_deref()) {
+                (2, None) => true,
+                (3, Some(model)) => valid_model_id(model),
+                _ => false,
+            };
+            if !model_selection_is_valid {
+                bail!("fixed MCP model selection does not match launcher policy version");
+            }
             if target.runtime_uid == 0
                 || target.runtime_gid == 0
                 || target.task_prompt.trim().is_empty()
@@ -784,6 +794,9 @@ fn validate_policy(policy: &LauncherPolicy) -> Result<()> {
             target.mcp_oauth.validate()?;
         }
         LauncherTarget::Http(target) => {
+            if policy.version != 2 {
+                bail!("fixed HTTP claim policy version is not supported");
+            }
             validate_sha256(&target.launcher_sha256)?;
             api_claim::validate_precondition(
                 &policy.work_item_ref,
@@ -811,6 +824,14 @@ fn validate_policy(policy: &LauncherPolicy) -> Result<()> {
         bail!("fixed issuer public key has an invalid size");
     }
     Ok(())
+}
+
+fn valid_model_id(model: &str) -> bool {
+    !model.is_empty()
+        && model.len() <= 128
+        && model
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_' | b'.'))
 }
 
 fn credential_directory() -> Result<PathBuf> {
@@ -943,7 +964,7 @@ fn prepare_run_directory(
     let codex_home = path.join("codex-home");
     fs::create_dir(&codex_home)?;
 
-    let config = render_codex_config(&target.mcp_recipient);
+    let config = render_codex_config(&target.mcp_recipient, target.model.as_deref());
     let config_path = codex_home.join("config.toml");
     write_owned_file(
         &config_path,
@@ -1002,9 +1023,12 @@ fn prepare_run_directory(
     })
 }
 
-fn render_codex_config(mcp_recipient: &str) -> String {
+fn render_codex_config(mcp_recipient: &str, model: Option<&str>) -> String {
+    let model_line = model
+        .map(|model| format!("model = {model:?}\n"))
+        .unwrap_or_default();
     format!(
-        "model_provider = \"openai\"\ncli_auth_credentials_store = \"ephemeral\"\napproval_policy = \"never\"\n\n[mcp_servers.ops]\nurl = {mcp_recipient:?}\nrequired = true\nenabled_tools = [\"work_item_claim\", \"work_item_current_work\", \"work_item_execution_receipt_read\", \"work_item_release\"]\n\n[mcp_servers.ops.tools.work_item_claim]\napproval_mode = \"approve\"\n\n[mcp_servers.ops.tools.work_item_current_work]\napproval_mode = \"approve\"\n\n[mcp_servers.ops.tools.work_item_execution_receipt_read]\napproval_mode = \"approve\"\n\n[mcp_servers.ops.tools.work_item_release]\napproval_mode = \"approve\"\n"
+        "{model_line}model_provider = \"openai\"\ncli_auth_credentials_store = \"ephemeral\"\napproval_policy = \"never\"\n\n[mcp_servers.ops]\nurl = {mcp_recipient:?}\nrequired = true\nenabled_tools = [\"work_item_claim\", \"work_item_current_work\", \"work_item_execution_receipt_read\", \"work_item_release\"]\n\n[mcp_servers.ops.tools.work_item_claim]\napproval_mode = \"approve\"\n\n[mcp_servers.ops.tools.work_item_current_work]\napproval_mode = \"approve\"\n\n[mcp_servers.ops.tools.work_item_execution_receipt_read]\napproval_mode = \"approve\"\n\n[mcp_servers.ops.tools.work_item_release]\napproval_mode = \"approve\"\n"
     )
 }
 
