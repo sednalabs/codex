@@ -41,7 +41,7 @@ async fn seed_active_goal(home: &Path, thread_id: &str) -> Result<()> {
             ThreadId::from_string(thread_id)?,
             "Resume useful work",
             codex_state::ThreadGoalStatus::Active,
-            None,
+            /*token_budget*/ None,
         )
         .await?;
     Ok(())

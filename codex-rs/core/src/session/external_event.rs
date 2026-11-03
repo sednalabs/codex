@@ -385,7 +385,7 @@ mod tests {
                 session.thread_id,
                 "active",
                 codex_state::ThreadGoalStatus::Active,
-                None,
+                /*token_budget*/ None,
             )
             .await
             .expect("active goal");
@@ -644,7 +644,12 @@ mod tests {
                 .as_ref()
                 .expect("state")
                 .thread_goals()
-                .replace_thread_goal(session.thread_id, "not active", status, None)
+                .replace_thread_goal(
+                    session.thread_id,
+                    "not active",
+                    status,
+                    /*token_budget*/ None,
+                )
                 .await
                 .expect("set inactive goal");
             assert_eq!(
@@ -662,7 +667,7 @@ mod tests {
                 session.thread_id,
                 "resumed",
                 codex_state::ThreadGoalStatus::Active,
-                None,
+                /*token_budget*/ None,
             )
             .await
             .expect("resume goal");
