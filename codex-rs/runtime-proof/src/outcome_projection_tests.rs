@@ -565,6 +565,10 @@ fn startup_error_projects_only_a_closed_reason_class() {
     assert_eq!(records[0]["event"], "runtime_proof_child_failure");
     assert_eq!(records[0]["stage"], "startup");
     assert_eq!(records[0]["reason_class"], "auth");
+    assert_eq!(
+        records[0]["matched_reason_classes"],
+        serde_json::json!(["auth"])
+    );
 }
 
 #[test]
@@ -622,6 +626,10 @@ fn primary_turn_failure_is_classified_and_child_thread_errors_are_ignored() {
     assert_eq!(records[0]["event"], "runtime_proof_child_failure");
     assert_eq!(records[0]["stage"], "turn");
     assert_eq!(records[0]["reason_class"], "provider");
+    assert_eq!(
+        records[0]["matched_reason_classes"],
+        serde_json::json!(["provider"])
+    );
 }
 
 #[test]
@@ -648,4 +656,8 @@ fn overlapping_child_error_categories_are_reported_as_ambiguous() {
         .collect();
     assert_eq!(records.len(), 1);
     assert_eq!(records[0]["reason_class"], "ambiguous");
+    assert_eq!(
+        records[0]["matched_reason_classes"],
+        serde_json::json!(["auth", "provider", "transport"])
+    );
 }
