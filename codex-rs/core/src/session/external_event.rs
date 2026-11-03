@@ -314,9 +314,10 @@ async fn deliver_request_inner(
     request: TurnInputRequest,
     idle_only: bool,
 ) -> Option<String> {
-    // An independent notice does not continue the goal. Serialize in-process
-    // goal mutations and explicit interruption without treating a paused goal
-    // as a stopped session.
+    // Serialize goal mutations and explicit interruption with admission.
+    // An external source must retain its event while a goal is not active;
+    // starting a new turn would otherwise defeat an intentional pause or
+    // bypass a goal's budget or usage limit.
     let goal_lock = session
         .services
         .thread_extension_data
@@ -325,6 +326,16 @@ async fn deliver_request_inner(
         Some(lock) => Some(lock.0.try_acquire().ok()?),
         None => None,
     };
+    if let Some(state) = session.services.state_db.as_ref() {
+        match state.thread_goals().get_thread_goal(session.thread_id).await {
+            Ok(Some(goal)) if goal.status != codex_state::ThreadGoalStatus::Active => {
+                return None;
+            }
+            Ok(_) => {}
+            // A failed read is not evidence that the goal permits admission.
+            Err(_) => return None,
+        }
+    }
     let enabled = session.external_event_gate.lock().await;
     if !*enabled || session.collaboration_mode().await.mode == ModeKind::Plan {
         return None;
@@ -483,7 +494,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn independent_event_preserves_paused_goal_after_state_reopen() {
+    async fn independent_event_defers_inactive_goals_and_accepts_after_resume() {
         let home = tempfile::tempdir().expect("state home");
         let sqlite = codex_state::SqliteConfig::new_for_testing(
             codex_utils_absolute_path::AbsolutePathBuf::try_from(home.path()).expect("absolute"),
@@ -527,7 +538,7 @@ mod tests {
         let session = Arc::new(session);
         assert_eq!(
             deliver(&session, "irc", "token", /*idle_only*/ false).await,
-            EventAdmission::Accepted
+            EventAdmission::Deferred
         );
         assert_eq!(
             session
@@ -542,6 +553,44 @@ mod tests {
                 .expect("goal persisted")
                 .status,
             codex_state::ThreadGoalStatus::Paused
+        );
+        for status in [
+            codex_state::ThreadGoalStatus::Blocked,
+            codex_state::ThreadGoalStatus::BudgetLimited,
+            codex_state::ThreadGoalStatus::UsageLimited,
+            codex_state::ThreadGoalStatus::Complete,
+        ] {
+            session
+                .services
+                .state_db
+                .as_ref()
+                .expect("state")
+                .thread_goals()
+                .replace_thread_goal(session.thread_id, "not active", status, None)
+                .await
+                .expect("set inactive goal");
+            assert_eq!(
+                deliver(&session, "irc", "token", /*idle_only*/ false).await,
+                EventAdmission::Deferred
+            );
+        }
+        session
+            .services
+            .state_db
+            .as_ref()
+            .expect("state")
+            .thread_goals()
+            .replace_thread_goal(
+                session.thread_id,
+                "resumed",
+                codex_state::ThreadGoalStatus::Active,
+                None,
+            )
+            .await
+            .expect("resume goal");
+        assert_eq!(
+            deliver(&session, "irc", "token", /*idle_only*/ false).await,
+            EventAdmission::Accepted
         );
         session.abort_all_tasks(TurnAbortReason::Interrupted).await;
     }
