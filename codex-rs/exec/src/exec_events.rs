@@ -1,5 +1,5 @@
+use codex_app_server_protocol::CodexErrorInfo;
 use codex_protocol::models::WebSearchAction;
-use codex_protocol::protocol::CodexErrorInfo;
 use serde::Deserialize;
 use serde::Serialize;
 use serde_json::Value as JsonValue;
