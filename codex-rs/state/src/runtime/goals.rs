@@ -832,27 +832,39 @@ mod tests {
         .await
         .expect("contention must not wait for SQLite's default busy timeout");
         assert!(contended.is_err());
-        let store = runtime.thread_goals().clone();
-        let (started, started_rx) = tokio::sync::oneshot::channel();
-        let pause = tokio::spawn(async move {
-            let _ = started.send(());
-            store
-                .replace_thread_goal(
-                    thread_id,
-                    "paused",
-                    crate::ThreadGoalStatus::Paused,
-                    /*token_budget*/ None,
-                )
-                .await
-        });
-        started_rx.await.expect("pause task started");
-        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
-        assert!(!pause.is_finished(), "pause must wait for the wake guard");
-        drop(guard);
-        tokio::time::timeout(std::time::Duration::from_secs(10), pause)
+        // An actual write from a distinct connection reaches SQLite while the
+        // wake guard is held. Do not infer lock contention from task timing.
+        let mut writer = crate::sqlite::open_goal_wake_connection(&runtime.thread_goals().pool)
             .await
-            .expect("pause settled")
-            .expect("pause task")
+            .expect("independent writer");
+        let error = sqlx::query("UPDATE thread_goals SET status = 'paused' WHERE thread_id = ?")
+            .bind(thread_id.to_string())
+            .execute(&mut writer)
+            .await
+            .expect_err("the goal write must be blocked");
+        let code = error.as_database_error().and_then(|error| error.code());
+        assert!(matches!(code.as_deref(), Some("5" | "261" | "517" | "773")));
+        assert_eq!(
+            runtime
+                .thread_goals()
+                .get_thread_goal(thread_id)
+                .await
+                .expect("read goal")
+                .expect("goal exists")
+                .status,
+            crate::ThreadGoalStatus::Active,
+        );
+        drop(writer);
+        drop(guard);
+        runtime
+            .thread_goals()
+            .replace_thread_goal(
+                thread_id,
+                "paused",
+                crate::ThreadGoalStatus::Paused,
+                /*token_budget*/ None,
+            )
+            .await
             .expect("pause goal");
         assert!(
             runtime
