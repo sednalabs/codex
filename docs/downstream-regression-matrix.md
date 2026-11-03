@@ -56,8 +56,10 @@ bearer authorization, and projects only bounded canonical primary-thread
 outcomes to the launcher's existing journal path. Its focused regressions cover
 closed tool configuration, claim/release proof binding, exact holder-conflict
 classification, payload redaction, child-event exclusion, overlong-line draining,
-and closed MCP launcher failure-stage projection. Protected package installation
-and natural first use remain separate acceptance steps.
+closed MCP launcher failure-stage projection, and typed child-failure codes
+with bounded structured HTTP statuses and no message/detail projection.
+Protected package installation and natural first use remain separate acceptance
+steps.
 
 ## Core default path
 

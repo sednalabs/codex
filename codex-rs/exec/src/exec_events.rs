@@ -1,4 +1,5 @@
 use codex_protocol::models::WebSearchAction;
+use codex_protocol::protocol::CodexErrorInfo;
 use serde::Deserialize;
 use serde::Serialize;
 use serde_json::Value as JsonValue;
@@ -110,9 +111,92 @@ pub struct ItemUpdatedEvent {
 pub struct ThreadErrorEvent {
     pub message: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub codex_error_code: Option<CodexErrorCode>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub http_status_code: Option<u16>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub thread_id: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub turn_id: Option<String>,
+}
+
+/// Closed, message-free subset of Codex error information for exec JSONL.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, TS)]
+#[serde(rename_all = "snake_case")]
+#[ts(rename_all = "snake_case")]
+pub enum CodexErrorCode {
+    ContextWindowExceeded,
+    SessionBudgetExceeded,
+    UsageLimitExceeded,
+    ServerOverloaded,
+    CyberPolicy,
+    HttpConnectionFailed,
+    ResponseStreamConnectionFailed,
+    InternalServerError,
+    Unauthorized,
+    BadRequest,
+    SandboxError,
+    ResponseStreamDisconnected,
+    ResponseTooManyFailedAttempts,
+    ActiveTurnNotSteerable,
+    ThreadRollbackFailed,
+    Other,
+}
+
+impl From<&CodexErrorInfo> for CodexErrorCode {
+    fn from(error: &CodexErrorInfo) -> Self {
+        match error {
+            CodexErrorInfo::ContextWindowExceeded => Self::ContextWindowExceeded,
+            CodexErrorInfo::SessionBudgetExceeded => Self::SessionBudgetExceeded,
+            CodexErrorInfo::UsageLimitExceeded => Self::UsageLimitExceeded,
+            CodexErrorInfo::ServerOverloaded => Self::ServerOverloaded,
+            CodexErrorInfo::CyberPolicy => Self::CyberPolicy,
+            CodexErrorInfo::HttpConnectionFailed { .. } => Self::HttpConnectionFailed,
+            CodexErrorInfo::ResponseStreamConnectionFailed { .. } => {
+                Self::ResponseStreamConnectionFailed
+            }
+            CodexErrorInfo::InternalServerError => Self::InternalServerError,
+            CodexErrorInfo::Unauthorized => Self::Unauthorized,
+            CodexErrorInfo::BadRequest => Self::BadRequest,
+            CodexErrorInfo::SandboxError => Self::SandboxError,
+            CodexErrorInfo::ResponseStreamDisconnected { .. } => Self::ResponseStreamDisconnected,
+            CodexErrorInfo::ResponseTooManyFailedAttempts { .. } => {
+                Self::ResponseTooManyFailedAttempts
+            }
+            CodexErrorInfo::ActiveTurnNotSteerable { .. } => Self::ActiveTurnNotSteerable,
+            CodexErrorInfo::ThreadRollbackFailed => Self::ThreadRollbackFailed,
+            CodexErrorInfo::Other => Self::Other,
+        }
+    }
+}
+
+impl ThreadErrorEvent {
+    pub(crate) fn new(
+        message: String,
+        thread_id: Option<String>,
+        turn_id: Option<String>,
+        error_info: Option<&CodexErrorInfo>,
+    ) -> Self {
+        let codex_error_code = error_info.map(CodexErrorCode::from);
+        let http_status_code = error_info
+            .and_then(|error| match error {
+                CodexErrorInfo::HttpConnectionFailed { http_status_code }
+                | CodexErrorInfo::ResponseStreamConnectionFailed { http_status_code }
+                | CodexErrorInfo::ResponseStreamDisconnected { http_status_code }
+                | CodexErrorInfo::ResponseTooManyFailedAttempts { http_status_code } => {
+                    *http_status_code
+                }
+                _ => None,
+            })
+            .filter(|status| (100..=599).contains(status));
+        Self {
+            message,
+            codex_error_code,
+            http_status_code,
+            thread_id,
+            turn_id,
+        }
+    }
 }
 
 /// Canonical representation of a thread item and its domain-specific payload.

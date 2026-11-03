@@ -3810,6 +3810,13 @@ MCP receipt read, where a missing receipt remains unresolved. Only the exact
 Ops active-holder discriminator is presented as `holder_conflict`; other
 failures remain closed as rejected or unresolved.
 
+Child failures use the existing sanitized journal event. The exec JSON boundary
+maps the typed `CodexErrorInfo` enum to a fixed code set and carries an HTTP
+status only from status-bearing variants and only within 100–599. The launcher
+revalidates that code set and status bound before projection. It does not
+forward message text, additional details, provider response bodies, tokens, or
+other child fields; substring-based failure classification is not used.
+
 The hosted external-unload residency case remains the exact core reproducer,
 with `session_end_flushes_transcript_and_ignores_control_output` and
 `session_end_skips_subagents` as existing shutdown-consumer controls. Earlier
