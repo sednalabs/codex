@@ -107,13 +107,15 @@ fn prepare_test_capability_state(mode: &str) {
 #[ignore]
 fn verified_executable_survives_privilege_drop() {
     assert_eq!(unsafe { libc::geteuid() }, 0, "root test runner required");
-    let base = tempfile::tempdir().expect("create private fixture directory");
-    let path = base.path().join("child");
+    let base = PathBuf::from("/tmp").join(format!("codex-verified-exec-{}", Uuid::new_v4()));
+    fs::create_dir(&base).expect("create private fixture directory");
+    fs::set_permissions(&base, fs::Permissions::from_mode(0o700)).unwrap();
+    let path = base.join("child");
     fs::copy("/usr/bin/true", &path).expect("copy fixed ELF fixture");
     fs::set_permissions(&path, fs::Permissions::from_mode(0o755)).unwrap();
     let digest = sha256_file(&File::open(&path).unwrap()).unwrap();
     let verified = open_verified_executable(&path, &digest).expect("verify fixture inode");
-    fs::rename(&path, base.path().join("original")).unwrap();
+    fs::rename(&path, base.join("original")).unwrap();
     fs::copy("/usr/bin/false", &path).unwrap();
     fs::set_permissions(&path, fs::Permissions::from_mode(0o755)).unwrap();
 
@@ -145,6 +147,7 @@ fn verified_executable_survives_privilege_drop() {
     match result {
         Ok(child) => {
             let output = child.wait_with_output().expect("wait for ELF fixture");
+            fs::remove_dir_all(&base).unwrap();
             println!("fixture_spawn=success");
             assert!(expected == "success" || expected == "observe");
             assert_eq!(
@@ -160,6 +163,7 @@ fn verified_executable_survives_privilege_drop() {
                     .downcast_ref::<std::io::Error>()
                     .and_then(std::io::Error::raw_os_error)
             });
+            fs::remove_dir_all(&base).unwrap();
             println!("fixture_spawn_errno={errno:?}");
             assert!(expected == "errno1" || expected == "observe");
             assert_eq!(errno, Some(libc::EPERM));
