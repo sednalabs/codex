@@ -99,7 +99,7 @@ struct LauncherPolicy {
     deny_unknown_fields
 )]
 enum LauncherTarget {
-    Mcp(McpLaunchConfig),
+    Mcp(Box<McpLaunchConfig>),
     Http(ApiClaimConfig),
 }
 
