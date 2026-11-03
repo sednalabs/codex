@@ -323,6 +323,11 @@ async fn deliver_request_inner(
         .thread_extension_data
         .get::<crate::GoalStateAdmissionLock>()?;
     let _goal_permit = goal_lock.0.try_acquire().ok()?;
+    if !goal_lock.1.load(std::sync::atomic::Ordering::Acquire) {
+        // A persisted active goal is not authority to wake when the goal
+        // runtime itself is disabled for this thread.
+        return None;
+    }
     let state = session.services.state_db.as_ref()?;
     if !matches!(
         state.thread_goals().get_thread_goal(session.thread_id).await,
@@ -547,6 +552,23 @@ mod tests {
             deliver(&session, "irc", "token", /*idle_only*/ false).await,
             EventAdmission::Deferred
         );
+    }
+
+    #[tokio::test]
+    async fn independent_event_defers_when_goal_runtime_is_disabled() {
+        let (_home, session) = active_goal_session().await;
+        session
+            .services
+            .thread_extension_data
+            .insert(crate::GoalStateAdmissionLock(
+                Arc::new(tokio::sync::Semaphore::new(1)),
+                Arc::new(std::sync::atomic::AtomicBool::new(false)),
+            ));
+        assert_eq!(
+            deliver(&session, "irc", "token", /*idle_only*/ false).await,
+            EventAdmission::Deferred
+        );
+        assert!(session.active_turn.lock().await.is_none());
     }
 
     #[tokio::test]
