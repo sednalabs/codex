@@ -24,7 +24,6 @@ jobs:
     env:
       PRODUCT_SHA: 7c02e650a7536df032a3ee688b070d3ea89af9a3
       TARGET: ${{ matrix.target }}
-      CARGO_BUILD_JOBS: 1
 
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
@@ -52,13 +51,16 @@ jobs:
           echo "package_version=${package_version}" >> "$GITHUB_OUTPUT"
           echo "package version=${package_version}; source=${PRODUCT_SHA}; target=${TARGET}"
 
+      - name: Limit local Bazel build concurrency
+        run: echo 'build --jobs=2' >> .bazelrc
+
       - name: Build and smoke-test maintained generic Codex packages
         uses: ./.github/actions/build-codex-packages
         with:
           target: ${{ matrix.target }}
           package-version: ${{ steps.meta.outputs.package_version }}
           build-mode: release
-          build-system: cargo
+          build-system: bazel
 
       - name: Record source, binary, and archive hashes
         env:
