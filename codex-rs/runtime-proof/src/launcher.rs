@@ -503,13 +503,15 @@ fn run_mcp(
     credential_directory: &Path,
     policy_sha256: &str,
 ) -> Result<i32> {
-    let (_lifecycle_lock, lifecycle_manager) = if let Some(config) = &target.lifecycle {
+    let lifecycle_manager = if let Some(config) = &target.lifecycle {
         open_verified_self_executable(&config.observer_sha256)?;
-        let lock = lifecycle::lock_cohort()?;
-        let binding = lifecycle::capture_manager_binding()?;
-        (Some(lock), Some(binding))
+        let binding = {
+            let _lifecycle_lock = lifecycle::lock_cohort()?;
+            lifecycle::capture_manager_binding()?
+        };
+        Some(binding)
     } else {
-        (None, None)
+        None
     };
     let runtime_directory =
         validate_runtime_directory(target.runtime_gid).context(McpFailureStage::RuntimeSetup)?;

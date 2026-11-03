@@ -143,6 +143,23 @@ fn closed_event_requires_nullable_fields() {
 }
 
 #[test]
+fn temporary_context_file_cleanup_removes_the_created_file() {
+    let directory = std::env::temp_dir().join(format!("lifecycle-cleanup-{}", Uuid::new_v4()));
+    std::fs::create_dir(&directory).expect("create temporary directory");
+    let path = directory.join("context.tmp");
+    OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(&path)
+        .expect("create temporary file");
+    let cleanup = RemoveTemporaryFile(path.clone());
+    assert!(path.exists());
+    drop(cleanup);
+    assert!(!path.exists());
+    std::fs::remove_dir(&directory).expect("remove temporary directory");
+}
+
+#[test]
 fn possibly_sent_end_keeps_its_original_proof_interval() {
     let mut event = start_event();
     event.phase = Phase::End;

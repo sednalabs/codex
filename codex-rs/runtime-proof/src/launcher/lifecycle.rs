@@ -41,6 +41,14 @@ const MAX_RESPONSE_BYTES: usize = 64 * 1024;
 const STATE_DIRECTORY: &str = "/var/lib/codex-runtime-proof-lifecycle";
 const MAX_CONTEXT_BYTES: usize = 64 * 1024;
 
+struct RemoveTemporaryFile(PathBuf);
+
+impl Drop for RemoveTemporaryFile {
+    fn drop(&mut self) {
+        let _ = fs::remove_file(&self.0);
+    }
+}
+
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub(super) enum Phase {
@@ -210,6 +218,7 @@ fn persist_context(context: &Context, create: bool) -> Result<()> {
         .mode(0o600)
         .custom_flags(libc::O_NOFOLLOW | libc::O_CLOEXEC)
         .open(&temporary)?;
+    let _temporary_cleanup = RemoveTemporaryFile(temporary.clone());
     file.write_all(&bytes)?;
     file.sync_all()?;
     if create {
@@ -868,6 +877,7 @@ pub(super) fn start(
     policy_sha256: &str,
     observer_sha256: &str,
 ) -> Result<Context> {
+    let _lock = lock_cohort()?;
     require_manager_start(manager_binding, child_pid, policy_sha256)?;
     let now = super::api_claim::unix_seconds()?;
     let bearer = read_bearer(credentials, policy, now)?;
@@ -952,6 +962,11 @@ pub(super) fn finish(
     exit_code: Option<i32>,
     signal: Option<i32>,
 ) -> Result<()> {
+    let _lock = if source == Source::Launcher {
+        Some(lock_cohort()?)
+    } else {
+        None
+    };
     let invocation = manager_invocation()?;
     verified_certificate(
         context,
