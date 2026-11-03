@@ -423,17 +423,21 @@ impl Session {
         debug_assert!(turn.task.is_none());
         // Record lineage only when the task starts: settings changes can invalidate a reservation.
         let attribution = (task_kind == TaskKind::Regular).then(|| turn_context.attribution());
-        if goal_guard.is_some() {
-            if !self.try_record_external_started_turn(&turn_context.sub_id, attribution) {
-                drop(active);
-                drop(goal_guard);
-                self.emit_turn_stop_lifecycle(turn_context.extension_data.as_ref())
-                    .await;
-                return false;
+        let external_state_guard = if goal_guard.is_some() {
+            match self.try_record_external_started_turn(&turn_context.sub_id, attribution) {
+                Some(state) => Some(state),
+                None => {
+                    drop(active);
+                    drop(goal_guard);
+                    self.emit_turn_stop_lifecycle(turn_context.extension_data.as_ref())
+                        .await;
+                    return false;
+                }
             }
         } else {
             self.record_started_turn(&turn_context.sub_id, attribution).await;
-        }
+            None
+        };
         let agent_execution_guard = self.services.agent_control.admit_turn(
             turn_context.multi_agent_version,
             &turn_context.session_source,
@@ -518,6 +522,7 @@ impl Session {
             _timer: timer,
         };
         turn.task = Some(running_task);
+        drop(external_state_guard);
         true
     }
 

@@ -834,13 +834,19 @@ pub(super) async fn steer_external_if_active(
     let Ok(state) = session.state.try_lock() else {
         return false;
     };
-    if !TurnStartKind::Automatic.permits_mode(
-        state
-            .session_configuration
-            .step_settings
-            .collaboration_mode
-            .mode,
-    ) {
+    if !state
+        .session_configuration
+        .original_config_do_not_use
+        .features
+        .enabled(Feature::Goals)
+        || !TurnStartKind::Automatic.permits_mode(
+            state
+                .session_configuration
+                .step_settings
+                .collaboration_mode
+                .mode,
+        )
+    {
         return false;
     }
     session
@@ -850,19 +856,34 @@ pub(super) async fn steer_external_if_active(
 
 impl Session {
     /// Do not wait for session state while the external wake holds SQLite's writer slot.
-    pub(crate) fn try_record_external_started_turn(
-        &self,
+    pub(crate) fn try_record_external_started_turn<'a>(
+        &'a self,
         turn_id: &str,
         attribution: Option<codex_history::TurnAttribution>,
-    ) -> bool {
+    ) -> Option<tokio::sync::MutexGuard<'a, crate::state::SessionState>> {
         let Ok(mut state) = self.state.try_lock() else {
-            return false;
+            return None;
         };
+        if !state
+            .session_configuration
+            .original_config_do_not_use
+            .features
+            .enabled(Feature::Goals)
+            || !TurnStartKind::Automatic.permits_mode(
+                state
+                    .session_configuration
+                    .step_settings
+                    .collaboration_mode
+                    .mode,
+            )
+        {
+            return None;
+        }
         state.last_started_turn_id = Some(turn_id.to_owned());
         if let Some(attribution) = attribution {
             state.turn_attribution = Some(attribution);
         }
-        true
+        Some(state)
     }
 
     /// Called under the active-turn lock when registering a task (or a realtime transcript turn).

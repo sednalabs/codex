@@ -826,22 +826,33 @@ mod tests {
             .expect("admission query")
             .expect("active goal admitted");
         let contended = tokio::time::timeout(
-            std::time::Duration::from_millis(500),
+            std::time::Duration::from_secs(2),
             runtime.thread_goals().try_active_wake_guard(thread_id),
         )
         .await
         .expect("contention must not wait for SQLite's default busy timeout");
         assert!(contended.is_err());
+        let store = runtime.thread_goals().clone();
+        let (started, started_rx) = tokio::sync::oneshot::channel();
+        let pause = tokio::spawn(async move {
+            let _ = started.send(());
+            store
+                .replace_thread_goal(
+                    thread_id,
+                    "paused",
+                    crate::ThreadGoalStatus::Paused,
+                    /*token_budget*/ None,
+                )
+                .await
+        });
+        started_rx.await.expect("pause task started");
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        assert!(!pause.is_finished(), "pause must wait for the wake guard");
         drop(guard);
-        runtime
-            .thread_goals()
-            .replace_thread_goal(
-                thread_id,
-                "paused",
-                crate::ThreadGoalStatus::Paused,
-                /*token_budget*/ None,
-            )
+        tokio::time::timeout(std::time::Duration::from_secs(10), pause)
             .await
+            .expect("pause settled")
+            .expect("pause task")
             .expect("pause goal");
         assert!(
             runtime

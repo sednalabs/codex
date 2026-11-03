@@ -588,6 +588,46 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn configuration_change_before_registration_defers_wake() {
+        for disable_goals in [true, false] {
+            let (_home, session) = active_goal_session().await;
+            let entered = Arc::new(tokio::sync::Notify::new());
+            let release = Arc::new(tokio::sync::Notify::new());
+            session.services.thread_extension_data.insert(
+                crate::tasks::ExternalTaskRegistrationTestBarrier {
+                    entered: Arc::clone(&entered),
+                    release: Arc::clone(&release),
+                },
+            );
+            let candidate = Arc::clone(&session);
+            let caller = tokio::spawn(async move {
+                deliver(&candidate, "irc", "config-race", /*idle_only*/ false).await
+            });
+            tokio::time::timeout(std::time::Duration::from_secs(5), entered.notified())
+                .await
+                .expect("admission reached barrier");
+            {
+                let mut state = session.state.lock().await;
+                if disable_goals {
+                    Arc::make_mut(&mut state.session_configuration.original_config_do_not_use)
+                        .features
+                        .disable(codex_features::Feature::Goals)
+                        .expect("disable goals");
+                    // Model the interval before the config contributor updates its flag.
+                } else {
+                    Arc::make_mut(&mut state.session_configuration.step_settings)
+                        .collaboration_mode
+                        .mode = ModeKind::Plan;
+                }
+            }
+            release.notify_one();
+            assert_eq!(caller.await.expect("admission task"), EventAdmission::Deferred);
+            assert!(session.active_turn.lock().await.is_none());
+            assert!(session.state.lock().await.last_started_turn_id.is_none());
+        }
+    }
+
+    #[tokio::test]
     async fn independent_event_defers_with_goal_lock_and_no_state_db() {
         let (session, _, _rx) = make_session_and_context_with_rx().await;
         assert!(session.services.state_db.is_none());
