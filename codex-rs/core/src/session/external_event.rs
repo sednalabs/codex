@@ -321,20 +321,15 @@ async fn deliver_request_inner(
     let goal_lock = session
         .services
         .thread_extension_data
-        .get::<crate::GoalStateAdmissionLock>();
-    let _goal_permit = match goal_lock.as_ref() {
-        Some(lock) => Some(lock.0.try_acquire().ok()?),
-        None => None,
-    };
-    if let Some(state) = session.services.state_db.as_ref() {
-        match state.thread_goals().get_thread_goal(session.thread_id).await {
-            Ok(Some(goal)) if goal.status != codex_state::ThreadGoalStatus::Active => {
-                return None;
-            }
-            Ok(_) => {}
-            // A failed read is not evidence that the goal permits admission.
-            Err(_) => return None,
-        }
+        .get::<crate::GoalStateAdmissionLock>()?;
+    let _goal_permit = goal_lock.0.try_acquire().ok()?;
+    let state = session.services.state_db.as_ref()?;
+    if !matches!(
+        state.thread_goals().get_thread_goal(session.thread_id).await,
+        Ok(Some(goal)) if goal.status == codex_state::ThreadGoalStatus::Active
+    ) {
+        // Missing or unreadable state is not evidence that admission is allowed.
+        return None;
     }
     let enabled = session.external_event_gate.lock().await;
     if !*enabled || session.collaboration_mode().await.mode == ModeKind::Plan {
@@ -370,6 +365,36 @@ mod tests {
     use crate::session::tests::make_session_and_context_with_rx;
     use codex_protocol::protocol::TurnAbortReason;
 
+    async fn active_goal_session() -> (tempfile::TempDir, Arc<Session>) {
+        let home = tempfile::tempdir().expect("state home");
+        let sqlite = codex_state::SqliteConfig::new_for_testing(
+            codex_utils_absolute_path::AbsolutePathBuf::try_from(home.path()).expect("absolute"),
+        );
+        let state = codex_state::StateRuntime::init(sqlite, "test".to_string())
+            .await
+            .expect("state");
+        let (mut session, _) = make_session_and_context().await;
+        state
+            .thread_goals()
+            .replace_thread_goal(
+                session.thread_id,
+                "active",
+                codex_state::ThreadGoalStatus::Active,
+                None,
+            )
+            .await
+            .expect("active goal");
+        session.services.state_db = Some(state);
+        session
+            .services
+            .thread_extension_data
+            .insert(crate::GoalStateAdmissionLock(
+                Arc::new(tokio::sync::Semaphore::new(1)),
+                Arc::new(std::sync::atomic::AtomicBool::new(true)),
+            ));
+        (home, Arc::new(session))
+    }
+
     #[test]
     fn source_name_is_bounded_and_cannot_supply_input_text() {
         assert!(event_request("irc.ops-pilot", "token").is_some());
@@ -384,8 +409,7 @@ mod tests {
     )]
     #[tokio::test]
     async fn startup_interrupt_ack_waits_for_external_notice_gate_to_close() {
-        let (session, _, _rx) = make_session_and_context_with_rx().await;
-        let session = Arc::new(session);
+        let (_home, session) = active_goal_session().await;
         let gate = session.external_event_gate.lock().await;
         let (reply, mut closed) = tokio::sync::oneshot::channel();
         let target = Arc::clone(&session);
@@ -407,19 +431,19 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn independent_event_can_start_without_a_goal_runtime() {
+    async fn independent_event_defers_without_a_goal_runtime() {
         let (session, _, _rx) = make_session_and_context_with_rx().await;
         assert!(session.services.state_db.is_none());
         assert_eq!(
             deliver(&session, "irc", "token", /*idle_only*/ false).await,
-            EventAdmission::Accepted
+            EventAdmission::Deferred
         );
         session.abort_all_tasks(TurnAbortReason::Interrupted).await;
     }
 
     #[tokio::test]
     async fn caller_cancellation_does_not_cancel_partial_admission_or_drain_mail() {
-        let (session, _, _rx) = make_session_and_context_with_rx().await;
+        let (_home, session) = active_goal_session().await;
         let entered = Arc::new(tokio::sync::Notify::new());
         let release = Arc::new(tokio::sync::Notify::new());
         session.services.thread_extension_data.insert(
@@ -428,7 +452,6 @@ mod tests {
                 release: Arc::clone(&release),
             },
         );
-        let session = Arc::new(session);
         let candidate = Arc::clone(&session);
         let caller = tokio::spawn(async move {
             deliver(
@@ -476,7 +499,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn independent_event_can_start_with_goal_lock_and_no_state_db() {
+    async fn independent_event_defers_with_goal_lock_and_no_state_db() {
         let (session, _, _rx) = make_session_and_context_with_rx().await;
         assert!(session.services.state_db.is_none());
         session
@@ -488,9 +511,42 @@ mod tests {
             ));
         assert_eq!(
             deliver(&session, "irc", "token", /*idle_only*/ false).await,
-            EventAdmission::Accepted
+            EventAdmission::Deferred
         );
         session.abort_all_tasks(TurnAbortReason::Interrupted).await;
+    }
+
+    #[tokio::test]
+    async fn independent_event_defers_when_goal_or_guard_is_missing() {
+        let (_home, session) = active_goal_session().await;
+        session
+            .services
+            .thread_extension_data
+            .remove::<crate::GoalStateAdmissionLock>();
+        assert_eq!(
+            deliver(&session, "irc", "token", /*idle_only*/ false).await,
+            EventAdmission::Deferred
+        );
+        session
+            .services
+            .thread_extension_data
+            .insert(crate::GoalStateAdmissionLock(
+                Arc::new(tokio::sync::Semaphore::new(1)),
+                Arc::new(std::sync::atomic::AtomicBool::new(true)),
+            ));
+        session
+            .services
+            .state_db
+            .as_ref()
+            .expect("state")
+            .thread_goals()
+            .delete_thread_goal(session.thread_id)
+            .await
+            .expect("delete goal");
+        assert_eq!(
+            deliver(&session, "irc", "token", /*idle_only*/ false).await,
+            EventAdmission::Deferred
+        );
     }
 
     #[tokio::test]
@@ -597,8 +653,7 @@ mod tests {
 
     #[tokio::test]
     async fn goal_mutation_permit_defers_admission_without_blocking() {
-        let (session, _) = make_session_and_context().await;
-        let session = Arc::new(session);
+        let (_home, session) = active_goal_session().await;
         let lock = Arc::new(tokio::sync::Semaphore::new(1));
         session
             .services
@@ -622,8 +677,7 @@ mod tests {
 
     #[tokio::test]
     async fn explicit_interrupt_disables_automatic_admission() {
-        let (session, _) = make_session_and_context().await;
-        let session = Arc::new(session);
+        let (_home, session) = active_goal_session().await;
         session
             .services
             .thread_extension_data
@@ -642,8 +696,7 @@ mod tests {
 
     #[tokio::test]
     async fn explicitly_closed_gate_defers_independent_notice() {
-        let (session, _) = make_session_and_context().await;
-        let session = Arc::new(session);
+        let (_home, session) = active_goal_session().await;
         *session.external_event_gate.lock().await = false;
         assert_eq!(
             deliver(
@@ -659,8 +712,7 @@ mod tests {
 
     #[tokio::test]
     async fn interrupted_agent_status_alone_does_not_block_independent_notice() {
-        let (session, _) = make_session_and_context().await;
-        let session = Arc::new(session);
+        let (_home, session) = active_goal_session().await;
         session.mark_interrupted(); // BudgetLimited also maps to this status.
         assert!(*session.external_event_gate.lock().await);
         assert_eq!(

@@ -2,7 +2,6 @@ use anyhow::Result;
 use app_test_support::MockResponsesConfig;
 use app_test_support::TestAppServer;
 use app_test_support::create_mock_responses_server_repeating_assistant;
-use app_test_support::create_mock_responses_server_sequence_unchecked;
 use codex_app_server_protocol::ThreadCompactStartParams;
 use codex_app_server_protocol::ThreadCompactStartResponse;
 use codex_app_server_protocol::ThreadGoalGetResponse;
@@ -25,16 +24,36 @@ use core_test_support::responses;
 use core_test_support::streaming_sse::StreamingSseChunk;
 use core_test_support::streaming_sse::start_streaming_sse_server;
 use serde_json::json;
+use std::path::Path;
 use tempfile::TempDir;
 use tokio::sync::oneshot;
 use tokio::time::Duration;
 use tokio::time::timeout;
 
+async fn seed_active_goal(home: &Path, thread_id: &str) -> Result<()> {
+    let sqlite = codex_state::SqliteConfig::new_for_testing(
+        codex_utils_absolute_path::AbsolutePathBuf::try_from(home)?,
+    );
+    let state = codex_state::StateRuntime::init(sqlite, "mock_provider".to_string()).await?;
+    state
+        .thread_goals()
+        .replace_thread_goal(
+            ThreadId::from_string(thread_id)?,
+            "Resume useful work",
+            codex_state::ThreadGoalStatus::Active,
+            None,
+        )
+        .await?;
+    Ok(())
+}
+
 #[tokio::test]
 async fn startup_interrupt_acknowledges_closed_notice_admission() -> Result<()> {
     let gateway = create_mock_responses_server_repeating_assistant("Done").await;
     let home = TempDir::new()?;
-    MockResponsesConfig::new(&gateway.uri()).write(home.path())?;
+    MockResponsesConfig::new(&gateway.uri())
+        .enable_feature(Feature::Goals)
+        .write(home.path())?;
     let mut server = TestAppServer::builder()
         .with_codex_home(home.path())
         .build_initialized()
@@ -43,6 +62,7 @@ async fn startup_interrupt_acknowledges_closed_notice_admission() -> Result<()> 
         .start_thread(ThreadStartParams::default())
         .await?
         .thread;
+    seed_active_goal(home.path(), &thread.id).await?;
     let id = server
         .send_turn_interrupt_request(TurnInterruptParams {
             thread_id: thread.id.clone(),
@@ -63,7 +83,7 @@ async fn startup_interrupt_acknowledges_closed_notice_admission() -> Result<()> 
 }
 
 #[tokio::test]
-async fn independent_notice_starts_with_paused_goal() -> Result<()> {
+async fn independent_notice_defers_while_goal_is_paused() -> Result<()> {
     let gateway = create_mock_responses_server_repeating_assistant("Done").await;
     let home = TempDir::new()?;
     MockResponsesConfig::new(&gateway.uri())
@@ -89,10 +109,10 @@ async fn independent_notice_starts_with_paused_goal() -> Result<()> {
         .await?;
     let _: ThreadGoalSetResponse = server.read_response(id).await?;
     let id = server
-        .send_raw_request("turn/externalNotice", Some(notice))
+        .send_raw_request("turn/externalNotice", Some(notice.clone()))
         .await?;
     let receipt: TurnExternalNoticeResponse = server.read_response(id).await?;
-    assert!(receipt.turn_id.is_some());
+    assert_eq!(receipt.turn_id, None);
     let id = server
         .send_raw_request("thread/goal/get", Some(json!({"threadId": thread.id})))
         .await?;
@@ -101,6 +121,12 @@ async fn independent_notice_starts_with_paused_goal() -> Result<()> {
         goal.goal.expect("paused goal").status,
         ThreadGoalStatus::Paused
     );
+    seed_active_goal(home.path(), &thread.id).await?;
+    let id = server
+        .send_raw_request("turn/externalNotice", Some(notice))
+        .await?;
+    let receipt: TurnExternalNoticeResponse = server.read_response(id).await?;
+    assert!(receipt.turn_id.is_some());
     Ok(())
 }
 
@@ -147,6 +173,7 @@ async fn resumed_idle_session_requires_explicit_reactivation() -> Result<()> {
         })
         .await?;
     let _: ThreadResumeResponse = server.read_response(id).await?;
+    seed_active_goal(home.path(), &thread.id).await?;
     let id = server
         .send_raw_request(
             "turn/externalNotice",
@@ -261,6 +288,7 @@ async fn independent_notice_respects_interruption_across_session_restart() -> Re
         })
         .await?;
     let _: ThreadResumeResponse = server.read_response(id).await?;
+    seed_active_goal(home.path(), &thread.id).await?;
     let notice = json!({"threadId": thread.id, "source": "irc", "notice": "retained message"});
     let id = server
         .send_raw_request("turn/externalNotice", Some(notice.clone()))
@@ -298,24 +326,8 @@ async fn independent_notice_respects_interruption_across_session_restart() -> Re
 }
 
 #[tokio::test]
-async fn independent_notice_can_create_goal_without_starting_follow_up() -> Result<()> {
-    let gateway = create_mock_responses_server_sequence_unchecked(vec![
-        responses::sse(vec![
-            responses::ev_response_created("create"),
-            responses::ev_function_call(
-                "goal-call",
-                "create_goal",
-                r#"{"objective":"Explicit new goal"}"#,
-            ),
-            responses::ev_completed("create"),
-        ]),
-        responses::sse(vec![
-            responses::ev_response_created("answer"),
-            responses::ev_assistant_message("answer-msg", "Created."),
-            responses::ev_completed("answer"),
-        ]),
-    ])
-    .await;
+async fn independent_notice_without_a_goal_is_deferred() -> Result<()> {
+    let gateway = create_mock_responses_server_repeating_assistant("Done").await;
     let home = TempDir::new()?;
     MockResponsesConfig::new(&gateway.uri())
         .enable_feature(Feature::Goals)
@@ -337,28 +349,19 @@ async fn independent_notice_can_create_goal_without_starting_follow_up() -> Resu
         )
         .await?;
     let receipt: TurnExternalNoticeResponse = server.read_response(id).await?;
-    assert!(receipt.turn_id.is_some());
-    timeout(
-        Duration::from_secs(60),
-        server.read_stream_until_notification_message("turn/completed"),
-    )
-    .await??;
+    assert_eq!(receipt.turn_id, None);
     let id = server
         .send_raw_request("thread/goal/get", Some(json!({"threadId": thread.id})))
         .await?;
     let goal: ThreadGoalGetResponse = server.read_response(id).await?;
-    assert_eq!(
-        goal.goal.expect("created goal").status,
-        ThreadGoalStatus::Active
-    );
-    tokio::time::sleep(Duration::from_secs(2)).await;
+    assert!(goal.goal.is_none());
     assert_eq!(
         gateway
             .received_requests()
             .await
             .expect("captured requests")
             .len(),
-        2
+        0
     );
     Ok(())
 }
@@ -389,6 +392,7 @@ async fn automatic_notice_steers_existing_turn_with_exact_receipt() -> Result<()
         .start_thread(ThreadStartParams::default())
         .await?
         .thread;
+    seed_active_goal(home.path(), &thread.id).await?;
     let id = server
         .send_turn_start_request(TurnStartParams {
             thread_id: thread.id.clone(),
