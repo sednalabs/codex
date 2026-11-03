@@ -2,7 +2,6 @@ use super::*;
 use ed25519_dalek::Signature;
 use ed25519_dalek::Verifier as _;
 use pretty_assertions::assert_eq;
-use std::os::fd::FromRawFd as _;
 use std::os::unix::fs::PermissionsExt as _;
 use std::process::Command;
 use std::time::Duration;
@@ -922,4 +921,32 @@ fn fixed_http_policy_accepts_only_the_canonical_work_and_api_precondition() {
             "fixed API policy must reject caller-selected {field}"
         );
     }
+}
+
+#[test]
+fn output_projection_timeout_has_distinct_launcher_exit_status() {
+    let child_failure = result_after_projection_drain(Ok(1), /*projection_drained*/ true)
+        .expect("a drained projection preserves the child failure status");
+    assert_eq!(child_failure, 1);
+
+    let timeout = result_after_projection_drain(Ok(1), /*projection_drained*/ false)
+        .expect("a projection timeout has a launcher diagnostic status");
+    assert_eq!(timeout, OUTPUT_PROJECTION_TIMEOUT_EXIT_CODE);
+    assert_ne!(timeout, child_failure);
+
+    let supervision_error = result_after_projection_drain(
+        Err(anyhow::anyhow!("synthetic supervision error")),
+        /*projection_drained*/ true,
+    );
+    assert!(supervision_error.is_err());
+
+    let timeout_after_supervision_error = result_after_projection_drain(
+        Err(anyhow::anyhow!("synthetic supervision error")),
+        /*projection_drained*/ false,
+    )
+    .expect("a projection timeout remains distinguishable without stderr logging");
+    assert_eq!(
+        timeout_after_supervision_error,
+        OUTPUT_PROJECTION_TIMEOUT_EXIT_CODE
+    );
 }

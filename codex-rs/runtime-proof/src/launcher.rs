@@ -74,6 +74,7 @@ const MAX_MCP_CLIENT_SECRET_BYTES: usize = 4096;
 const MAX_EXECUTABLE_BYTES: u64 = 2 * 1024 * 1024 * 1024;
 const ACK_TIMEOUT: Duration = Duration::from_secs(60);
 const OUTPUT_DRAIN_GRACE: Duration = Duration::from_millis(100);
+const OUTPUT_PROJECTION_TIMEOUT_EXIT_CODE: i32 = 125;
 const READINESS_PACKET: &[u8; 4] = b"ACK1";
 
 /// Root-owned policy for one fixed Work-task execution.
@@ -591,19 +592,26 @@ fn run_mcp(
     if result.is_err() {
         terminate_child_group(&mut child);
     }
-    if output_finished_rx.recv_timeout(OUTPUT_DRAIN_GRACE).is_ok() {
+    let projection_drained = output_finished_rx.recv_timeout(OUTPUT_DRAIN_GRACE).is_ok();
+    if projection_drained {
         let _ = output_reader.join();
     } else {
         // A blocked journal write or inherited stdout descriptor cannot delay
         // child teardown or the launcher's normal return past this grace. Do
-        // not return the supervision error here: the binary's error reporter
-        // takes stderr's global lock, which the detached projector may hold.
-        // Exit nonzero without a diagnostic; the missing projection remains
-        // unknown to the caller.
+        // not report this through stderr: the detached projector may hold the
+        // global lock or be blocked writing to the journal. Return a distinct
+        // nonzero status rather than conflating this path with a child exit 1.
         drop(output_reader);
-        return Ok(1);
     }
-    result
+    result_after_projection_drain(result, projection_drained)
+}
+
+fn result_after_projection_drain(result: Result<i32>, projection_drained: bool) -> Result<i32> {
+    if projection_drained {
+        result
+    } else {
+        Ok(OUTPUT_PROJECTION_TIMEOUT_EXIT_CODE)
+    }
 }
 
 fn run_http_claim(
