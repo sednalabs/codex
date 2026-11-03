@@ -100,7 +100,7 @@ struct LauncherPolicy {
     deny_unknown_fields
 )]
 enum LauncherTarget {
-    Mcp(McpLaunchConfig),
+    Mcp(Box<McpLaunchConfig>),
     Http(ApiClaimConfig),
 }
 
@@ -203,13 +203,17 @@ pub fn lifecycle_stop() -> Result<i32> {
     };
     lifecycle::require_manager_stop(&context.manager_binding)?;
     let credentials = credential_directory()?;
+    let policy_sha256 = wire::certificate_digest(&policy_bytes);
+    let inputs = lifecycle::Inputs {
+        policy: &policy,
+        target,
+        credentials: &credentials,
+        policy_sha256: &policy_sha256,
+        observer_sha256: &config.observer_sha256,
+    };
     lifecycle::finish(
         &mut context,
-        &policy,
-        target,
-        &credentials,
-        &wire::certificate_digest(&policy_bytes),
-        &config.observer_sha256,
+        inputs,
         lifecycle::Source::Systemd,
         lifecycle::Cause::Unobserved,
         None,
@@ -1229,17 +1233,20 @@ fn supervise_child(
     let mut lifecycle_context = if let Some(config) = &target.lifecycle {
         let manager_binding = lifecycle_manager
             .ok_or_else(|| anyhow!("fixed lifecycle manager binding is missing"))?;
-        Some(lifecycle::start(
+        let inputs = lifecycle::Inputs {
             policy,
             target,
-            credential_directory,
+            credentials: credential_directory,
+            policy_sha256,
+            observer_sha256: &config.observer_sha256,
+        };
+        Some(lifecycle::start(
+            inputs,
             manager_binding,
             child.id(),
             &certificate,
             &claims,
             &issuer_seed,
-            policy_sha256,
-            &config.observer_sha256,
         )?)
     } else {
         None
@@ -1322,13 +1329,16 @@ fn supervise_child(
             ChildWait::Exited(_) => (lifecycle::Cause::Unobserved, None, None),
             ChildWait::TimedOut => (lifecycle::Cause::Timeout, None, None),
         };
-        let _end_result = lifecycle::finish(
-            context,
+        let inputs = lifecycle::Inputs {
             policy,
             target,
-            credential_directory,
+            credentials: credential_directory,
             policy_sha256,
-            &config.observer_sha256,
+            observer_sha256: &config.observer_sha256,
+        };
+        let _end_result = lifecycle::finish(
+            context,
+            inputs,
             lifecycle::Source::Launcher,
             cause,
             code,

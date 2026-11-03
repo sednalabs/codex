@@ -404,10 +404,9 @@ fn require_process_cgroup(pid: u32, expected: &str) -> Result<()> {
     for line in contents.lines() {
         if let Some((hierarchy, path)) = line.split_once("::")
             && hierarchy == "0"
+            && unified.replace(path).is_some()
         {
-            if unified.replace(path).is_some() {
-                bail!("lifecycle cgroup membership is ambiguous");
-            }
+            bail!("lifecycle cgroup membership is ambiguous");
         }
     }
     if unified != Some(expected) {
@@ -500,7 +499,7 @@ fn open_cgroup_directory(path: &str) -> Result<File> {
         .custom_flags(libc::O_DIRECTORY | libc::O_NOFOLLOW | libc::O_CLOEXEC)
         .open(CGROUP_ROOT)?;
     if unsafe { libc::fstatfs(root.as_raw_fd(), stat.as_mut_ptr()) } != 0
-        || unsafe { stat.assume_init_ref().f_type as i64 } != CGROUP2_SUPER_MAGIC
+        || unsafe { stat.assume_init_ref().f_type } != CGROUP2_SUPER_MAGIC
     {
         bail!("lifecycle requires the unified cgroup hierarchy");
     }

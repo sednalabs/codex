@@ -144,9 +144,8 @@ fn closed_event_requires_nullable_fields() {
 
 #[test]
 fn temporary_context_file_cleanup_removes_the_created_file() {
-    let directory = std::env::temp_dir().join(format!("lifecycle-cleanup-{}", Uuid::new_v4()));
-    std::fs::create_dir(&directory).expect("create temporary directory");
-    let path = directory.join("context.tmp");
+    let directory = tempfile::tempdir().expect("create temporary directory");
+    let path = directory.path().join("context.tmp");
     OpenOptions::new()
         .write(true)
         .create_new(true)
@@ -156,7 +155,6 @@ fn temporary_context_file_cleanup_removes_the_created_file() {
     assert!(path.exists());
     drop(cleanup);
     assert!(!path.exists());
-    std::fs::remove_dir(&directory).expect("remove temporary directory");
 }
 
 #[test]

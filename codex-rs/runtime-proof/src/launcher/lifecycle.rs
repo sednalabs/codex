@@ -125,6 +125,14 @@ pub(super) struct Context {
     end_acknowledged: bool,
 }
 
+pub(super) struct Inputs<'a> {
+    pub(super) policy: &'a super::LauncherPolicy,
+    pub(super) target: &'a super::McpLaunchConfig,
+    pub(super) credentials: &'a Path,
+    pub(super) policy_sha256: &'a str,
+    pub(super) observer_sha256: &'a str,
+}
+
 #[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 struct EndObservation {
@@ -866,17 +874,20 @@ fn require_current_policy(expected: &str) -> Result<()> {
 
 /// Persist and acknowledge start before the child receives bootstrap authority.
 pub(super) fn start(
-    policy: &super::LauncherPolicy,
-    target: &super::McpLaunchConfig,
-    credentials: &Path,
+    inputs: Inputs<'_>,
     manager_binding: &ManagerBinding,
     child_pid: u32,
     certificate: &str,
     claims: &wire::CertificateClaims,
     seed: &[u8; 32],
-    policy_sha256: &str,
-    observer_sha256: &str,
 ) -> Result<Context> {
+    let Inputs {
+        policy,
+        target,
+        credentials,
+        policy_sha256,
+        observer_sha256,
+    } = inputs;
     let _lock = lock_cohort()?;
     require_manager_start(manager_binding, child_pid, policy_sha256)?;
     let now = super::api_claim::unix_seconds()?;
@@ -952,16 +963,19 @@ pub(super) fn start(
 /// Deliver a launcher-observed end, or a systemd unobserved end after teardown.
 pub(super) fn finish(
     context: &mut Context,
-    policy: &super::LauncherPolicy,
-    target: &super::McpLaunchConfig,
-    credentials: &Path,
-    policy_sha256: &str,
-    observer_sha256: &str,
+    inputs: Inputs<'_>,
     source: Source,
     cause: Cause,
     exit_code: Option<i32>,
     signal: Option<i32>,
 ) -> Result<()> {
+    let Inputs {
+        policy,
+        target,
+        credentials,
+        policy_sha256,
+        observer_sha256,
+    } = inputs;
     let _lock = if source == Source::Launcher {
         Some(lock_cohort()?)
     } else {

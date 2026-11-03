@@ -7,6 +7,14 @@ use std::process::Command;
 use std::time::Duration;
 use std::time::Instant;
 
+fn claim_service_unit() -> String {
+    let package_root = option_env!("BAZEL_PACKAGE")
+        .map(std::path::PathBuf::from)
+        .unwrap_or_else(|| std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")));
+    std::fs::read_to_string(package_root.join("systemd/codex-runtime-proof-claim.service"))
+        .expect("read fixed claim service unit")
+}
+
 #[test]
 fn api_bearer_provisioning_accepts_only_the_fixed_browser_modes() {
     let browser = vec![std::ffi::OsString::from("provision-api-bearer")];
@@ -277,7 +285,7 @@ fn lifecycle_policy_is_opt_in_and_closed() {
 
 #[test]
 fn systemd_unit_keeps_the_fixed_epoch_observer_contract() {
-    const SERVICE_UNIT: &str = include_str!("../systemd/codex-runtime-proof-claim.service");
+    let service_unit = claim_service_unit();
     for directive in [
         "ExecStart=/usr/libexec/codex/codex-runtime-proof-launcher",
         "ExecStopPost=/usr/libexec/codex/codex-runtime-proof-launcher lifecycle-stop",
@@ -290,17 +298,17 @@ fn systemd_unit_keeps_the_fixed_epoch_observer_contract() {
         "StateDirectoryMode=0700",
         "ProtectControlGroups=yes",
     ] {
-        assert!(SERVICE_UNIT.lines().any(|line| line == directive));
+        assert!(service_unit.lines().any(|line| line == directive));
     }
     assert_eq!(
-        SERVICE_UNIT
+        service_unit
             .lines()
             .filter(|line| line.starts_with("ExecStopPost="))
             .count(),
         1
     );
     assert!(
-        !SERVICE_UNIT
+        !service_unit
             .lines()
             .any(|line| line.starts_with("ExecStop="))
     );
@@ -308,11 +316,11 @@ fn systemd_unit_keeps_the_fixed_epoch_observer_contract() {
 
 #[test]
 fn systemd_analyze_accepts_the_fixed_claim_unit() {
-    const SERVICE_UNIT: &str = include_str!("../systemd/codex-runtime-proof-claim.service");
+    let service_unit = claim_service_unit();
     // Validate all unit syntax and directives while mapping only host-specific
     // executable/group identities to the standard Linux runner equivalents.
     // Separate assertions above pin those fixed production values exactly.
-    let validation_unit = SERVICE_UNIT
+    let validation_unit = service_unit
         .replace(
             "User=root\nGroup=codex-runtime-proof\n",
             "User=root\nGroup=root\n",
@@ -325,17 +333,16 @@ fn systemd_analyze_accepts_the_fixed_claim_unit() {
             "ExecStopPost=/usr/libexec/codex/codex-runtime-proof-launcher lifecycle-stop",
             "ExecStopPost=/usr/bin/true lifecycle-stop",
         );
-    let unit_path = std::env::temp_dir().join(format!(
-        "codex-runtime-proof-claim-{}.service",
-        uuid::Uuid::new_v4()
-    ));
-    std::fs::write(&unit_path, validation_unit).expect("write temporary systemd unit");
+    let unit_file = tempfile::Builder::new()
+        .suffix(".service")
+        .tempfile()
+        .expect("create temporary systemd unit");
+    std::fs::write(unit_file.path(), validation_unit).expect("write temporary systemd unit");
     let output = Command::new("systemd-analyze")
         .arg("verify")
-        .arg(&unit_path)
+        .arg(unit_file.path())
         .output()
         .expect("standard Linux runner provides systemd-analyze");
-    let _ = std::fs::remove_file(&unit_path);
     assert!(
         output.status.success(),
         "fixed runtime-proof systemd unit did not validate: {}{}",
