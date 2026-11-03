@@ -155,10 +155,12 @@ impl<'a, W: Write> Projector<'a, W> {
             return;
         }
         self.child_failure_emitted = true;
+        let (reason_class, matched_reason_classes) = child_failure_classification(message);
         self.emit_record(&serde_json::json!({
             "event": "runtime_proof_child_failure",
             "stage": stage,
-            "reason_class": child_failure_reason_class(message),
+            "reason_class": reason_class,
+            "matched_reason_classes": matched_reason_classes,
         }));
     }
 
@@ -555,9 +557,9 @@ impl<'a, W: Write> Projector<'a, W> {
 
 // `codex exec --json` exposes the error message but not its protocol error code.
 // Keep diagnostics useful without forwarding potentially sensitive message text.
-fn child_failure_reason_class(message: Option<&str>) -> &'static str {
+fn child_failure_classification(message: Option<&str>) -> (&'static str, Vec<&'static str>) {
     let Some(message) = message else {
-        return "unclassified";
+        return ("unclassified", Vec::new());
     };
     let message = message.to_ascii_lowercase();
     let categories: [(&str, &[&str]); 9] = [
@@ -580,16 +582,21 @@ fn child_failure_reason_class(message: Option<&str>) -> &'static str {
         ),
         ("panic", &["panicked", "panic"]),
     ];
-    let mut matched = None;
-    for (category, needles) in categories {
-        if needles.iter().any(|needle| message.contains(*needle)) {
-            if matched.is_some() {
-                return "ambiguous";
-            }
-            matched = Some(category);
-        }
-    }
-    matched.unwrap_or("other")
+    let matched: Vec<&'static str> = categories
+        .into_iter()
+        .filter_map(|(category, needles)| {
+            needles
+                .iter()
+                .any(|needle| message.contains(*needle))
+                .then_some(category)
+        })
+        .collect();
+    let reason_class = match matched.as_slice() {
+        [] => "other",
+        [category] => *category,
+        _ => "ambiguous",
+    };
+    (reason_class, matched)
 }
 
 fn canonical_uuid(value: &str) -> Option<String> {
