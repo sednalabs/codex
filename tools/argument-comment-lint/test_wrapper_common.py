@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from pathlib import Path
 import sys
+import tempfile
 import unittest
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
@@ -12,6 +13,43 @@ import wrapper_common
 
 
 class WrapperCommonTest(unittest.TestCase):
+    def test_prebuilt_cargo_dylint_defaults_to_packaged_executable(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            package_dir = Path(temp_dir) / "argument-comment-lint" / "bin"
+            package_dir.mkdir(parents=True)
+            package_entrypoint = package_dir / "argument-comment-lint"
+            package_entrypoint.touch()
+            packaged_cargo_dylint = package_dir / "cargo-dylint"
+            packaged_cargo_dylint.touch()
+
+            resolved = wrapper_common.resolve_prebuilt_cargo_dylint(
+                package_entrypoint, {}
+            )
+
+        self.assertEqual(resolved, packaged_cargo_dylint)
+
+    def test_prebuilt_cargo_dylint_override_uses_absolute_existing_executable(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            override = Path(temp_dir) / "cargo-dylint"
+            override.touch()
+
+            resolved = wrapper_common.resolve_prebuilt_cargo_dylint(
+                Path("/package/bin/argument-comment-lint"),
+                {wrapper_common.PREBUILT_CARGO_DYLINT_ENV: str(override)},
+            )
+
+        self.assertEqual(resolved, override.resolve())
+
+    def test_prebuilt_cargo_dylint_override_rejects_missing_executable(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            override = Path(temp_dir) / "missing-cargo-dylint"
+
+            with self.assertRaises(SystemExit):
+                wrapper_common.resolve_prebuilt_cargo_dylint(
+                    Path("/package/bin/argument-comment-lint"),
+                    {wrapper_common.PREBUILT_CARGO_DYLINT_ENV: str(override)},
+                )
+
     def test_defaults_to_workspace_and_all_targets(self) -> None:
         parsed = wrapper_common.parse_wrapper_args([])
         final_args = wrapper_common.build_final_args(parsed, Path("/repo/codex-rs/Cargo.toml"))
