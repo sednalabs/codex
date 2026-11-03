@@ -100,6 +100,7 @@ struct Projector<'a, W: Write> {
     principal: Uuid,
     primary_thread: Option<String>,
     pending: BTreeMap<String, PendingCall>,
+    child_failure_emitted: bool,
     writer: &'a mut W,
 }
 
@@ -110,6 +111,7 @@ impl<'a, W: Write> Projector<'a, W> {
             principal,
             primary_thread: None,
             pending: BTreeMap::new(),
+            child_failure_emitted: false,
             writer,
         }
     }
@@ -122,8 +124,42 @@ impl<'a, W: Write> Projector<'a, W> {
             Some("thread.started") => self.accept_thread_start(&event),
             Some("item.started") => self.accept_item_start(&event),
             Some("item.completed") => self.accept_item_completion(&event),
+            Some("error") => self.accept_child_error(&event),
+            Some("turn.failed") => self.accept_turn_failure(&event),
             _ => {}
         }
+    }
+
+    fn accept_child_error(&mut self, event: &Value) {
+        let stage = match self.primary_thread.as_deref() {
+            Some(_) if self.is_primary_event(event) => "turn",
+            Some(_) => return,
+            None if event.get("thread_id").is_none_or(Value::is_null) => "startup",
+            None => return,
+        };
+        self.emit_child_failure(stage, event.get("message").and_then(Value::as_str));
+    }
+
+    fn accept_turn_failure(&mut self, event: &Value) {
+        if !self.is_primary_event(event) {
+            return;
+        }
+        self.emit_child_failure(
+            "turn",
+            event.pointer("/error/message").and_then(Value::as_str),
+        );
+    }
+
+    fn emit_child_failure(&mut self, stage: &'static str, message: Option<&str>) {
+        if self.child_failure_emitted {
+            return;
+        }
+        self.child_failure_emitted = true;
+        self.emit_record(&serde_json::json!({
+            "event": "runtime_proof_child_failure",
+            "stage": stage,
+            "reason_class": child_failure_reason_class(message),
+        }));
     }
 
     fn accept_thread_start(&mut self, event: &Value) {
@@ -515,6 +551,45 @@ impl<'a, W: Write> Projector<'a, W> {
         let _ = self.writer.write_all(b"\n");
         let _ = self.writer.flush();
     }
+}
+
+// `codex exec --json` exposes the error message but not its protocol error code.
+// Keep diagnostics useful without forwarding potentially sensitive message text.
+fn child_failure_reason_class(message: Option<&str>) -> &'static str {
+    let Some(message) = message else {
+        return "unclassified";
+    };
+    let message = message.to_ascii_lowercase();
+    let categories: [(&str, &[&str]); 9] = [
+        (
+            "auth",
+            &["auth", "credential", "token", "api key", "unauthorized"],
+        ),
+        ("mcp", &["mcp", "tool server", "tools/list"]),
+        ("config", &["config", "toml", "profile"]),
+        (
+            "provider",
+            &["model", "provider", "responses api", "openai"],
+        ),
+        ("sandbox", &["sandbox", "approval", "permission denied"]),
+        ("input", &["stdin", "prompt", "input"]),
+        ("filesystem", &["file", "directory", "path", "no such file"]),
+        (
+            "transport",
+            &["connection", "connect", "socket", "timeout", "network"],
+        ),
+        ("panic", &["panicked", "panic"]),
+    ];
+    let mut matched = None;
+    for (category, needles) in categories {
+        if needles.iter().any(|needle| message.contains(*needle)) {
+            if matched.is_some() {
+                return "ambiguous";
+            }
+            matched = Some(category);
+        }
+    }
+    matched.unwrap_or("other")
 }
 
 fn canonical_uuid(value: &str) -> Option<String> {
