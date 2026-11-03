@@ -1,5 +1,5 @@
 use super::*;
-use codex_protocol::protocol::CodexErrorInfo;
+use codex_app_server_protocol::CodexErrorInfo;
 use pretty_assertions::assert_eq;
 use serde_json::json;
 use tempfile::tempdir;
@@ -187,7 +187,7 @@ fn thread_error_event_maps_only_allowlisted_codex_error_codes() {
         ),
         (
             CodexErrorInfo::ActiveTurnNotSteerable {
-                turn_kind: codex_protocol::protocol::NonSteerableTurnKind::Review,
+                turn_kind: codex_app_server_protocol::NonSteerableTurnKind::Review,
             },
             "active_turn_not_steerable",
         ),
