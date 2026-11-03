@@ -4037,6 +4037,27 @@ or writing it. Installation never starts or reloads the unit. Packaging does
 not create the host policy, credentials, service account, issuer appointment,
 or live execution authority.
 
+The optional native supervised path additionally supports issuer-signed lifecycle
+events. The same pinned launcher reports start only after a matching receipt and
+before bootstrap; the measured child is held with uncatchable `SIGSTOP` until both
+bootstrap and auth packets are queued, and start proof requires the fixed cgroup's
+task count to equal the launcher's threads plus that stopped child. It preserves a
+reaped exit, signal, or timeout. Its root-only
+context binds the system manager executable and boot, fixed unit, InvocationID,
+and cgroup path plus filesystem identity. The unit uses control-group kill,
+`TasksAccounting=yes`, and no cgroup delegation. Only its synchronous
+`ExecStopPost` may report end, after the manager confirms `MainPID=0`,
+`ControlPID` is the observer, the observer remains in the bound cgroup, and
+hierarchical `pids.current=1`; there is no global UID scan. Manager/cgroup
+identity, current policy, and a current same-principal API bearer are rechecked
+before send, with the receiver enforcing non-system caller identity. The original
+certificate remains a historical reference; a distinct lifecycle witness binds
+the exact closed event and scoped receipt. Unknown effects, unavailable
+authority, and unproven epoch termination remain unresolved and fall back to
+lease recovery. The API claim and ordinary unconfigured paths are not made
+dependent on lifecycle. Hosted unit validation and package proof do not replace
+Ops-owned installation, host proof, or first use.
+
 Curated plugin ZIP extraction applies Unix permissions only after masking to
 ordinary `0o777` bits. This keeps executable plugin files usable while making
 the filesystem permission boundary independent of the ZIP reader's current

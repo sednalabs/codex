@@ -241,8 +241,142 @@ fn fixed_policy(seed: &[u8; RUNTIME_SEED_BYTES]) -> LauncherPolicy {
                 requested_scope: "ops:write".to_string(),
             },
             task_prompt: "Claim the fixed Work item after checking its current state.".to_string(),
+            lifecycle: None,
         }),
     }
+}
+
+#[test]
+fn lifecycle_policy_is_opt_in_and_closed() {
+    let mut value = serde_json::json!({
+        "codex_dev_path": "/bin/example",
+        "codex_dev_sha256": "a".repeat(64),
+        "runtime_uid": 1001,
+        "runtime_gid": 1001,
+        "working_directory": "/",
+        "mcp_recipient": "https://example.invalid",
+        "mcp_oauth": {
+            "token_endpoint": "https://example.invalid/token",
+            "expected_issuer": "https://example.invalid",
+            "client_id": "test",
+            "audience": "test",
+            "requested_scope": "ops:write"
+        },
+        "task_prompt": "test"
+    });
+    let original: McpLaunchConfig =
+        serde_json::from_value(value.clone()).expect("ordinary MCP profile");
+    assert!(original.lifecycle.is_none());
+    value["lifecycle"] = serde_json::json!({"observer_sha256": "b".repeat(64)});
+    let enabled: McpLaunchConfig =
+        serde_json::from_value(value.clone()).expect("lifecycle profile");
+    assert!(enabled.lifecycle.is_some());
+    value["lifecycle"]["unexpected"] = serde_json::json!(true);
+    assert!(serde_json::from_value::<McpLaunchConfig>(value).is_err());
+}
+
+#[test]
+fn systemd_unit_keeps_the_fixed_epoch_observer_contract() {
+    const SERVICE_UNIT: &str = include_str!("../systemd/codex-runtime-proof-claim.service");
+    for directive in [
+        "ExecStart=/usr/libexec/codex/codex-runtime-proof-launcher",
+        "ExecStopPost=/usr/libexec/codex/codex-runtime-proof-launcher lifecycle-stop",
+        "TimeoutStopSec=30s",
+        "KillMode=control-group",
+        "SendSIGKILL=yes",
+        "Delegate=no",
+        "TasksAccounting=yes",
+        "StateDirectory=codex-runtime-proof-lifecycle",
+        "StateDirectoryMode=0700",
+        "ProtectControlGroups=yes",
+    ] {
+        assert!(SERVICE_UNIT.lines().any(|line| line == directive));
+    }
+    assert_eq!(
+        SERVICE_UNIT
+            .lines()
+            .filter(|line| line.starts_with("ExecStopPost="))
+            .count(),
+        1
+    );
+    assert!(
+        !SERVICE_UNIT
+            .lines()
+            .any(|line| line.starts_with("ExecStop="))
+    );
+}
+
+#[test]
+fn systemd_analyze_accepts_the_fixed_claim_unit() {
+    const SERVICE_UNIT: &str = include_str!("../systemd/codex-runtime-proof-claim.service");
+    // Validate all unit syntax and directives while mapping only host-specific
+    // executable/group identities to the standard Linux runner equivalents.
+    // Separate assertions above pin those fixed production values exactly.
+    let validation_unit = SERVICE_UNIT
+        .replace(
+            "User=root\nGroup=codex-runtime-proof\n",
+            "User=root\nGroup=root\n",
+        )
+        .replace(
+            "ExecStart=/usr/libexec/codex/codex-runtime-proof-launcher",
+            "ExecStart=/usr/bin/true",
+        )
+        .replace(
+            "ExecStopPost=/usr/libexec/codex/codex-runtime-proof-launcher lifecycle-stop",
+            "ExecStopPost=/usr/bin/true lifecycle-stop",
+        );
+    let unit_path = std::env::temp_dir().join(format!(
+        "codex-runtime-proof-claim-{}.service",
+        uuid::Uuid::new_v4()
+    ));
+    std::fs::write(&unit_path, validation_unit).expect("write temporary systemd unit");
+    let output = Command::new("systemd-analyze")
+        .arg("verify")
+        .arg(&unit_path)
+        .output()
+        .expect("standard Linux runner provides systemd-analyze");
+    let _ = std::fs::remove_file(&unit_path);
+    assert!(
+        output.status.success(),
+        "fixed runtime-proof systemd unit did not validate: {}{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+}
+
+#[test]
+fn lifecycle_child_is_stopped_until_the_authority_packets_are_ready() {
+    struct KillOnDrop(Child);
+
+    impl Drop for KillOnDrop {
+        fn drop(&mut self) {
+            let _ = self.0.kill();
+            let _ = self.0.wait();
+        }
+    }
+
+    let mut child = KillOnDrop(
+        Command::new("/usr/bin/sleep")
+            .arg("30")
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .spawn()
+            .expect("spawn fixed sleep fixture"),
+    );
+    hold_child_before_authority(&child.0).expect("hold measured child");
+    let status = std::fs::read_to_string(format!("/proc/{}/status", child.0.id()))
+        .expect("read held child status");
+    assert_eq!(
+        status
+            .lines()
+            .find_map(|line| line.strip_prefix("State:"))
+            .and_then(|value| value.split_whitespace().next()),
+        Some("T")
+    );
+    resume_child_after_authority(&child.0).expect("resume measured child");
+    child.0.kill().expect("stop sleep fixture");
+    child.0.wait().expect("reap sleep fixture");
 }
 
 #[test]

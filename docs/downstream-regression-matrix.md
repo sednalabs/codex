@@ -68,6 +68,22 @@ classification, payload redaction, child-event exclusion, overlong-line draining
 and closed MCP launcher failure-stage projection. Protected package installation
 and natural first use remain separate acceptance steps.
 
+The optional native launcher lifecycle path requires a separately issuer-signed
+event and matching start receipt before bootstrap. Its focused tests cover the
+event/witness binding, closed causes, exact receipt comparison, immutable
+potentially-sent proof timing, and a single read after an uncertain POST. The
+manager-proof tests reject changed/unknown systemd properties and require start
+task accounting to equal the launcher's threads plus the held measured child;
+the child receives no authority until the start receipt and final boundary check.
+End requires the fixed invocation, `MainPID=0`, `ControlPID=self`, stop-post
+state, self cgroup membership, and hierarchical `pids.current=1`. A normalized validation copy of
+the fixed unit is checked by `systemd-analyze verify` on the hosted Linux runner
+after replacing only executable/group identities that are separately pinned by
+exact-text checks. A missing current
+same-principal bearer or unresolved effect leaves lease recovery intact. These
+hosted source/package checks do not establish protected service admission or
+live host activation.
+
 ## Core default path
 
 Exact-target V2 `wait_agent` ignores queue-only (`trigger_turn=false`) mailbox
