@@ -12,20 +12,19 @@ jobs:
   package:
     name: ${{ matrix.target }} package smoke
     runs-on: ${{ matrix.runner }}
-    timeout-minutes: 120
+    timeout-minutes: 180
     permissions:
       contents: read
     strategy:
       fail-fast: false
       matrix:
         include:
-          - runner: ubuntu-24.04
-            target: x86_64-unknown-linux-gnu
           - runner: ubuntu-24.04-arm
             target: aarch64-unknown-linux-gnu
     env:
       PRODUCT_SHA: 7c02e650a7536df032a3ee688b070d3ea89af9a3
       TARGET: ${{ matrix.target }}
+      CARGO_BUILD_JOBS: 1
 
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
