@@ -48,6 +48,15 @@ legacy peer; installed configuration therefore does not prove the negotiated
 wire lifecycle. Source and hosted checks must pass before configuring a live
 server, and natural first use must verify the actual request path.
 
+## Retired stdio MCP runtime cleanup
+
+`codex.mcp-tool-exposure-targeted` runs
+`refresh_reaps_superseded_mcp_server_after_in_flight_call_finishes`. The
+regression proves that an in-flight tool call remains served during refresh,
+then the superseded stdio child is reaped and its pipes are released after the
+call finishes. Preserve this lane until upstream has equivalent deferred
+runtime shutdown and child cleanup.
+
 ## Protected native work-item lifecycle
 
 `codex.runtime-proof` verifies the exact version-2 MCP mutation pairs for
