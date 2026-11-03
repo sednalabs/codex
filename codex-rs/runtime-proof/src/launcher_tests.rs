@@ -464,6 +464,7 @@ fn fixed_policy(seed: &[u8; RUNTIME_SEED_BYTES]) -> LauncherPolicy {
                 audience: "https://mcp.example/".to_string(),
                 requested_scope: "ops:read ops:write".to_string(),
             },
+            model: None,
             task_prompt: "Claim the fixed Work item after checking its current state.".to_string(),
         }),
     }
@@ -568,7 +569,11 @@ fn token_deadline_preserves_fractional_time_from_the_policy_clock_pair() {
 
 #[test]
 fn generated_claim_profile_matches_the_protected_runtime_admission() {
-    let config = render_codex_config("https://mcp.example/");
+    let config = render_codex_config("https://mcp.example/", Some("gpt-6-luna"));
+    assert_eq!(
+        config.lines().find(|line| line.starts_with("model = ")),
+        Some("model = \"gpt-6-luna\"")
+    );
     crate::auth::validate_raw_config(config.as_bytes(), MCP_SERVER, "https://mcp.example/")
         .expect("launcher profile is admitted by the child runtime");
 
@@ -580,6 +585,57 @@ fn generated_claim_profile_matches_the_protected_runtime_admission() {
             "https://mcp.example/",
         )
         .is_err()
+    );
+}
+
+#[test]
+fn mcp_model_selection_is_policy_versioned_and_scoped() {
+    let seed = [29_u8; RUNTIME_SEED_BYTES];
+    let mut policy = fixed_policy(&seed);
+    assert!(
+        validate_policy(&policy).is_ok(),
+        "v2 retains dynamic selection"
+    );
+
+    {
+        let LauncherTarget::Mcp(target) = &mut policy.target else {
+            unreachable!("the fixed policy helper creates an MCP target");
+        };
+        target.model = Some("gpt-6-luna".to_string());
+    }
+    assert!(
+        validate_policy(&policy).is_err(),
+        "v2 does not accept a model pin"
+    );
+
+    policy.version = 3;
+    assert!(
+        validate_policy(&policy).is_ok(),
+        "v3 accepts the task-scoped model"
+    );
+    {
+        let LauncherTarget::Mcp(target) = &mut policy.target else {
+            unreachable!("the fixed policy helper creates an MCP target");
+        };
+        target.model = Some("invalid model".to_string());
+    }
+    assert!(
+        validate_policy(&policy).is_err(),
+        "model names must be bounded identifiers"
+    );
+    if let LauncherTarget::Mcp(target) = &mut policy.target {
+        target.model = None;
+    }
+    assert!(
+        validate_policy(&policy).is_err(),
+        "v3 requires an explicit model"
+    );
+
+    let legacy_config = render_codex_config("https://mcp.example/", None);
+    assert!(
+        !legacy_config
+            .lines()
+            .any(|line| line.starts_with("model = "))
     );
 }
 
