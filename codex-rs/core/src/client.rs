@@ -502,7 +502,7 @@ fn validate_protected_model_provider_info(
                 "protected runtime built-in provider is unavailable".to_string(),
             )
         })?;
-    let default = codex_model_provider_info::built_in_model_providers(None)
+    let default = codex_model_provider_info::built_in_model_providers(/*openai_base_url*/ None)
         .remove("openai")
         .ok_or_else(|| {
             CodexErr::UnsupportedOperation(

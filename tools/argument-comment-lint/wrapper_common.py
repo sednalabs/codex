@@ -19,7 +19,7 @@ STRICT_LINTS = [
 ]
 NOISE_LINT = "unknown_lints"
 TOOLCHAIN_CHANNEL = "nightly-2025-09-18"
-PREBUILT_CARGO_DYLINT_ENV = "CODEX_ARGUMENT_COMMENT_LINT_CARGO_DYLINT"
+USE_SYSTEM_CARGO_DYLINT_ENV = "CODEX_ARGUMENT_COMMENT_LINT_USE_SYSTEM_CARGO_DYLINT"
 
 _TARGET_SELECTION_ARGS = {
     "--all-targets",
@@ -179,13 +179,15 @@ def ensure_source_prerequisites(env: MutableMapping[str, str]) -> None:
         "cargo-dylint",
         "argument-comment-lint source wrapper requires cargo-dylint and dylint-link.\n"
         "Install them with:\n"
-        "  cargo install --locked cargo-dylint dylint-link",
+        "  rustup toolchain install stable --profile minimal\n"
+        "  cargo +stable install --locked cargo-dylint dylint-link",
     )
     require_command(
         "dylint-link",
         "argument-comment-lint source wrapper requires cargo-dylint and dylint-link.\n"
         "Install them with:\n"
-        "  cargo install --locked cargo-dylint dylint-link",
+        "  rustup toolchain install stable --profile minimal\n"
+        "  cargo +stable install --locked cargo-dylint dylint-link",
     )
     require_command(
         "rustup",
@@ -255,14 +257,9 @@ def find_packaged_cargo_dylint(package_entrypoint: Path) -> Path:
 def resolve_prebuilt_cargo_dylint(
     package_entrypoint: Path, env: MutableMapping[str, str]
 ) -> Path:
-    override = env.get(PREBUILT_CARGO_DYLINT_ENV)
-    if override:
-        cargo_dylint = Path(override)
-        if not cargo_dylint.is_absolute() or not cargo_dylint.is_file():
-            die(
-                f"{PREBUILT_CARGO_DYLINT_ENV} must name an existing absolute cargo-dylint executable"
-            )
-        return cargo_dylint.resolve()
+    if env.get(USE_SYSTEM_CARGO_DYLINT_ENV) == "1":
+        executable = "cargo-dylint.exe" if os.name == "nt" else "cargo-dylint"
+        return Path(executable)
     return find_packaged_cargo_dylint(package_entrypoint)
 
 
