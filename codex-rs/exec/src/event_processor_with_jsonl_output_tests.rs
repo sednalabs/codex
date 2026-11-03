@@ -254,12 +254,12 @@ fn streamed_error_jsonl_adds_typed_code_and_bounded_status_fields() {
     assert_eq!(collected.events.len(), 1);
     let serialized = serde_json::to_value(&collected.events[0]).expect("serialize error event");
     assert_eq!(
-        serialized["error"]["codex_error_code"],
+        serialized["codex_error_code"],
         "response_stream_disconnected"
     );
-    assert_eq!(serialized["error"]["http_status_code"], 503);
-    assert!(serialized["error"].get("response_body").is_none());
-    assert!(serialized["error"].get("additional_details").is_none());
+    assert_eq!(serialized["http_status_code"], 503);
+    assert!(serialized.get("response_body").is_none());
+    assert!(serialized.get("additional_details").is_none());
 }
 
 #[test]
