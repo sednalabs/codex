@@ -26,24 +26,27 @@ jobs:
         run: |
           set -euo pipefail
           git rev-parse HEAD
-          git fetch --no-tags --depth=1 origin 2851fbabc81559e0c10eddae0764eed4f3312e35
-          git diff --quiet 2851fbabc81559e0c10eddae0764eed4f3312e35 HEAD -- codex-rs ':(exclude)codex-rs/cli/tests/runtime_execution_proof.rs' ':(exclude)codex-rs/cli/tests/runtime_execution_proof/support.rs'
+          git fetch --no-tags --depth=1 origin 14307cc4412c7b3212103c16dae125fceb96b5f8
+          git diff --quiet 14307cc4412c7b3212103c16dae125fceb96b5f8 HEAD -- codex-rs ':(exclude)codex-rs/cli/tests/runtime_execution_proof.rs' ':(exclude)codex-rs/cli/tests/runtime_execution_proof/support.rs'
           export CARGO_BUILD_JOBS=2
           cargo test --locked -p codex-runtime-proof --lib outcome_projection::tests
           cargo test --locked -p codex-runtime-proof --lib mcp_model_selection_is_policy_versioned_and_scoped
           cargo test --locked -p codex-exec --lib protected_runtime_accepts_only_the_fixed_four_tool_profile
+          cargo test --locked -p codex-exec --lib thread_error_event_
+          cargo test --locked -p codex-exec --lib jsonl_
+          cargo test --locked -p codex-exec --test event_processor_with_json_output turn_failure_prefers_structured_error_message -- --exact --test-threads=1
           cargo test --locked -p codex-core --lib protected_model_provider_is_checked_before_auth_resolution
           cargo test --locked -p codex-cli --test runtime_execution_proof --no-run --message-format=json > "$RUNNER_TEMP/consumer-build.jsonl"
       - name: Await exact producer package
         env:
           GH_TOKEN: ${{ github.token }}
-        run: gh run watch 41662400491 --repo "$GITHUB_REPOSITORY" --interval 120 --exit-status
+        run: gh run watch 41687826607 --repo "$GITHUB_REPOSITORY" --interval 120 --exit-status
       - name: Download exact producer package
         uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with:
           github-token: ${{ github.token }}
-          run-id: 41662400491
-          name: sedna-branch-2851fbabc81559e0c10eddae0764eed4f3312e35-2851fbab-x86_64-unknown-linux-gnu
+          run-id: 41687826607
+          name: sedna-branch-14307cc4412c7b3212103c16dae125fceb96b5f8-14307cc4-x86_64-unknown-linux-gnu
           path: ${{ runner.temp }}/producer-package
       - name: Bind package to corrected consumer source
         shell: bash
@@ -54,13 +57,13 @@ jobs:
           mapfile -t archives < <(find . -maxdepth 1 -name '*.tar.gz' -type f)
           test "${#manifests[@]}" -eq 1
           test "${#archives[@]}" -eq 1
-          jq -e '.commit == "2851fbabc81559e0c10eddae0764eed4f3312e35"' "${manifests[0]}" >/dev/null
+          jq -e '.commit == "14307cc4412c7b3212103c16dae125fceb96b5f8"' "${manifests[0]}" >/dev/null
           mkdir -p "$RUNNER_TEMP/producer-unpacked"
           tar -xzf "${archives[0]}" -C "$RUNNER_TEMP/producer-unpacked"
           sha256sum "${archives[0]}" "$RUNNER_TEMP/producer-unpacked/codex" "$RUNNER_TEMP/producer-unpacked/codex-runtime-proof-launcher" "$RUNNER_TEMP/producer-unpacked/install_runtime_proof_launcher" "$RUNNER_TEMP/producer-unpacked/systemd/codex-runtime-proof-claim.service"
           test "$(sha256sum "$RUNNER_TEMP/producer-unpacked/codex-runtime-proof-launcher" | cut -d' ' -f1)" = "$(jq -r .runtimeProofLauncherSha256 "${manifests[0]}")"
           test "$(sha256sum "$RUNNER_TEMP/producer-unpacked/install_runtime_proof_launcher" | cut -d' ' -f1)" = "$(jq -r .runtimeProofLauncherInstallerSha256 "${manifests[0]}")"
-          test "$(sha256sum "$RUNNER_TEMP/producer-unpacked/systemd/codex-runtime-proof-claim.service" | cut -d' ' -f1)" = "$(git -C "$GITHUB_WORKSPACE" show 2851fbabc81559e0c10eddae0764eed4f3312e35:codex-rs/runtime-proof/systemd/codex-runtime-proof-claim.service | sha256sum | cut -d' ' -f1)"
+          test "$(sha256sum "$RUNNER_TEMP/producer-unpacked/systemd/codex-runtime-proof-claim.service" | cut -d' ' -f1)" = "$(git -C "$GITHUB_WORKSPACE" show 14307cc4412c7b3212103c16dae125fceb96b5f8:codex-rs/runtime-proof/systemd/codex-runtime-proof-claim.service | sha256sum | cut -d' ' -f1)"
       - name: Build and run targeted consumer checks
         working-directory: codex-rs
         shell: bash
