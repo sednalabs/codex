@@ -12,11 +12,11 @@ from wrapper_common import (
     build_final_args,
     exec_command,
     fetch_packaged_entrypoint,
-    find_packaged_cargo_dylint,
     normalize_packaged_library,
     parse_wrapper_args,
     prefer_rustup_shims,
     repo_root,
+    resolve_prebuilt_cargo_dylint,
     set_default_lint_env,
 )
 
@@ -34,7 +34,7 @@ def main() -> "Never":
         root / "tools" / "argument-comment-lint" / "argument-comment-lint",
         env,
     )
-    cargo_dylint = find_packaged_cargo_dylint(package_entrypoint)
+    cargo_dylint = resolve_prebuilt_cargo_dylint(package_entrypoint, env)
     library_path = normalize_packaged_library(package_entrypoint)
 
     command = [str(cargo_dylint), "dylint", "--lib-path", str(library_path)]
