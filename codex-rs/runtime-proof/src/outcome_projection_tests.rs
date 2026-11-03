@@ -536,13 +536,14 @@ fn child_events_are_ignored_and_overlong_lines_are_drained() {
 }
 
 #[test]
-fn startup_error_projects_only_a_closed_reason_class() {
+fn startup_error_projects_only_allowlisted_codex_error_fields() {
     let mut input = Vec::new();
     line(
         serde_json::json!({
             "type":"error",
             "message":"API credential rejected; secret=private-startup-sentinel",
-            "additional_details":"private detail"
+            "additional_details":"private detail",
+            "codex_error_code":"unauthorized"
         }),
         &mut input,
     );
@@ -564,15 +565,13 @@ fn startup_error_projects_only_a_closed_reason_class() {
     assert_eq!(records.len(), 1);
     assert_eq!(records[0]["event"], "runtime_proof_child_failure");
     assert_eq!(records[0]["stage"], "startup");
-    assert_eq!(records[0]["reason_class"], "auth");
-    assert_eq!(
-        records[0]["matched_reason_classes"],
-        serde_json::json!(["auth"])
-    );
+    assert_eq!(records[0]["codex_error_code"], "unauthorized");
+    assert!(records[0].get("http_status_code").is_none());
+    assert!(records[0].get("reason_class").is_none());
 }
 
 #[test]
-fn primary_turn_failure_is_classified_and_child_thread_errors_are_ignored() {
+fn primary_turn_failure_projects_typed_code_and_child_thread_errors_are_ignored() {
     let mut input = Vec::new();
     line(
         serde_json::json!({"type":"thread.started","thread_id":THREAD}),
@@ -588,20 +587,14 @@ fn primary_turn_failure_is_classified_and_child_thread_errors_are_ignored() {
     );
     line(
         serde_json::json!({
-            "type":"error",
-            "thread_id":THREAD,
-            "message":"provider returned a private diagnostic"
-        }),
-        &mut input,
-    );
-    line(
-        serde_json::json!({
             "type":"turn.failed",
             "thread_id":THREAD,
             "turn_id":"turn-1",
             "error":{
                 "message":"provider rejected request; payload=private-turn-sentinel",
-                "additionalDetails":"private detail"
+                "additionalDetails":"private detail",
+                "codex_error_code":"response_stream_disconnected",
+                "http_status_code":503
             }
         }),
         &mut input,
@@ -625,20 +618,23 @@ fn primary_turn_failure_is_classified_and_child_thread_errors_are_ignored() {
     assert_eq!(records.len(), 1);
     assert_eq!(records[0]["event"], "runtime_proof_child_failure");
     assert_eq!(records[0]["stage"], "turn");
-    assert_eq!(records[0]["reason_class"], "provider");
     assert_eq!(
-        records[0]["matched_reason_classes"],
-        serde_json::json!(["provider"])
+        records[0]["codex_error_code"],
+        "response_stream_disconnected"
     );
+    assert_eq!(records[0]["http_status_code"], 503);
+    assert!(records[0].get("reason_class").is_none());
 }
 
 #[test]
-fn overlapping_child_error_categories_are_reported_as_ambiguous() {
+fn unallowlisted_error_fields_and_unstructured_status_are_not_projected() {
     let mut input = Vec::new();
     line(
         serde_json::json!({
             "type":"error",
-            "message":"provider auth connection failed"
+            "message":"provider auth connection failed; token=private-sentinel",
+            "codex_error_code":"private-error-code",
+            "http_status_code":401
         }),
         &mut input,
     );
@@ -655,9 +651,105 @@ fn overlapping_child_error_categories_are_reported_as_ambiguous() {
         .map(|line| serde_json::from_slice(line).unwrap())
         .collect();
     assert_eq!(records.len(), 1);
-    assert_eq!(records[0]["reason_class"], "ambiguous");
-    assert_eq!(
-        records[0]["matched_reason_classes"],
-        serde_json::json!(["auth", "provider", "transport"])
+    assert_eq!(records[0]["event"], "runtime_proof_child_failure");
+    assert_eq!(records[0]["stage"], "startup");
+    assert!(records[0].get("codex_error_code").is_none());
+    assert!(records[0].get("http_status_code").is_none());
+    let projected = String::from_utf8(output).unwrap();
+    assert!(!projected.contains("private-sentinel"));
+    assert!(!projected.contains("provider auth connection failed"));
+}
+
+#[test]
+fn child_failure_projects_only_codes_from_the_fixed_allowlist() {
+    let codes = [
+        "context_window_exceeded",
+        "session_budget_exceeded",
+        "usage_limit_exceeded",
+        "server_overloaded",
+        "cyber_policy",
+        "http_connection_failed",
+        "response_stream_connection_failed",
+        "internal_server_error",
+        "unauthorized",
+        "bad_request",
+        "sandbox_error",
+        "response_stream_disconnected",
+        "response_too_many_failed_attempts",
+        "active_turn_not_steerable",
+        "thread_rollback_failed",
+        "other",
+    ];
+    for code in codes {
+        let mut input = Vec::new();
+        line(
+            serde_json::json!({
+                "type":"error",
+                "message":"private arbitrary detail",
+                "codex_error_code":code,
+                "http_status_code":401
+            }),
+            &mut input,
+        );
+        let mut output = Vec::new();
+        project_child_stdout(
+            input.as_slice(),
+            "w18773",
+            Uuid::parse_str(PRINCIPAL).unwrap(),
+            &mut output,
+        );
+        let record: Value = serde_json::from_slice(
+            output
+                .split(|byte| *byte == b'\n')
+                .find(|line| !line.is_empty())
+                .expect("failure record"),
+        )
+        .expect("parse failure record");
+        assert_eq!(record["codex_error_code"], code);
+        if matches!(
+            code,
+            "http_connection_failed"
+                | "response_stream_connection_failed"
+                | "response_stream_disconnected"
+                | "response_too_many_failed_attempts"
+        ) {
+            assert_eq!(record["http_status_code"], 401);
+        } else {
+            assert!(record.get("http_status_code").is_none());
+        }
+        let projected = String::from_utf8(output).unwrap();
+        assert!(!projected.contains("private arbitrary detail"));
+    }
+}
+
+#[test]
+fn child_failure_omits_out_of_range_structured_http_status() {
+    let mut input = Vec::new();
+    line(
+        serde_json::json!({
+            "type":"error",
+            "message":"private provider message",
+            "codex_error_code":"http_connection_failed",
+            "http_status_code":700
+        }),
+        &mut input,
     );
+    let mut output = Vec::new();
+    project_child_stdout(
+        input.as_slice(),
+        "w18773",
+        Uuid::parse_str(PRINCIPAL).unwrap(),
+        &mut output,
+    );
+    let record: Value = serde_json::from_slice(
+        output
+            .split(|byte| *byte == b'\n')
+            .find(|line| !line.is_empty())
+            .expect("failure record"),
+    )
+    .expect("parse failure record");
+    assert_eq!(record["codex_error_code"], "http_connection_failed");
+    assert!(record.get("http_status_code").is_none());
+    let projected = String::from_utf8(output).unwrap();
+    assert!(!projected.contains("private provider message"));
 }

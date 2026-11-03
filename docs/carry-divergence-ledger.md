@@ -2920,6 +2920,23 @@ bundles during upstream sync merely because they once shared this carry entry.
   `codex-rs/config/src/mcp_types.rs`, and
   `codex-rs/core/src/config/edit/document_helpers.rs`.
 
+### Retired stdio MCP Runtime Cleanup
+
+- Replacing or ending a stdio MCP runtime prevents new bindings while keeping
+  already-bound calls on their live connection. Once in-flight ownership ends,
+  asynchronous shutdown reaps the child and releases its stdio pipes.
+- `refresh_reaps_superseded_mcp_server_after_in_flight_call_finishes` proves
+  calls finish before the superseded child and pipe ownership are released in
+  the hosted `codex.mcp-tool-exposure-targeted` lane.
+- Preserve this carry until upstream provides equivalent retirement and child
+  teardown without interrupting in-flight calls.
+- Primary files:
+  - `codex-rs/codex-mcp/src/connection_manager.rs`
+  - `codex-rs/codex-mcp/src/runtime.rs`
+  - `codex-rs/core/tests/suite/mcp_refresh_cleanup.rs`
+  - `codex-rs/rmcp-client/src/bin/test_stdio_server.rs`
+  - `justfile`
+
 ### 2026-07-23 Upstream Integration Boundaries
 
 - Upstream `4462b9deef` adds default-on
@@ -3809,6 +3826,13 @@ completion is lost; the logged canonical request UUID supports the same-actor
 MCP receipt read, where a missing receipt remains unresolved. Only the exact
 Ops active-holder discriminator is presented as `holder_conflict`; other
 failures remain closed as rejected or unresolved.
+
+Child failures use the existing sanitized journal event. The exec JSON boundary
+maps the typed `CodexErrorInfo` enum to a fixed code set and carries an HTTP
+status only from status-bearing variants and only within 100–599. The launcher
+revalidates that code set and status bound before projection. It does not
+forward message text, additional details, provider response bodies, tokens, or
+other child fields; substring-based failure classification is not used.
 
 The hosted external-unload residency case remains the exact core reproducer,
 with `session_end_flushes_transcript_and_ignores_control_output` and
