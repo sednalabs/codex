@@ -534,3 +534,118 @@ fn child_events_are_ignored_and_overlong_lines_are_drained() {
     );
     assert!(output.is_empty());
 }
+
+#[test]
+fn startup_error_projects_only_a_closed_reason_class() {
+    let mut input = Vec::new();
+    line(
+        serde_json::json!({
+            "type":"error",
+            "message":"API credential rejected; secret=private-startup-sentinel",
+            "additional_details":"private detail"
+        }),
+        &mut input,
+    );
+    let mut output = Vec::new();
+    project_child_stdout(
+        input.as_slice(),
+        "w18773",
+        Uuid::parse_str(PRINCIPAL).unwrap(),
+        &mut output,
+    );
+    let text = String::from_utf8(output.clone()).unwrap();
+    assert!(!text.contains("private-startup-sentinel"));
+    assert!(!text.contains("private detail"));
+    let records: Vec<Value> = output
+        .split(|byte| *byte == b'\n')
+        .filter(|line| !line.is_empty())
+        .map(|line| serde_json::from_slice(line).unwrap())
+        .collect();
+    assert_eq!(records.len(), 1);
+    assert_eq!(records[0]["event"], "runtime_proof_child_failure");
+    assert_eq!(records[0]["stage"], "startup");
+    assert_eq!(records[0]["reason_class"], "auth");
+}
+
+#[test]
+fn primary_turn_failure_is_classified_and_child_thread_errors_are_ignored() {
+    let mut input = Vec::new();
+    line(
+        serde_json::json!({"type":"thread.started","thread_id":THREAD}),
+        &mut input,
+    );
+    line(
+        serde_json::json!({
+            "type":"error",
+            "thread_id":"55555555-5555-4555-8555-555555555555",
+            "message":"private child-thread path"
+        }),
+        &mut input,
+    );
+    line(
+        serde_json::json!({
+            "type":"error",
+            "thread_id":THREAD,
+            "message":"provider returned a private diagnostic"
+        }),
+        &mut input,
+    );
+    line(
+        serde_json::json!({
+            "type":"turn.failed",
+            "thread_id":THREAD,
+            "turn_id":"turn-1",
+            "error":{
+                "message":"provider rejected request; payload=private-turn-sentinel",
+                "additionalDetails":"private detail"
+            }
+        }),
+        &mut input,
+    );
+    let mut output = Vec::new();
+    project_child_stdout(
+        input.as_slice(),
+        "w18773",
+        Uuid::parse_str(PRINCIPAL).unwrap(),
+        &mut output,
+    );
+    let text = String::from_utf8(output.clone()).unwrap();
+    assert!(!text.contains("private child-thread path"));
+    assert!(!text.contains("private-turn-sentinel"));
+    assert!(!text.contains("private detail"));
+    let records: Vec<Value> = output
+        .split(|byte| *byte == b'\n')
+        .filter(|line| !line.is_empty())
+        .map(|line| serde_json::from_slice(line).unwrap())
+        .collect();
+    assert_eq!(records.len(), 1);
+    assert_eq!(records[0]["event"], "runtime_proof_child_failure");
+    assert_eq!(records[0]["stage"], "turn");
+    assert_eq!(records[0]["reason_class"], "provider");
+}
+
+#[test]
+fn overlapping_child_error_categories_are_reported_as_ambiguous() {
+    let mut input = Vec::new();
+    line(
+        serde_json::json!({
+            "type":"error",
+            "message":"provider auth connection failed"
+        }),
+        &mut input,
+    );
+    let mut output = Vec::new();
+    project_child_stdout(
+        input.as_slice(),
+        "w18773",
+        Uuid::parse_str(PRINCIPAL).unwrap(),
+        &mut output,
+    );
+    let records: Vec<Value> = output
+        .split(|byte| *byte == b'\n')
+        .filter(|line| !line.is_empty())
+        .map(|line| serde_json::from_slice(line).unwrap())
+        .collect();
+    assert_eq!(records.len(), 1);
+    assert_eq!(records[0]["reason_class"], "ambiguous");
+}
