@@ -1,132 +1,70 @@
-name: exact-source package preview
-
+name: ARM app-server canary preview
 on:
   push:
     branches:
       - validation/w18854-package-preview-f9-20261103
-
 permissions:
   contents: read
-
 jobs:
-  package:
-    name: ${{ matrix.target }} package smoke
-    runs-on: ${{ matrix.runner }}
+  app-server:
+    runs-on: ubuntu-24.04-arm
     timeout-minutes: 180
-    permissions:
-      contents: read
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          - runner: ubuntu-24.04-arm
-            target: aarch64-unknown-linux-gnu
     env:
       PRODUCT_SHA: 7c02e650a7536df032a3ee688b070d3ea89af9a3
-      TARGET: ${{ matrix.target }}
-
+      TARGET: aarch64-unknown-linux-gnu
+      CARGO_BUILD_JOBS: "2"
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
         with:
           ref: 7c02e650a7536df032a3ee688b070d3ea89af9a3
           fetch-depth: 0
           persist-credentials: false
-
       - name: Verify exact product checkout
         run: test "$(git rev-parse HEAD)" = "$PRODUCT_SHA"
-
-      - name: Select package version from source
-        id: meta
-        shell: bash
+      - name: Install Linux build dependencies
+        run: |
+          sudo apt-get update -y
+          sudo DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends binutils make pkg-config libcap-dev
+      - name: Build app-server and its bwrap dependency
+        uses: ./.github/actions/build-cargo-package-binaries
+        with:
+          target: aarch64-unknown-linux-gnu
+          binaries: codex-app-server
+          build-mode: release
+      - name: Smoke-test and identify canary binaries
         run: |
           set -euo pipefail
-          package_version="$(python3 - <<'PY'
-          import tomllib
-          from pathlib import Path
-
-          manifest = tomllib.loads(Path("codex-rs/Cargo.toml").read_text())
-          print(manifest["workspace"]["package"]["version"])
-          PY
-          )"
-          echo "package_version=${package_version}" >> "$GITHUB_OUTPUT"
-          echo "package version=${package_version}; source=${PRODUCT_SHA}; target=${TARGET}"
-
-      - name: Limit local Bazel build concurrency
-        run: echo 'build --jobs=2' >> .bazelrc
-
-      - name: Build and smoke-test maintained generic Codex packages
-        uses: ./.github/actions/build-codex-packages
-        with:
-          target: ${{ matrix.target }}
-          package-version: ${{ steps.meta.outputs.package_version }}
-          build-mode: release
-          build-system: bazel
-
-      - name: Record source, binary, and archive hashes
-        env:
-          PACKAGE_VERSION: ${{ steps.meta.outputs.package_version }}
-          WORKFLOW_HOST_SHA: ${{ github.sha }}
-        run: |
+          release_dir="${CARGO_TARGET_DIR}/${TARGET}/release"
+          "${release_dir}/codex-app-server" --version
+          install -d dist/app-server-canary
+          install -m 0755 "${release_dir}/codex-app-server" dist/app-server-canary/codex-app-server
+          install -m 0755 "${release_dir}/bwrap" dist/app-server-canary/bwrap
           python3 - <<'PY'
-          import hashlib
-          import json
-          import os
+          import hashlib, json, os
           from pathlib import Path
-          import subprocess
-
-          target = os.environ["TARGET"]
-          package_dir = Path("dist") / target
-          release_dir = Path(os.environ["CARGO_TARGET_DIR"]) / target / "release"
-          package_names = (
-              f"codex-package-{target}.tar.gz",
-              f"codex-package-{target}.tar.zst",
-              f"codex-app-server-package-{target}.tar.gz",
-              f"codex-app-server-package-{target}.tar.zst",
-          )
-
-          def sha256(path: Path) -> str:
-              digest = hashlib.sha256()
-              with path.open("rb") as handle:
-                  for block in iter(lambda: handle.read(1024 * 1024), b""):
-                      digest.update(block)
-              return digest.hexdigest()
-
-          artifacts = {}
-          for name in package_names:
-              path = package_dir / name
-              if not path.is_file():
-                  raise SystemExit(f"required package artifact is missing: {name}")
-              artifacts[name] = {"size_bytes": path.stat().st_size, "sha256": sha256(path)}
-
+          d = Path("dist/app-server-canary")
           binaries = {}
-          for name in ("codex", "codex-app-server", "codex-code-mode-host", "codex-exec-server", "bwrap"):
-              path = release_dir / name
-              if path.is_file():
-                  binaries[name] = {"size_bytes": path.stat().st_size, "sha256": sha256(path)}
-
-          payload = {
+          for name in ("codex-app-server", "bwrap"):
+              p = d / name
+              h = hashlib.sha256()
+              with p.open("rb") as f:
+                  for chunk in iter(lambda: f.read(1024 * 1024), b""):
+                      h.update(chunk)
+              binaries[name] = {"sha256": h.hexdigest(), "size_bytes": p.stat().st_size}
+          (d / "manifest.json").write_text(json.dumps({
+              "kind": "app-server-only-canary",
               "source_sha": os.environ["PRODUCT_SHA"],
-              "source_tree_sha": subprocess.check_output(
-                  ["git", "rev-parse", f"{os.environ['PRODUCT_SHA']}^{{tree}}"], text=True
-              ).strip(),
-              "workflow_host_sha": os.environ["WORKFLOW_HOST_SHA"],
+              "workflow_host_sha": os.environ["GITHUB_SHA"],
               "run_id": os.environ["GITHUB_RUN_ID"],
-              "target": target,
-              "runner": os.environ["RUNNER_NAME"],
-              "package_version": os.environ["PACKAGE_VERSION"],
+              "target": os.environ["TARGET"],
+              "build": "maintained cargo release action, CARGO_BUILD_JOBS=2",
+              "smoke": "codex-app-server --version",
               "binaries": binaries,
-              "packages": artifacts,
-              "smoke_tests": "passed by .github/actions/build-codex-packages",
-          }
-          (package_dir / "manifest.json").write_text(
-              json.dumps(payload, indent=2, sort_keys=True) + "\n", encoding="utf-8"
-          )
+          }, indent=2, sort_keys=True) + "\n")
           PY
-
       - uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f # v7.0.0
         with:
-          name: codex-package-${{ matrix.target }}-7c02e650
-          path: dist/${{ matrix.target }}
+          name: app-server-only-arm-canary-7c02e650
+          path: dist/app-server-canary
           if-no-files-found: error
-          compression-level: 0
           retention-days: 7
