@@ -72,6 +72,7 @@ pub use external_agent_config_imports::ExternalAgentConfigImportSuccessRecord;
 pub use goals::GoalAccountingMode;
 pub use goals::GoalAccountingOutcome;
 pub use goals::GoalStore;
+pub use goals::GoalWakeGuard;
 pub use goals::GoalUpdate;
 pub use guardian_feedback::GuardianReviewRecord;
 pub use guardian_feedback::MAX_GUARDIAN_REVIEW_BYTES;

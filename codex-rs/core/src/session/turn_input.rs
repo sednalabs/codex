@@ -709,9 +709,18 @@ async fn start_if_idle(
         }
     }
     if independent_notice {
-        session
+        let started = session
             .start_external_task(Arc::clone(&turn_context), task_input, RegularTask::new())
             .await;
+        if !started {
+            session.clear_reserved_idle_turn(&turn_state).await;
+            if let Some(cleanup) = &mut external_cleanup {
+                cleanup.armed = false;
+            }
+            return Ok(TurnInputSubmission::NotSubmitted {
+                reason: NotSubmittedReason::Superseded,
+            });
+        }
     } else {
         session
             .start_task(Arc::clone(&turn_context), task_input, RegularTask::new())
@@ -804,7 +813,10 @@ pub(super) async fn steer_external_if_active(
     else {
         return false;
     };
-    let active = session.active_turn.lock().await;
+    // Never wait on another runtime lock while holding SQLite's writer slot.
+    let Ok(active) = session.active_turn.try_lock() else {
+        return false;
+    };
     let Some(active_turn) = active.as_ref().filter(|turn| turn.finishing.is_none()) else {
         return false;
     };
@@ -819,7 +831,9 @@ pub(super) async fn steer_external_if_active(
     }
     // Serialize the mode check with configuration changes until the wake is
     // queued. Do not await a turn-state lock while holding the config guard.
-    let state = session.state.lock().await;
+    let Ok(state) = session.state.try_lock() else {
+        return false;
+    };
     if !TurnStartKind::Automatic.permits_mode(
         state
             .session_configuration
@@ -835,6 +849,22 @@ pub(super) async fn steer_external_if_active(
 }
 
 impl Session {
+    /// Do not wait for session state while the external wake holds SQLite's writer slot.
+    pub(crate) fn try_record_external_started_turn(
+        &self,
+        turn_id: &str,
+        attribution: Option<codex_history::TurnAttribution>,
+    ) -> bool {
+        let Ok(mut state) = self.state.try_lock() else {
+            return false;
+        };
+        state.last_started_turn_id = Some(turn_id.to_owned());
+        if let Some(attribution) = attribution {
+            state.turn_attribution = Some(attribution);
+        }
+        true
+    }
+
     /// Called under the active-turn lock when registering a task (or a realtime transcript turn).
     pub(crate) async fn record_started_turn(
         &self,

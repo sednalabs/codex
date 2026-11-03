@@ -353,6 +353,7 @@ async fn deliver_request_inner(
                         .map(|task| task.turn_context.sub_id.clone())
                 })
             }?;
+            let _goal_guard = try_active_goal_wake_guard(session).await?;
             if turn_input::steer_external_if_active(session, request.input, &turn_id).await {
                 Some(turn_id)
             } else {
@@ -361,6 +362,32 @@ async fn deliver_request_inner(
         }
         _ => None,
     }
+}
+
+/// Recheck the goal under the shared SQLite writer slot at the point where
+/// the wake becomes visible. Errors or contention leave the source pending.
+pub(crate) async fn try_active_goal_wake_guard(
+    session: &Session,
+) -> Option<codex_state::GoalWakeGuard> {
+    let goal_lock = session
+        .services
+        .thread_extension_data
+        .get::<crate::GoalStateAdmissionLock>()?;
+    if !goal_lock.1.load(std::sync::atomic::Ordering::Acquire) {
+        return None;
+    }
+    let guard = session
+        .services
+        .state_db
+        .as_ref()?
+        .thread_goals()
+        .try_active_wake_guard(session.thread_id)
+        .await
+        .ok()??;
+    if !goal_lock.1.load(std::sync::atomic::Ordering::Acquire) {
+        return None;
+    }
+    Some(guard)
 }
 
 #[cfg(test)]
@@ -501,6 +528,63 @@ mod tests {
         .await
         .expect("owned admission completed after caller cancellation");
         session.abort_all_tasks(TurnAbortReason::Interrupted).await;
+    }
+
+    #[tokio::test]
+    async fn goal_change_from_independent_store_before_registration_defers_wake() {
+        for status in [
+            Some(codex_state::ThreadGoalStatus::Paused),
+            Some(codex_state::ThreadGoalStatus::BudgetLimited),
+            Some(codex_state::ThreadGoalStatus::UsageLimited),
+            None,
+        ] {
+            let (home, session) = active_goal_session().await;
+            let sqlite = codex_state::SqliteConfig::new_for_testing(
+                codex_utils_absolute_path::AbsolutePathBuf::try_from(home.path())
+                    .expect("absolute"),
+            );
+            // This store has its own connection pool and no process-local goal permit.
+            let other = codex_state::StateRuntime::init(sqlite, "test".to_string())
+                .await
+                .expect("independent state");
+            let entered = Arc::new(tokio::sync::Notify::new());
+            let release = Arc::new(tokio::sync::Notify::new());
+            session.services.thread_extension_data.insert(
+                crate::tasks::ExternalTaskRegistrationTestBarrier {
+                    entered: Arc::clone(&entered),
+                    release: Arc::clone(&release),
+                },
+            );
+            let candidate = Arc::clone(&session);
+            let caller = tokio::spawn(async move {
+                deliver(&candidate, "irc", "race", /*idle_only*/ false).await
+            });
+            tokio::time::timeout(std::time::Duration::from_secs(5), entered.notified())
+                .await
+                .expect("admission reached barrier");
+            if let Some(status) = status {
+                other
+                    .thread_goals()
+                    .replace_thread_goal(
+                        session.thread_id,
+                        "stopped",
+                        status,
+                        /*token_budget*/ None,
+                    )
+                    .await
+                    .expect("commit stopped goal");
+            } else {
+                other
+                    .thread_goals()
+                    .delete_thread_goal(session.thread_id)
+                    .await
+                    .expect("delete goal");
+            }
+            release.notify_one();
+            assert_eq!(caller.await.expect("admission task"), EventAdmission::Deferred);
+            assert!(session.active_turn.lock().await.is_none());
+            assert!(session.state.lock().await.last_started_turn_id.is_none());
+        }
     }
 
     #[tokio::test]

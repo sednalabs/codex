@@ -20,6 +20,7 @@ use codex_file_system::LocalLogsDir;
 use codex_utils_absolute_path::AbsolutePathBuf;
 use log::LevelFilter;
 use sqlx::ConnectOptions;
+use sqlx::Connection;
 use sqlx::Error;
 use sqlx::SqlitePool;
 use sqlx::migrate::Migrator;
@@ -46,6 +47,20 @@ use connection::connect_once;
 use validation::SqliteQuickCheckManager;
 
 const DEFAULT_BUSY_TIMEOUT: Duration = Duration::from_secs(5);
+
+/// Open a short-lived goals connection that never waits on SQLite contention.
+/// It uses the existing pool's database options without changing the pool.
+pub(crate) async fn open_goal_wake_connection(
+    pool: &SqlitePool,
+) -> Result<sqlx::SqliteConnection, Error> {
+    let options = pool
+        .connect_options()
+        .as_ref()
+        .clone()
+        .create_if_missing(false)
+        .busy_timeout(Duration::ZERO);
+    sqlx::SqliteConnection::connect_with(&options).await
+}
 
 const LOGS_DB_FILENAME: &str = "logs_2.sqlite";
 const USAGE_DB_FILENAME: &str = "usage_1.sqlite";

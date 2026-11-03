@@ -309,9 +309,9 @@ impl Session {
         turn_context: Arc<TurnContext>,
         input: Vec<TurnInput>,
         task: T,
-    ) {
+    ) -> bool {
         self.start_task_inner(turn_context, input, task, MailboxStart::Defer)
-            .await;
+            .await
     }
 
     #[expect(
@@ -324,7 +324,7 @@ impl Session {
         input: Vec<TurnInput>,
         task: T,
         mailbox_start: MailboxStart,
-    ) {
+    ) -> bool {
         // Replace the cache; in-flight acquisitions retain their previous Arc.
         self.services
             .thread_extension_data
@@ -392,15 +392,48 @@ impl Session {
             barrier.release.notified().await;
         }
 
-        let mut active = self.active_turn.lock().await;
+        let goal_guard = if matches!(mailbox_start, MailboxStart::Defer) {
+            match crate::session::external_event::try_active_goal_wake_guard(self).await {
+                Some(guard) => Some(guard),
+                None => {
+                    self.emit_turn_stop_lifecycle(turn_context.extension_data.as_ref())
+                        .await;
+                    return false;
+                }
+            }
+        } else {
+            None
+        };
+        // A wake must not wait on runtime locks while holding SQLite's writer
+        // slot. If either lock is busy, its source will retry the same batch.
+        let mut active = if goal_guard.is_some() {
+            match self.active_turn.try_lock() {
+                Ok(active) => active,
+                Err(_) => {
+                    drop(goal_guard);
+                    self.emit_turn_stop_lifecycle(turn_context.extension_data.as_ref())
+                        .await;
+                    return false;
+                }
+            }
+        } else {
+            self.active_turn.lock().await
+        };
         let turn = active.get_or_insert_with(ActiveTurn::default);
         debug_assert!(turn.task.is_none());
         // Record lineage only when the task starts: settings changes can invalidate a reservation.
-        self.record_started_turn(
-            &turn_context.sub_id,
-            (task_kind == TaskKind::Regular).then(|| turn_context.attribution()),
-        )
-        .await;
+        let attribution = (task_kind == TaskKind::Regular).then(|| turn_context.attribution());
+        if goal_guard.is_some() {
+            if !self.try_record_external_started_turn(&turn_context.sub_id, attribution) {
+                drop(active);
+                drop(goal_guard);
+                self.emit_turn_stop_lifecycle(turn_context.extension_data.as_ref())
+                    .await;
+                return false;
+            }
+        } else {
+            self.record_started_turn(&turn_context.sub_id, attribution).await;
+        }
         let agent_execution_guard = self.services.agent_control.admit_turn(
             turn_context.multi_agent_version,
             &turn_context.session_source,
@@ -485,6 +518,7 @@ impl Session {
             _timer: timer,
         };
         turn.task = Some(running_task);
+        true
     }
 
     /// Returns whether an extension has marked this thread as durably asleep.
