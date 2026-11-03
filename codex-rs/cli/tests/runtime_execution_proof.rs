@@ -56,6 +56,13 @@ async fn protected_cli_starts_with_launcher_home_and_four_tool_profile() -> Resu
         !fixture.model_requests().is_empty(),
         "protected consumer did not reach the synthetic model endpoint"
     );
+    anyhow::ensure!(
+        fixture.model_requests().iter().all(|request| {
+            request.get("model").and_then(|value| value.as_str()) == Some("gpt-6-luna")
+        }),
+        "protected consumer did not use the fixed GPT-6 Luna model"
+    );
+    eprintln!("launcher-layout-model:gpt-6-luna");
     Ok(())
 }
 

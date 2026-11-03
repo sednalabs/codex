@@ -784,10 +784,15 @@ impl ProtectedRuntimeFixture {
                 home.join("agents/proof-child.toml").display().to_string(),
             )
         };
+        let model_id = if launcher_layout {
+            "gpt-6-luna"
+        } else {
+            "gpt-5.2"
+        };
         fs::write(
             home.join("config.toml"),
             format!(
-                "model = \"gpt-5.2\"\nmodel_provider = \"openai\"\nopenai_base_url = {provider_recipient:?}\ncli_auth_credentials_store = \"ephemeral\"\napproval_policy = \"never\"\n{test_settings}\n[mcp_servers.ops]\nurl = {recipient:?}\nrequired = true\nenabled_tools = [\"work_item_claim\", \"work_item_current_work\", \"work_item_execution_receipt_read\", \"work_item_release\"]\n\n[mcp_servers.ops.tools.work_item_claim]\napproval_mode = \"approve\"\n\n[mcp_servers.ops.tools.work_item_current_work]\napproval_mode = \"approve\"\n\n[mcp_servers.ops.tools.work_item_execution_receipt_read]\napproval_mode = \"approve\"\n\n[mcp_servers.ops.tools.work_item_release]\napproval_mode = \"approve\"\n"
+                "model = {model_id:?}\nmodel_provider = \"openai\"\nopenai_base_url = {provider_recipient:?}\ncli_auth_credentials_store = \"ephemeral\"\napproval_policy = \"never\"\n{test_settings}\n[mcp_servers.ops]\nurl = {recipient:?}\nrequired = true\nenabled_tools = [\"work_item_claim\", \"work_item_current_work\", \"work_item_execution_receipt_read\", \"work_item_release\"]\n\n[mcp_servers.ops.tools.work_item_claim]\napproval_mode = \"approve\"\n\n[mcp_servers.ops.tools.work_item_current_work]\napproval_mode = \"approve\"\n\n[mcp_servers.ops.tools.work_item_execution_receipt_read]\napproval_mode = \"approve\"\n\n[mcp_servers.ops.tools.work_item_release]\napproval_mode = \"approve\"\n"
             ),
         )?;
         // The child app server updates this state while the configuration home stays immutable.
