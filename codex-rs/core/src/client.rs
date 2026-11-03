@@ -502,12 +502,26 @@ fn validate_protected_model_provider_info(
                 "protected runtime built-in provider is unavailable".to_string(),
             )
         })?;
-    if provider != &expected {
+    let default = codex_model_provider_info::built_in_model_providers(None)
+        .remove("openai")
+        .ok_or_else(|| {
+            CodexErr::UnsupportedOperation(
+                "protected runtime built-in provider is unavailable".to_string(),
+            )
+        })?;
+    if provider != &expected && provider != &default {
         return Err(CodexErr::UnsupportedOperation(
             "protected model provider differs from pinned built-in configuration".to_string(),
         ));
     }
-    Ok(())
+
+    // The protected launcher emits the built-in `openai` provider without an
+    // `openai_base_url`. Config loading therefore keeps `base_url = None`, even
+    // though ChatGPT-token auth resolves that provider to the default Codex
+    // endpoint. Accept that exact built-in raw form only when its effective API
+    // provider still matches the root-bound recipient and built-in settings.
+    let api_provider = provider.to_api_provider(Some(AuthMode::ChatgptAuthTokens))?;
+    validate_protected_api_provider(&api_provider, recipient)
 }
 
 fn protected_provider_recipient() -> Result<Option<String>> {
