@@ -1,0 +1,75 @@
+name: IRC preview artifact verification
+on:
+  push:
+    branches: [validation/w18854-x86-artifact-20261103]
+permissions:
+  actions: read
+  contents: read
+jobs:
+  verify:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - name: Download and verify exact preview artifact
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          gh api repos/sednalabs/codex/actions/artifacts/13195790821/zip > "$RUNNER_TEMP/artifact.zip"
+          printf '%s  %s\n' 04f926f0f78c96e0ce930f38c0ab5738b1f9586aee6279338fc36bde744f2e5f "$RUNNER_TEMP/artifact.zip" | sha256sum -c -
+          python3 - <<'PY'
+          import hashlib
+          import json
+          import os
+          from pathlib import PurePosixPath
+          import tarfile
+          import zipfile
+
+          def digest(stream):
+              h = hashlib.sha256()
+              while chunk := stream.read(1024 * 1024):
+                  h.update(chunk)
+              return h.hexdigest()
+
+          with zipfile.ZipFile(os.path.join(os.environ['RUNNER_TEMP'], 'artifact.zip')) as z:
+              names = z.namelist()
+              if len(names) != len(set(names)):
+                  raise SystemExit('duplicate artifact entry')
+              def entry(basename):
+                  hits = [n for n in names if PurePosixPath(n).name == basename]
+                  if len(hits) != 1:
+                      raise SystemExit('missing or ambiguous artifact entry: ' + basename)
+                  return hits[0]
+              manifest = json.loads(z.read(entry('manifest.json')))
+              if (manifest.get('source_sha') != '7c02e650a7536df032a3ee688b070d3ea89af9a3'
+                  or manifest.get('workflow_host_sha') != 'e80930714214c659e680decd93f27b2d7a688bf4'
+                  or str(manifest.get('run_id')) != '41548828898'
+                  or manifest.get('target') != 'x86_64-unknown-linux-gnu'
+                  or manifest.get('smoke_tests') != 'passed by .github/actions/build-codex-packages'):
+                  raise SystemExit('manifest provenance mismatch')
+              expected_packages = manifest.get('packages', {})
+              expected_binaries = manifest.get('binaries', {})
+              if len(expected_packages) != 4 or not {'codex', 'codex-app-server'} <= expected_binaries.keys():
+                  raise SystemExit('manifest missing expected entries')
+              for name, info in expected_packages.items():
+                  with z.open(entry(name)) as source:
+                      if digest(source) != info.get('sha256'):
+                          raise SystemExit('archive digest mismatch: ' + name)
+              found = set()
+              for stem in ('codex-package', 'codex-app-server-package'):
+                  name = stem + '-x86_64-unknown-linux-gnu.tar.gz'
+                  with z.open(entry(name)) as source, tarfile.open(fileobj=source, mode='r|gz') as tar:
+                      for member in tar:
+                          base = PurePosixPath(member.name).name
+                          if member.isfile() and base in expected_binaries:
+                              f = tar.extractfile(member)
+                              if f is None or digest(f) != expected_binaries[base].get('sha256'):
+                                  raise SystemExit('binary digest mismatch: ' + base)
+                              found.add(base)
+              if not {'codex', 'codex-app-server'} <= found:
+                  raise SystemExit('package entrypoints not found')
+              print(json.dumps({'source_sha': manifest['source_sha'], 'target': manifest['target'],
+                                'package_archives_verified': len(expected_packages),
+                                'binary_names_verified': sorted(found), 'artifact_id': 13195790821}))
+          PY
