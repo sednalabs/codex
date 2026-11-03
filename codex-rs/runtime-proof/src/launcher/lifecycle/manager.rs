@@ -30,7 +30,7 @@ const UNIT_PROPERTIES: &str = "Id,InvocationID,ControlGroup,MainPID,ControlPID,T
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(deny_unknown_fields)]
-pub(super) struct ManagerBinding {
+pub(in crate::launcher) struct ManagerBinding {
     pub(super) boot_id: Uuid,
     pub(super) manager_executable: String,
     pub(super) manager_pid: u32,
