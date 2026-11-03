@@ -435,7 +435,8 @@ impl Session {
                 }
             }
         } else {
-            self.record_started_turn(&turn_context.sub_id, attribution).await;
+            self.record_started_turn(&turn_context.sub_id, attribution)
+                .await;
             None
         };
         let agent_execution_guard = self.services.agent_control.admit_turn(

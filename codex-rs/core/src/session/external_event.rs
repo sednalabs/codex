@@ -581,7 +581,10 @@ mod tests {
                     .expect("delete goal");
             }
             release.notify_one();
-            assert_eq!(caller.await.expect("admission task"), EventAdmission::Deferred);
+            assert_eq!(
+                caller.await.expect("admission task"),
+                EventAdmission::Deferred
+            );
             assert!(session.active_turn.lock().await.is_none());
             assert!(session.state.lock().await.last_started_turn_id.is_none());
         }
@@ -621,7 +624,10 @@ mod tests {
                 }
             }
             release.notify_one();
-            assert_eq!(caller.await.expect("admission task"), EventAdmission::Deferred);
+            assert_eq!(
+                caller.await.expect("admission task"),
+                EventAdmission::Deferred
+            );
             assert!(session.active_turn.lock().await.is_none());
             assert!(session.state.lock().await.last_started_turn_id.is_none());
         }

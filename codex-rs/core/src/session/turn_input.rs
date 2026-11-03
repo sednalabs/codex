@@ -794,10 +794,6 @@ async fn steer(
 /// Deliver a named, standalone external output to one exact regular turn.
 /// Unlike start-or-steer this can never create a turn after a race.
 #[cfg(any(unix, test))]
-#[expect(
-    clippy::await_holding_invalid_type,
-    reason = "active turn checks and wake admission must remain atomic"
-)]
 pub(super) async fn steer_external_if_active(
     session: &Arc<Session>,
     input: SubmittedTurnInput,

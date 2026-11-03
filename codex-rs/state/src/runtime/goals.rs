@@ -842,7 +842,9 @@ mod tests {
             .execute(&mut writer)
             .await
             .expect_err("the goal write must be blocked");
-        let code = error.as_database_error().and_then(|error| error.code());
+        let code = error
+            .as_database_error()
+            .and_then(sqlx::error::DatabaseError::code);
         assert!(matches!(code.as_deref(), Some("5" | "261" | "517" | "773")));
         assert_eq!(
             runtime
