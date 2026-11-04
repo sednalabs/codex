@@ -185,15 +185,17 @@ async fn invalid_token_refresh_never_replays_tool_calls() -> anyhow::Result<()> 
                 "refresh_token": INVALID_TOKEN_REFRESH_TOKEN,
             }))
         })
-        .expect(2)
+        .expect(3)
         .mount(&server)
         .await;
 
     let read_only_attempts = Arc::new(AtomicUsize::new(0));
     let mutating_attempts = Arc::new(AtomicUsize::new(0));
+    let tools_list_attempts = Arc::new(AtomicUsize::new(0));
     let metadata_challenge_attempts = Arc::new(AtomicUsize::new(0));
     let read_only_attempts_for_response = Arc::clone(&read_only_attempts);
     let mutating_attempts_for_response = Arc::clone(&mutating_attempts);
+    let tools_list_attempts_for_response = Arc::clone(&tools_list_attempts);
     let metadata_challenge_attempts_for_response = Arc::clone(&metadata_challenge_attempts);
     Mock::given(method("POST"))
         .and(path("/mcp"))
@@ -212,6 +214,19 @@ async fn invalid_token_refresh_never_replays_tool_calls() -> anyhow::Result<()> 
                     },
                 })),
                 Some("notifications/initialized") => ResponseTemplate::new(202),
+                Some("tools/list") => {
+                    let attempt = tools_list_attempts_for_response.fetch_add(1, Ordering::SeqCst);
+                    if attempt == 0 {
+                        ResponseTemplate::new(401)
+                            .insert_header("WWW-Authenticate", r#"Bearer error="invalid_token""#)
+                    } else {
+                        ResponseTemplate::new(200).set_body_json(json!({
+                            "jsonrpc": "2.0",
+                            "id": id,
+                            "result": {"tools": []},
+                        }))
+                    }
+                }
                 Some("tools/call") => {
                     let name = body.pointer("/params/name").and_then(Value::as_str);
                     let attempt = match name {
@@ -249,7 +264,7 @@ async fn invalid_token_refresh_never_replays_tool_calls() -> anyhow::Result<()> 
                 _ => ResponseTemplate::new(400),
             }
         })
-        .expect(5)
+        .expect(7)
         .mount(&server)
         .await;
 
@@ -270,9 +285,10 @@ async fn invalid_token_refresh_never_replays_tool_calls() -> anyhow::Result<()> 
         status.success(),
         "OAuth invalid_token child failed: {status}"
     );
-    assert_eq!(refresh_attempts.load(Ordering::SeqCst), 2);
+    assert_eq!(refresh_attempts.load(Ordering::SeqCst), 3);
     assert_eq!(read_only_attempts.load(Ordering::SeqCst), 1);
     assert_eq!(mutating_attempts.load(Ordering::SeqCst), 1);
+    assert_eq!(tools_list_attempts.load(Ordering::SeqCst), 2);
     assert_eq!(metadata_challenge_attempts.load(Ordering::SeqCst), 1);
     server.verify().await;
     Ok(())
@@ -366,6 +382,10 @@ async fn invalid_token_recovery_child() -> anyhow::Result<()> {
         )
         .await?;
     assert!(result_challenge.is_error.unwrap_or(false));
+    let tools = client
+        .list_tools(None, Some(Duration::from_secs(5)))
+        .await?;
+    assert!(tools.tools.is_empty());
     client.shutdown().await;
     Ok(())
 }
