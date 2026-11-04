@@ -283,9 +283,10 @@ impl Context {
         let tool = params
             .get("name")
             .and_then(Value::as_str)
-            .context("protected MCP tool call has no name")?;
+            .context("protected MCP tool call has no name")?
+            .to_owned();
         if !matches!(
-            tool,
+            tool.as_str(),
             "work_item_claim"
                 | "work_item_current_work"
                 | "work_item_execution_receipt_read"
@@ -365,7 +366,7 @@ impl Context {
             let arguments = Value::Object(arguments.clone());
             let proof =
                 self.authority
-                    .sign(&execution_nonce, provider_thread_id, tool, &arguments)?;
+                    .sign(&execution_nonce, provider_thread_id, &tool, &arguments)?;
             let proof_text = proof
                 .get("proof")
                 .and_then(Value::as_str)
