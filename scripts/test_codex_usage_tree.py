@@ -966,21 +966,20 @@ class UsageTreeTests(unittest.TestCase):
             )
             for group in merged["groups"]:
                 count = group["responseUsageRecordCount"]
-                self.assertEqual(
-                    group["tokenTotals"]["inputTokensUncached"]["value"], count
-                )
-                self.assertEqual(
-                    group["tokenTotals"]["inputTokensCached"]["value"], count * 10
-                )
-                self.assertEqual(
-                    group["tokenTotals"]["cacheWriteInputTokens"]["value"], 0
-                )
-                self.assertEqual(
-                    group["tokenTotals"]["outputTokens"]["value"], count * 5
-                )
-                self.assertEqual(
-                    group["tokenTotals"]["totalTokens"]["value"], count * 16
-                )
+                for field, expected_subtotal in (
+                    ("inputTokensUncached", count),
+                    ("inputTokensCached", count * 10),
+                    ("cacheWriteInputTokens", 0),
+                    ("outputTokens", count * 5),
+                    ("totalTokens", count * 16),
+                ):
+                    coverage = group["tokenTotals"][field]
+                    # Unresolved rows keep the merged total unavailable, while
+                    # the subtotal for accepted rows remains useful and exact.
+                    self.assertIsNone(coverage["value"])
+                    self.assertEqual(coverage["knownSubtotal"], expected_subtotal)
+                    self.assertTrue(coverage["completeForIncludedRows"])
+                    self.assertEqual(coverage["missingValues"], 0)
             for source in result["sources"]:
                 per_source_groups = source["recordedAggregate"]["groups"]
                 self.assertEqual(
