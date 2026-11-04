@@ -502,13 +502,14 @@ fn validate_protected_model_provider_info(
                 "protected runtime built-in provider is unavailable".to_string(),
             )
         })?;
-    let default = codex_model_provider_info::built_in_model_providers(/*openai_base_url*/ None)
-        .remove("openai")
-        .ok_or_else(|| {
-            CodexErr::UnsupportedOperation(
-                "protected runtime built-in provider is unavailable".to_string(),
-            )
-        })?;
+    let default =
+        codex_model_provider_info::built_in_model_providers(/*openai_base_url*/ None)
+            .remove("openai")
+            .ok_or_else(|| {
+                CodexErr::UnsupportedOperation(
+                    "protected runtime built-in provider is unavailable".to_string(),
+                )
+            })?;
     if provider != &expected && provider != &default {
         return Err(CodexErr::UnsupportedOperation(
             "protected model provider differs from pinned built-in configuration".to_string(),

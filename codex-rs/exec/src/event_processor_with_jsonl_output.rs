@@ -655,7 +655,7 @@ impl EventProcessorWithJsonOutput {
                                     "turn failed".to_string(),
                                     Some(notification.thread_id.clone()),
                                     Some(notification.turn.id.clone()),
-                                    None,
+                                    /*error_info*/ None,
                                 )
                             });
                         events.push(ThreadEvent::TurnFailed(TurnFailedEvent {

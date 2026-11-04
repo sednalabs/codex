@@ -583,6 +583,28 @@ jobs:
         working-directory: tools/argument-comment-lint
         run: cargo test
 
+      - name: Capture regenerated argument comment lint lock
+        if: always() && !cancelled()
+        shell: bash
+        run: |
+          set -euo pipefail
+          lock_file="tools/argument-comment-lint/Cargo.lock"
+          if git diff --quiet -- "$lock_file"; then
+            exit 0
+          fi
+          lock_dir="$RUNNER_TEMP/argument-comment-lint-lock"
+          mkdir -p "$lock_dir"
+          cp "$lock_file" "$lock_dir/Cargo.lock"
+          git restore -- "$lock_file"
+
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        if: always() && !cancelled()
+        with:
+          name: argument-comment-lint-cargo-lock-${{ github.run_id }}
+          path: ${{ runner.temp }}/argument-comment-lint-lock/Cargo.lock
+          if-no-files-found: ignore
+          retention-days: 1
+
       - name: Check for a clean worktree
         if: always() && !cancelled()
         uses: ./.github/actions/check-clean-worktree
