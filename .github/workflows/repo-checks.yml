@@ -132,6 +132,9 @@ jobs:
 
       - uses: ./.github/actions/setup-ci
 
+      - name: Test read-only tree usage adapter
+        run: python3 -m unittest discover -s scripts -p 'test_codex_usage_tree.py'
+
       - name: Setup pnpm
         uses: pnpm/action-setup@0ebf47130e4866e96fce0953f49152a61190b271 # v5
         with:

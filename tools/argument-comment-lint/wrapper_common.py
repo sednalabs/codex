@@ -259,6 +259,8 @@ def resolve_prebuilt_cargo_dylint(
 ) -> Path:
     if env.get(USE_SYSTEM_CARGO_DYLINT_ENV) == "1":
         executable = "cargo-dylint.exe" if os.name == "nt" else "cargo-dylint"
+        if shutil.which(executable, path=env.get("PATH", "")) is None:
+            die(f"System {executable} not found in PATH.")
         return Path(executable)
     return find_packaged_cargo_dylint(package_entrypoint)
 
