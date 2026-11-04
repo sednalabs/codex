@@ -6,9 +6,12 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
+import os
 import queue
 import sqlite3
+import stat
 import subprocess
+import sys
 import threading
 import time
 from collections import Counter
@@ -25,11 +28,17 @@ MAX_DATABASE_THREADS = 900
 MAX_DATABASE_CALLS = 10_000
 MAX_DATABASE_UNION_CALLS_PER_SOURCE = 200_000
 MAX_DATABASE_UNION_CALLS_TOTAL = 300_000
+MAX_DATABASE_UNION_CALLS_PER_RUN = 25_000
+MAX_DATABASE_UNION_AUTO_RUNS = 16
+DATABASE_UNION_PASS_PAUSE_SECONDS = 1.0
 MAX_DATABASE_UNION_MEMORY_BYTES = 192 * 1024 * 1024
 MAX_DATABASE_UNION_GROUPS = 100
+MAX_DATABASE_UNION_PAGE_SIZE = 4096
+MAX_DATABASE_CHECKPOINT_BYTES = 256 * 1024 * 1024
 MAX_DATABASE_SOURCE_SECONDS = 12.0
 MAX_DATABASE_UNION_SECONDS = 24.0
 MAX_DATABASE_QUERY_SECONDS = 4.0
+DATABASE_UNION_CHECKPOINT_VERSION = 3
 UNION_CALL_FIELDS = (
     "role",
     "schemaMissingFields",
@@ -83,7 +92,6 @@ DATABASE_CALL_COLUMNS = (
     "provider",
     "requested_model",
     "actual_model_used",
-    "final_model",
     "requested_service_tier",
     "actual_service_tier",
     "actual_service_tier_source",
@@ -1054,12 +1062,113 @@ def _database_deadline(overall_deadline: float | None = None) -> float:
     return min(local_deadline, overall_deadline) if overall_deadline else local_deadline
 
 
+def _database_file_state(path: Path, header_bytes: int) -> dict[str, Any] | None:
+    try:
+        info = path.stat()
+    except FileNotFoundError:
+        return None
+    if not stat.S_ISREG(info.st_mode):
+        raise UsageError("usage database or SQLite sidecar is not a regular file")
+    with path.open("rb") as source:
+        header = source.read(header_bytes)
+    return {
+        "device": info.st_dev,
+        "inode": info.st_ino,
+        "size": info.st_size,
+        "modifiedNs": info.st_mtime_ns,
+        "changedNs": info.st_ctime_ns,
+        "formatHeaderSha256": hashlib.sha256(header[:16]).hexdigest(),
+        "headerSha256": hashlib.sha256(header).hexdigest(),
+    }
+
+
+def _database_files_identity(resolved: Path) -> dict[str, Any]:
+    return {
+        "database": _database_file_state(resolved, 100),
+        "wal": _database_file_state(Path(str(resolved) + "-wal"), 32),
+        "journal": _database_file_state(Path(str(resolved) + "-journal"), 32),
+    }
+
+
+def _same_database_generation(files: dict[str, Any], stable: dict[str, Any]) -> bool:
+    database = files.get("database")
+    return bool(
+        database
+        and database.get("device") == stable["device"]
+        and database.get("inode") == stable["inode"]
+        and database.get("formatHeaderSha256") == stable["formatHeaderSha256"]
+    )
+
+
+def _database_source_identity(database_path: str) -> dict[str, Any]:
+    """Identify one read-only SQLite generation without scanning ledger rows."""
+    resolved = Path(database_path).resolve(strict=True)
+
+    before = _database_files_identity(resolved)
+    connection = None
+    try:
+        uri = resolved.as_uri() + "?mode=ro"
+        connection = sqlite3.connect(uri, uri=True, timeout=2.0)
+        connection.execute("PRAGMA query_only = ON")
+        connection.execute("BEGIN")
+        schema_version = connection.execute("PRAGMA schema_version").fetchone()[0]
+        user_version = connection.execute("PRAGMA user_version").fetchone()[0]
+        journal_mode = connection.execute("PRAGMA journal_mode").fetchone()[0]
+        schema_rows = connection.execute(
+            "SELECT type, name, sql FROM sqlite_master "
+            "WHERE name IN ('usage_threads', 'usage_provider_calls') "
+            "OR tbl_name IN ('usage_threads', 'usage_provider_calls') "
+            "ORDER BY type, name"
+        ).fetchall()
+        schema_digest = hashlib.sha256(
+            json.dumps(
+                [tuple(row) for row in schema_rows],
+                ensure_ascii=True,
+                separators=(",", ":"),
+            ).encode("utf-8")
+        ).hexdigest()
+    except (OSError, sqlite3.Error) as exc:
+        raise UsageError("could not identify the explicit read-only usage database") from exc
+    finally:
+        if connection is not None:
+            connection.close()
+    after = _database_files_identity(resolved)
+    if not _same_database_generation(
+        after,
+        {
+            "device": before["database"]["device"],
+            "inode": before["database"]["inode"],
+            "formatHeaderSha256": before["database"]["formatHeaderSha256"],
+        },
+    ):
+        raise UsageError("usage database changed while its checkpoint identity was read")
+    return {
+        "path": str(resolved),
+        "files": after,
+        "stable": {
+            "path": str(resolved),
+            "device": after["database"]["device"],
+            "inode": after["database"]["inode"],
+            "formatHeaderSha256": after["database"]["formatHeaderSha256"],
+            "schemaVersion": schema_version,
+            "userVersion": user_version,
+            "journalMode": str(journal_mode),
+            "usageSchemaSha256": schema_digest,
+        },
+        "schemaVersion": schema_version,
+        "userVersion": user_version,
+        "journalMode": str(journal_mode),
+        "usageSchemaSha256": schema_digest,
+    }
+
+
 def _assert_indexed_thread_call_lookup(
     connection: sqlite3.Connection,
     thread_ids: list[str],
     *,
     sql: str | None = None,
     parameters: tuple[Any, ...] | list[str] | None = None,
+    require_ordered: bool = False,
 ) -> None:
     if sql is None:
         placeholders = ", ".join("?" for _ in thread_ids)
@@ -1077,6 +1186,32 @@ def _assert_indexed_thread_call_lookup(
         raise UsageError(
             "usage database has no indexed exact-thread provider-call lookup"
         )
+    if require_ordered and any("TEMP B-TREE" in detail for detail in details):
+        raise UsageError("usage database cannot serve bounded call pages from its index")
+
+
+def _database_call_order_mode(connection: sqlite3.Connection) -> str:
+    has_thread_index = False
+    for index in connection.execute('PRAGMA index_list("usage_provider_calls")'):
+        index_name = str(index[1]).replace('"', '""')
+        columns = [
+            row[2]
+            for row in connection.execute(f'PRAGMA index_info("{index_name}")')
+        ]
+        if columns[:2] == ["thread_id", "started_at"]:
+            return "thread_started_rowid"
+        if columns[:1] == ["thread_id"]:
+            has_thread_index = True
+    if has_thread_index:
+        return "thread_rowid"
+    raise UsageError("usage database has no index suitable for bounded thread pages")
+
+
+def _provider_call_id_is_primary_key(connection: sqlite3.Connection) -> bool:
+    return any(
+        row["name"] == "provider_call_id" and int(row["pk"]) > 0
+        for row in connection.execute('PRAGMA table_info("usage_provider_calls")')
+    )
 
 
 def _normalize_database_call(
@@ -1089,11 +1224,10 @@ def _normalize_database_call(
         raise UsageError("usage database contains a provider call without a thread ID")
     requested_model = _optional_text(row["requested_model"], "requested_model") or None
     actual_model = _optional_text(row["actual_model_used"], "actual_model_used") or None
-    final_model = _optional_text(row["final_model"], "final_model") or None
-    effective_model = final_model or actual_model
-    effective_model_source = (
-        "final_model" if final_model else "actual_model_used" if actual_model else None
-    )
+    # Runtime may fill final_model/model_snapshot after the provider-call row is
+    # inserted. Keep accounting identity on the immutable response model instead.
+    effective_model = actual_model
+    effective_model_source = "actual_model_used" if actual_model else None
     reported_cost = _optional_decimal(
         row["provider_reported_cost"], "provider_reported_cost"
     )
@@ -1190,9 +1324,12 @@ def _union_call_fingerprint(values: tuple[Any, ...]) -> bytes:
 class _MergedUsageTotals:
     """Compact totals for the keyed rows that survive cross-ledger comparison."""
 
-    def __init__(self, rates: dict[str, Any]):
+    def __init__(self, rates: dict[str, Any], *, max_groups: int | None = None):
         self.rates = rates
+        self.max_groups = max_groups
         self.groups: dict[tuple[str, str | None, str | None], dict[str, Any]] = {}
+        self.rows_seen = 0
+        self.omitted_group_rows = 0
 
     @staticmethod
     def group_key(values: tuple[Any, ...]) -> tuple[str, str | None, str | None]:
@@ -1204,8 +1341,16 @@ class _MergedUsageTotals:
         )
 
     def add(self, values: tuple[Any, ...]) -> None:
+        self.rows_seen += 1
         call = dict(zip(UNION_CONTRIBUTION_FIELDS, values))
         group_key = self.group_key(values)
+        if (
+            group_key not in self.groups
+            and self.max_groups is not None
+            and len(self.groups) >= self.max_groups
+        ):
+            self.omitted_group_rows += 1
+            return
         state = self.groups.setdefault(
             group_key,
             {
@@ -1253,6 +1398,100 @@ class _MergedUsageTotals:
             state["reportedMissing"] += 1
         else:
             state["reportedSubtotal"] += reported
+
+    @staticmethod
+    def _counter_checkpoint(counter: Counter) -> list[list[Any]]:
+        return [[key, value] for key, value in sorted(counter.items())]
+
+    def checkpoint_state(self) -> dict[str, Any]:
+        groups = []
+        for (role, requested, effective), state in sorted(
+            self.groups.items(),
+            key=lambda item: tuple(value or "" for value in item[0]),
+        ):
+            groups.append(
+                {
+                    "key": [role, requested, effective],
+                    "count": state["count"],
+                    "statusCounts": self._counter_checkpoint(state["statusCounts"]),
+                    "effectiveSources": self._counter_checkpoint(
+                        state["effectiveSources"]
+                    ),
+                    "tokenSums": self._counter_checkpoint(state["tokenSums"]),
+                    "tokenMissing": self._counter_checkpoint(state["tokenMissing"]),
+                    "estimateSubtotal": _decimal_text(state["estimateSubtotal"]),
+                    "estimateIncomplete": state["estimateIncomplete"],
+                    "missingTokenDimensions": self._counter_checkpoint(
+                        state["missingTokenDimensions"]
+                    ),
+                    "missingRates": self._counter_checkpoint(state["missingRates"]),
+                    "reportedSubtotal": _decimal_text(state["reportedSubtotal"]),
+                    "reportedMissing": state["reportedMissing"],
+                }
+            )
+        return {
+            "rowsSeen": self.rows_seen,
+            "omittedGroupRows": self.omitted_group_rows,
+            "groups": groups,
+        }
+
+    @classmethod
+    def from_checkpoint(
+        cls, rates: dict[str, Any], state: dict[str, Any]
+    ) -> _MergedUsageTotals:
+        if not isinstance(state, dict) or not isinstance(state.get("groups"), list):
+            raise UsageError("usage checkpoint has an invalid source aggregate")
+        totals = cls(rates, max_groups=MAX_DATABASE_UNION_GROUPS)
+        totals.rows_seen = state.get("rowsSeen", 0)
+        totals.omitted_group_rows = state.get("omittedGroupRows", 0)
+        if (
+            not isinstance(totals.rows_seen, int)
+            or totals.rows_seen < 0
+            or not isinstance(totals.omitted_group_rows, int)
+            or totals.omitted_group_rows < 0
+            or len(state["groups"]) > MAX_DATABASE_UNION_GROUPS
+        ):
+            raise UsageError("usage checkpoint exceeds its source aggregate bounds")
+
+        def counter(value: Any) -> Counter:
+            if not isinstance(value, list):
+                raise UsageError("usage checkpoint has an invalid aggregate counter")
+            result = Counter()
+            for pair in value:
+                if (
+                    not isinstance(pair, list)
+                    or len(pair) != 2
+                    or not isinstance(pair[0], str)
+                    or not isinstance(pair[1], int)
+                    or pair[1] < 0
+                ):
+                    raise UsageError("usage checkpoint has an invalid aggregate counter")
+                result[pair[0]] = pair[1]
+            return result
+
+        for item in state["groups"]:
+            key = item.get("key") if isinstance(item, dict) else None
+            if (
+                not isinstance(key, list)
+                or len(key) != 3
+                or not isinstance(key[0], str)
+                or any(value is not None and not isinstance(value, str) for value in key)
+            ):
+                raise UsageError("usage checkpoint has an invalid aggregate group key")
+            totals.groups[(key[0], key[1], key[2])] = {
+                "count": item["count"],
+                "statusCounts": counter(item["statusCounts"]),
+                "effectiveSources": counter(item["effectiveSources"]),
+                "tokenSums": counter(item["tokenSums"]),
+                "tokenMissing": counter(item["tokenMissing"]),
+                "estimateSubtotal": Decimal(item["estimateSubtotal"]),
+                "estimateIncomplete": item["estimateIncomplete"],
+                "missingTokenDimensions": counter(item["missingTokenDimensions"]),
+                "missingRates": counter(item["missingRates"]),
+                "reportedSubtotal": Decimal(item["reportedSubtotal"]),
+                "reportedMissing": item["reportedMissing"],
+            }
+        return totals
 
     def output(
         self, *, complete_scan: bool, unresolved_rows: int
@@ -1336,10 +1575,15 @@ class _MergedUsageTotals:
 
 class _CrossLedgerUnion:
     def __init__(self):
-        self.calls_by_id: dict[str, tuple[bytes, tuple[Any, ...], int, int, bool]] = {}
+        self.calls_by_id: dict[
+            str, tuple[bytes, tuple[Any, ...], int, int, bool, int]
+        ] = {}
+        self.lookup_existing: Any | None = None
         self.group_counts: Counter = Counter()
         self.conflicting_ids: set[str] = set()
         self.schema_unverifiable_ids: set[str] = set()
+        self.conflicting_id_count = 0
+        self.schema_unverifiable_id_count = 0
         self.exact_duplicate_rows = 0
         self.exact_duplicate_rows_by_source = [0, 0]
         self.conflict_rows = 0
@@ -1351,6 +1595,12 @@ class _CrossLedgerUnion:
         self.rate_context_missing_by_source = [Counter(), Counter()]
         self.estimated_memory_bytes = 0
         self.rejection_reason = None
+        self.pending_call_upserts: dict[
+            str, tuple[bytes, tuple[Any, ...], int, int, bool, int]
+        ] = {}
+        self.pending_call_deletes: set[str] = set()
+        self.pending_conflicting_ids: set[str] = set()
+        self.pending_schema_unverifiable_ids: set[str] = set()
 
     def add(self, source_index: int, call: dict[str, Any]) -> bool:
         self.source_rows[source_index] += 1
@@ -1380,11 +1630,17 @@ class _CrossLedgerUnion:
         fingerprint = _union_call_fingerprint(values)
         contribution = _union_contribution(values)
         existing = self.calls_by_id.get(provider_call_id)
-        if provider_call_id in self.conflicting_ids:
+        persisted_state = None
+        if existing is None and self.lookup_existing is not None:
+            persisted_state, existing = self.lookup_existing(provider_call_id)
+        if persisted_state == "conflict" or provider_call_id in self.conflicting_ids:
             self.conflict_rows += 1
             self.conflict_rows_by_source[source_index] += 1
             return True
-        if provider_call_id in self.schema_unverifiable_ids:
+        if (
+            persisted_state == "schema_unverifiable"
+            or provider_call_id in self.schema_unverifiable_ids
+        ):
             self.schema_unverifiable_rows += 1
             self.schema_unverifiable_rows_by_source[source_index] += 1
             return True
@@ -1415,31 +1671,526 @@ class _CrossLedgerUnion:
                 entry_bytes,
                 key_bytes,
                 schema_complete,
+                1 << source_index,
             )
+            self.pending_call_upserts[provider_call_id] = self.calls_by_id[
+                provider_call_id
+            ]
+            self.pending_call_deletes.discard(provider_call_id)
             self.estimated_memory_bytes += entry_bytes
             self.group_counts[group_key] += 1
             return True
-        if existing[4] and schema_complete and existing[0] == fingerprint:
+        source_mask = existing[5]
+        if (
+            existing[4]
+            and schema_complete
+            and existing[0] == fingerprint
+            and not (source_mask & (1 << source_index))
+        ):
             self.exact_duplicate_rows += 1
             self.exact_duplicate_rows_by_source[source_index] += 1
+            updated = (*existing[:5], source_mask | (1 << source_index))
+            self.calls_by_id[provider_call_id] = updated
+            self.pending_call_upserts[provider_call_id] = updated
             return True
+        prior_sources = [index for index in range(2) if source_mask & (1 << index)]
         if existing[4] and schema_complete:
             self.conflicting_ids.add(provider_call_id)
-            self.conflict_rows += 2
-            self.conflict_rows_by_source[0] += 1
+            self.pending_conflicting_ids.add(provider_call_id)
+            self.conflicting_id_count += 1
+            self.conflict_rows += len(prior_sources) + 1
+            for index in prior_sources:
+                self.conflict_rows_by_source[index] += 1
             self.conflict_rows_by_source[source_index] += 1
         else:
             self.schema_unverifiable_ids.add(provider_call_id)
-            self.schema_unverifiable_rows += 2
-            self.schema_unverifiable_rows_by_source[0] += 1
+            self.pending_schema_unverifiable_ids.add(provider_call_id)
+            self.schema_unverifiable_id_count += 1
+            self.schema_unverifiable_rows += len(prior_sources) + 1
+            for index in prior_sources:
+                self.schema_unverifiable_rows_by_source[index] += 1
             self.schema_unverifiable_rows_by_source[source_index] += 1
         self.calls_by_id.pop(provider_call_id, None)
+        self.pending_call_upserts.pop(provider_call_id, None)
+        self.pending_call_deletes.add(provider_call_id)
         self.estimated_memory_bytes -= existing[2] - (128 + existing[3])
         group_key = _MergedUsageTotals.group_key(existing[1])
         self.group_counts[group_key] -= 1
         if self.group_counts[group_key] == 0:
             del self.group_counts[group_key]
         return True
+
+    def checkpoint_state(self) -> dict[str, Any]:
+        return {
+            "exactDuplicateRows": self.exact_duplicate_rows,
+            "exactDuplicateRowsBySource": self.exact_duplicate_rows_by_source,
+            "conflictRows": self.conflict_rows,
+            "conflictRowsBySource": self.conflict_rows_by_source,
+            "schemaUnverifiableRows": self.schema_unverifiable_rows,
+            "schemaUnverifiableRowsBySource": self.schema_unverifiable_rows_by_source,
+            "conflictingProviderCallIds": self.conflicting_id_count,
+            "schemaUnverifiableProviderCallIds": self.schema_unverifiable_id_count,
+            "unkeyedRows": self.unkeyed_rows,
+            "sourceRows": self.source_rows,
+            "groupCounts": [
+                [list(group), count]
+                for group, count in sorted(
+                    self.group_counts.items(),
+                    key=lambda item: tuple(value or "" for value in item[0]),
+                )
+            ],
+            "rateContextMissingBySource": [
+                dict(counter) for counter in self.rate_context_missing_by_source
+            ],
+            "estimatedMemoryBytes": self.estimated_memory_bytes,
+            "rejectionReason": self.rejection_reason,
+        }
+
+
+class _CrossLedgerCheckpoint:
+    """Owner-selected, private resume state; source ledgers remain read-only."""
+
+    def __init__(self, checkpoint_path: str, identity: dict[str, Any]):
+        requested_path = Path(checkpoint_path).expanduser()
+        try:
+            requested_info = requested_path.lstat()
+        except FileNotFoundError:
+            requested_info = None
+        if requested_info is not None and stat.S_ISLNK(requested_info.st_mode):
+            raise UsageError("checkpoint must not be a symbolic link")
+        path = requested_path.resolve(strict=False)
+        try:
+            requested_info = requested_path.lstat()
+        except FileNotFoundError:
+            requested_info = None
+        if requested_info is not None and stat.S_ISLNK(requested_info.st_mode):
+            raise UsageError("checkpoint must not be a symbolic link")
+        if any(path == Path(source["path"]) for source in identity["sources"]):
+            raise UsageError("checkpoint path must be separate from both usage databases")
+        if not path.parent.is_dir():
+            raise UsageError("checkpoint parent directory does not exist")
+        try:
+            info = path.lstat()
+        except FileNotFoundError:
+            flags = os.O_CREAT | os.O_EXCL | os.O_RDWR
+            flags |= getattr(os, "O_NOFOLLOW", 0)
+            descriptor = os.open(path, flags, 0o600)
+            os.close(descriptor)
+            info = path.lstat()
+        if stat.S_ISLNK(info.st_mode) or not stat.S_ISREG(info.st_mode):
+            raise UsageError("checkpoint must be a regular, non-symlink file")
+        if hasattr(os, "getuid") and info.st_uid != os.getuid():
+            raise UsageError("checkpoint must be owned by the current user")
+        if os.name != "nt" and stat.S_IMODE(info.st_mode) & 0o077:
+            raise UsageError("checkpoint permissions must be owner-only")
+
+        self.path = path
+        self.connection = None
+        self.error = None
+        self.reset_reason = None
+        identity_json = json.dumps(
+            identity, ensure_ascii=True, sort_keys=True, separators=(",", ":")
+        )
+        try:
+            self.connection = sqlite3.connect(
+                path.as_uri() + "?mode=rw", uri=True, timeout=2.0
+            )
+            self.connection.execute("PRAGMA busy_timeout = 2000")
+            self.connection.execute("PRAGMA journal_mode = DELETE")
+            self.connection.execute("PRAGMA synchronous = FULL")
+            tables = {
+                row[0]
+                for row in self.connection.execute(
+                    "SELECT name FROM sqlite_master WHERE type = 'table'"
+                )
+            }
+            if "checkpoint_meta" not in tables:
+                if info.st_size != 0 or tables:
+                    raise UsageError("checkpoint file is not a recognized usage checkpoint")
+                self.connection.executescript(
+                    "CREATE TABLE checkpoint_meta (key TEXT PRIMARY KEY, value TEXT NOT NULL);"
+                    "CREATE TABLE union_calls ("
+                    "provider_call_id TEXT PRIMARY KEY, fingerprint BLOB NOT NULL, "
+                    "contribution TEXT NOT NULL, entry_bytes INTEGER NOT NULL, "
+                    "key_bytes INTEGER NOT NULL, schema_complete INTEGER NOT NULL, "
+                    "source_mask INTEGER NOT NULL);"
+                    "CREATE TABLE conflicting_ids (provider_call_id TEXT PRIMARY KEY);"
+                    "CREATE TABLE schema_unverifiable_ids (provider_call_id TEXT PRIMARY KEY);"
+                )
+                self.connection.execute(
+                    "INSERT INTO checkpoint_meta(key,value) VALUES('format_version',?)",
+                    (str(DATABASE_UNION_CHECKPOINT_VERSION),),
+                )
+                self.connection.execute(
+                    "INSERT INTO checkpoint_meta(key,value) VALUES('identity',?)",
+                    (identity_json,),
+                )
+                self.connection.commit()
+                self.reset_reason = "new_checkpoint"
+            else:
+                expected_tables = {
+                    "checkpoint_meta",
+                    "union_calls",
+                    "conflicting_ids",
+                    "schema_unverifiable_ids",
+                }
+                if tables != expected_tables:
+                    raise UsageError("checkpoint schema is not recognized")
+                version_row = self.connection.execute(
+                    "SELECT value FROM checkpoint_meta WHERE key = 'format_version'"
+                ).fetchone()
+                if version_row is None:
+                    raise UsageError("checkpoint version marker is missing")
+                if version_row[0] != str(DATABASE_UNION_CHECKPOINT_VERSION):
+                    raise UsageError("checkpoint format version is unsupported")
+                identity_row = self.connection.execute(
+                    "SELECT value FROM checkpoint_meta WHERE key = 'identity'"
+                ).fetchone()
+                if identity_row is None:
+                    raise UsageError("checkpoint source identity is missing")
+                if identity_row[0] != identity_json:
+                    self._reset(identity_json)
+                    self.reset_reason = "source_or_request_identity_changed"
+        except UsageError:
+            if self.connection is not None:
+                self.connection.close()
+                self.connection = None
+            raise
+        except (OSError, sqlite3.Error) as exc:
+            if self.connection is not None:
+                self.connection.close()
+                self.connection = None
+            raise UsageError("could not open the private usage checkpoint") from exc
+
+        try:
+            path.chmod(0o600)
+        except OSError as exc:
+            self.close()
+            raise UsageError("could not restrict usage checkpoint permissions") from exc
+
+    def _reset(self, identity_json: str) -> None:
+        assert self.connection is not None
+        self.connection.execute("BEGIN IMMEDIATE")
+        try:
+            self.connection.execute("DELETE FROM union_calls")
+            self.connection.execute("DELETE FROM conflicting_ids")
+            self.connection.execute("DELETE FROM schema_unverifiable_ids")
+            self.connection.execute("DELETE FROM checkpoint_meta WHERE key = 'state'")
+            self.connection.execute(
+                "UPDATE checkpoint_meta SET value = ? WHERE key = 'identity'",
+                (identity_json,),
+            )
+            self.connection.commit()
+        except sqlite3.Error:
+            self.connection.rollback()
+            raise
+
+    @staticmethod
+    def _counter_state(value: Any, name: str) -> list[int]:
+        if (
+            not isinstance(value, list)
+            or len(value) != 2
+            or any(not isinstance(item, int) or item < 0 for item in value)
+        ):
+            raise UsageError(f"checkpoint has invalid {name} counters")
+        return value
+
+    def load(
+        self, rates: dict[str, Any], overall_deadline: float
+    ) -> tuple[_CrossLedgerUnion, list[dict[str, Any]]]:
+        assert self.connection is not None
+        row = self.connection.execute(
+            "SELECT value FROM checkpoint_meta WHERE key = 'state'"
+        ).fetchone()
+        union = _CrossLedgerUnion()
+        if row is None:
+            union.lookup_existing = self.lookup_call
+            return union, [
+                {
+                    "complete": False,
+                    "cursor": None,
+                    "orderMode": None,
+                    "rowsScanned": 0,
+                    "totals": _MergedUsageTotals(
+                        rates, max_groups=MAX_DATABASE_UNION_GROUPS
+                    ).checkpoint_state(),
+                    "minimumStartedAtObserved": None,
+                    "maximumStartedAtObserved": None,
+                    "lineage": None,
+                    "threadRoles": None,
+                    "snapshotMaxRowid": None,
+                    "snapshotStartedAt": None,
+                    "postCutoffRowsExcludedObserved": False,
+                }
+                for _ in range(2)
+            ]
+        try:
+            self.connection.set_progress_handler(
+                lambda: int(time.monotonic() >= overall_deadline), 10000
+            )
+            state = json.loads(row[0])
+            union_state = state["union"]
+            sources = state["sources"]
+            union.exact_duplicate_rows = union_state["exactDuplicateRows"]
+            union.exact_duplicate_rows_by_source = self._counter_state(
+                union_state["exactDuplicateRowsBySource"], "exact-duplicate"
+            )
+            union.conflict_rows = union_state["conflictRows"]
+            union.conflict_rows_by_source = self._counter_state(
+                union_state["conflictRowsBySource"], "conflict"
+            )
+            union.schema_unverifiable_rows = union_state["schemaUnverifiableRows"]
+            union.schema_unverifiable_rows_by_source = self._counter_state(
+                union_state["schemaUnverifiableRowsBySource"], "schema-unverifiable"
+            )
+            union.conflicting_id_count = union_state["conflictingProviderCallIds"]
+            union.schema_unverifiable_id_count = union_state[
+                "schemaUnverifiableProviderCallIds"
+            ]
+            if any(
+                not isinstance(value, int) or value < 0
+                for value in (
+                    union.conflicting_id_count,
+                    union.schema_unverifiable_id_count,
+                )
+            ):
+                raise UsageError("checkpoint has invalid unresolved identity counts")
+            union.unkeyed_rows = self._counter_state(
+                union_state["unkeyedRows"], "unkeyed"
+            )
+            union.source_rows = self._counter_state(union_state["sourceRows"], "source")
+            missing = union_state["rateContextMissingBySource"]
+            if not isinstance(missing, list) or len(missing) != 2:
+                raise UsageError("checkpoint has invalid missing-rate-context counters")
+            union.rate_context_missing_by_source = []
+            for item in missing:
+                if not isinstance(item, dict) or any(
+                    not isinstance(key, str)
+                    or not isinstance(value, int)
+                    or value < 0
+                    for key, value in item.items()
+                ):
+                    raise UsageError("checkpoint has invalid missing-rate-context counters")
+                union.rate_context_missing_by_source.append(Counter(item))
+            expected_memory_bytes = union_state["estimatedMemoryBytes"]
+            union.estimated_memory_bytes = 0
+            union.rejection_reason = union_state["rejectionReason"]
+            if (
+                not isinstance(expected_memory_bytes, int)
+                or expected_memory_bytes < 0
+                or expected_memory_bytes > MAX_DATABASE_UNION_MEMORY_BYTES
+                or union.rejection_reason is not None
+                and not isinstance(union.rejection_reason, str)
+            ):
+                raise UsageError("checkpoint exceeds cross-ledger union bounds")
+            union.estimated_memory_bytes = expected_memory_bytes
+            group_counts = union_state["groupCounts"]
+            if not isinstance(group_counts, list) or len(group_counts) > MAX_DATABASE_UNION_GROUPS:
+                raise UsageError("checkpoint has invalid merged group counts")
+            for item in group_counts:
+                if (
+                    not isinstance(item, list)
+                    or len(item) != 2
+                    or not isinstance(item[0], list)
+                    or len(item[0]) != 3
+                    or any(value is not None and not isinstance(value, str) for value in item[0])
+                    or not isinstance(item[1], int)
+                    or item[1] <= 0
+                ):
+                    raise UsageError("checkpoint has invalid merged group counts")
+                union.group_counts[tuple(item[0])] = item[1]
+            if sum(union.group_counts.values()) > MAX_DATABASE_UNION_CALLS_TOTAL:
+                raise UsageError("checkpoint exceeds merged call-count bounds")
+            union.lookup_existing = self.lookup_call
+            if not isinstance(sources, list) or len(sources) != 2:
+                raise UsageError("checkpoint has invalid source cursors")
+            for source in sources:
+                if (
+                    not isinstance(source, dict)
+                    or not isinstance(source.get("complete"), bool)
+                    or source.get("orderMode") not in (None, "thread_started_rowid", "thread_rowid")
+                    or source.get("cursor") is not None
+                    and not isinstance(source.get("cursor"), list)
+                    or source.get("snapshotMaxRowid") is not None
+                    and (
+                        not isinstance(source.get("snapshotMaxRowid"), int)
+                        or source["snapshotMaxRowid"] < 0
+                    )
+                    or source.get("threadRoles") is not None
+                    and (
+                        not isinstance(source.get("threadRoles"), dict)
+                        or len(source["threadRoles"]) > MAX_DATABASE_THREADS
+                        or any(
+                            not isinstance(thread_id, str)
+                            or role not in ("root", "subagent", "other_descendant")
+                            for thread_id, role in source["threadRoles"].items()
+                        )
+                    )
+                ):
+                    raise UsageError("checkpoint has invalid source cursors")
+                source["totals"] = _MergedUsageTotals.from_checkpoint(
+                    rates, source.get("totals")
+                ).checkpoint_state()
+            return union, sources
+        except sqlite3.OperationalError as exc:
+            if getattr(exc, "sqlite_errorcode", None) == sqlite3.SQLITE_INTERRUPT:
+                raise UsageError(
+                    "usage checkpoint load exceeded its operation time limit"
+                ) from exc
+            raise UsageError("could not read the private usage checkpoint") from exc
+        except (KeyError, TypeError, ValueError, InvalidOperation, json.JSONDecodeError) as exc:
+            raise UsageError("checkpoint state is corrupt or incompatible") from exc
+        finally:
+            self.connection.set_progress_handler(None, 0)
+
+    def lookup_call(
+        self, provider_call_id: str
+    ) -> tuple[str | None, tuple[bytes, tuple[Any, ...], int, int, bool, int] | None]:
+        assert self.connection is not None
+        row = self.connection.execute(
+            "SELECT CASE "
+            "WHEN EXISTS (SELECT 1 FROM conflicting_ids WHERE provider_call_id = ?) "
+            "THEN 'conflict' "
+            "WHEN EXISTS (SELECT 1 FROM schema_unverifiable_ids WHERE provider_call_id = ?) "
+            "THEN 'schema_unverifiable' END, "
+            "fingerprint, contribution, entry_bytes, key_bytes, schema_complete, source_mask "
+            "FROM (SELECT 1) LEFT JOIN union_calls ON union_calls.provider_call_id = ?",
+            (provider_call_id, provider_call_id, provider_call_id),
+        ).fetchone()
+        if row is None or row[0] is not None:
+            return (row[0] if row is not None else None), None
+        if row[1] is None:
+            return None, None
+        values = json.loads(row[2])
+        if not isinstance(values, list) or len(values) != len(UNION_CONTRIBUTION_FIELDS):
+            raise UsageError("checkpoint has invalid provider-call contribution")
+        credits_index = UNION_CONTRIBUTION_FIELDS.index("providerReportedCredits")
+        if values[credits_index] is not None:
+            values[credits_index] = Decimal(values[credits_index])
+        result = (
+            bytes(row[1]),
+            tuple(values),
+            int(row[3]),
+            int(row[4]),
+            bool(row[5]),
+            int(row[6]),
+        )
+        if result[2] < 0 or result[3] < 0 or result[5] not in (1, 2, 3):
+            raise UsageError("checkpoint has invalid provider-call identity metadata")
+        return None, result
+
+    def iter_unique_contributions(self):
+        assert self.connection is not None
+        for row in self.connection.execute(
+            "SELECT contribution FROM union_calls ORDER BY provider_call_id"
+        ):
+            values = json.loads(row[0])
+            if not isinstance(values, list) or len(values) != len(UNION_CONTRIBUTION_FIELDS):
+                raise UsageError("checkpoint has invalid provider-call contribution")
+            credits_index = UNION_CONTRIBUTION_FIELDS.index("providerReportedCredits")
+            if values[credits_index] is not None:
+                values[credits_index] = Decimal(values[credits_index])
+            yield tuple(values)
+
+    def save_page(
+        self,
+        union: _CrossLedgerUnion,
+        sources: list[dict[str, Any]],
+    ) -> bool:
+        if self.error is not None or self.connection is None:
+            return False
+        state = json.dumps(
+            {"union": union.checkpoint_state(), "sources": sources},
+            ensure_ascii=True,
+            sort_keys=True,
+            separators=(",", ":"),
+        )
+        pending_bytes = len(state.encode("utf-8")) + sum(
+            len(provider_call_id.encode("utf-8"))
+            + len(_checkpoint_contribution(entry[1]).encode("utf-8"))
+            + 128
+            for provider_call_id, entry in union.pending_call_upserts.items()
+        )
+        try:
+            if self.path.stat().st_size + pending_bytes > MAX_DATABASE_CHECKPOINT_BYTES:
+                self.error = "checkpoint_size_limit"
+                return False
+            connection = self.connection
+            connection.execute("BEGIN IMMEDIATE")
+            for provider_call_id in union.pending_call_deletes:
+                connection.execute(
+                    "DELETE FROM union_calls WHERE provider_call_id = ?",
+                    (provider_call_id,),
+                )
+            connection.executemany(
+                "INSERT OR REPLACE INTO union_calls "
+                "(provider_call_id,fingerprint,contribution,entry_bytes,key_bytes,"
+                "schema_complete,source_mask) "
+                "VALUES(?,?,?,?,?,?,?)",
+                [
+                    (
+                        provider_call_id,
+                        entry[0],
+                        _checkpoint_contribution(entry[1]),
+                        entry[2],
+                        entry[3],
+                        int(entry[4]),
+                        entry[5],
+                    )
+                    for provider_call_id, entry in union.pending_call_upserts.items()
+                ],
+            )
+            connection.executemany(
+                "INSERT OR IGNORE INTO conflicting_ids(provider_call_id) VALUES(?)",
+                [(provider_call_id,) for provider_call_id in union.pending_conflicting_ids],
+            )
+            connection.executemany(
+                "INSERT OR IGNORE INTO schema_unverifiable_ids(provider_call_id) VALUES(?)",
+                [
+                    (provider_call_id,)
+                    for provider_call_id in union.pending_schema_unverifiable_ids
+                ],
+            )
+            connection.execute(
+                "INSERT OR REPLACE INTO checkpoint_meta(key,value) VALUES('state',?)",
+                (state,),
+            )
+            connection.commit()
+            union.pending_call_upserts.clear()
+            union.pending_call_deletes.clear()
+            union.pending_conflicting_ids.clear()
+            union.pending_schema_unverifiable_ids.clear()
+            if union.lookup_existing is not None:
+                union.calls_by_id.clear()
+                union.conflicting_ids.clear()
+                union.schema_unverifiable_ids.clear()
+            if self.path.stat().st_size > MAX_DATABASE_CHECKPOINT_BYTES:
+                self.error = "checkpoint_size_limit"
+                return False
+            return True
+        except (OSError, sqlite3.Error):
+            try:
+                self.connection.rollback()
+            except sqlite3.Error:
+                pass
+            self.error = "checkpoint_write_failed"
+            return False
+
+    def close(self) -> None:
+        if self.connection is not None:
+            self.connection.close()
+            self.connection = None
+
+
+def _checkpoint_contribution(values: tuple[Any, ...]) -> str:
+    return json.dumps(
+        [
+            _decimal_text(value) if isinstance(value, Decimal) else value
+            for value in values
+        ],
+        ensure_ascii=True,
+        separators=(",", ":"),
+    )
 
 
 def _database_compact_aggregate(
@@ -1480,20 +2231,19 @@ def _database_compact_aggregate(
     cache_write = call_field("input_tokens_cache_write")
     requested = call_field("requested_model")
     actual = call_field("actual_model_used")
-    final = call_field("final_model")
     placeholders = ", ".join("?" for _ in thread_ids)
     sql = f"""
         SELECT CASE WHEN c.thread_id = ? THEN 'root'
                     WHEN {kind} = 'subagent' OR lower(COALESCE({source}, '')) LIKE '%subagent%'
                     THEN 'subagent' ELSE 'other_descendant' END AS role,
                {requested} AS requested_model, {actual} AS actual_model,
-               {final} AS final_model, COUNT(*) AS calls,
+               COUNT(*) AS calls,
                {", ".join(dimensions)},
                SUM(CASE WHEN {cache_write} = 0 THEN {uncached} ELSE 0 END) AS priced_uncached,
                SUM(CASE WHEN {cache_write} IS NULL OR {cache_write} != 0 THEN 1 ELSE 0 END) AS unpriced_cache_write
         FROM usage_provider_calls c JOIN usage_threads t ON t.thread_id = c.thread_id
         WHERE c.thread_id IN ({placeholders})
-        GROUP BY role, requested_model, actual_model, final_model
+        GROUP BY role, requested_model, actual_model
         LIMIT 101
     """
     deadline = _database_deadline(overall_deadline)
@@ -1519,8 +2269,7 @@ def _database_compact_aggregate(
             _optional_text(row["requested_model"], "requested_model") or None
         )
         actual_model = _optional_text(row["actual_model"], "actual_model_used") or None
-        final_model = _optional_text(row["final_model"], "final_model") or None
-        effective = final_model or actual_model
+        effective = actual_model
         model = effective or requested_model
         missing = [field for field in fields if row[f"{field}_missing"]]
         if row["unpriced_cache_write"]:
@@ -1540,9 +2289,7 @@ def _database_compact_aggregate(
                 "role": row["role"],
                 "requestedModel": requested_model,
                 "providerEffectiveModel": effective,
-                "providerEffectiveModelSource": "final_model"
-                if final_model
-                else "actual_model_used"
+                "providerEffectiveModelSource": "actual_model_used"
                 if actual_model
                 else None,
                 "responseUsageRecordCount": row["calls"],
@@ -1577,6 +2324,24 @@ def _database_compact_aggregate(
     }
 
 
+def _recorded_source_aggregate(
+    totals: _MergedUsageTotals, *, complete_scan: bool
+) -> dict[str, Any]:
+    complete = complete_scan and totals.omitted_group_rows == 0
+    return {
+        "status": "recorded_rows_only" if complete else "partial_recorded_rows_only",
+        "responseUsageRecordCount": totals.rows_seen,
+        "groups": totals.output(complete_scan=complete, unresolved_rows=0),
+        "groupsTruncated": totals.omitted_group_rows > 0,
+        "omittedGroupRows": totals.omitted_group_rows,
+        "actualDebitObserved": False,
+        "note": (
+            "Per-source totals include the scanned recorded rows, including duplicate, "
+            "conflicting, and unkeyed rows; these are not merged cross-ledger totals."
+        ),
+    }
+
+
 def collect_database_tree(
     root_id: str,
     database_path: str,
@@ -1586,7 +2351,13 @@ def collect_database_tree(
     aggregate_only: bool = False,
     union_callback: Any | None = None,
     union_row_limit: int | None = None,
+    union_row_limit_reason: str = "per_source_or_whole_operation_row_limit",
     overall_deadline: float | None = None,
+    source_index: int | None = None,
+    resume_state: dict[str, Any] | None = None,
+    source_totals: _MergedUsageTotals | None = None,
+    checkpoint_callback: Any | None = None,
+    expected_source_identity: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Read an explicitly named usage database without startup, migration, or writes."""
     if not isinstance(root_id, str) or not root_id.strip():
@@ -1596,10 +2367,27 @@ def collect_database_tree(
         source_deadline = min(source_deadline, overall_deadline)
     connection = None
     try:
-        uri = Path(database_path).resolve(strict=True).as_uri() + "?mode=ro"
+        resolved_database_path = Path(database_path).resolve(strict=True)
+        uri = resolved_database_path.as_uri() + "?mode=ro"
         connection = sqlite3.connect(uri, uri=True, timeout=5.0)
         connection.row_factory = sqlite3.Row
         connection.execute("PRAGMA query_only = ON")
+        connection.execute("BEGIN")
+        source_transaction_started_at = datetime.now().astimezone().isoformat()
+        if expected_source_identity is not None:
+            current_files = _database_files_identity(resolved_database_path)
+            stable = expected_source_identity["stable"]
+            if (
+                str(resolved_database_path) != stable["path"]
+                or not _same_database_generation(current_files, stable)
+                or connection.execute("PRAGMA schema_version").fetchone()[0]
+                != stable["schemaVersion"]
+                or connection.execute("PRAGMA user_version").fetchone()[0]
+                != stable["userVersion"]
+                or connection.execute("PRAGMA journal_mode").fetchone()[0]
+                != stable["journalMode"]
+            ):
+                raise UsageError("usage database identity changed after checkpoint validation")
         tables = {
             row["name"]
             for row in connection.execute(
@@ -1626,6 +2414,11 @@ def collect_database_tree(
             raise UsageError("usage database has no supported thread lineage schema")
         if not {"provider_call_id", "thread_id", "started_at"}.issubset(call_columns):
             raise UsageError("usage database has no supported provider-call schema")
+        provider_call_id_primary_key = _provider_call_id_is_primary_key(connection)
+        if union_callback is not None and not provider_call_id_primary_key:
+            raise UsageError(
+                "cross-ledger merge requires provider_call_id uniqueness in each source"
+            )
         if (
             connection.execute(
                 "SELECT 1 FROM usage_threads WHERE thread_id = ?", (root_id,)
@@ -1634,76 +2427,90 @@ def collect_database_tree(
         ):
             raise UsageError("root thread is not present in usage_threads")
 
-        thread_source = (
-            'thread.source AS "source"'
-            if "source" in thread_columns
-            else 'NULL AS "source"'
+        reuse_frozen_lineage = (
+            union_callback is not None
+            and resume_state is not None
+            and resume_state.get("threadRoles") is not None
         )
-        thread_kind = (
-            'thread.thread_source AS "thread_source"'
-            if "thread_source" in thread_columns
-            else 'NULL AS "thread_source"'
-        )
-        # Keep the recursive row outermost and remove its TEXT affinity: SQLite
-        # can then search the existing parent/fork expression index per child.
-        deadline = _database_deadline(source_deadline)
-        connection.set_progress_handler(
-            lambda: int(time.monotonic() >= deadline), 10000
-        )
-        thread_rows = connection.execute(
-            f"""
-            WITH RECURSIVE lineage(thread_id, depth, visited) AS (
-                SELECT thread_id, 0, ',' || thread_id || ','
-                FROM usage_threads WHERE thread_id = ?
-                UNION ALL
-                SELECT child.thread_id, lineage.depth + 1,
-                       lineage.visited || child.thread_id || ','
-                FROM lineage
-                CROSS JOIN usage_threads AS child
-                WHERE COALESCE(
-                      NULLIF(child.parent_thread_id, ''),
-                      NULLIF(child.fork_parent_thread_id, '')
-                  ) = +lineage.thread_id
-                  AND instr(lineage.visited, ',' || child.thread_id || ',') = 0
-                  AND lineage.depth < ?
-                LIMIT ?
-            ),
-            selected(thread_id) AS (
-                SELECT thread_id FROM lineage
-                UNION
-                SELECT thread_id FROM (
-                    SELECT thread_id FROM usage_threads
-                    WHERE root_thread_id = ?
-                    LIMIT ?
-                )
+        if reuse_frozen_lineage:
+            frozen_roles = resume_state["threadRoles"]
+            lineage_state = resume_state.get("lineage")
+            if root_id not in frozen_roles or not isinstance(lineage_state, dict):
+                raise UsageError("checkpoint has an invalid frozen lineage snapshot")
+            thread_rows = [{"thread_id": thread_id} for thread_id in frozen_roles]
+            thread_ids = sorted(frozen_roles)
+            threads_truncated = bool(lineage_state.get("truncated"))
+        else:
+            thread_source = (
+                'thread.source AS "source"'
+                if "source" in thread_columns
+                else 'NULL AS "source"'
             )
-            SELECT thread.thread_id, thread.parent_thread_id,
-                   thread.fork_parent_thread_id, thread.root_thread_id,
-                   {thread_source}, {thread_kind},
-                   COALESCE((
-                       SELECT MIN(lineage.depth) FROM lineage
-                       WHERE lineage.thread_id = thread.thread_id
-                   ), 1) AS depth
-            FROM usage_threads AS thread
-            JOIN selected ON selected.thread_id = thread.thread_id
-            ORDER BY CASE WHEN thread.thread_id = ? THEN 0 ELSE 1 END,
-                     depth, thread.thread_id
-            LIMIT ?
-            """,
-            (
-                root_id,
-                MAX_DATABASE_THREADS,
-                MAX_DATABASE_THREADS + 1,
-                root_id,
-                MAX_DATABASE_THREADS + 1,
-                root_id,
-                MAX_DATABASE_THREADS + 1,
-            ),
-        ).fetchall()
-        connection.set_progress_handler(None, 0)
-        threads_truncated = len(thread_rows) > MAX_DATABASE_THREADS
-        thread_rows = thread_rows[:MAX_DATABASE_THREADS]
-        thread_ids = [row["thread_id"] for row in thread_rows]
+            thread_kind = (
+                'thread.thread_source AS "thread_source"'
+                if "thread_source" in thread_columns
+                else 'NULL AS "thread_source"'
+            )
+            # Keep the recursive row outermost and remove its TEXT affinity: SQLite
+            # can then search the existing parent/fork expression index per child.
+            deadline = _database_deadline(source_deadline)
+            connection.set_progress_handler(
+                lambda: int(time.monotonic() >= deadline), 10000
+            )
+            thread_rows = connection.execute(
+                f"""
+                WITH RECURSIVE lineage(thread_id, depth, visited) AS (
+                    SELECT thread_id, 0, ',' || thread_id || ','
+                    FROM usage_threads WHERE thread_id = ?
+                    UNION ALL
+                    SELECT child.thread_id, lineage.depth + 1,
+                           lineage.visited || child.thread_id || ','
+                    FROM lineage
+                    CROSS JOIN usage_threads AS child
+                    WHERE COALESCE(
+                          NULLIF(child.parent_thread_id, ''),
+                          NULLIF(child.fork_parent_thread_id, '')
+                      ) = +lineage.thread_id
+                      AND instr(lineage.visited, ',' || child.thread_id || ',') = 0
+                      AND lineage.depth < ?
+                    LIMIT ?
+                ),
+                selected(thread_id) AS (
+                    SELECT thread_id FROM lineage
+                    UNION
+                    SELECT thread_id FROM (
+                        SELECT thread_id FROM usage_threads
+                        WHERE root_thread_id = ?
+                        LIMIT ?
+                    )
+                )
+                SELECT thread.thread_id, thread.parent_thread_id,
+                       thread.fork_parent_thread_id, thread.root_thread_id,
+                       {thread_source}, {thread_kind},
+                       COALESCE((
+                           SELECT MIN(lineage.depth) FROM lineage
+                           WHERE lineage.thread_id = thread.thread_id
+                       ), 1) AS depth
+                FROM usage_threads AS thread
+                JOIN selected ON selected.thread_id = thread.thread_id
+                ORDER BY CASE WHEN thread.thread_id = ? THEN 0 ELSE 1 END,
+                         depth, thread.thread_id
+                LIMIT ?
+                """,
+                (
+                    root_id,
+                    MAX_DATABASE_THREADS,
+                    MAX_DATABASE_THREADS + 1,
+                    root_id,
+                    MAX_DATABASE_THREADS + 1,
+                    root_id,
+                    MAX_DATABASE_THREADS + 1,
+                ),
+            ).fetchall()
+            connection.set_progress_handler(None, 0)
+            threads_truncated = len(thread_rows) > MAX_DATABASE_THREADS
+            thread_rows = thread_rows[:MAX_DATABASE_THREADS]
+            thread_ids = [row["thread_id"] for row in thread_rows]
         if root_id not in thread_ids:
             raise UsageError("root thread was omitted by the bounded lineage query")
         _assert_indexed_thread_call_lookup(connection, thread_ids)
@@ -1724,7 +2531,7 @@ def collect_database_tree(
                 thread_columns,
                 source_deadline,
             )
-            if aggregate or aggregate_only
+            if aggregate or (aggregate_only and union_callback is None)
             else None
         )
         if aggregate_only:
@@ -1733,110 +2540,275 @@ def collect_database_tree(
                 if (
                     union_row_limit is None
                     or not 0 <= union_row_limit <= MAX_DATABASE_UNION_CALLS_PER_SOURCE
+                    or source_index not in (0, 1)
                 ):
                     raise UsageError("cross-ledger row limit is outside its safe bound")
-                thread_roles = {}
-                for thread_row in thread_rows:
-                    thread_id = thread_row["thread_id"]
-                    source = _optional_text(thread_row["source"], "thread source")
-                    thread_source = _optional_text(
-                        thread_row["thread_source"], "thread source kind"
+                if resume_state is None:
+                    resume_state = {
+                        "complete": False,
+                        "cursor": None,
+                        "orderMode": None,
+                        "rowsScanned": 0,
+                        "minimumStartedAtObserved": None,
+                        "maximumStartedAtObserved": None,
+                    }
+                if source_totals is None:
+                    source_totals = _MergedUsageTotals(
+                        rates, max_groups=MAX_DATABASE_UNION_GROUPS
                     )
-                    thread_roles[thread_id] = (
-                        "root"
-                        if thread_id == root_id
-                        else "subagent"
-                        if thread_source == "subagent"
-                        or (source is not None and "subagent" in source.lower())
-                        else "other_descendant"
-                    )
-                selected_fields = DATABASE_CALL_COLUMNS
-                expressions = [
-                    f'"{field}" AS "{field}"'
-                    if field in call_columns
-                    else f'NULL AS "{field}"'
-                    for field in selected_fields
-                ]
-                placeholders = ", ".join("?" for _ in thread_ids)
+                if resume_state.get("threadRoles") is not None:
+                    thread_roles = resume_state["threadRoles"]
+                    if root_id not in thread_roles:
+                        raise UsageError("checkpoint lineage omitted the root thread")
+                    lineage_state = resume_state.get("lineage")
+                    if not isinstance(lineage_state, dict):
+                        raise UsageError("checkpoint has no frozen lineage summary")
+                    threads_truncated = bool(lineage_state.get("truncated"))
+                    thread_ids = sorted(thread_roles)
+                    thread_rows = [{"thread_id": thread_id} for thread_id in thread_ids]
+                else:
+                    thread_roles = {}
+                    for thread_row in thread_rows:
+                        thread_id = thread_row["thread_id"]
+                        source = _optional_text(thread_row["source"], "thread source")
+                        thread_source = _optional_text(
+                            thread_row["thread_source"], "thread source kind"
+                        )
+                        thread_roles[thread_id] = (
+                            "root"
+                            if thread_id == root_id
+                            else "subagent"
+                            if thread_source == "subagent"
+                            or (source is not None and "subagent" in source.lower())
+                            else "other_descendant"
+                        )
+                    resume_state["threadRoles"] = thread_roles
+                    resume_state["lineage"] = {
+                        "knownThreadCount": len(thread_rows),
+                        "truncated": threads_truncated,
+                    }
+                _assert_indexed_thread_call_lookup(connection, thread_ids)
+                if resume_state.get("snapshotMaxRowid") is None:
+                    resume_state["snapshotMaxRowid"] = connection.execute(
+                        "SELECT COALESCE(MAX(rowid), 0) FROM usage_provider_calls"
+                    ).fetchone()[0]
+                    resume_state["snapshotStartedAt"] = source_transaction_started_at
+                snapshot_max_rowid = resume_state["snapshotMaxRowid"]
+                current_max_rowid = connection.execute(
+                    "SELECT COALESCE(MAX(rowid), 0) FROM usage_provider_calls"
+                ).fetchone()[0]
+                resume_state["postCutoffRowsExcludedObserved"] = (
+                    current_max_rowid > snapshot_max_rowid
+                )
                 row_limit = union_row_limit or 0
-                query_deadline = _database_deadline(source_deadline)
-                call_sql = f"""
-                    SELECT provider_call_id, thread_id, {", ".join(expressions)}
-                    FROM usage_provider_calls
-                    WHERE thread_id IN ({placeholders})
-                    LIMIT ?
-                """
-                call_parameters = (*thread_ids, row_limit + 1)
-                _assert_indexed_thread_call_lookup(
-                    connection,
-                    thread_ids,
-                    sql=call_sql,
-                    parameters=call_parameters,
-                )
-                connection.set_progress_handler(
-                    lambda: int(time.monotonic() >= query_deadline), 10000
-                )
-                rows_scanned = 0
-                minimum_started_at = None
-                maximum_started_at = None
+                order_mode = _database_call_order_mode(connection)
+                stored_order_mode = resume_state.get("orderMode")
+                if stored_order_mode not in (None, order_mode):
+                    raise UsageError("checkpoint keyset order no longer matches the ledger")
+                resume_state["orderMode"] = order_mode
+                if checkpoint_callback is not None:
+                    resume_state["totals"] = source_totals.checkpoint_state()
+                    checkpoint_callback()
+                rows_scanned_this_run = 0
                 truncated = False
-                extra_row_observed = False
                 truncation_reason = None
-                try:
-                    cursor = connection.execute(call_sql, call_parameters)
-                    for row in cursor:
-                        if rows_scanned >= row_limit:
+                source_changed = False
+                additional_row_observed = False
+                source_rows_before = resume_state.get("rowsScanned", 0)
+                if not isinstance(source_rows_before, int) or source_rows_before < 0:
+                    raise UsageError("checkpoint has an invalid source row count")
+                if not resume_state.get("complete", False):
+                    while True:
+                        now = time.monotonic()
+                        if now >= source_deadline:
                             truncated = True
-                            extra_row_observed = True
                             truncation_reason = (
-                                "per_source_or_whole_operation_row_limit"
+                                "operation_time_limit"
+                                if overall_deadline is not None
+                                and now >= overall_deadline
+                                else "source_time_limit"
                             )
                             break
-                        if time.monotonic() >= query_deadline:
+                        remaining_rows = max(0, row_limit - rows_scanned_this_run)
+                        query_limit = min(
+                            MAX_DATABASE_UNION_PAGE_SIZE, remaining_rows + 1
+                        )
+                        expressions = [
+                            f'"{field}" AS "{field}"'
+                            if field in call_columns
+                            else f'NULL AS "{field}"'
+                            for field in DATABASE_CALL_COLUMNS
+                        ]
+                        if order_mode == "thread_started_rowid":
+                            ordering = "thread_id, started_at, rowid"
+                            if resume_state["cursor"] is None:
+                                cursor_clause = ""
+                                cursor_parameters = ()
+                            else:
+                                cursor_clause = (
+                                    "AND (thread_id, started_at, rowid) > (?, ?, ?)"
+                                )
+                                cursor_parameters = tuple(resume_state["cursor"])
+                        else:
+                            ordering = "thread_id, rowid"
+                            if resume_state["cursor"] is None:
+                                cursor_clause = ""
+                                cursor_parameters = ()
+                            else:
+                                cursor_clause = "AND (thread_id, rowid) > (?, ?)"
+                                cursor_parameters = tuple(resume_state["cursor"])
+                        placeholders = ", ".join("?" for _ in thread_ids)
+                        call_sql = f"""
+                            SELECT rowid AS __rowid, provider_call_id, thread_id,
+                                   {", ".join(expressions)}
+                            FROM usage_provider_calls
+                            WHERE thread_id IN ({placeholders})
+                              AND rowid <= ? {cursor_clause}
+                            ORDER BY {ordering}
+                            LIMIT ?
+                        """
+                        call_parameters = (
+                            *thread_ids,
+                            snapshot_max_rowid,
+                            *cursor_parameters,
+                            query_limit,
+                        )
+                        _assert_indexed_thread_call_lookup(
+                            connection,
+                            thread_ids,
+                            sql=call_sql,
+                            parameters=call_parameters,
+                            require_ordered=True,
+                        )
+                        query_deadline = _database_deadline(source_deadline)
+                        page_rows = 0
+                        additional_row_observed = False
+                        page_interrupted = False
+                        connection.set_progress_handler(
+                            lambda: int(time.monotonic() >= query_deadline), 10000
+                        )
+                        try:
+                            cursor = connection.execute(call_sql, call_parameters)
+                            for row in cursor:
+                                if rows_scanned_this_run >= row_limit:
+                                    truncated = True
+                                    additional_row_observed = True
+                                    truncation_reason = (
+                                        union_row_limit_reason
+                                    )
+                                    break
+                                if time.monotonic() >= query_deadline:
+                                    truncated = True
+                                    additional_row_observed = True
+                                    truncation_reason = "query_time_limit"
+                                    break
+                                call = _normalize_database_call(
+                                    row, thread_roles, call_columns
+                                )
+                                contribution = tuple(
+                                    call[field] for field in UNION_CONTRIBUTION_FIELDS
+                                )
+                                source_totals.add(contribution)
+                                accepted = union_callback(call)
+                                rows_scanned_this_run += 1
+                                page_rows += 1
+                                if order_mode == "thread_started_rowid":
+                                    resume_state["cursor"] = [
+                                        call["threadId"],
+                                        call["startedAt"],
+                                        row["__rowid"],
+                                    ]
+                                else:
+                                    resume_state["cursor"] = [
+                                        call["threadId"],
+                                        row["__rowid"],
+                                    ]
+                                started_at = call["startedAt"]
+                                if started_at is not None:
+                                    minimum = resume_state.get(
+                                        "minimumStartedAtObserved"
+                                    )
+                                    maximum = resume_state.get(
+                                        "maximumStartedAtObserved"
+                                    )
+                                    resume_state["minimumStartedAtObserved"] = (
+                                        started_at if minimum is None else min(minimum, started_at)
+                                    )
+                                    resume_state["maximumStartedAtObserved"] = (
+                                        started_at if maximum is None else max(maximum, started_at)
+                                    )
+                                if accepted is False:
+                                    truncated = True
+                                    truncation_reason = "union_state_limit"
+                                    break
+                        except sqlite3.OperationalError as exc:
+                            if (
+                                getattr(exc, "sqlite_errorcode", None)
+                                != sqlite3.SQLITE_INTERRUPT
+                            ):
+                                raise
                             truncated = True
-                            extra_row_observed = True
+                            page_interrupted = True
                             truncation_reason = "query_time_limit"
-                            break
-                        call = _normalize_database_call(row, thread_roles, call_columns)
-                        accepted = union_callback(call)
-                        rows_scanned += 1
-                        if accepted is False:
+                        finally:
+                            connection.set_progress_handler(None, 0)
+
+                        resume_state["rowsScanned"] = (
+                            source_rows_before + rows_scanned_this_run
+                        )
+                        resume_state["totals"] = source_totals.checkpoint_state()
+                        if page_rows < query_limit and not truncated and not page_interrupted:
+                            resume_state["complete"] = True
+                        if expected_source_identity is not None and (
+                            not _same_database_generation(
+                                _database_files_identity(resolved_database_path),
+                                expected_source_identity["stable"],
+                            )
+                        ):
+                            source_changed = True
                             truncated = True
-                            truncation_reason = "union_state_limit"
+                            truncation_reason = "source_changed_during_scan"
+                        if (
+                            checkpoint_callback is not None
+                            and not source_changed
+                            and truncation_reason != "union_state_limit"
+                        ):
+                            checkpoint_callback()
+                        if truncated or resume_state["complete"]:
                             break
-                        started_at = call["startedAt"]
-                        if started_at is not None:
-                            minimum_started_at = (
-                                started_at
-                                if minimum_started_at is None
-                                else min(minimum_started_at, started_at)
-                            )
-                            maximum_started_at = (
-                                started_at
-                                if maximum_started_at is None
-                                else max(maximum_started_at, started_at)
-                            )
-                except sqlite3.OperationalError as exc:
-                    if (
-                        getattr(exc, "sqlite_errorcode", None)
-                        != sqlite3.SQLITE_INTERRUPT
-                    ):
-                        raise
-                    truncated = True
-                    truncation_reason = "query_time_limit"
-                finally:
-                    connection.set_progress_handler(None, 0)
+                        if page_rows == 0:
+                            resume_state["complete"] = True
+                            if checkpoint_callback is not None and not source_changed:
+                                checkpoint_callback()
+                            break
+
+                aggregate_result = _recorded_source_aggregate(
+                    source_totals, complete_scan=resume_state["complete"]
+                )
                 union_scan = {
-                    "rowsScanned": rows_scanned,
-                    "rowsScannedAtLeast": rows_scanned + 1
-                    if extra_row_observed
-                    else rows_scanned,
-                    "complete": not truncated,
-                    "truncated": truncated,
+                    "rowsScanned": resume_state.get("rowsScanned", source_rows_before),
+                    "rowsScannedThisRun": rows_scanned_this_run,
+                    "rowsScannedAtLeast": resume_state.get("rowsScanned", source_rows_before)
+                    + (1 if additional_row_observed else 0),
+                    "complete": resume_state["complete"],
+                    "truncated": not resume_state["complete"],
                     "reason": truncation_reason,
-                    "minimumStartedAtObserved": minimum_started_at,
-                    "maximumStartedAtObserved": maximum_started_at,
-                    "timestampOrder": "SQLite text order; timestamps are not normalized",
+                    "minimumStartedAtObserved": resume_state.get(
+                        "minimumStartedAtObserved"
+                    ),
+                    "maximumStartedAtObserved": resume_state.get(
+                        "maximumStartedAtObserved"
+                    ),
+                    "keysetOrder": order_mode,
+                    "snapshotStartedAt": resume_state.get("snapshotStartedAt"),
+                    "snapshotRowidHighWaterSet": snapshot_max_rowid is not None,
+                    "postCutoffLedgerRowsExcludedObserved": resume_state.get(
+                        "postCutoffRowsExcludedObserved", False
+                    ),
+                    "lineageFrozenAtSnapshot": True,
+                    "providerCallRowsAssumedAppendOnlyThroughCutoff": True,
+                    "inPlaceDeleteOrRewriteDetection": "not_supported",
+                    "sourceChanged": source_changed,
                 }
             result = {
                 "schema": "codex-usage-tree/v1",
@@ -1874,12 +2846,14 @@ def collect_database_tree(
                         )
                     },
                     "indexedExactThreadLookup": True,
+                    "providerCallIdPrimaryKey": provider_call_id_primary_key,
                 },
                 "recordedAggregate": aggregate_result,
                 "actualDebitObserved": False,
             }
             if union_scan is not None:
                 result["_unionScan"] = union_scan
+                result["_sourceLineage"] = resume_state.get("lineage")
             return result
         deadline = _database_deadline(source_deadline)
         call_sql = f"""
@@ -1923,15 +2897,8 @@ def collect_database_tree(
         actual_model = (
             _optional_text(row["actual_model_used"], "actual_model_used") or None
         )
-        final_model = _optional_text(row["final_model"], "final_model") or None
-        effective_model = final_model or actual_model
-        effective_model_source = (
-            "final_model"
-            if final_model
-            else "actual_model_used"
-            if actual_model
-            else None
-        )
+        effective_model = actual_model
+        effective_model_source = "actual_model_used" if actual_model else None
         reported_credits = row["provider_reported_credits"]
         if reported_credits is not None:
             try:
@@ -2120,10 +3087,45 @@ def collect_database_tree(
     }
 
 
+def _empty_cross_ledger_source_state(rates: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "complete": False,
+        "cursor": None,
+        "orderMode": None,
+        "rowsScanned": 0,
+        "totals": _MergedUsageTotals(
+            rates, max_groups=MAX_DATABASE_UNION_GROUPS
+        ).checkpoint_state(),
+        "minimumStartedAtObserved": None,
+        "maximumStartedAtObserved": None,
+        "lineage": None,
+        "threadRoles": None,
+        "snapshotMaxRowid": None,
+        "snapshotStartedAt": None,
+        "postCutoffRowsExcludedObserved": False,
+    }
+
+
+def _rate_checkpoint_identity(rates: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "source": rates["source"],
+        "date": rates["date"],
+        "models": {
+            model: {
+                dimension: _decimal_text(value)
+                for dimension, value in sorted(entries.items())
+            }
+            for model, entries in sorted(rates["models"].items())
+        },
+    }
+
+
 def collect_database_union(
     root_id: str,
     database_paths: list[str],
     rates: dict[str, Any],
+    *,
+    checkpoint_path: str | None = None,
 ) -> dict[str, Any]:
     """Read two explicitly named ledgers and conservatively deduplicate their calls."""
     if len(database_paths) != 2:
@@ -2138,46 +3140,159 @@ def collect_database_union(
         raise UsageError("cross-ledger aggregate requires two distinct databases")
 
     overall_deadline = time.monotonic() + MAX_DATABASE_UNION_SECONDS
-    union = _CrossLedgerUnion()
-    source_results = []
-    all_source_scans_complete = True
-    for source_index, database_path in enumerate(resolved_paths):
-        label = "primary" if source_index == 0 else "comparison"
-        processed_before = sum(union.source_rows)
-        remaining_total = max(0, MAX_DATABASE_UNION_CALLS_TOTAL - processed_before)
-        row_limit = min(MAX_DATABASE_UNION_CALLS_PER_SOURCE, remaining_total)
-        callback = lambda call, index=source_index: union.add(index, call)
-        try:
-            result = collect_database_tree(
-                root_id,
-                str(database_path),
-                rates,
-                aggregate_only=True,
-                union_callback=callback,
-                union_row_limit=row_limit,
-                overall_deadline=overall_deadline,
+    source_identities = [
+        _database_source_identity(str(path)) for path in resolved_paths
+    ]
+    checkpoint_identity = {
+        "formatVersion": DATABASE_UNION_CHECKPOINT_VERSION,
+        "rootThreadId": root_id,
+        "sources": [identity["stable"] for identity in source_identities],
+        "rateScenario": _rate_checkpoint_identity(rates),
+        "bounds": {
+            "pageSize": MAX_DATABASE_UNION_PAGE_SIZE,
+            "rowsPerRun": MAX_DATABASE_UNION_CALLS_PER_RUN,
+            "rowsPerSource": MAX_DATABASE_UNION_CALLS_PER_SOURCE,
+            "rowsTotal": MAX_DATABASE_UNION_CALLS_TOTAL,
+            "retainedBytes": MAX_DATABASE_UNION_MEMORY_BYTES,
+            "groups": MAX_DATABASE_UNION_GROUPS,
+            "sourceSeconds": MAX_DATABASE_SOURCE_SECONDS,
+            "querySeconds": MAX_DATABASE_QUERY_SECONDS,
+            "operationSeconds": MAX_DATABASE_UNION_SECONDS,
+        },
+    }
+    checkpoint = (
+        _CrossLedgerCheckpoint(checkpoint_path, checkpoint_identity)
+        if checkpoint_path is not None
+        else None
+    )
+    try:
+        if checkpoint is None:
+            union = _CrossLedgerUnion()
+            source_states = [
+                _empty_cross_ledger_source_state(rates) for _ in range(2)
+            ]
+        else:
+            union, source_states = checkpoint.load(rates, overall_deadline)
+        source_totals = [
+            _MergedUsageTotals.from_checkpoint(rates, state["totals"])
+            for state in source_states
+        ]
+        for index, state in enumerate(source_states):
+            if state.get("rowsScanned", 0) != union.source_rows[index]:
+                raise UsageError("checkpoint source and dedup row counts disagree")
+
+        source_results = []
+        all_source_scans_complete = True
+        source_changed = False
+        for source_index, database_path in enumerate(resolved_paths):
+            label = "primary" if source_index == 0 else "comparison"
+            processed_before = sum(union.source_rows)
+            remaining_total = max(0, MAX_DATABASE_UNION_CALLS_TOTAL - processed_before)
+            remaining_source = max(
+                0,
+                MAX_DATABASE_UNION_CALLS_PER_SOURCE
+                - union.source_rows[source_index],
             )
-        except (UsageError, OSError, ValueError) as exc:
-            all_source_scans_complete = False
-            detail = (
-                str(exc)
-                if isinstance(exc, UsageError)
-                else "read-only source open failed"
-            )
+            row_limit = min(remaining_source, remaining_total)
+            resumable_run_limit = row_limit > MAX_DATABASE_UNION_CALLS_PER_RUN
+            if resumable_run_limit:
+                row_limit = MAX_DATABASE_UNION_CALLS_PER_RUN
+            callback = lambda call, index=source_index: union.add(index, call)
+
+            def checkpoint_page() -> None:
+                if checkpoint is None:
+                    return
+                source_states[source_index]["totals"] = source_totals[
+                    source_index
+                ].checkpoint_state()
+                if not checkpoint.save_page(union, source_states):
+                    raise UsageError("checkpoint page could not be persisted")
+
+            try:
+                result = collect_database_tree(
+                    root_id,
+                    str(database_path),
+                    rates,
+                    aggregate_only=True,
+                    union_callback=callback,
+                    union_row_limit=row_limit,
+                    union_row_limit_reason=(
+                        "per_run_row_limit"
+                        if resumable_run_limit
+                        else "per_source_or_whole_operation_row_limit"
+                    ),
+                    overall_deadline=overall_deadline,
+                    source_index=source_index,
+                    resume_state=source_states[source_index],
+                    source_totals=source_totals[source_index],
+                    checkpoint_callback=checkpoint_page if checkpoint else None,
+                    expected_source_identity=source_identities[source_index],
+                )
+            except (UsageError, OSError, ValueError) as exc:
+                all_source_scans_complete = False
+                if checkpoint is not None and "changed" in str(exc).lower():
+                    checkpoint.error = "source_identity_changed"
+                    source_changed = True
+                detail = (
+                    str(exc)
+                    if isinstance(exc, UsageError)
+                    else "read-only source open failed"
+                )
+                source_results.append(
+                    {
+                        "source": label,
+                        "status": "unavailable",
+                        "reason": detail,
+                        "lineage": None,
+                        "recordedAggregate": _recorded_source_aggregate(
+                            source_totals[source_index],
+                            complete_scan=source_states[source_index]["complete"],
+                        ),
+                        "rowScan": {
+                            "rowsScanned": union.source_rows[source_index],
+                            "complete": False,
+                            "truncated": True,
+                            "reason": "source_query_failed",
+                        },
+                        "unkeyedProviderCallRowsScanned": union.unkeyed_rows[
+                            source_index
+                        ],
+                        "conflictingRowsWithheldObserved": union.conflict_rows_by_source[
+                            source_index
+                        ],
+                        "exactDuplicateRowsOmittedObserved": union.exact_duplicate_rows_by_source[
+                            source_index
+                        ],
+                    }
+                )
+                continue
+
+            scan = result.pop("_unionScan")
+            result.pop("_sourceLineage", None)
+            if scan["reason"] == "union_state_limit":
+                scan["reason"] = union.rejection_reason or "union_state_limit"
+            if scan["sourceChanged"]:
+                source_changed = True
+                if checkpoint is not None:
+                    checkpoint.error = "source_changed_during_scan"
+            if (
+                not scan["complete"]
+                or result["lineage"]["truncated"]
+                or scan["sourceChanged"]
+            ):
+                all_source_scans_complete = False
             source_results.append(
                 {
                     "source": label,
-                    "status": "unavailable",
-                    "reason": detail,
-                    "lineage": None,
-                    "recordedAggregate": None,
-                    "rowScan": {
-                        "rowsScanned": union.source_rows[source_index],
-                        "complete": False,
-                        "truncated": True,
-                        "reason": "source_query_failed",
-                    },
-                    "unkeyedProviderCallRowsScanned": union.unkeyed_rows[source_index],
+                    "status": "partial",
+                    "scope": "recorded rows in bounded known lineage",
+                    "lineage": result["lineage"],
+                    "columnCoverage": result["columnCoverage"],
+                    "recordedAggregate": result["recordedAggregate"],
+                    "rowScan": scan,
+                    "unkeyedProviderCallRowsScanned": union.unkeyed_rows[
+                        source_index
+                    ],
                     "conflictingRowsWithheldObserved": union.conflict_rows_by_source[
                         source_index
                     ],
@@ -2186,35 +3301,25 @@ def collect_database_union(
                     ],
                 }
             )
-            continue
 
-        scan = result.pop("_unionScan")
-        if scan["reason"] == "union_state_limit":
-            scan["reason"] = union.rejection_reason or "union_state_limit"
-        if (
-            not scan["complete"]
-            or result["lineage"]["truncated"]
-            or result["recordedAggregate"]["status"] == "unavailable"
-        ):
+        for identity in source_identities:
+            try:
+                current_identity = _database_source_identity(identity["path"])
+                if current_identity["stable"] != identity["stable"]:
+                    source_changed = True
+            except (OSError, UsageError):
+                source_changed = True
+        if source_changed:
             all_source_scans_complete = False
-        source_results.append(
-            {
-                "source": label,
-                "status": "partial",
-                "scope": "recorded rows in bounded known lineage",
-                "lineage": result["lineage"],
-                "columnCoverage": result["columnCoverage"],
-                "recordedAggregate": result["recordedAggregate"],
-                "rowScan": scan,
-                "unkeyedProviderCallRowsScanned": union.unkeyed_rows[source_index],
-                "conflictingRowsWithheldObserved": union.conflict_rows_by_source[
-                    source_index
-                ],
-                "exactDuplicateRowsOmittedObserved": union.exact_duplicate_rows_by_source[
-                    source_index
-                ],
-            }
-        )
+            if checkpoint is not None:
+                checkpoint.error = "source_changed_during_operation"
+    except BaseException:
+        if checkpoint is not None:
+            checkpoint.close()
+        raise
+
+    checkpoint_reset_reason = checkpoint.reset_reason if checkpoint else None
+    checkpoint_error = checkpoint.error if checkpoint else None
 
     for source_index, source in enumerate(source_results):
         source["unkeyedProviderCallRowsScanned"] = union.unkeyed_rows[source_index]
@@ -2238,7 +3343,12 @@ def collect_database_union(
     merged_totals_accumulator = None
     if all_source_scans_complete:
         merged_totals_accumulator = _MergedUsageTotals(rates)
-        for index, (_, contribution, _, _, _) in enumerate(union.calls_by_id.values()):
+        contributions = (
+            checkpoint.iter_unique_contributions()
+            if checkpoint is not None
+            else (entry[1] for entry in union.calls_by_id.values())
+        )
+        for index, contribution in enumerate(contributions):
             if index % 128 == 0 and time.monotonic() >= overall_deadline:
                 merge_totals_available = False
                 break
@@ -2253,7 +3363,7 @@ def collect_database_union(
             if unresolved_rows
             else "selected_recorded_rows_deduplicated",
             "scope": "unique keyed rows in the selected recorded lineages only",
-            "responseUsageRecordCount": len(union.calls_by_id),
+            "responseUsageRecordCount": sum(union.group_counts.values()),
             "excludedUnresolvedRows": unresolved_rows,
             "groups": merged_totals_accumulator.output(
                 complete_scan=True, unresolved_rows=unresolved_rows
@@ -2283,6 +3393,72 @@ def collect_database_union(
                 "total is offered."
             ),
         }
+    if checkpoint is not None:
+        checkpoint.close()
+
+    row_cap_reached = any(
+        source.get("rowScan", {}).get("reason")
+        == "per_source_or_whole_operation_row_limit"
+        for source in source_results
+    )
+    union_state_limit_reached = union.rejection_reason is not None
+    if all_source_scans_complete:
+        continuation = {
+            "status": "complete",
+            "checkpointUsed": checkpoint_path is not None,
+            "nextAction": "none",
+        }
+    elif source_changed:
+        continuation = {
+            "status": "restart_required_source_changed",
+            "checkpointUsed": checkpoint_path is not None,
+            "nextAction": (
+                "rerun with the same explicit checkpoint path; changed sources "
+                "invalidate prior pages"
+            ),
+        }
+    elif row_cap_reached:
+        continuation = {
+            "status": "bounded_row_limit_reached",
+            "checkpointUsed": checkpoint_path is not None,
+            "nextAction": "no continuation within the configured row caps",
+        }
+    elif union_state_limit_reached:
+        continuation = {
+            "status": "bounded_union_state_limit_reached",
+            "checkpointUsed": checkpoint_path is not None,
+            "nextAction": (
+                "the request cannot merge within its configured retained-byte, "
+                "group, or identity-size limits; per-source totals remain available"
+            ),
+        }
+    elif checkpoint_path is None:
+        continuation = {
+            "status": "checkpoint_required_to_resume",
+            "checkpointUsed": False,
+            "nextAction": (
+                "rerun with --checkpoint-file at a private owner-only path to "
+                "resume after committed pages"
+            ),
+        }
+    elif checkpoint_error is not None:
+        continuation = {
+            "status": "checkpoint_unavailable",
+            "checkpointUsed": True,
+            "reason": checkpoint_error,
+            "nextAction": (
+                "inspect checkpoint storage and rerun with a valid private "
+                "checkpoint file"
+            ),
+        }
+    else:
+        continuation = {
+            "status": "resumable",
+            "checkpointUsed": True,
+            "nextAction": "rerun the same command with the same checkpoint file to continue",
+        }
+    if checkpoint_reset_reason not in (None, "new_checkpoint"):
+        continuation["checkpointResetReason"] = checkpoint_reset_reason
 
     return {
         "schema": "codex-usage-tree/v2",
@@ -2290,6 +3466,7 @@ def collect_database_union(
         "scope": "two_explicit_read_only_ledgers_for_root_and_known_descendants",
         "rootThreadId": root_id,
         "sources": source_results,
+        "continuation": continuation,
         "crossLedgerDeduplication": {
             "status": "complete_for_selected_rows"
             if all_source_scans_complete
@@ -2305,10 +3482,10 @@ def collect_database_union(
             "rowsScannedBySource": union.source_rows,
             "estimatedRetainedBytes": union.estimated_memory_bytes,
             "exactDuplicateRowsOmittedObserved": union.exact_duplicate_rows,
-            "conflictingProviderCallIdsObserved": len(union.conflicting_ids),
+            "conflictingProviderCallIdsObserved": union.conflicting_id_count,
             "conflictingRowsWithheldObserved": union.conflict_rows,
-            "schemaUnverifiableProviderCallIdsObserved": len(
-                union.schema_unverifiable_ids
+            "schemaUnverifiableProviderCallIdsObserved": (
+                union.schema_unverifiable_id_count
             ),
             "schemaUnverifiableRowsWithheldObserved": union.schema_unverifiable_rows,
             "unkeyedRowsWithheldObserved": sum(union.unkeyed_rows),
@@ -2351,9 +3528,38 @@ def collect_database_union(
                 "verified account debits, and actual debit is not observed."
             ),
         },
+        "snapshot": {
+            "kind": "per_source_first_page_rowid_high_water",
+            "crossSourceAtomic": False,
+            "crossInvocationAtomic": False,
+            "lineageFrozenAtEachSourceFirstPage": True,
+            "providerCallRowsAssumedAppendOnlyThroughCutoff": True,
+            "effectiveModelField": "actual_model_used_only",
+            "finalModelFallbackPerformed": False,
+            "finalModelAndModelSnapshotUpdatesAffectReport": False,
+            "postCutoffAppendsIncluded": False,
+            "sourceGenerationReplacementDetection": (
+                "path/device/inode/format-header/schema changes invalidate saved pages"
+            ),
+            "unsupportedUndetectedSourceMutations": [
+                "manual in-place call-row update or deletion",
+                "VACUUM/rebuild preserving path, device, inode, and schema",
+                "in-place replacement preserving all observed identity markers",
+                "rowid reuse after deletion",
+                "manual lineage edits after its frozen first-page snapshot",
+            ],
+            "coverageNote": (
+                "The report is bounded to each source's first-page rowid cutoff and "
+                "frozen lineage. Known runtime call-row writers append rows; mutable "
+                "final-model fields are excluded from deduplication and aggregation. "
+                "There is no atomic transaction spanning pages or both ledgers, and "
+                "out-of-band in-place edits are not detected."
+            ),
+        },
         "completeness": {
             "historicalCoverageComplete": False,
             "crossLedgerScanCompleteForSelectedLineage": all_source_scans_complete,
+            "sourceGenerationReplacementsDetected": source_changed,
             "unresolvedRowsExcludedFromMergedTotals": True,
             "actualDebitObserved": False,
             "coverageNote": (
@@ -2365,11 +3571,14 @@ def collect_database_union(
             "maxThreadsPerSource": MAX_DATABASE_THREADS,
             "maxRowsPerSource": MAX_DATABASE_UNION_CALLS_PER_SOURCE,
             "maxRowsTotal": MAX_DATABASE_UNION_CALLS_TOTAL,
+            "maxRowsPerRun": MAX_DATABASE_UNION_CALLS_PER_RUN,
             "maxEstimatedRetainedBytes": MAX_DATABASE_UNION_MEMORY_BYTES,
             "maxMergedGroups": MAX_DATABASE_UNION_GROUPS,
             "maxSourceSeconds": MAX_DATABASE_SOURCE_SECONDS,
             "maxQuerySeconds": MAX_DATABASE_QUERY_SECONDS,
             "maxOperationSeconds": MAX_DATABASE_UNION_SECONDS,
+            "maxPageRows": MAX_DATABASE_UNION_PAGE_SIZE,
+            "maxCheckpointBytes": MAX_DATABASE_CHECKPOINT_BYTES,
         },
     }
 
@@ -2626,6 +3835,29 @@ def main(argv: list[str] | None = None) -> int:
         ),
     )
     parser.add_argument(
+        "--checkpoint-file",
+        help=(
+            "private owner-only SQLite resume state for a two-ledger aggregate; "
+            "the explicitly named file is separate from both read-only ledgers"
+        ),
+    )
+    parser.add_argument(
+        "--continue-until-complete",
+        action="store_true",
+        help=(
+            "repeat bounded two-ledger passes with the same checkpoint, stopping "
+            f"after completion or {MAX_DATABASE_UNION_AUTO_RUNS} passes"
+        ),
+    )
+    parser.add_argument(
+        "--max-resume-passes",
+        type=int,
+        help=(
+            "operator-selected pass budget for --continue-until-complete "
+            f"(1..{MAX_DATABASE_UNION_AUTO_RUNS}; default {MAX_DATABASE_UNION_AUTO_RUNS})"
+        ),
+    )
+    parser.add_argument(
         "--aggregate-recorded",
         action="store_true",
         help="show a time-bounded aggregate without loading detailed call records",
@@ -2661,6 +3893,20 @@ def main(argv: list[str] | None = None) -> int:
         parser.error("--database and --rollout-file select different local query modes")
     if args.also_database and not (args.database and args.aggregate_recorded):
         parser.error("--also-database requires --database and --aggregate-recorded")
+    if args.checkpoint_file and not args.also_database:
+        parser.error("--checkpoint-file requires --also-database")
+    if args.continue_until_complete and not args.checkpoint_file:
+        parser.error("--continue-until-complete requires --checkpoint-file")
+    if args.continue_until_complete and not args.also_database:
+        parser.error("--continue-until-complete requires --also-database")
+    if args.max_resume_passes is not None and not args.continue_until_complete:
+        parser.error("--max-resume-passes requires --continue-until-complete")
+    if args.max_resume_passes is not None and not (
+        1 <= args.max_resume_passes <= MAX_DATABASE_UNION_AUTO_RUNS
+    ):
+        parser.error(
+            f"--max-resume-passes must be in 1..{MAX_DATABASE_UNION_AUTO_RUNS}"
+        )
     if args.database and args.allow_local_app_server_startup:
         parser.error("read-only database mode does not start an app-server")
     if args.aggregate_recorded and not args.database:
@@ -2705,20 +3951,48 @@ def main(argv: list[str] | None = None) -> int:
             print(json.dumps(result, indent=2, sort_keys=True))
             return 0 if result["status"] == "complete" else 2
         if args.database:
-            result = (
-                collect_database_union(
-                    args.thread_id,
-                    [args.database, args.also_database],
-                    rates,
-                )
-                if args.also_database
-                else collect_database_tree(
+            if args.also_database:
+                passes = 1
+                if args.continue_until_complete:
+                    passes = args.max_resume_passes or MAX_DATABASE_UNION_AUTO_RUNS
+                for pass_number in range(1, passes + 1):
+                    result = collect_database_union(
+                        args.thread_id,
+                        [args.database, args.also_database],
+                        rates,
+                        checkpoint_path=args.checkpoint_file,
+                    )
+                    continuation_status = result["continuation"]["status"]
+                    if args.continue_until_complete:
+                        rows = result["crossLedgerDeduplication"]["rowsScannedBySource"]
+                        print(
+                            f"usage report pass {pass_number}/{passes}: "
+                            f"scanned {rows[0]} primary and {rows[1]} comparison rows; "
+                            f"{continuation_status}",
+                            file=sys.stderr,
+                        )
+                    if continuation_status != "resumable":
+                        break
+                    if pass_number < passes:
+                        time.sleep(DATABASE_UNION_PASS_PAUSE_SECONDS)
+                if args.continue_until_complete:
+                    result["continuation"]["resumePassesCompleted"] = pass_number
+                    result["continuation"]["resumePassLimit"] = passes
+                    if (
+                        continuation_status == "resumable"
+                        and pass_number == passes
+                    ):
+                        result["continuation"]["status"] = "resume_pass_limit_reached"
+                        result["continuation"]["nextAction"] = (
+                            "rerun this same command with the same checkpoint file to continue"
+                        )
+            else:
+                result = collect_database_tree(
                     args.thread_id,
                     args.database,
                     rates,
                     aggregate_only=args.aggregate_recorded,
                 )
-            )
             print(json.dumps(result, indent=2, sort_keys=True))
             return 0 if result["status"] == "complete" else 2
         client = AppServer(
@@ -2738,6 +4012,14 @@ def main(argv: list[str] | None = None) -> int:
             json.dumps(error_document(args.thread_id, safe), indent=2, sort_keys=True)
         )
         return 2
+    except KeyboardInterrupt:
+        safe = UsageError(
+            "cancelled; already committed private checkpoint pages remain resumable"
+        )
+        print(
+            json.dumps(error_document(args.thread_id, safe), indent=2, sort_keys=True)
+        )
+        return 130
     finally:
         if client is not None:
             client.close()
