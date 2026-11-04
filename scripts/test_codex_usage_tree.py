@@ -2,11 +2,15 @@ import contextlib
 import io
 import json
 import sqlite3
+import sys
 import tempfile
 import unittest
 from decimal import Decimal
 from pathlib import Path
 from unittest.mock import patch
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[1] / ".github" / "scripts"))
+from classify_ci_paths import classify  # noqa: E402
 
 from codex_usage_tree import (
     RpcError,
@@ -101,6 +105,14 @@ class SyntheticErrorAppServer:
 
 
 class UsageTreeTests(unittest.TestCase):
+    def test_usage_tree_python_files_select_existing_format_lane(self):
+        for path in (
+            "scripts/codex_usage_tree.py",
+            "scripts/test_codex_usage_tree.py",
+        ):
+            with self.subTest(path=path):
+                self.assertTrue(classify([path]).repo_format)
+
     def _write_union_ledger(self, database, calls):
         connection = sqlite3.connect(database)
         connection.executescript(
@@ -128,6 +140,7 @@ class UsageTreeTests(unittest.TestCase):
                 requested_model TEXT,
                 actual_model_used TEXT,
                 final_model TEXT,
+                model_snapshot TEXT,
                 requested_service_tier TEXT,
                 actual_service_tier TEXT,
                 actual_service_tier_source TEXT,
@@ -345,6 +358,57 @@ class UsageTreeTests(unittest.TestCase):
                 "params": {"threadId": "root"},
             },
         )
+
+    def test_cli_continues_bounded_checkpoint_passes_without_operator_guessing(self):
+        first = {
+            "status": "partial",
+            "continuation": {"status": "resumable", "nextAction": "continue"},
+            "crossLedgerDeduplication": {"rowsScannedBySource": [10, 10]},
+        }
+        finished = {
+            "status": "partial",
+            "continuation": {"status": "complete", "nextAction": "none"},
+            "crossLedgerDeduplication": {"rowsScannedBySource": [20, 20]},
+        }
+        output = io.StringIO()
+        progress = io.StringIO()
+        with (
+            patch(
+                "codex_usage_tree.collect_database_union",
+                side_effect=[first, finished],
+            ) as collect,
+            patch("codex_usage_tree.time.sleep"),
+            contextlib.redirect_stdout(output),
+            contextlib.redirect_stderr(progress),
+        ):
+            exit_code = main(
+                [
+                    "--thread-id",
+                    "root",
+                    "--database",
+                    "primary.sqlite",
+                    "--also-database",
+                    "comparison.sqlite",
+                    "--aggregate-recorded",
+                    "--checkpoint-file",
+                    "private-checkpoint.sqlite",
+                    "--continue-until-complete",
+                    "--max-resume-passes",
+                    "2",
+                ]
+            )
+
+        self.assertEqual(exit_code, 2)
+        self.assertEqual(collect.call_count, 2)
+        self.assertEqual(
+            collect.call_args.kwargs["checkpoint_path"], "private-checkpoint.sqlite"
+        )
+        result = json.loads(output.getvalue())
+        self.assertEqual(result["continuation"]["status"], "complete")
+        self.assertEqual(result["continuation"]["resumePassesCompleted"], 2)
+        self.assertEqual(result["continuation"]["resumePassLimit"], 2)
+        self.assertIn("pass 1/2", progress.getvalue())
+        self.assertIn("pass 2/2", progress.getvalue())
 
     def test_root_child_totals_deduplicate_and_preserve_nulls_and_missing_rates(self):
         api = SyntheticAppServer()
@@ -730,6 +794,273 @@ class UsageTreeTests(unittest.TestCase):
                 )
             self.assertEqual(exit_code, 2)
             self.assertIn("crossLedgerDeduplication", json.loads(output.getvalue()))
+
+    def test_cross_ledger_checkpoint_resumes_large_cutoff_snapshot(self):
+        call_count = 90_000
+
+        def call(call_index):
+            thread = "root" if call_index % 2 == 0 else "child"
+            started_at = (
+                "2026-10-01T00:00:00Z" if thread == "root" else "2026-10-02T00:00:00Z"
+            )
+            return (
+                f"bulk-call-{call_index:06d}",
+                thread,
+                f"turn-{call_index}",
+                f"request-{call_index}",
+                "openai",
+                "gpt-6.1-sol",
+                "gpt-6-sol",
+                None,
+                0.125,
+                started_at,
+                None,
+                1,
+                10,
+                0,
+                5,
+                16,
+                "ok",
+            )
+
+        def calls(source_name):
+            for call_index in range(call_count):
+                yield call(call_index)
+            conflict = list(call(call_count))
+            conflict[0] = "bulk-conflict"
+            conflict[1] = "child"
+            conflict[2] = "turn-conflict"
+            conflict[3] = f"request-conflict-{source_name}"
+            conflict[9] = "2026-10-02T00:00:00Z"
+            conflict[11] = 2 if source_name == "comparison" else 1
+            conflict[15] = conflict[11] + 15
+            yield tuple(conflict)
+            unkeyed = list(call(call_count + 1))
+            unkeyed[0] = None
+            unkeyed[1] = "root"
+            unkeyed[2] = f"turn-unkeyed-{source_name}"
+            unkeyed[3] = f"request-unkeyed-{source_name}"
+            unkeyed[9] = "2026-10-01T00:00:00Z"
+            yield tuple(unkeyed)
+
+        def append_call(database, call_values):
+            connection = sqlite3.connect(database)
+            connection.execute(
+                """
+                INSERT INTO usage_provider_calls (
+                    provider_call_id, thread_id, turn_id, request_id, provider,
+                    requested_model, actual_model_used, final_model,
+                    provider_reported_credits, started_at, completed_at,
+                    input_tokens_uncached, input_tokens_cached,
+                    input_tokens_cache_write, output_tokens, total_tokens, status
+                ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+                """,
+                call_values,
+            )
+            connection.commit()
+            connection.close()
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            primary = Path(temp_dir) / "primary.sqlite"
+            comparison = Path(temp_dir) / "comparison.sqlite"
+            checkpoint = Path(temp_dir) / "private-checkpoint.sqlite"
+            self._write_union_ledger(primary, calls("primary"))
+            self._write_union_ledger(comparison, calls("comparison"))
+
+            result = None
+            progress_rows = []
+            per_run_rows = []
+            with patch("codex_usage_tree.MAX_DATABASE_UNION_CALLS_PER_RUN", 25_000):
+                for invocation in range(8):
+                    result = collect_database_union(
+                        "root",
+                        [str(primary), str(comparison)],
+                        load_rates(None),
+                        checkpoint_path=str(checkpoint),
+                    )
+                    progress_rows.append(
+                        result["crossLedgerDeduplication"]["rowsScannedBySource"]
+                    )
+                    per_run_rows.append(
+                        [
+                            source["rowScan"]["rowsScannedThisRun"]
+                            for source in result["sources"]
+                        ]
+                    )
+                    if invocation == 0:
+                        # These production-style model metadata updates must not
+                        # change the dedup key; the new call is above each frozen
+                        # rowid high-water mark and must not enter this report.
+                        for database in (primary, comparison):
+                            connection = sqlite3.connect(database)
+                            connection.execute(
+                                "UPDATE usage_provider_calls "
+                                "SET final_model = ?, model_snapshot = ? "
+                                "WHERE provider_call_id = ?",
+                                (
+                                    "gpt-6.1-luna-final",
+                                    "post-call-snapshot",
+                                    "bulk-call-000000",
+                                ),
+                            )
+                            connection.execute(
+                                "UPDATE usage_threads SET source = 'cli', "
+                                "thread_source = 'user', parent_thread_id = NULL "
+                                "WHERE thread_id = 'child'"
+                            )
+                            connection.commit()
+                            connection.close()
+                            append_call(
+                                database,
+                                (
+                                    "after-cutoff-call",
+                                    "root",
+                                    "after-cutoff-turn",
+                                    "after-cutoff-request",
+                                    "openai",
+                                    "gpt-6.1-sol",
+                                    "gpt-6-sol",
+                                    None,
+                                    0.125,
+                                    "2026-11-04T00:00:00Z",
+                                    None,
+                                    1,
+                                    10,
+                                    0,
+                                    5,
+                                    16,
+                                    "ok",
+                                ),
+                            )
+                    if result["continuation"]["status"] == "complete":
+                        break
+                else:
+                    self.fail("checkpoint did not finish the large bounded scan")
+
+            self.assertIsNotNone(result)
+            self.assertEqual(result["continuation"]["status"], "complete")
+            self.assertGreater(invocation, 0)
+            self.assertGreater(len(progress_rows), 1)
+            self.assertTrue(
+                all(
+                    previous[0] < current[0] and previous[1] < current[1]
+                    for previous, current in zip(progress_rows, progress_rows[1:])
+                )
+            )
+            self.assertTrue(
+                all(rows[0] <= 25_000 and rows[1] <= 25_000 for rows in per_run_rows)
+            )
+            self.assertEqual(
+                result["crossLedgerDeduplication"]["rowsScannedBySource"],
+                [call_count + 2, call_count + 2],
+            )
+            dedupe = result["crossLedgerDeduplication"]
+            self.assertEqual(dedupe["exactDuplicateRowsOmittedObserved"], call_count)
+            self.assertEqual(dedupe["conflictingProviderCallIdsObserved"], 1)
+            self.assertEqual(dedupe["conflictingRowsWithheldObserved"], 2)
+            self.assertEqual(dedupe["unkeyedRowsWithheldObserved"], 2)
+            merged = dedupe["mergedTotals"]
+            self.assertEqual(merged["status"], "partial_excluding_unresolved")
+            self.assertEqual(merged["responseUsageRecordCount"], call_count)
+            self.assertEqual(merged["excludedUnresolvedRows"], 4)
+            self.assertEqual(
+                {
+                    group["role"]: group["responseUsageRecordCount"]
+                    for group in merged["groups"]
+                },
+                {"root": call_count // 2, "subagent": call_count // 2},
+            )
+            self.assertTrue(
+                all(
+                    group["providerEffectiveModel"] == "gpt-6-sol"
+                    for group in merged["groups"]
+                )
+            )
+            for group in merged["groups"]:
+                count = group["responseUsageRecordCount"]
+                for field, expected_subtotal in (
+                    ("inputTokensUncached", count),
+                    ("inputTokensCached", count * 10),
+                    ("cacheWriteInputTokens", 0),
+                    ("outputTokens", count * 5),
+                    ("totalTokens", count * 16),
+                ):
+                    coverage = group["tokenTotals"][field]
+                    # Unresolved rows keep the merged total unavailable, while
+                    # the subtotal for accepted rows remains useful and exact.
+                    self.assertIsNone(coverage["value"])
+                    self.assertEqual(coverage["knownSubtotal"], expected_subtotal)
+                    self.assertTrue(coverage["completeForIncludedRows"])
+                    self.assertEqual(coverage["missingValues"], 0)
+            for source in result["sources"]:
+                self.assertIn(source["source"], ("primary", "comparison"))
+                per_source_groups = source["recordedAggregate"]["groups"]
+                self.assertEqual(
+                    sum(
+                        group["responseUsageRecordCount"] for group in per_source_groups
+                    ),
+                    call_count + 2,
+                )
+                self.assertEqual(
+                    source["recordedAggregate"]["status"], "recorded_rows_only"
+                )
+                conflict_uncached = 2 if source["source"] == "comparison" else 1
+                expected_by_role = {
+                    "root": {
+                        "inputTokensUncached": call_count // 2 + 1,
+                        "inputTokensCached": (call_count // 2 + 1) * 10,
+                        "cacheWriteInputTokens": 0,
+                        "outputTokens": (call_count // 2 + 1) * 5,
+                        "totalTokens": (call_count // 2) * 16 + 16,
+                    },
+                    "subagent": {
+                        "inputTokensUncached": call_count // 2 + conflict_uncached,
+                        "inputTokensCached": (call_count // 2 + 1) * 10,
+                        "cacheWriteInputTokens": 0,
+                        "outputTokens": (call_count // 2 + 1) * 5,
+                        "totalTokens": (call_count // 2) * 16 + conflict_uncached + 15,
+                    },
+                }
+                self.assertEqual(
+                    {
+                        group["role"]: group["responseUsageRecordCount"]
+                        for group in per_source_groups
+                    },
+                    {
+                        "root": call_count // 2 + 1,
+                        "subagent": call_count // 2 + 1,
+                    },
+                )
+                for group in per_source_groups:
+                    for field, expected in expected_by_role[group["role"]].items():
+                        coverage = group["tokenTotals"][field]
+                        self.assertEqual(coverage["value"], expected)
+                        self.assertEqual(coverage["knownSubtotal"], expected)
+                        self.assertEqual(coverage["missingValues"], 0)
+                        self.assertTrue(coverage["completeForIncludedRows"])
+            self.assertTrue(
+                all(
+                    source["rowScan"]["postCutoffLedgerRowsExcludedObserved"]
+                    for source in result["sources"]
+                )
+            )
+            self.assertTrue(
+                all(
+                    source["rowScan"]["lineageFrozenAtSnapshot"]
+                    for source in result["sources"]
+                )
+            )
+            self.assertFalse(result["snapshot"]["crossSourceAtomic"])
+            self.assertTrue(
+                result["snapshot"]["providerCallRowsAssumedAppendOnlyThroughCutoff"]
+            )
+            self.assertEqual(result["snapshot"]["crossInvocationAtomic"], False)
+            self.assertEqual(checkpoint.stat().st_mode & 0o777, 0o600)
+            self.assertLess(checkpoint.stat().st_size, 256 * 1024 * 1024)
+            serialized = json.dumps(result)
+            self.assertNotIn(str(primary), serialized)
+            self.assertNotIn(str(comparison), serialized)
+            self.assertNotIn(str(checkpoint), serialized)
 
     def test_cross_ledger_bounds_withhold_merged_totals_but_keep_source_summaries(self):
         def call(call_id, uncached):
