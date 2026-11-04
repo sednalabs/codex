@@ -132,8 +132,8 @@ fn protected_model_provider_is_checked_before_auth_resolution() {
     // ChatGPT-token auth resolves it to the pinned default Codex endpoint.
     let generated_default =
         codex_model_provider_info::built_in_model_providers(/*openai_base_url*/ None)
-        .remove("openai")
-        .expect("built-in provider");
+            .remove("openai")
+            .expect("built-in provider");
     assert!(super::validate_protected_model_provider_info(&generated_default, recipient).is_ok());
     assert!(
         super::validate_protected_model_provider_info(
