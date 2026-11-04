@@ -68,6 +68,9 @@ const CHILD_REFRESH_SUCCEEDS_ENV: &str = "MCP_TEST_REFRESH_SUCCEEDS";
 const LEGACY_REFRESHABLE_SERVER_URL: &str = "https://legacy-refreshable.example/mcp";
 const UNEXPIRED_SERVER_URL: &str = "https://unexpired.example/mcp";
 const REFRESHABLE_SERVER_URL: &str = "https://refreshable.example/mcp";
+const INVALID_TOKEN_SERVER_NAME: &str = "test-streamable-http-oauth-invalid-token";
+const INVALID_TOKEN_ACCESS_TOKEN: &str = "initial-access-token";
+const INVALID_TOKEN_REFRESH_TOKEN: &str = "invalid-token-test-refresh";
 
 #[derive(Clone, Copy)]
 enum OAuthStartupScenario {
@@ -444,7 +447,7 @@ async fn assert_expired_token_refresh(
         .and(header("user-agent", RESOURCE_USER_AGENT))
         .and(header("x-api-key", RESOURCE_API_KEY))
         .respond_with(ResponseTemplate::new(200).set_body_json(authorization_metadata))
-        .expect(2)
+        .expect(4)
         .mount(&server)
         .await;
     Mock::given(method("POST"))
@@ -860,6 +863,253 @@ async fn does_not_refresh_against_metadata_from_second_discovery() -> anyhow::Re
     mcp_server.verify().await;
     issuer_a.verify().await;
     issuer_b.verify().await;
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 1)]
+async fn invalid_token_refresh_never_replays_tool_calls() -> anyhow::Result<()> {
+    let server = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path("/.well-known/oauth-authorization-server/mcp"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "issuer": format!("{}/mcp", server.uri()),
+            "authorization_endpoint": format!("{}/oauth/authorize", server.uri()),
+            "token_endpoint": format!("{}/oauth/token", server.uri()),
+            "scopes_supported": ["profile", "ops:read"],
+        })))
+        .mount(&server)
+        .await;
+
+    let refresh_attempts = Arc::new(AtomicUsize::new(0));
+    let refresh_attempts_for_response = Arc::clone(&refresh_attempts);
+    Mock::given(method("POST"))
+        .and(path("/oauth/token"))
+        .and(body_string_contains("grant_type=refresh_token"))
+        .and(body_string_contains(format!(
+            "refresh_token={INVALID_TOKEN_REFRESH_TOKEN}"
+        )))
+        .respond_with(move |_request: &Request| {
+            let attempt = refresh_attempts_for_response.fetch_add(1, Ordering::SeqCst);
+            let access_token = match attempt {
+                0 => "refreshed-read-only-token",
+                _ => "refreshed-future-token",
+            };
+            ResponseTemplate::new(200).set_body_json(json!({
+                "access_token": access_token,
+                "token_type": "Bearer",
+                "expires_in": 7200,
+                "refresh_token": INVALID_TOKEN_REFRESH_TOKEN,
+            }))
+        })
+        .expect(2)
+        .mount(&server)
+        .await;
+
+    let read_only_attempts = Arc::new(AtomicUsize::new(0));
+    let mutating_attempts = Arc::new(AtomicUsize::new(0));
+    let metadata_challenge_attempts = Arc::new(AtomicUsize::new(0));
+    let read_only_attempts_for_response = Arc::clone(&read_only_attempts);
+    let mutating_attempts_for_response = Arc::clone(&mutating_attempts);
+    let metadata_challenge_attempts_for_response = Arc::clone(&metadata_challenge_attempts);
+    Mock::given(method("POST"))
+        .and(path("/mcp"))
+        .respond_with(move |request: &Request| {
+            let body: Value = request.body_json().expect("valid JSON-RPC request");
+            let id = body.get("id").cloned().unwrap_or(Value::Null);
+            match body.get("method").and_then(Value::as_str) {
+                Some("initialize") => ResponseTemplate::new(200).set_body_json(json!({
+                    "jsonrpc": "2.0",
+                    "id": id,
+                    "result": {
+                        "protocolVersion": body.pointer("/params/protocolVersion")
+                            .cloned().unwrap_or_else(|| json!("2025-06-18")),
+                        "capabilities": {},
+                        "serverInfo": {"name": "invalid-token-test", "version": "0.0.0-test"},
+                    },
+                })),
+                Some("notifications/initialized") => ResponseTemplate::new(202),
+                Some("tools/call") => {
+                    let name = body.pointer("/params/name").and_then(Value::as_str);
+                    if name == Some("read_only")
+                        && body
+                            .pointer("/params/_meta/openai~1readOnly")
+                            .and_then(Value::as_bool)
+                            != Some(true)
+                    {
+                        return ResponseTemplate::new(400);
+                    }
+                    let attempt = match name {
+                        Some("read_only") => {
+                            read_only_attempts_for_response.fetch_add(1, Ordering::SeqCst)
+                        }
+                        Some("mutating") => {
+                            mutating_attempts_for_response.fetch_add(1, Ordering::SeqCst)
+                        }
+                        Some("result_challenge") => {
+                            metadata_challenge_attempts_for_response.fetch_add(1, Ordering::SeqCst);
+                            return ResponseTemplate::new(200).set_body_json(json!({
+                                "jsonrpc": "2.0",
+                                "id": id,
+                                "result": {
+                                    "content": [{"type": "text", "text": "denied"}],
+                                    "isError": true,
+                                    "_meta": {"mcp/www_authenticate": "Bearer error=invalid_token"},
+                                },
+                            }));
+                        }
+                        _ => return ResponseTemplate::new(400),
+                    };
+                    if attempt == 0 {
+                        ResponseTemplate::new(401)
+                            .insert_header("WWW-Authenticate", r#"Bearer error="invalid_token""#)
+                    } else {
+                        ResponseTemplate::new(200).set_body_json(json!({
+                            "jsonrpc": "2.0",
+                            "id": id,
+                            "result": {"content": [{"type": "text", "text": "ok"}]},
+                        }))
+                    }
+                }
+                _ => ResponseTemplate::new(400),
+            }
+        })
+        .expect(10)
+        .mount(&server)
+        .await;
+
+    let server_url = format!("{}/mcp", server.uri());
+    for refresh_mode in [McpOAuthRefreshMode::Legacy, McpOAuthRefreshMode::Coordinated] {
+        let codex_home = TempDir::new()?;
+        let status = Command::new(std::env::current_exe()?)
+            .args([
+                "invalid_token_recovery_child",
+                "--exact",
+                "--ignored",
+                "--nocapture",
+            ])
+            .env("CODEX_HOME", codex_home.path())
+            .env(CHILD_SERVER_URL_ENV, &server_url)
+            .env(
+                CHILD_REFRESH_MODE_ENV,
+                match refresh_mode {
+                    McpOAuthRefreshMode::Legacy => "legacy",
+                    McpOAuthRefreshMode::Coordinated => "coordinated",
+                },
+            )
+            .status()
+            .await?;
+        assert!(
+            status.success(),
+            "OAuth invalid_token {refresh_mode:?} child failed: {status}"
+        );
+    }
+    assert_eq!(refresh_attempts.load(Ordering::SeqCst), 4);
+    assert_eq!(read_only_attempts.load(Ordering::SeqCst), 2);
+    assert_eq!(mutating_attempts.load(Ordering::SeqCst), 2);
+    assert_eq!(metadata_challenge_attempts.load(Ordering::SeqCst), 2);
+    server.verify().await;
+    Ok(())
+}
+
+#[tokio::test]
+#[ignore = "spawned by invalid_token_refresh_never_replays_tool_calls"]
+async fn invalid_token_recovery_child() -> anyhow::Result<()> {
+    let server_url = std::env::var(CHILD_SERVER_URL_ENV)?;
+    let refresh_mode = if std::env::var(CHILD_REFRESH_MODE_ENV).as_deref() == Ok("coordinated") {
+        McpOAuthRefreshMode::Coordinated
+    } else {
+        McpOAuthRefreshMode::Legacy
+    };
+    let mut token_response = OAuthTokenResponse::new(
+        AccessToken::new(INVALID_TOKEN_ACCESS_TOKEN.to_string()),
+        BasicTokenType::Bearer,
+        VendorExtraTokenFields::default(),
+    );
+    token_response.set_refresh_token(Some(RefreshToken::new(
+        INVALID_TOKEN_REFRESH_TOKEN.to_string(),
+    )));
+    token_response.set_scopes(Some(vec![Scope::new("ops:read".to_string())]));
+    let expires_at = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_else(|_| Duration::from_secs(0))
+        .as_millis() as u64
+        + 120_000;
+    let tokens = StoredOAuthTokens {
+        server_name: INVALID_TOKEN_SERVER_NAME.to_string(),
+        url: server_url.clone(),
+        issuer: Some(server_url.clone()),
+        client_id: "test-client-id".to_string(),
+        token_response: WrappedOAuthTokenResponse(token_response),
+        expires_at: Some(expires_at),
+    };
+    save_oauth_tokens(
+        INVALID_TOKEN_SERVER_NAME,
+        &tokens,
+        OAuthCredentialsStoreMode::File,
+        AuthKeyringBackendKind::default(),
+    )?;
+
+    let client = RmcpClient::new_streamable_http_client_with_protocol_mode_and_redirect_mode(
+        INVALID_TOKEN_SERVER_NAME,
+        &server_url,
+        /*bearer_token*/ None,
+        /*http_headers*/ None,
+        /*env_http_headers*/ None,
+        /*oauth_config*/ None,
+        OAuthCredentialsStoreMode::File,
+        AuthKeyringBackendKind::default(),
+        Environment::default_for_tests().get_http_client(),
+        /*auth_provider*/ None,
+        McpProtocolMode::Legacy,
+        StreamableHttpRedirectMode::Legacy,
+        refresh_mode,
+    )
+    .await?;
+    initialize_client(&client).await?;
+
+    let read_only_error = client
+        .call_tool(
+            "read_only".to_string(),
+            /*arguments*/ None,
+            |_| Ok(Some(json!({"openai/readOnly": true}))),
+            Some(Duration::from_secs(5)),
+        )
+        .await
+        .expect_err("read-only annotation cannot authorize automatic replay");
+    assert!(
+        read_only_error
+            .to_string()
+            .contains("code=mcp_oauth_invalid_token_refreshed_no_replay")
+    );
+    assert!(read_only_error.to_string().contains("outcome=unknown"));
+    assert!(read_only_error.to_string().contains("retry=read_only_only"));
+    assert!(
+        read_only_error
+            .to_string()
+            .contains("Do not repeat a mutation")
+    );
+
+    let mutating = client
+        .call_tool(
+            "mutating".to_string(),
+            /*arguments*/ None,
+            |_| Ok(None),
+            Some(Duration::from_secs(5)),
+        )
+        .await;
+    let mutating_error = mutating.expect_err("mutating tool call must not be replayed");
+    assert!(mutating_error.to_string().contains("outcome=unknown"));
+
+    let result_challenge = client
+        .call_tool(
+            "result_challenge".to_string(),
+            /*arguments*/ None,
+            |_| Ok(None),
+            Some(Duration::from_secs(5)),
+        )
+        .await?;
+    assert!(result_challenge.is_error.unwrap_or(false));
+    client.shutdown().await;
     Ok(())
 }
 

@@ -206,9 +206,9 @@ dependencies = [
 
 [[package]]
 name = "dylint"
-version = "6.3.0"
+version = "6.3.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "a34a586a3d22e87c5cd6b0b45158c4d4ec3a7fc2ea49800c8f3127eea239538b"
+checksum = "f860d94af1dd52e932fdaac5351eeb1946cee466616331d5d3f5f570646cbe05"
 dependencies = [
  "anstyle",
  "anyhow",
@@ -224,9 +224,9 @@ dependencies = [
 
 [[package]]
 name = "dylint_internal"
-version = "6.3.0"
+version = "6.3.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "7bc061f49eb5a4d2a440a8b40a65e3d8860f92516d118090573cfadf8c0d2fa4"
+checksum = "0b7cba7031cd44bdc56bde25a451015911a7aacad72cfc0e476003bec091f3ac"
 dependencies = [
  "anstyle",
  "anyhow",
@@ -249,9 +249,9 @@ dependencies = [
 
 [[package]]
 name = "dylint_linting"
-version = "6.3.0"
+version = "6.3.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "1d190d4d3c83bd2e7a9ed94eaf98d58dbb89afbabd2bf4ad2d75c76a0c383718"
+checksum = "75bb21fcfeb6cf699039c95e2c23fd3dd9c1fce7f487f2025920a822573ac389"
 dependencies = [
  "cargo_metadata",
  "dylint_internal",
@@ -264,9 +264,9 @@ dependencies = [
 
 [[package]]
 name = "dylint_testing"
-version = "6.3.0"
+version = "6.3.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "0abbaa51fb13d56446702ca2105dcf0fd390183d1ba3ea210d08b216c0805a09"
+checksum = "b5be664837ffe83f16823c9c4646fc7428fa1067cb21f435eb2214fd2bffc8dd"
 dependencies = [
  "anyhow",
  "cargo_metadata",

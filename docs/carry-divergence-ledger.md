@@ -21,10 +21,8 @@ be mistaken for live state.
 - Mirror vs `upstream/main`: `0` ahead, `14` behind (`stale_ff_only`)
 - Downstream-only non-merge commits at audit time: `1800` unique, `0` patch-equivalent
 
-See [`generated/upstream-status.md`](generated/upstream-status.md) for the
-reproducible current-state receipt and
-[`upstream-sync/2026-07-28.md`](upstream-sync/2026-07-28.md) for harvest
-decisions.
+The refs and counts above are an audit-time snapshot, not a live mirror-health
+report.
 
 ## Audit Rules
 
@@ -1252,10 +1250,6 @@ bundles during upstream sync merely because they once shared this carry entry.
   but those presets are not a tracked repository contract.
 - Divergence regression ownership is tracked in
   [`downstream-regression-matrix.md`](downstream-regression-matrix.md).
-- Field-level native tool-surface deltas are summarized in
-  [`downstream-tool-surface-matrix.md`](downstream-tool-surface-matrix.md).
-- Future registry-plus-generation maintenance direction is captured in
-  [`downstream-divergence-tracking.md`](downstream-divergence-tracking.md).
 - Downstream guidance prefers MCP tool surfaces with blocking wait
   semantics over transcript-driven polling when the tool contract supports it.
 - Primary files:
@@ -3230,6 +3224,21 @@ bundles during upstream sync merely because they once shared this carry entry.
   handing credentials to RMCP so refresh requests do not broaden explicit
   persisted scopes with authorization-server-advertised `offline_access`; Codex
   preserves the durable stored scope set when the provider omits scopes.
+- Reactive recovery runs only after Streamable HTTP receives a real `401` with
+  a parsed Bearer `invalid_token` challenge. A local `AuthorizationRequired`, a
+  generic 401, `insufficient_scope`, an uncertain transport outcome, or an MCP
+  tool-result `_meta` challenge does not trigger the refresh path.
+- One successful refresh retries only the fixed read-only protocol operations
+  (`tools/list`, `resources/list`, `resources/templates/list`, and
+  `resources/read`). Tool calls, custom requests, and custom notifications
+  refresh credentials for future calls and return
+  `mcp_oauth_invalid_token_refreshed_no_replay` with `auth=refreshed`,
+  `outcome=unknown`, and `retry=read_only_only`. Callers must not repeat a
+  mutation; a new request is appropriate only when the operation is independently
+  known to be read-only. Remote tool annotations are untrusted hints and never
+  authorize a tool-call replay. The client reuses its existing serialized OAuth
+  transaction and does not add credentials, login flows, or a parallel session
+  store.
 - During future syncs, do not "simplify" the OAuth helpers by dropping either
   the secrets-backed keyring path or the downstream resolved-store reread/save
   discipline unless an upstream replacement covers those behaviors and the
@@ -3242,6 +3251,12 @@ bundles during upstream sync merely because they once shared this carry entry.
   - `codex-rs/rmcp-client/src/rmcp_client.rs`
   - `codex-rs/rmcp-client/src/startup_error.rs`
   - `codex-rs/codex-mcp/src/connection_manager.rs`
+  - `codex-rs/codex-mcp/src/binding.rs`
+  - `codex-rs/codex-mcp/src/connection_manager_tests.rs`
+  - `codex-rs/codex-mcp/src/tools.rs`
+  - `codex-rs/rmcp-client/src/http_client_adapter.rs`
+  - `codex-rs/rmcp-client/src/http_client_adapter/www_authenticate.rs`
+  - `codex-rs/rmcp-client/src/http_client_adapter/www_authenticate_tests.rs`
 
 ### MCP OAuth Device Login For Headless Servers
 

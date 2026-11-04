@@ -2,11 +2,15 @@ import contextlib
 import io
 import json
 import sqlite3
+import sys
 import tempfile
 import unittest
 from decimal import Decimal
 from pathlib import Path
 from unittest.mock import patch
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[1] / ".github" / "scripts"))
+from classify_ci_paths import classify  # noqa: E402
 
 from codex_usage_tree import (
     RpcError,
@@ -14,6 +18,7 @@ from codex_usage_tree import (
     _database_compact_aggregate,
     app_server_argv,
     collect_database_tree,
+    collect_database_union,
     collect_local_tree,
     collect_tree,
     error_document,
@@ -100,6 +105,188 @@ class SyntheticErrorAppServer:
 
 
 class UsageTreeTests(unittest.TestCase):
+    def test_usage_tree_python_files_select_existing_format_lane(self):
+        for path in (
+            "scripts/codex_usage_tree.py",
+            "scripts/test_codex_usage_tree.py",
+        ):
+            with self.subTest(path=path):
+                self.assertTrue(classify([path]).repo_format)
+
+    def _write_union_ledger(self, database, calls):
+        connection = sqlite3.connect(database)
+        connection.executescript(
+            """
+            CREATE TABLE usage_threads (
+                thread_id TEXT PRIMARY KEY,
+                parent_thread_id TEXT,
+                root_thread_id TEXT,
+                fork_parent_thread_id TEXT,
+                source TEXT,
+                thread_source TEXT,
+                created_at TEXT NOT NULL
+            );
+            CREATE INDEX usage_threads_reporting_parent_idx ON usage_threads(
+                COALESCE(NULLIF(parent_thread_id, ''), NULLIF(fork_parent_thread_id, ''))
+            );
+            CREATE TABLE usage_provider_calls (
+                provider_call_id TEXT PRIMARY KEY,
+                thread_id TEXT NOT NULL,
+                turn_id TEXT,
+                spawn_request_id TEXT,
+                tool_call_id TEXT,
+                request_id TEXT,
+                provider TEXT,
+                requested_model TEXT,
+                actual_model_used TEXT,
+                final_model TEXT,
+                model_snapshot TEXT,
+                requested_service_tier TEXT,
+                actual_service_tier TEXT,
+                actual_service_tier_source TEXT,
+                fast_mode_requested INTEGER,
+                fast_mode_used INTEGER,
+                billing_surface TEXT,
+                account_plan TEXT,
+                provider_reported_cost REAL,
+                provider_reported_currency TEXT,
+                provider_reported_credits REAL,
+                started_at TEXT NOT NULL,
+                completed_at TEXT,
+                input_tokens_uncached INTEGER,
+                input_tokens_cached INTEGER,
+                input_tokens_cache_write INTEGER,
+                output_tokens INTEGER,
+                total_tokens INTEGER,
+                status TEXT
+            );
+            CREATE INDEX usage_provider_calls_thread_idx
+                ON usage_provider_calls(thread_id);
+            INSERT INTO usage_threads VALUES
+                ('root', NULL, 'root', NULL, 'cli', 'user', '2026-10-01'),
+                ('child', 'root', 'root', NULL,
+                 '{"subagent":{"other":"worker"}}', 'subagent', '2026-10-02');
+            """
+        )
+        connection.executemany(
+            """
+            INSERT INTO usage_provider_calls (
+                provider_call_id, thread_id, turn_id, request_id, provider,
+                requested_model, actual_model_used, final_model,
+                provider_reported_credits, started_at, completed_at,
+                input_tokens_uncached, input_tokens_cached,
+                input_tokens_cache_write, output_tokens, total_tokens, status
+            ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+            """,
+            calls,
+        )
+        connection.commit()
+        connection.close()
+
+    def _write_legacy_union_ledger(self, database, call):
+        connection = sqlite3.connect(database)
+        connection.executescript(
+            """
+            CREATE TABLE usage_threads (
+                thread_id TEXT PRIMARY KEY,
+                parent_thread_id TEXT,
+                root_thread_id TEXT,
+                fork_parent_thread_id TEXT,
+                created_at TEXT NOT NULL
+            );
+            CREATE INDEX usage_threads_reporting_parent_idx ON usage_threads(
+                COALESCE(NULLIF(parent_thread_id, ''), NULLIF(fork_parent_thread_id, ''))
+            );
+            CREATE TABLE usage_provider_calls (
+                provider_call_id TEXT PRIMARY KEY,
+                thread_id TEXT NOT NULL,
+                turn_id TEXT,
+                spawn_request_id TEXT,
+                tool_call_id TEXT,
+                request_id TEXT,
+                provider TEXT,
+                requested_model TEXT,
+                actual_model_used TEXT,
+                started_at TEXT NOT NULL,
+                completed_at TEXT,
+                input_tokens_uncached INTEGER,
+                input_tokens_cached INTEGER,
+                output_tokens INTEGER,
+                total_tokens INTEGER,
+                provider_reported_cost REAL,
+                provider_reported_currency TEXT,
+                status TEXT
+            );
+            CREATE INDEX usage_provider_calls_thread_idx
+                ON usage_provider_calls(thread_id);
+            INSERT INTO usage_threads VALUES ('root', NULL, 'root', NULL, '2026-10-01');
+            """
+        )
+        connection.execute(
+            """
+            INSERT INTO usage_provider_calls (
+                provider_call_id, thread_id, turn_id, request_id, provider,
+                requested_model, actual_model_used, started_at, input_tokens_uncached,
+                input_tokens_cached, output_tokens, total_tokens, status
+            ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)
+            """,
+            call,
+        )
+        connection.commit()
+        connection.close()
+
+    def _use_root_thread_index_only(self, database):
+        connection = sqlite3.connect(database)
+        connection.execute("DROP INDEX usage_threads_reporting_parent_idx")
+        connection.execute(
+            "CREATE INDEX usage_threads_root_thread_idx "
+            "ON usage_threads(root_thread_id)"
+        )
+        connection.commit()
+        connection.close()
+
+    def _small_lineage_calls(self):
+        return [
+            (
+                "root-call",
+                "root",
+                "turn-root",
+                "request-root",
+                "openai",
+                "gpt-6.1-sol",
+                "gpt-6.1-sol",
+                None,
+                0.25,
+                "2026-10-01T00:00:00Z",
+                None,
+                10,
+                20,
+                0,
+                5,
+                35,
+                "ok",
+            ),
+            (
+                "child-call",
+                "child",
+                "turn-child",
+                "request-child",
+                "openai",
+                "gpt-6.1-sol",
+                "gpt-6.1-sol",
+                None,
+                0.5,
+                "2026-10-02T00:00:00Z",
+                None,
+                20,
+                30,
+                0,
+                10,
+                60,
+                "ok",
+            ),
+        ]
+
     def test_recorded_aggregate_preserves_unknowns_and_other_descendants(self):
         connection = sqlite3.connect(":memory:")
         connection.row_factory = sqlite3.Row
@@ -224,6 +411,57 @@ class UsageTreeTests(unittest.TestCase):
             },
         )
 
+    def test_cli_continues_bounded_checkpoint_passes_without_operator_guessing(self):
+        first = {
+            "status": "partial",
+            "continuation": {"status": "resumable", "nextAction": "continue"},
+            "crossLedgerDeduplication": {"rowsScannedBySource": [10, 10]},
+        }
+        finished = {
+            "status": "partial",
+            "continuation": {"status": "complete", "nextAction": "none"},
+            "crossLedgerDeduplication": {"rowsScannedBySource": [20, 20]},
+        }
+        output = io.StringIO()
+        progress = io.StringIO()
+        with (
+            patch(
+                "codex_usage_tree.collect_database_union",
+                side_effect=[first, finished],
+            ) as collect,
+            patch("codex_usage_tree.time.sleep"),
+            contextlib.redirect_stdout(output),
+            contextlib.redirect_stderr(progress),
+        ):
+            exit_code = main(
+                [
+                    "--thread-id",
+                    "root",
+                    "--database",
+                    "primary.sqlite",
+                    "--also-database",
+                    "comparison.sqlite",
+                    "--aggregate-recorded",
+                    "--checkpoint-file",
+                    "private-checkpoint.sqlite",
+                    "--continue-until-complete",
+                    "--max-resume-passes",
+                    "2",
+                ]
+            )
+
+        self.assertEqual(exit_code, 2)
+        self.assertEqual(collect.call_count, 2)
+        self.assertEqual(
+            collect.call_args.kwargs["checkpoint_path"], "private-checkpoint.sqlite"
+        )
+        result = json.loads(output.getvalue())
+        self.assertEqual(result["continuation"]["status"], "complete")
+        self.assertEqual(result["continuation"]["resumePassesCompleted"], 2)
+        self.assertEqual(result["continuation"]["resumePassLimit"], 2)
+        self.assertIn("pass 1/2", progress.getvalue())
+        self.assertIn("pass 2/2", progress.getvalue())
+
     def test_root_child_totals_deduplicate_and_preserve_nulls_and_missing_rates(self):
         api = SyntheticAppServer()
         result = collect_tree(api, "root", load_rates(None), max_per_state=4)
@@ -320,6 +558,8 @@ class UsageTreeTests(unittest.TestCase):
                     total_tokens INTEGER,
                     status TEXT
                 );
+                CREATE INDEX usage_provider_calls_thread_idx
+                    ON usage_provider_calls(thread_id);
                 INSERT INTO usage_threads VALUES
                     ('root', NULL, 'root', NULL, 'cli', 'user', '2026-10-01'),
                     ('child', 'root', 'root', NULL,
@@ -455,6 +695,853 @@ class UsageTreeTests(unittest.TestCase):
                 with self.assertRaisesRegex(UsageError, "exceeded its time limit"):
                     collect_database_tree("root", str(database), load_rates(None))
             self.assertEqual(database.read_bytes(), original_bytes)
+
+    def test_cross_ledger_uses_bounded_root_index_fallback_for_legacy_lineage(self):
+        calls = self._small_lineage_calls()
+        with tempfile.TemporaryDirectory() as temp_dir:
+            primary = Path(temp_dir) / "primary.sqlite"
+            comparison = Path(temp_dir) / "comparison.sqlite"
+            self._write_union_ledger(primary, calls)
+            self._write_union_ledger(comparison, calls)
+            self._use_root_thread_index_only(comparison)
+
+            result = collect_database_union(
+                "root", [str(primary), str(comparison)], load_rates(None)
+            )
+
+        comparison_result = result["sources"][1]
+        self.assertEqual(comparison_result["status"], "partial")
+        self.assertEqual(
+            comparison_result["lineage"]["resolution"],
+            "root_thread_id_index_fallback",
+        )
+        self.assertFalse(comparison_result["lineage"]["truncated"])
+        self.assertEqual(comparison_result["lineage"]["unverifiedThreadCount"], 0)
+        self.assertIn(
+            "indexed root_thread_id", comparison_result["lineage"]["coverageNote"]
+        )
+        comparison_groups = {
+            group["role"]: group
+            for group in comparison_result["recordedAggregate"]["groups"]
+        }
+        self.assertEqual(set(comparison_groups), {"root", "subagent"})
+        self.assertEqual(comparison_groups["root"]["responseUsageRecordCount"], 1)
+        self.assertEqual(comparison_groups["subagent"]["responseUsageRecordCount"], 1)
+        self.assertTrue(
+            result["completeness"]["crossLedgerScanCompleteForSelectedLineage"]
+        )
+        self.assertFalse(result["completeness"]["historicalCoverageComplete"])
+        self.assertTrue(result["completeness"]["rootThreadIndexFallbackUsed"])
+        self.assertFalse(result["completeness"]["rootThreadIndexFallbackIsExhaustive"])
+        self.assertEqual(
+            result["crossLedgerDeduplication"]["status"],
+            "known_root_indexed_rows_only",
+        )
+        self.assertEqual(
+            result["crossLedgerDeduplication"]["mergedTotals"]["status"],
+            "known_root_indexed_rows_only",
+        )
+        self.assertEqual(
+            result["crossLedgerDeduplication"]["mergedTotals"][
+                "responseUsageRecordCount"
+            ],
+            2,
+        )
+        self.assertEqual(
+            result["crossLedgerDeduplication"]["exactDuplicateRowsOmittedObserved"],
+            2,
+        )
+
+    def test_root_index_fallback_withholds_merge_for_unverified_parent_metadata(
+        self,
+    ):
+        calls = self._small_lineage_calls()
+        with tempfile.TemporaryDirectory() as temp_dir:
+            primary = Path(temp_dir) / "primary.sqlite"
+            comparison = Path(temp_dir) / "comparison.sqlite"
+            self._write_union_ledger(primary, calls)
+            self._write_union_ledger(comparison, calls)
+            self._use_root_thread_index_only(comparison)
+            connection = sqlite3.connect(comparison)
+            connection.execute(
+                "INSERT INTO usage_threads VALUES (?, ?, ?, ?, ?, ?, ?)",
+                (
+                    "grandchild",
+                    "child",
+                    "root",
+                    None,
+                    '{"subagent":{"worker":"luna"}}',
+                    "subagent",
+                    "2026-10-03",
+                ),
+            )
+            connection.execute(
+                """
+                INSERT INTO usage_provider_calls (
+                    provider_call_id, thread_id, turn_id, request_id, provider,
+                    requested_model, actual_model_used, provider_reported_credits,
+                    started_at, input_tokens_uncached, input_tokens_cached,
+                    input_tokens_cache_write, output_tokens, total_tokens, status
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    "grandchild-call",
+                    "grandchild",
+                    "turn-grandchild",
+                    "request-grandchild",
+                    "openai",
+                    "gpt-6.1-sol",
+                    "gpt-6.1-sol",
+                    0.75,
+                    "2026-10-03T00:00:00Z",
+                    30,
+                    40,
+                    0,
+                    15,
+                    85,
+                    "ok",
+                ),
+            )
+            connection.execute(
+                "UPDATE usage_threads SET root_thread_id = 'other-root' "
+                "WHERE thread_id = 'root'"
+            )
+            connection.execute(
+                "UPDATE usage_threads SET parent_thread_id = 'missing-parent' "
+                "WHERE thread_id = 'child'"
+            )
+            connection.commit()
+            connection.close()
+
+            result = collect_database_union(
+                "root", [str(primary), str(comparison)], load_rates(None)
+            )
+
+        comparison_result = result["sources"][1]
+        self.assertEqual(
+            comparison_result["lineage"]["resolution"],
+            "root_thread_id_index_fallback",
+        )
+        self.assertTrue(comparison_result["lineage"]["truncated"])
+        self.assertEqual(comparison_result["lineage"]["unverifiedThreadCount"], 2)
+        self.assertEqual(comparison_result["lineage"]["knownThreadCount"], 1)
+        self.assertEqual(
+            comparison_result["lineage"]["truncationReasons"],
+            ["root_or_parent_chain_unverified"],
+        )
+        comparison_groups = {
+            group["role"]: group
+            for group in comparison_result["recordedAggregate"]["groups"]
+        }
+        self.assertEqual(set(comparison_groups), {"root"})
+        self.assertEqual(
+            comparison_result["recordedAggregate"]["responseUsageRecordCount"], 1
+        )
+        self.assertEqual(comparison_groups["root"]["responseUsageRecordCount"], 1)
+        self.assertEqual(
+            comparison_groups["root"]["tokenTotals"]["inputTokensUncached"][
+                "knownSubtotal"
+            ],
+            10,
+        )
+        self.assertFalse(
+            result["completeness"]["crossLedgerScanCompleteForSelectedLineage"]
+        )
+        self.assertEqual(
+            result["crossLedgerDeduplication"]["mergedTotals"]["status"],
+            "unavailable_incomplete_source_scan",
+        )
+
+    def test_root_index_fallback_fails_closed_without_a_persistent_index(self):
+        calls = self._small_lineage_calls()
+        with tempfile.TemporaryDirectory() as temp_dir:
+            primary = Path(temp_dir) / "primary.sqlite"
+            comparison = Path(temp_dir) / "comparison.sqlite"
+            self._write_union_ledger(primary, calls)
+            self._write_union_ledger(comparison, calls)
+            connection = sqlite3.connect(comparison)
+            connection.execute("DROP INDEX usage_threads_reporting_parent_idx")
+            connection.commit()
+            connection.close()
+
+            result = collect_database_union(
+                "root", [str(primary), str(comparison)], load_rates(None)
+            )
+
+        comparison_result = result["sources"][1]
+        self.assertEqual(comparison_result["status"], "unavailable")
+        self.assertEqual(
+            comparison_result["reason"],
+            "usage database has no indexed exact-root lineage lookup",
+        )
+        self.assertFalse(
+            result["completeness"]["crossLedgerScanCompleteForSelectedLineage"]
+        )
+        self.assertEqual(
+            result["crossLedgerDeduplication"]["mergedTotals"]["status"],
+            "unavailable_incomplete_source_scan",
+        )
+
+    def test_cross_ledger_union_deduplicates_and_withholds_unresolved_rows(self):
+        def call(call_id, thread, request, uncached, credits, *, status="ok"):
+            return (
+                call_id,
+                thread,
+                f"turn-{request}",
+                request,
+                "openai",
+                "gpt-6.1-sol",
+                "gpt-6-sol",
+                None,
+                credits,
+                "2026-10-0{}T00:00:00Z".format(1 if thread == "root" else 2),
+                None,
+                uncached,
+                10,
+                0,
+                5,
+                uncached + 15,
+                status,
+            )
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            primary = Path(temp_dir) / "primary.sqlite"
+            comparison = Path(temp_dir) / "comparison.sqlite"
+            self._write_union_ledger(
+                primary,
+                [
+                    call("pcid-secret-shared", "root", "shared-request", 100, 1.25),
+                    call("pcid-secret-conflict", "child", "conflict-primary", 20, 0.5),
+                    call(None, "root", "unkeyed-primary", 30, 0.25),
+                ],
+            )
+            self._write_union_ledger(
+                comparison,
+                [
+                    call("pcid-secret-shared", "root", "shared-request", 100, 1.25),
+                    call(
+                        "pcid-secret-conflict", "child", "conflict-comparison", 200, 9.5
+                    ),
+                    call(
+                        "pcid-secret-secondary", "child", "secondary-request", 40, 0.75
+                    ),
+                    call(None, "root", "unkeyed-comparison", 50, 0.125),
+                ],
+            )
+            original_primary = primary.read_bytes()
+            original_comparison = comparison.read_bytes()
+
+            result = collect_database_union(
+                "root", [str(primary), str(comparison)], load_rates(None)
+            )
+
+            dedupe = result["crossLedgerDeduplication"]
+            self.assertEqual(result["status"], "partial")
+            self.assertFalse(result["completeness"]["historicalCoverageComplete"])
+            self.assertTrue(
+                result["completeness"]["unresolvedRowsExcludedFromMergedTotals"]
+            )
+            self.assertFalse(
+                result["pricingCoverage"]["effectiveDatedPerCallRateMatchPerformed"]
+            )
+            self.assertGreater(
+                result["pricingCoverage"]["missingContextRowsObservedBySource"][0][
+                    "missing"
+                ]["actual_service_tier"],
+                0,
+            )
+            self.assertEqual(dedupe["status"], "complete_for_selected_rows")
+            self.assertEqual(dedupe["rowsScanned"], 7)
+            self.assertEqual(dedupe["exactDuplicateRowsOmittedObserved"], 1)
+            self.assertEqual(dedupe["conflictingProviderCallIdsObserved"], 1)
+            self.assertEqual(dedupe["conflictingRowsWithheldObserved"], 2)
+            self.assertEqual(dedupe["unkeyedRowsWithheldObserved"], 2)
+            merged = dedupe["mergedTotals"]
+            self.assertEqual(merged["status"], "partial_excluding_unresolved")
+            self.assertEqual(merged["responseUsageRecordCount"], 2)
+            self.assertEqual(merged["excludedUnresolvedRows"], 4)
+            self.assertEqual(
+                sum(
+                    group["tokenTotals"]["inputTokensUncached"]["knownSubtotal"]
+                    for group in merged["groups"]
+                ),
+                140,
+            )
+            self.assertEqual(
+                sum(
+                    (
+                        Decimal(group["providerReportedCredits"]["knownSubtotal"])
+                        for group in merged["groups"]
+                    ),
+                    start=Decimal(0),
+                ),
+                Decimal("2"),
+            )
+            self.assertEqual(
+                {group["role"] for group in merged["groups"]}, {"root", "subagent"}
+            )
+            self.assertTrue(
+                all(
+                    group["tokenTotals"]["inputTokensUncached"]["value"] is None
+                    for group in merged["groups"]
+                )
+            )
+            self.assertTrue(
+                all(
+                    group["calculatedCreditEstimate"]["estimateType"]
+                    == "model_rate_scenario_not_verified_billing"
+                    and Decimal(group["calculatedCreditEstimate"]["knownSubtotal"]) > 0
+                    for group in merged["groups"]
+                )
+            )
+            self.assertTrue(
+                all(
+                    group["actualDebit"]["status"] == "not_observed"
+                    for group in merged["groups"]
+                )
+            )
+            self.assertEqual(len(result["sources"]), 2)
+            self.assertTrue(
+                all(
+                    source["recordedAggregate"]["groups"]
+                    for source in result["sources"]
+                )
+            )
+            self.assertTrue(
+                all(source["rowScan"]["complete"] for source in result["sources"])
+            )
+            serialized = json.dumps(result)
+            self.assertNotIn("pcid-secret", serialized)
+            self.assertNotIn(str(primary), serialized)
+            self.assertNotIn(str(comparison), serialized)
+            self.assertEqual(primary.read_bytes(), original_primary)
+            self.assertEqual(comparison.read_bytes(), original_comparison)
+
+            output = io.StringIO()
+            with contextlib.redirect_stdout(output):
+                exit_code = main(
+                    [
+                        "--thread-id",
+                        "root",
+                        "--database",
+                        str(primary),
+                        "--also-database",
+                        str(comparison),
+                        "--aggregate-recorded",
+                    ]
+                )
+            self.assertEqual(exit_code, 2)
+            self.assertIn("crossLedgerDeduplication", json.loads(output.getvalue()))
+
+    def test_cross_ledger_checkpoint_resumes_large_cutoff_snapshot(self):
+        call_count = 90_000
+
+        def call(call_index):
+            thread = "root" if call_index % 2 == 0 else "child"
+            started_at = (
+                "2026-10-01T00:00:00Z" if thread == "root" else "2026-10-02T00:00:00Z"
+            )
+            return (
+                f"bulk-call-{call_index:06d}",
+                thread,
+                f"turn-{call_index}",
+                f"request-{call_index}",
+                "openai",
+                "gpt-6.1-sol",
+                "gpt-6-sol",
+                None,
+                0.125,
+                started_at,
+                None,
+                1,
+                10,
+                0,
+                5,
+                16,
+                "ok",
+            )
+
+        def calls(source_name):
+            for call_index in range(call_count):
+                yield call(call_index)
+            conflict = list(call(call_count))
+            conflict[0] = "bulk-conflict"
+            conflict[1] = "child"
+            conflict[2] = "turn-conflict"
+            conflict[3] = f"request-conflict-{source_name}"
+            conflict[9] = "2026-10-02T00:00:00Z"
+            conflict[11] = 2 if source_name == "comparison" else 1
+            conflict[15] = conflict[11] + 15
+            yield tuple(conflict)
+            unkeyed = list(call(call_count + 1))
+            unkeyed[0] = None
+            unkeyed[1] = "root"
+            unkeyed[2] = f"turn-unkeyed-{source_name}"
+            unkeyed[3] = f"request-unkeyed-{source_name}"
+            unkeyed[9] = "2026-10-01T00:00:00Z"
+            yield tuple(unkeyed)
+
+        def append_call(database, call_values):
+            connection = sqlite3.connect(database)
+            connection.execute(
+                """
+                INSERT INTO usage_provider_calls (
+                    provider_call_id, thread_id, turn_id, request_id, provider,
+                    requested_model, actual_model_used, final_model,
+                    provider_reported_credits, started_at, completed_at,
+                    input_tokens_uncached, input_tokens_cached,
+                    input_tokens_cache_write, output_tokens, total_tokens, status
+                ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+                """,
+                call_values,
+            )
+            connection.commit()
+            connection.close()
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            primary = Path(temp_dir) / "primary.sqlite"
+            comparison = Path(temp_dir) / "comparison.sqlite"
+            checkpoint = Path(temp_dir) / "private-checkpoint.sqlite"
+            self._write_union_ledger(primary, calls("primary"))
+            self._write_union_ledger(comparison, calls("comparison"))
+            for database in (primary, comparison):
+                connection = sqlite3.connect(database)
+                connection.execute(
+                    "UPDATE usage_threads SET root_thread_id = 'child' "
+                    "WHERE thread_id = 'child'"
+                )
+                connection.commit()
+                connection.close()
+
+            result = None
+            progress_rows = []
+            per_run_rows = []
+            with patch("codex_usage_tree.MAX_DATABASE_UNION_CALLS_PER_RUN", 25_000):
+                for invocation in range(8):
+                    result = collect_database_union(
+                        "root",
+                        [str(primary), str(comparison)],
+                        load_rates(None),
+                        checkpoint_path=str(checkpoint),
+                    )
+                    progress_rows.append(
+                        result["crossLedgerDeduplication"]["rowsScannedBySource"]
+                    )
+                    per_run_rows.append(
+                        [
+                            source["rowScan"]["rowsScannedThisRun"]
+                            for source in result["sources"]
+                        ]
+                    )
+                    if invocation == 0:
+                        # These production-style model metadata updates must not
+                        # change the dedup key; the new call is above each frozen
+                        # rowid high-water mark and must not enter this report.
+                        for database in (primary, comparison):
+                            connection = sqlite3.connect(database)
+                            connection.execute(
+                                "UPDATE usage_provider_calls "
+                                "SET final_model = ?, model_snapshot = ? "
+                                "WHERE provider_call_id = ?",
+                                (
+                                    "gpt-6.1-luna-final",
+                                    "post-call-snapshot",
+                                    "bulk-call-000000",
+                                ),
+                            )
+                            connection.execute(
+                                "UPDATE usage_threads SET source = 'cli', "
+                                "thread_source = 'user', parent_thread_id = NULL, "
+                                "root_thread_id = 'root' "
+                                "WHERE thread_id = 'child'"
+                            )
+                            connection.commit()
+                            connection.close()
+                            append_call(
+                                database,
+                                (
+                                    "after-cutoff-call",
+                                    "root",
+                                    "after-cutoff-turn",
+                                    "after-cutoff-request",
+                                    "openai",
+                                    "gpt-6.1-sol",
+                                    "gpt-6-sol",
+                                    None,
+                                    0.125,
+                                    "2026-11-04T00:00:00Z",
+                                    None,
+                                    1,
+                                    10,
+                                    0,
+                                    5,
+                                    16,
+                                    "ok",
+                                ),
+                            )
+                    if result["continuation"]["status"] == "complete":
+                        break
+                else:
+                    self.fail("checkpoint did not finish the large bounded scan")
+
+            self.assertIsNotNone(result)
+            self.assertEqual(result["continuation"]["status"], "complete")
+            self.assertFalse(result["completeness"]["historicalCoverageComplete"])
+            self.assertTrue(result["snapshot"]["lineageFrozenAtEachSourceFirstPage"])
+            self.assertIn(
+                "runtime thread registration", result["snapshot"]["coverageNote"]
+            )
+            self.assertIn(
+                "manual or runtime lineage edits after frozen snapshot",
+                result["snapshot"]["unsupportedUndetectedSourceMutations"],
+            )
+            self.assertGreater(invocation, 0)
+            self.assertGreater(len(progress_rows), 1)
+            self.assertTrue(
+                all(
+                    previous[0] < current[0] and previous[1] < current[1]
+                    for previous, current in zip(progress_rows, progress_rows[1:])
+                )
+            )
+            self.assertTrue(
+                all(rows[0] <= 25_000 and rows[1] <= 25_000 for rows in per_run_rows)
+            )
+            self.assertEqual(
+                result["crossLedgerDeduplication"]["rowsScannedBySource"],
+                [call_count + 2, call_count + 2],
+            )
+            dedupe = result["crossLedgerDeduplication"]
+            self.assertEqual(dedupe["exactDuplicateRowsOmittedObserved"], call_count)
+            self.assertEqual(dedupe["conflictingProviderCallIdsObserved"], 1)
+            self.assertEqual(dedupe["conflictingRowsWithheldObserved"], 2)
+            self.assertEqual(dedupe["unkeyedRowsWithheldObserved"], 2)
+            merged = dedupe["mergedTotals"]
+            self.assertEqual(merged["status"], "partial_excluding_unresolved")
+            self.assertEqual(merged["responseUsageRecordCount"], call_count)
+            self.assertEqual(merged["excludedUnresolvedRows"], 4)
+            self.assertEqual(
+                {
+                    group["role"]: group["responseUsageRecordCount"]
+                    for group in merged["groups"]
+                },
+                {"root": call_count // 2, "subagent": call_count // 2},
+            )
+            self.assertTrue(
+                all(
+                    group["providerEffectiveModel"] == "gpt-6-sol"
+                    for group in merged["groups"]
+                )
+            )
+            for group in merged["groups"]:
+                count = group["responseUsageRecordCount"]
+                for field, expected_subtotal in (
+                    ("inputTokensUncached", count),
+                    ("inputTokensCached", count * 10),
+                    ("cacheWriteInputTokens", 0),
+                    ("outputTokens", count * 5),
+                    ("totalTokens", count * 16),
+                ):
+                    coverage = group["tokenTotals"][field]
+                    # Unresolved rows keep the merged total unavailable, while
+                    # the subtotal for accepted rows remains useful and exact.
+                    self.assertIsNone(coverage["value"])
+                    self.assertEqual(coverage["knownSubtotal"], expected_subtotal)
+                    self.assertTrue(coverage["completeForIncludedRows"])
+                    self.assertEqual(coverage["missingValues"], 0)
+            for source in result["sources"]:
+                self.assertIn(source["source"], ("primary", "comparison"))
+                per_source_groups = source["recordedAggregate"]["groups"]
+                self.assertEqual(
+                    sum(
+                        group["responseUsageRecordCount"] for group in per_source_groups
+                    ),
+                    call_count + 2,
+                )
+                self.assertEqual(
+                    source["recordedAggregate"]["status"], "recorded_rows_only"
+                )
+                conflict_uncached = 2 if source["source"] == "comparison" else 1
+                expected_by_role = {
+                    "root": {
+                        "inputTokensUncached": call_count // 2 + 1,
+                        "inputTokensCached": (call_count // 2 + 1) * 10,
+                        "cacheWriteInputTokens": 0,
+                        "outputTokens": (call_count // 2 + 1) * 5,
+                        "totalTokens": (call_count // 2) * 16 + 16,
+                    },
+                    "subagent": {
+                        "inputTokensUncached": call_count // 2 + conflict_uncached,
+                        "inputTokensCached": (call_count // 2 + 1) * 10,
+                        "cacheWriteInputTokens": 0,
+                        "outputTokens": (call_count // 2 + 1) * 5,
+                        "totalTokens": (call_count // 2) * 16 + conflict_uncached + 15,
+                    },
+                }
+                self.assertEqual(
+                    {
+                        group["role"]: group["responseUsageRecordCount"]
+                        for group in per_source_groups
+                    },
+                    {
+                        "root": call_count // 2 + 1,
+                        "subagent": call_count // 2 + 1,
+                    },
+                )
+                for group in per_source_groups:
+                    for field, expected in expected_by_role[group["role"]].items():
+                        coverage = group["tokenTotals"][field]
+                        self.assertEqual(coverage["value"], expected)
+                        self.assertEqual(coverage["knownSubtotal"], expected)
+                        self.assertEqual(coverage["missingValues"], 0)
+                        self.assertTrue(coverage["completeForIncludedRows"])
+            self.assertTrue(
+                all(
+                    source["rowScan"]["postCutoffLedgerRowsExcludedObserved"]
+                    for source in result["sources"]
+                )
+            )
+            self.assertTrue(
+                all(
+                    source["rowScan"]["lineageFrozenAtSnapshot"]
+                    for source in result["sources"]
+                )
+            )
+            self.assertFalse(result["snapshot"]["crossSourceAtomic"])
+            self.assertTrue(
+                result["snapshot"]["providerCallRowsAssumedAppendOnlyThroughCutoff"]
+            )
+            self.assertEqual(result["snapshot"]["crossInvocationAtomic"], False)
+            self.assertEqual(checkpoint.stat().st_mode & 0o777, 0o600)
+            self.assertLess(checkpoint.stat().st_size, 256 * 1024 * 1024)
+            serialized = json.dumps(result)
+            self.assertNotIn(str(primary), serialized)
+            self.assertNotIn(str(comparison), serialized)
+            self.assertNotIn(str(checkpoint), serialized)
+
+    def test_cross_ledger_bounds_withhold_merged_totals_but_keep_source_summaries(self):
+        def call(call_id, uncached):
+            return (
+                call_id,
+                "root",
+                "turn-" + call_id,
+                "request-" + call_id,
+                "openai",
+                "gpt-6.1-sol",
+                None,
+                None,
+                None,
+                "2026-10-01T00:00:00Z",
+                None,
+                uncached,
+                0,
+                0,
+                0,
+                uncached,
+                "ok",
+            )
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            primary = Path(temp_dir) / "primary.sqlite"
+            comparison = Path(temp_dir) / "comparison.sqlite"
+            self._write_union_ledger(primary, [call("a1", 10), call("a2", 20)])
+            self._write_union_ledger(comparison, [call("b1", 30), call("b2", 40)])
+            with (
+                patch("codex_usage_tree.MAX_DATABASE_UNION_CALLS_PER_SOURCE", 1),
+                patch("codex_usage_tree.MAX_DATABASE_UNION_CALLS_TOTAL", 2),
+            ):
+                result = collect_database_union(
+                    "root", [str(primary), str(comparison)], load_rates(None)
+                )
+
+        dedupe = result["crossLedgerDeduplication"]
+        self.assertEqual(dedupe["status"], "incomplete")
+        self.assertEqual(
+            dedupe["mergedTotals"]["status"], "unavailable_incomplete_source_scan"
+        )
+        self.assertEqual(dedupe["mergedTotals"]["groups"], [])
+        self.assertTrue(
+            all(source["recordedAggregate"]["groups"] for source in result["sources"])
+        )
+        self.assertTrue(
+            all(source["rowScan"]["truncated"] for source in result["sources"])
+        )
+
+    def test_cross_ledger_rejects_oversized_provider_call_id(self):
+        call = (
+            "p" * 257,
+            "root",
+            "turn-oversized",
+            "request-oversized",
+            "openai",
+            "gpt-6.1-sol",
+            None,
+            None,
+            None,
+            "2026-10-01T00:00:00Z",
+            None,
+            10,
+            0,
+            0,
+            5,
+            15,
+            "ok",
+        )
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            primary = Path(temp_dir) / "primary.sqlite"
+            comparison = Path(temp_dir) / "comparison.sqlite"
+            self._write_union_ledger(primary, [call])
+            self._write_union_ledger(comparison, [])
+
+            result = collect_database_union(
+                "root", [str(primary), str(comparison)], load_rates(None)
+            )
+
+        dedupe = result["crossLedgerDeduplication"]
+        self.assertEqual(dedupe["status"], "incomplete")
+        self.assertEqual(dedupe["rowsScannedBySource"], [1, 0])
+        self.assertEqual(
+            result["sources"][0]["rowScan"]["reason"],
+            "identity_field_size_limit",
+        )
+        self.assertEqual(
+            dedupe["mergedTotals"]["status"], "unavailable_incomplete_source_scan"
+        )
+        self.assertNotIn("p" * 257, json.dumps(result))
+
+    def test_legacy_schema_duplicate_is_unverifiable_not_silently_deduplicated(self):
+        current_call = (
+            "pcid-secret-legacy",
+            "root",
+            "turn-legacy",
+            "request-legacy",
+            "openai",
+            "gpt-6.1-sol",
+            "gpt-6-sol",
+            None,
+            1.0,
+            "2026-10-01T00:00:00Z",
+            None,
+            10,
+            0,
+            0,
+            5,
+            15,
+            "ok",
+        )
+        legacy_call = (
+            "pcid-secret-legacy",
+            "root",
+            "turn-legacy",
+            "request-legacy",
+            "openai",
+            "gpt-6.1-sol",
+            "gpt-6-sol",
+            "2026-10-01T00:00:00Z",
+            10,
+            0,
+            5,
+            15,
+            "ok",
+        )
+        with tempfile.TemporaryDirectory() as temp_dir:
+            current = Path(temp_dir) / "current.sqlite"
+            legacy = Path(temp_dir) / "legacy.sqlite"
+            self._write_union_ledger(current, [current_call])
+            self._write_legacy_union_ledger(legacy, legacy_call)
+
+            result = collect_database_union(
+                "root", [str(current), str(legacy)], load_rates(None)
+            )
+
+        dedupe = result["crossLedgerDeduplication"]
+        self.assertEqual(dedupe["exactDuplicateRowsOmittedObserved"], 0)
+        self.assertEqual(dedupe["conflictingProviderCallIdsObserved"], 0)
+        self.assertEqual(dedupe["schemaUnverifiableProviderCallIdsObserved"], 1)
+        self.assertEqual(dedupe["schemaUnverifiableRowsWithheldObserved"], 2)
+        self.assertEqual(dedupe["mergedTotals"]["responseUsageRecordCount"], 0)
+        self.assertFalse(
+            result["sources"][1]["columnCoverage"]["usage_provider_calls"][
+                "input_tokens_cache_write"
+            ]
+        )
+
+    def test_cross_ledger_memory_bound_withholds_merge_without_losing_source_summary(
+        self,
+    ):
+        call = (
+            "a1",
+            "root",
+            "turn-a1",
+            "request-a1",
+            "openai",
+            "gpt-6.1-sol",
+            None,
+            None,
+            None,
+            "2026-10-01T00:00:00Z",
+            None,
+            10,
+            0,
+            0,
+            0,
+            10,
+            "ok",
+        )
+        with tempfile.TemporaryDirectory() as temp_dir:
+            primary = Path(temp_dir) / "primary.sqlite"
+            comparison = Path(temp_dir) / "comparison.sqlite"
+            self._write_union_ledger(primary, [call])
+            self._write_union_ledger(comparison, [call])
+            with patch("codex_usage_tree.MAX_DATABASE_UNION_MEMORY_BYTES", 1):
+                result = collect_database_union(
+                    "root", [str(primary), str(comparison)], load_rates(None)
+                )
+
+        dedupe = result["crossLedgerDeduplication"]
+        self.assertEqual(dedupe["status"], "incomplete")
+        self.assertEqual(
+            dedupe["mergedTotals"]["status"], "unavailable_incomplete_source_scan"
+        )
+        self.assertEqual(result["sources"][0]["rowScan"]["reason"], "memory_limit")
+        self.assertTrue(result["sources"][0]["recordedAggregate"]["groups"])
+
+    def test_database_mode_fails_closed_without_thread_index(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            database = Path(temp_dir) / "usage.sqlite"
+            self._write_union_ledger(
+                database,
+                [
+                    (
+                        "call",
+                        "root",
+                        "turn",
+                        "request",
+                        "openai",
+                        "gpt-6.1-sol",
+                        None,
+                        None,
+                        None,
+                        "2026-10-01T00:00:00Z",
+                        None,
+                        10,
+                        0,
+                        0,
+                        5,
+                        15,
+                        "ok",
+                    )
+                ],
+            )
+            connection = sqlite3.connect(database)
+            connection.execute("DROP INDEX usage_provider_calls_thread_idx")
+            connection.commit()
+            connection.close()
+
+            with self.assertRaisesRegex(UsageError, "indexed exact-thread"):
+                collect_database_tree(
+                    "root", str(database), load_rates(None), aggregate_only=True
+                )
 
     def test_a_list_cap_marks_lineage_incomplete_instead_of_claiming_full_tree(self):
         class CappedAppServer(SyntheticAppServer):

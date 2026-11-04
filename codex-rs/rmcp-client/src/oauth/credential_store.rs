@@ -43,6 +43,7 @@ use super::RefreshCredentialLock;
 use super::ResolvedOAuthCredentialStore;
 use super::StoredOAuthTokens;
 use super::WrappedOAuthTokenResponse;
+use super::refresh_transaction::install_tokens_in_manager;
 use super::normalized_oauth_credentials;
 use super::refresh_expires_in_from_timestamp;
 use super::refresh_transaction::REFRESH_REQUEST_TIMEOUT;
@@ -105,6 +106,46 @@ impl<K: KeyringStore + Clone + 'static> OAuthCredentialStore<K> {
         if !token_needs_refresh(tokens.expires_at) {
             return Ok(());
         }
+        self.refresh_with_guard(manager, tokens, guard).await
+    }
+
+    pub(crate) async fn refresh_after_unauthorized(
+        &self,
+        manager: &mut AuthorizationManager,
+        rejected_access_token: Option<&str>,
+    ) -> Result<()> {
+        let guard = self.acquire_transaction_guard().await?;
+        let tokens = self
+            .inner
+            .last_credentials
+            .lock()
+            .await
+            .clone()
+            .ok_or(AuthError::AuthorizationRequired)?;
+        let latest_access_token = tokens.token_response.0.access_token().secret();
+
+        // Another process may already have replaced the token that received the 401. Adopt that
+        // valid winner under the same serialized lock instead of refreshing its predecessor.
+        if !token_needs_refresh(tokens.expires_at)
+            && rejected_access_token != Some(latest_access_token)
+        {
+            let metadata = manager.resolve_metadata().await?.metadata;
+            validate_refresh_token_issuer(&metadata, &tokens)?;
+            manager.set_metadata(metadata);
+            install_tokens_in_manager(manager, &tokens, self.inner.oauth_config.as_ref()).await?;
+            manager.set_credential_store(self.clone());
+            return Ok(());
+        }
+
+        self.refresh_with_guard(manager, tokens, guard).await
+    }
+
+    async fn refresh_with_guard(
+        &self,
+        manager: &mut AuthorizationManager,
+        tokens: StoredOAuthTokens,
+        guard: Arc<RefreshCredentialLock>,
+    ) -> Result<()> {
         let metadata = manager.resolve_metadata().await?.metadata;
         validate_refresh_token_issuer(&metadata, &tokens)?;
         manager.set_metadata(metadata);
