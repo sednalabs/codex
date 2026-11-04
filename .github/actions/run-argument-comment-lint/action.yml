@@ -36,7 +36,8 @@ runs:
           cargo_dylint="${cargo_dylint}.exe"
         fi
         test -f "$cargo_dylint"
-        echo "CODEX_ARGUMENT_COMMENT_LINT_CARGO_DYLINT=$cargo_dylint" >> "$GITHUB_ENV"
+        echo "$install_root/bin" >> "$GITHUB_PATH"
+        echo "CODEX_ARGUMENT_COMMENT_LINT_USE_SYSTEM_CARGO_DYLINT=1" >> "$GITHUB_ENV"
 
     - name: Run prebuilt argument comment lint on codex-rs
       shell: bash

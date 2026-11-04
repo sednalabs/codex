@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import os
 from pathlib import Path
 import sys
 import tempfile
@@ -28,27 +29,20 @@ class WrapperCommonTest(unittest.TestCase):
 
         self.assertEqual(resolved, packaged_cargo_dylint)
 
-    def test_prebuilt_cargo_dylint_override_uses_absolute_existing_executable(self) -> None:
+    def test_prebuilt_cargo_dylint_selects_fixed_system_executable(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
-            override = Path(temp_dir) / "cargo-dylint"
-            override.touch()
+            package_dir = Path(temp_dir) / "argument-comment-lint" / "bin"
+            package_dir.mkdir(parents=True)
+            packaged_cargo_dylint = package_dir / "cargo-dylint"
+            packaged_cargo_dylint.touch()
 
             resolved = wrapper_common.resolve_prebuilt_cargo_dylint(
-                Path("/package/bin/argument-comment-lint"),
-                {wrapper_common.PREBUILT_CARGO_DYLINT_ENV: str(override)},
+                package_dir / "argument-comment-lint",
+                {wrapper_common.USE_SYSTEM_CARGO_DYLINT_ENV: "1"},
             )
 
-        self.assertEqual(resolved, override.resolve())
-
-    def test_prebuilt_cargo_dylint_override_rejects_missing_executable(self) -> None:
-        with tempfile.TemporaryDirectory() as temp_dir:
-            override = Path(temp_dir) / "missing-cargo-dylint"
-
-            with self.assertRaises(SystemExit):
-                wrapper_common.resolve_prebuilt_cargo_dylint(
-                    Path("/package/bin/argument-comment-lint"),
-                    {wrapper_common.PREBUILT_CARGO_DYLINT_ENV: str(override)},
-                )
+        executable = "cargo-dylint.exe" if os.name == "nt" else "cargo-dylint"
+        self.assertEqual(resolved, Path(executable))
 
     def test_defaults_to_workspace_and_all_targets(self) -> None:
         parsed = wrapper_common.parse_wrapper_args([])
