@@ -1148,7 +1148,7 @@ class UsageTreeTests(unittest.TestCase):
                 "runtime thread registration", result["snapshot"]["coverageNote"]
             )
             self.assertIn(
-                "manual or runtime thread-lineage upserts after its frozen ",
+                "manual or runtime lineage edits after frozen snapshot",
                 result["snapshot"]["unsupportedUndetectedSourceMutations"],
             )
             self.assertGreater(invocation, 0)

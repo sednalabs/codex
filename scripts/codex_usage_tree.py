@@ -1206,7 +1206,8 @@ def _has_indexed_parent_lineage_lookup(connection: sqlite3.Connection) -> bool:
     ).fetchall()
     details = [str(row[3]).upper() for row in plan]
     return any(
-        "SEARCH CHILD USING" in detail
+        "SEARCH" in detail
+        and "CHILD" in detail
         and "INDEX" in detail
         and "AUTOMATIC" not in detail
         for detail in details
@@ -1221,7 +1222,8 @@ def _assert_indexed_root_thread_lookup(
     plan = connection.execute("EXPLAIN QUERY PLAN " + sql, parameters).fetchall()
     details = [str(row[3]).upper() for row in plan]
     if not any(
-        "SEARCH THREAD USING" in detail
+        "SEARCH" in detail
+        and "THREAD" in detail
         and "INDEX" in detail
         and "ROOT_THREAD_ID" in detail
         and "AUTOMATIC" not in detail
@@ -3818,8 +3820,7 @@ def collect_database_union(
                 "VACUUM/rebuild preserving path, device, inode, and schema",
                 "in-place replacement preserving all observed identity markers",
                 "rowid reuse after deletion",
-                "manual or runtime thread-lineage upserts after its frozen "
-                "first-page snapshot",
+                "manual or runtime lineage edits after frozen snapshot",
             ],
             "coverageNote": (
                 "The report is bounded to each source's first-page rowid cutoff and "
