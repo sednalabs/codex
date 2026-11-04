@@ -191,7 +191,9 @@ The first page for each source freezes its known thread lineage and records a
 queries up to that mark, so appends after it are excluded instead of forcing a
 restart. The two source snapshots are captured independently and are not
 atomic with one another or across separate command invocations. In-repository
-runtime call rows are inserted once; the later `final_model` and
+runtime call rows are inserted once; repeated thread registration may upsert
+`usage_threads` parent/root/fork metadata after the lineage snapshot, and this
+mode does not reconcile those changes. The later `final_model` and
 `model_snapshot` update is excluded from the report's effective-model and
 deduplication fields; effective model uses `actual_model_used` only, so it does
 not fall back to a later finalized model. The report assumes call rows at or below the saved
@@ -199,8 +201,8 @@ high-water mark are otherwise immutable. It detects source path/device/inode,
 SQLite format-header, or usage-schema replacement and invalidates those saved
 pages. It cannot detect out-of-band in-place call-row edits or deletes,
 `VACUUM`/rebuild that preserves the observed source identity, rowid reuse after
-deletion, replacement preserving every observed identity marker, or lineage
-edits after a source's frozen first page. Output exposes
+deletion, replacement preserving every observed identity marker, or manual or
+runtime lineage changes after a source's frozen first page. Output exposes
 these limits under `snapshot`; a completed scan means all rows selected under
 that bounded snapshot contract were read, not that a single atomic historical
 database snapshot was proven.
@@ -226,6 +228,18 @@ terminal for that request. Per-run time/row limits are checkpoint-resumable;
 the output keeps per-source aggregates visible and withholds merged totals
 until both sources finish. Results remain partial for historical lineage
 regardless of cross-ledger deduplication.
+
+If a source has no indexed parent/fork lookup, the helper uses its existing
+`root_thread_id` index with a 901-row sentinel query and verifies selected
+parent/fork chains within the 900-thread memory bound. It does not scan the
+whole thread table. The output labels this as
+`root_thread_id_index_fallback`; merged totals are scoped and labelled
+`known_root_indexed_rows_only`, not as a complete descendant census. The
+fallback cannot discover descendants whose stored root marker is absent or
+incorrect. Broken or cyclic parent chains, inconsistent root metadata, missing
+root indexes, or the thread cap make lineage incomplete and withhold merged
+totals; a missing persistent root index fails closed before its candidate
+query.
 Calculated credit estimates retain known subtotals and missing-rate/token
 labels; provider-reported credits are not verified account debits, and actual
 debit remains unobserved. If a standard ledger-rate scenario is selected, the
