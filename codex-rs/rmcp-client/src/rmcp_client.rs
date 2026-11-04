@@ -77,6 +77,7 @@ use crate::oauth_http_client::OAuthHttpClientAdapter;
 use crate::oauth_metadata::discover_metadata;
 use crate::protocol_mode::McpProtocolMode;
 use crate::request_cancellation_guard::RequestCancellationGuard;
+use crate::single_attempt_oauth_client::SingleAttemptOAuthClient;
 use crate::stdio_server_launcher::StdioServerCommand;
 use crate::stdio_server_launcher::StdioServerLauncher;
 use crate::stdio_server_launcher::StdioServerProcessHandle;
@@ -107,7 +108,8 @@ enum PendingTransport {
         transport: StreamableHttpClientTransport<StreamableHttpClientAdapter>,
     },
     StreamableHttpWithOAuth {
-        transport: StreamableHttpClientTransport<AuthClient<StreamableHttpClientAdapter>>,
+        transport:
+            StreamableHttpClientTransport<SingleAttemptOAuthClient<StreamableHttpClientAdapter>>,
         oauth_persistor: OAuthPersistor,
     },
 }
@@ -1715,7 +1717,7 @@ async fn create_oauth_transport_and_runtime(
     default_headers: HeaderMap,
     http_client: Arc<dyn HttpClient>,
 ) -> Result<(
-    StreamableHttpClientTransport<AuthClient<StreamableHttpClientAdapter>>,
+    StreamableHttpClientTransport<SingleAttemptOAuthClient<StreamableHttpClientAdapter>>,
     OAuthPersistor,
 )> {
     let oauth_http_client = Arc::new(OAuthHttpClientAdapter::new(
@@ -1738,7 +1740,7 @@ async fn create_oauth_transport_and_runtime(
     let auth_manager = auth_client.auth_manager.clone();
 
     let transport = StreamableHttpClientTransport::with_client(
-        auth_client,
+        SingleAttemptOAuthClient::new(auth_client),
         StreamableHttpClientTransportConfig::with_uri(url.to_string()),
     );
 

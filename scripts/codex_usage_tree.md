@@ -164,27 +164,35 @@ optional checkpoint is a separate owner-only SQLite file that retains the
 minimum provider-call identity and aggregate state needed to resume; it may
 contain sensitive call IDs and should be kept private. It must be a regular,
 non-symlink file with owner-only permissions. Reuse the same explicit
-checkpoint path and command arguments to continue. Without a checkpoint,
-bounded work is reported but cannot resume. Each run processes at most 25,000
-provider-call rows per source, with the existing per-query, per-source,
-whole-operation, thread, row, memory, and group limits still in force. When a
-run limit is reached, per-source subtotals are returned and the output marks
-the result resumable; merged totals remain withheld until both source scans
-finish. The cumulative 200,000-row per-source and 300,000-row total limits are
-not resumable beyond those caps.
+checkpoint path, root, source pair, and rate scenario to continue. Without a
+checkpoint, bounded work is reported but cannot resume. Each run processes at
+most 25,000 provider-call rows per source, with the existing per-query,
+per-source, whole-operation, thread, cumulative-row, memory, and group limits
+still in force. To make one continuation smaller, use the optional
+`--max-rows-per-source-per-pass N` with a checkpoint; it accepts 1 through
+25,000 and defaults to the hard 25,000-per-source run limit. For example,
+`--max-rows-per-source-per-pass 4096` allows at most one existing indexed page
+per source per pass, plus the bounded lookahead row. This soft cap changes only
+how far a saved cursor advances and may be changed between resumptions without
+changing checkpoint identity; the hard bound and all cumulative limits remain
+unchanged. A two-source pass can process up to twice the selected per-source
+cap. When a per-run limit is reached, per-source subtotals are returned and
+the output marks the result resumable; merged totals remain withheld until
+both source scans finish. The cumulative 200,000-row per-source and 300,000-row
+total limits are not resumable beyond those caps.
 
-`--continue-until-complete` repeats the exact bounded operation with the same
-checkpoint, printing only per-source row counts and continuation status to
-stderr. It stops at completion, a detected source/checkpoint/cumulative-limit
-condition, or after its pass budget. `--max-resume-passes N` selects a budget
-from 1 through 16 (default 16); the helper idles for one second between passes.
-The maximum is 16 × 24 seconds of operation-bound time plus 15 seconds idle,
-or 6 minutes 39 seconds plus small startup overhead. Use
-`--max-resume-passes 1` for a single small probe. If a pass limit is reached,
-rerun the same command and checkpoint; no query parameters need to be guessed
-or changed. Ctrl-C stops the process with exit 130; committed checkpoint pages
-remain safe to resume, while the current uncommitted page is retried. The live
-ledgers remain read-only throughout.
+`--continue-until-complete` repeats bounded operations with the same checkpoint,
+printing only per-source row counts and continuation status to stderr. It stops
+at completion, a detected source/checkpoint/cumulative-limit condition, or
+after its pass budget. `--max-resume-passes N` selects a budget from 1 through
+16 (default 16); the helper idles for one second between passes. The maximum is
+16 × 24 seconds of operation-bound time plus 15 seconds idle, or 6 minutes 39
+seconds plus small startup overhead. Combine `--max-resume-passes 1` with a
+smaller `--max-rows-per-source-per-pass` for one resumable slice. If a pass
+limit is reached, rerun with the same checkpoint and rate scenario; the soft
+row cap may be adjusted within its limit. Ctrl-C stops the process with exit
+130; committed checkpoint pages remain safe to resume, while the current
+uncommitted page is retried. The live ledgers remain read-only throughout.
 
 The first page for each source freezes its known thread lineage and records a
 `usage_provider_calls.rowid` high-water mark. Later pages use indexed keyset

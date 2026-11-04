@@ -1256,6 +1256,32 @@ INSERT INTO usage_provider_calls (
         Ok(())
     }
 
+    fn adopted_rate_call<'a>(
+        id: &'a str,
+        model: &'a str,
+        tier: &'a str,
+        fast: bool,
+        started_at: &'a str,
+    ) -> TestProviderCall<'a> {
+        TestProviderCall {
+            id,
+            thread_id: "adopted-rates",
+            started_at,
+            requested_model: Some(model),
+            actual_model: Some(model),
+            actual_tier: Some(tier),
+            fast_mode_used: Some(fast),
+            billing_surface: "chatgpt_credits",
+            account_plan: Some("pro"),
+            uncached: 1_000_000,
+            cached: 1_000_000,
+            cache_write: 0,
+            output: 1_000_000,
+            total: 3_000_000,
+            provider_reported_credits: None,
+        }
+    }
+
     #[derive(Debug, PartialEq, Eq, sqlx::FromRow)]
     struct ToolCallRow {
         tool_name: String,
@@ -2048,6 +2074,14 @@ ORDER BY rate_id
                     3125.0,
                 ),
                 (
+                    "openai-gpt-6-astra-fast-20260930".into(),
+                    "gpt-6-astra".into(),
+                    "fast".into(),
+                    500.0,
+                    50.0,
+                    2500.0,
+                ),
+                (
                     "openai-gpt-6-astra-standard-20260905".into(),
                     "gpt-6-astra".into(),
                     "standard".into(),
@@ -2064,6 +2098,14 @@ ORDER BY rate_id
                     31.25,
                 ),
                 (
+                    "openai-gpt-6-luna-fast-20260930".into(),
+                    "gpt-6-luna".into(),
+                    "fast".into(),
+                    5.0,
+                    0.5,
+                    25.0,
+                ),
+                (
                     "openai-gpt-6-luna-standard-20260926".into(),
                     "gpt-6-luna".into(),
                     "standard".into(),
@@ -2078,6 +2120,14 @@ ORDER BY rate_id
                     125.0,
                     12.5,
                     625.0,
+                ),
+                (
+                    "openai-gpt-6-sol-fast-20260930".into(),
+                    "gpt-6-sol".into(),
+                    "fast".into(),
+                    100.0,
+                    10.0,
+                    500.0,
                 ),
                 (
                     "openai-gpt-6-sol-standard-20260926".into(),
@@ -2271,6 +2321,140 @@ WHERE thread_id = 'gpt6' AND turn_id = 'gpt6-turn'
         .fetch_one(pool)
         .await?;
         assert_eq!(turn_summary, summary);
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn credit_views_apply_september_30_adopted_rate_intervals() -> Result<()> {
+        let (runtime, _tmp_dir) = init_runtime().await?;
+        let pool_arc = runtime.usage_pool();
+        let pool: &SqlitePool = pool_arc.as_ref();
+
+        for call in [
+            adopted_rate_call(
+                "01-gpt-5.5-fast",
+                "gpt-5.5",
+                "priority",
+                /*fast*/ true,
+                "2026-09-29T23:52:00Z",
+            ),
+            adopted_rate_call(
+                "02-gpt-6-sol-fast-before",
+                "gpt-6-sol",
+                "priority",
+                /*fast*/ true,
+                "2026-09-29T23:51:59Z",
+            ),
+            adopted_rate_call(
+                "03-gpt-6-sol-fast-at",
+                "gpt-6-sol",
+                "priority",
+                /*fast*/ true,
+                "2026-09-29T23:52:00Z",
+            ),
+            adopted_rate_call(
+                "04-gpt-6.1-sol-standard",
+                "gpt-6.1-sol",
+                "default",
+                /*fast*/ false,
+                "2026-09-29T23:52:00Z",
+            ),
+            adopted_rate_call(
+                "05-gpt-6.1-sol-fast",
+                "gpt-6.1-sol",
+                "priority",
+                /*fast*/ true,
+                "2026-09-29T23:52:00Z",
+            ),
+            adopted_rate_call(
+                "06-gpt-6-astra-fast",
+                "gpt-6-astra",
+                "priority",
+                /*fast*/ true,
+                "2026-09-29T23:52:00Z",
+            ),
+            adopted_rate_call(
+                "07-gpt-6-luna-fast",
+                "gpt-6-luna",
+                "priority",
+                /*fast*/ true,
+                "2026-09-29T23:52:00Z",
+            ),
+            adopted_rate_call(
+                "08-gpt-rosalind-standard",
+                "gpt-rosalind-research",
+                "default",
+                /*fast*/ false,
+                "2026-09-29T23:52:00Z",
+            ),
+        ] {
+            insert_test_provider_call(pool, call).await?;
+        }
+
+        let estimates: Vec<(String, Option<String>, Option<f64>, String)> = sqlx::query_as(
+            r#"
+SELECT provider_call_id, rate_id, rate_card_estimated_total_credits, pricing_status
+FROM usage_provider_call_credit_estimates
+WHERE thread_id = 'adopted-rates'
+ORDER BY provider_call_id
+"#,
+        )
+        .fetch_all(pool)
+        .await?;
+        assert_eq!(
+            estimates,
+            vec![
+                (
+                    "01-gpt-5.5-fast".into(),
+                    None,
+                    None,
+                    "fast_rate_unknown".into(),
+                ),
+                (
+                    "02-gpt-6-sol-fast-before".into(),
+                    Some("openai-gpt-6-sol-fast-20260926".into()),
+                    Some(762.5),
+                    "priced_estimate".into(),
+                ),
+                (
+                    "03-gpt-6-sol-fast-at".into(),
+                    Some("openai-gpt-6-sol-fast-20260930".into()),
+                    Some(610.0),
+                    "priced_estimate".into(),
+                ),
+                (
+                    "04-gpt-6.1-sol-standard".into(),
+                    Some("openai-gpt-6.1-sol-standard-20260930".into()),
+                    Some(302.5),
+                    "priced_estimate".into(),
+                ),
+                (
+                    "05-gpt-6.1-sol-fast".into(),
+                    Some("openai-gpt-6.1-sol-fast-20260930".into()),
+                    Some(605.0),
+                    "priced_estimate".into(),
+                ),
+                (
+                    "06-gpt-6-astra-fast".into(),
+                    Some("openai-gpt-6-astra-fast-20260930".into()),
+                    Some(3_050.0),
+                    "priced_estimate".into(),
+                ),
+                (
+                    "07-gpt-6-luna-fast".into(),
+                    Some("openai-gpt-6-luna-fast-20260930".into()),
+                    Some(30.5),
+                    "priced_estimate".into(),
+                ),
+                (
+                    "08-gpt-rosalind-standard".into(),
+                    Some("openai-gpt-rosalind-research-standard-20260930".into()),
+                    Some(762.5),
+                    "priced_estimate".into(),
+                ),
+            ]
+        );
+
         Ok(())
     }
 

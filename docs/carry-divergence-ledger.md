@@ -3245,6 +3245,14 @@ bundles during upstream sync merely because they once shared this carry entry.
   authorize a tool-call replay. The client reuses its existing serialized OAuth
   transaction and does not add credentials, login flows, or a parallel session
   store.
+- RMCP's `AuthClient` transport implementation also retries requests after a
+  401, below Codex's operation-level retry policy. Codex wraps the same auth
+  manager with `SingleAttemptOAuthClient`, which obtains the current token and
+  delegates each transport operation once. The original denial then reaches
+  Codex, where only the fixed read-only protocol methods can be retried. The
+  hosted `invalid_token_refresh_never_replays_tool_calls` integration regression
+  checks both one `tools/call` attempt after refresh and a successful single
+  retry for `tools/list`.
 - During future syncs, do not "simplify" the OAuth helpers by dropping either
   the secrets-backed keyring path or the downstream resolved-store reread/save
   discipline unless an upstream replacement covers those behaviors and the
@@ -3255,6 +3263,7 @@ bundles during upstream sync merely because they once shared this carry entry.
   - `codex-rs/rmcp-client/src/oauth/store_lock.rs`
   - `codex-rs/rmcp-client/tests/streamable_http_oauth_startup.rs`
   - `codex-rs/rmcp-client/src/rmcp_client.rs`
+  - `codex-rs/rmcp-client/src/single_attempt_oauth_client.rs`
   - `codex-rs/rmcp-client/src/startup_error.rs`
   - `codex-rs/codex-mcp/src/connection_manager.rs`
   - `codex-rs/codex-mcp/src/binding.rs`
