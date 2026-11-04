@@ -327,8 +327,8 @@ async fn invalid_token_recovery_child() -> anyhow::Result<()> {
     let read_only_error = client
         .call_tool(
             "read_only".to_string(),
-            None,
-            None,
+            /*arguments*/ None,
+            /*meta*/ None,
             Some(Duration::from_secs(5)),
         )
         .await
@@ -349,8 +349,8 @@ async fn invalid_token_recovery_child() -> anyhow::Result<()> {
     let mutating = client
         .call_tool(
             "mutating".to_string(),
-            None,
-            None,
+            /*arguments*/ None,
+            /*meta*/ None,
             Some(Duration::from_secs(5)),
         )
         .await;
@@ -360,8 +360,8 @@ async fn invalid_token_recovery_child() -> anyhow::Result<()> {
     let result_challenge = client
         .call_tool(
             "result_challenge".to_string(),
-            None,
-            None,
+            /*arguments*/ None,
+            /*meta*/ None,
             Some(Duration::from_secs(5)),
         )
         .await?;
