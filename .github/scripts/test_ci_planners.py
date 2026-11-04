@@ -1925,7 +1925,12 @@ class RouteSelectionTests(unittest.TestCase):
         self.assertIn('elif mode == "observer_only"', results_run)
         self.assertIn('require("docs-only", "success")', results_run)
         self.assertIn('require(job, "skipped")', results_run)
-        self.assertIn('require(job, "success")', results_run)
+        self.assertIn('require("test", "success")', results_run)
+        self.assertIn(
+            '"skipped" if os.environ.get("WINDOWS_DEFERRED") == "true" else "success"',
+            results_run,
+        )
+        self.assertIn('if os.environ.get("FOCUSED_TESTS") == "true":', results_run)
 
         heredoc_start = "python3 - <<'PY'\n"
         self.assertIn(heredoc_start, results_run)
@@ -5362,12 +5367,23 @@ class ValidationPlanScriptTests(unittest.TestCase):
             tool_values,
             ["sccache@0.7.5", "nextest@0.9.103", "nextest@0.9.103"],
         )
+        shard_env = ((payload.get("jobs") or {}).get("shard") or {}).get("env") or {}
+        self.assertEqual(shard_env.get("CODEX_CI_TEST_SHARD"), "${{ matrix.shard }}")
+        self.assertEqual(shard_env.get("CODEX_CI_TEST_SHARD_COUNT"), "4")
         workflow_text = (
             REPO_ROOT / ".github/workflows/rust-ci-full-nextest-platform.yml"
         ).read_text(encoding="utf-8")
         self.assertNotIn("run_id }}-${{ matrix.shard", workflow_text)
         self.assertNotIn("remote-env-target-${{ matrix.shard", workflow_text)
         self.assertNotIn('hash:${{ matrix.shard }}/4', workflow_text)
+        self.assertIn(
+            'codex-remote-test-env-${GITHUB_RUN_ID}-${CODEX_CI_TEST_SHARD}',
+            workflow_text,
+        )
+        self.assertIn(
+            '--partition "hash:${CODEX_CI_TEST_SHARD}/${CODEX_CI_TEST_SHARD_COUNT}"',
+            workflow_text,
+        )
 
     def test_rust_ci_full_nextest_platform_keeps_inputs_out_of_shell_source(self) -> None:
         payload = load_workflow_payload(
@@ -7928,13 +7944,24 @@ class ValidationPlanScriptTests(unittest.TestCase):
         range_step = next(
             step for step in check_steps if step.get("name") == "Determine comparison range"
         )
+        range_env = range_step.get("env") or {}
+        self.assertEqual(range_env.get("EVENT_NAME"), "${{ github.event_name }}")
+        self.assertEqual(
+            range_env.get("MERGE_GROUP_BASE_SHA"),
+            "${{ github.event.merge_group.base_sha || '' }}",
+        )
+        self.assertEqual(range_env.get("CURRENT_SHA"), "${{ github.sha }}")
         run_script = range_step.get("run") or ""
         self.assertIn(
-            'if [[ "${{ github.event_name }}" == "merge_group" ]]; then',
+            'elif [[ "${EVENT_NAME}" == "merge_group" ]]; then',
             run_script,
         )
-        self.assertIn("github.event.merge_group.base_sha", run_script)
-        self.assertIn("head='${{ github.sha }}'", run_script)
+        self.assertIn('base="${MERGE_GROUP_BASE_SHA}"', run_script)
+        self.assertIn('head="${CURRENT_SHA}"', run_script)
+        self.assertIn(
+            "Unable to determine the exact blob-size comparison range",
+            run_script,
+        )
 
 
 class BazelCiModeScriptTests(unittest.TestCase):
@@ -10020,15 +10047,32 @@ fi
             },
         )
 
-    def test_prerelease_main_command_dispatches_explicit_markerless_opt_in(self) -> None:
-        justfile = (REPO_ROOT / "justfile").read_text(encoding="utf-8")
-        self.assertIn("prerelease-main:", justfile)
-        self.assertIn(
-            "gh workflow run sedna-release.yml --repo sednalabs/codex --ref main "
-            "-f channel=prerelease -f draft=false -f macos_release_mode=preview "
-            "-f allow_markerless_prerelease=true",
-            justfile,
+    def test_sedna_release_markerless_prerelease_requires_manual_opt_in(self) -> None:
+        payload = load_workflow_payload(
+            REPO_ROOT / ".github/workflows/sedna-release.yml"
         )
+        dispatch_input = (
+            ((payload.get("on") or {}).get("workflow_dispatch") or {}).get("inputs") or {}
+        ).get("allow_markerless_prerelease") or {}
+        self.assertEqual(dispatch_input.get("type"), "boolean")
+        self.assertFalse(dispatch_input.get("default"))
+        release_workflow = REPO_ROOT / ".github/workflows/sedna-release.yml"
+        resolve_step = workflow_step_by_name(
+            release_workflow,
+            "resolve",
+            "Resolve release metadata",
+        )
+        self.assertEqual(
+            (resolve_step.get("env") or {}).get("INPUT_ALLOW_MARKERLESS_PRERELEASE"),
+            "${{ inputs.allow_markerless_prerelease }}",
+        )
+        resolve_run = resolve_step.get("run") or ""
+        self.assertIn(
+            'elif [[ "${INPUT_CHANNEL}" == "prerelease" && '
+            '"${INPUT_ALLOW_MARKERLESS_PRERELEASE}" == "true" ]]; then',
+            resolve_run,
+        )
+        self.assertIn("args+=(--require-marker --missing-marker error)", resolve_run)
 
     def test_sedna_release_main_pushes_are_routed_before_publisher(self) -> None:
         release_payload = load_workflow_payload(
@@ -10567,10 +10611,12 @@ fi
         daemon_update_loop = (
             REPO_ROOT / "codex-rs/app-server-daemon/src/update_loop.rs"
         ).read_text(encoding="utf-8")
-        sedna_updater = daemon_update_loop.split(
-            "async fn install_latest_sedna_standalone", 1
+        installer_runner = daemon_update_loop.split(
+            "async fn run_installer_script(", 1
         )[1]
-        self.assertIn(".stderr(Stdio::inherit())", sedna_updater)
+        self.assertIn(".stderr(Stdio::piped())", installer_runner)
+        self.assertIn("INSTALLER_STDERR_TAIL_BYTES", installer_runner)
+        self.assertIn("standalone Codex updater exited with status", installer_runner)
         self.assertEqual(installer.count('--source-digest "$expected_source_commit"'), 3)
         self.assertEqual(installer.count('--signer-digest "$expected_workflow_sha"'), 3)
         self.assertEqual(

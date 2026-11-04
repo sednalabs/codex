@@ -261,6 +261,8 @@ jobs:
       CODEX_CI_PROFILE: ${{ inputs.profile }}
       CODEX_CI_TARGET: ${{ inputs.target }}
       CODEX_CI_TEST_THREADS: ${{ inputs.test_threads }}
+      CODEX_CI_TEST_SHARD: ${{ matrix.shard }}
+      CODEX_CI_TEST_SHARD_COUNT: "4"
       NEXTEST_ARCHIVE_FILE: nextest-${{ inputs.artifact_id }}.tar.zst
       TEST_HELPERS_ARTIFACT: nextest-test-helpers-${{ inputs.artifact_id }}
     strategy:
@@ -297,7 +299,7 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          export CODEX_TEST_REMOTE_ENV_CONTAINER_NAME="codex-remote-test-env-${{ github.run_id }}-${{ matrix.shard }}"
+          export CODEX_TEST_REMOTE_ENV_CONTAINER_NAME="codex-remote-test-env-${GITHUB_RUN_ID}-${CODEX_CI_TEST_SHARD}"
           source "${GITHUB_WORKSPACE}/scripts/test-remote-env.sh"
           echo "CODEX_TEST_ENVIRONMENT=${CODEX_TEST_ENVIRONMENT}" >> "$GITHUB_ENV"
           echo "CODEX_TEST_REMOTE_ENV=${CODEX_TEST_REMOTE_ENV}" >> "$GITHUB_ENV"
@@ -349,7 +351,7 @@ jobs:
             --no-fail-fast
             --archive-file "${archive_file}"
             --workspace-remap "${workspace_root}"
-            --partition "hash:${{ matrix.shard }}/4"
+            --partition "hash:${CODEX_CI_TEST_SHARD}/${CODEX_CI_TEST_SHARD_COUNT}"
           )
           if [[ "${CODEX_CI_TEST_THREADS}" != "0" ]]; then
             nextest_args+=(--test-threads "${CODEX_CI_TEST_THREADS}")

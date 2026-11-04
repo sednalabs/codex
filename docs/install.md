@@ -9,6 +9,10 @@
 | Git (optional, recommended) | 2.23+ for built-in PR helpers                                   |
 | RAM                         | 4-GB minimum (8-GB recommended)                                 |
 
+The standalone release installer serializes its own activations before it
+mutates package links. This is not a security boundary against a same-UID
+process that concurrently replaces directories.
+
 ### DotSlash
 
 The GitHub Release also contains a [DotSlash](https://dotslash-cli.com/) file for the Codex CLI named `codex`. Using a DotSlash file makes it possible to make a lightweight commit to source control to ensure all contributors use the same version of an executable, regardless of what platform they use for development.

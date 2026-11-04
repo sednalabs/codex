@@ -21,17 +21,31 @@ jobs:
       - name: Determine comparison range
         id: range
         shell: bash
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          PR_BASE_SHA: ${{ github.event.pull_request.base.sha || '' }}
+          PR_HEAD_SHA: ${{ github.event.pull_request.head.sha || '' }}
+          MERGE_GROUP_BASE_SHA: ${{ github.event.merge_group.base_sha || '' }}
+          EVENT_BEFORE: ${{ github.event.before || '' }}
+          CURRENT_SHA: ${{ github.sha }}
         run: |
           set -euo pipefail
 
-          # PRs inspect the proposed diff; main pushes inspect only the commit
-          # range that just landed. Both paths feed the same blob-size checker.
-          if [[ "${{ github.event_name }}" == "pull_request" ]]; then
-            base='${{ github.event.pull_request.base.sha }}'
-            head='${{ github.event.pull_request.head.sha }}'
+          # PR and merge-queue events inspect their exact proposed diff; main
+          # pushes inspect only the commit range that just landed.
+          if [[ "${EVENT_NAME}" == "pull_request" ]]; then
+            base="${PR_BASE_SHA}"
+            head="${PR_HEAD_SHA}"
+          elif [[ "${EVENT_NAME}" == "merge_group" ]]; then
+            base="${MERGE_GROUP_BASE_SHA}"
+            head="${CURRENT_SHA}"
           else
-            base='${{ github.event.before }}'
-            head='${{ github.sha }}'
+            base="${EVENT_BEFORE}"
+            head="${CURRENT_SHA}"
+          fi
+          if [[ -z "${base}" || -z "${head}" ]]; then
+            echo "::error::Unable to determine the exact blob-size comparison range." >&2
+            exit 1
           fi
 
           echo "base=$base" >> "$GITHUB_OUTPUT"
