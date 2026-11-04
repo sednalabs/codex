@@ -41,6 +41,7 @@ use core_test_support::skip_if_remote;
 use pretty_assertions::assert_eq;
 use serde_json::Value;
 use serde_json::json;
+use std::collections::BTreeSet;
 use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::Duration;
@@ -127,6 +128,48 @@ fn comparable_request(body: Value) -> Value {
         }
     }
     body
+}
+
+fn differing_json_paths(left: &Value, right: &Value) -> Vec<String> {
+    fn collect(left: &Value, right: &Value, path: &str, differences: &mut Vec<String>) {
+        if differences.len() >= 32 {
+            return;
+        }
+        match (left, right) {
+            (Value::Object(left), Value::Object(right)) => {
+                let keys: BTreeSet<_> = left.keys().chain(right.keys()).cloned().collect();
+                for key in keys {
+                    let escaped = key.replace('~', "~0").replace('/', "~1");
+                    let child_path = format!("{path}/{escaped}");
+                    match (left.get(&key), right.get(&key)) {
+                        (Some(left), Some(right)) => collect(left, right, &child_path, differences),
+                        _ => differences.push(child_path),
+                    }
+                    if differences.len() >= 32 {
+                        return;
+                    }
+                }
+            }
+            (Value::Array(left), Value::Array(right)) => {
+                if left.len() != right.len() {
+                    differences.push(path.to_string());
+                } else {
+                    for (index, (left, right)) in left.iter().zip(right).enumerate() {
+                        collect(left, right, &format!("{path}/{index}"), differences);
+                        if differences.len() >= 32 {
+                            return;
+                        }
+                    }
+                }
+            }
+            _ if left != right => differences.push(path.to_string()),
+            _ => {}
+        }
+    }
+
+    let mut differences = Vec::new();
+    collect(left, right, "", &mut differences);
+    differences
 }
 
 async fn sample(
@@ -488,9 +531,13 @@ async fn sample_preserves_effort_baseline(
         requests[0].body_json()["reasoning"]["effort"],
         json!(initial_effort)
     );
-    assert_eq!(
-        comparable_request(requests[2].body_json()),
-        comparable_request(requests[3].body_json())
+    let sampled = comparable_request(requests[2].body_json());
+    let prediction_fork = comparable_request(requests[3].body_json());
+    let differences = differing_json_paths(&sampled, &prediction_fork);
+    assert!(
+        differences.is_empty(),
+        "sample and prediction fork requests differ at: {}",
+        differences.join(", ")
     );
     let mut parent = comparable_request(requests[1].body_json());
     let mut child = comparable_request(requests[2].body_json());

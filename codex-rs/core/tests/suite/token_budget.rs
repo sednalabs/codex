@@ -1063,7 +1063,10 @@ async fn get_context_remaining_returns_token_budget_remaining_fragment() -> Resu
         "get_context_remaining should be exposed when token budget is enabled"
     );
 
-    let remaining_context = "You have 6500 tokens left in this context window.".to_string();
+    // The handler reports the current active-context estimate, including input
+    // added since the last server-reported usage, rather than subtracting only
+    // the mocked response total from the configured window.
+    let remaining_context = "You have 6486 tokens left in this context window.".to_string();
     let token_budgets = token_budget_contexts(&requests[1]);
     assert_eq!(token_budgets.len(), 1);
     token_budget_window_ids(&token_budgets[0], "/root");
