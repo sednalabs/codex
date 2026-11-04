@@ -1,11 +1,15 @@
 use anyhow::Result;
 use app_test_support::MockResponsesConfig;
 use app_test_support::TestAppServer;
+use codex_app_server_protocol::AdditionalContextEntry;
+use codex_app_server_protocol::AdditionalContextKind;
 use codex_app_server_protocol::ClientRequest;
 use codex_app_server_protocol::CurrentTimeReadResponse;
 use codex_app_server_protocol::ItemCompletedNotification;
 use codex_app_server_protocol::ItemStartedNotification;
 use codex_app_server_protocol::JSONRPCErrorError;
+use codex_app_server_protocol::JSONRPCError;
+use codex_app_server_protocol::RequestId;
 use codex_app_server_protocol::ServerRequest;
 use codex_app_server_protocol::SleepItem;
 use codex_app_server_protocol::ThreadItemPayload;
@@ -14,6 +18,8 @@ use codex_app_server_protocol::ThreadStartResponse;
 use codex_app_server_protocol::TurnCompletedNotification;
 use codex_app_server_protocol::TurnStartParams;
 use codex_app_server_protocol::TurnStartResponse;
+use codex_app_server_protocol::TurnSteerParams;
+use codex_app_server_protocol::TurnSteerResponse;
 use codex_app_server_protocol::TurnStatus;
 use codex_app_server_protocol::TurnToolOutput;
 use codex_app_server_protocol::UserInput as V2UserInput;
@@ -21,6 +27,7 @@ use codex_protocol::models::FunctionCallOutputBody;
 use core_test_support::responses;
 use pretty_assertions::assert_eq;
 use serde_json::json;
+use std::collections::HashMap;
 use std::time::Duration;
 use tempfile::TempDir;
 use test_case::test_case;
@@ -35,6 +42,91 @@ const DEFAULT_READ_TIMEOUT: Duration = Duration::from_secs(25);
 #[cfg(not(windows))]
 const DEFAULT_READ_TIMEOUT: Duration = Duration::from_secs(10);
 const CURRENT_TIME_AT: i64 = 1_781_717_655;
+
+// A bridge can wake the exact active turn with a fixed signal and carry the
+// external message separately as untrusted context. A stale turn id must not
+// create an idle turn or deliver its context to a successor.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn exact_turn_steer_wakes_sleep_with_untrusted_context() -> Result<()> {
+    let server = responses::start_mock_server().await;
+    let model = responses::mount_sse_sequence(
+        &server,
+        vec![
+            responses::sse(vec![
+                responses::ev_response_created("sleep-response"),
+                responses::ev_function_call_with_namespace(
+                    "sleep-call",
+                    "clock",
+                    "sleep",
+                    &json!({"duration_ms": 30000}).to_string(),
+                ),
+                responses::ev_completed("sleep-response"),
+            ]),
+            responses::sse(vec![
+                responses::ev_assistant_message("active-answer", "Done"),
+                responses::ev_completed("active-response"),
+            ]),
+        ],
+    )
+    .await;
+    let codex_home = TempDir::new()?;
+    MockResponsesConfig::new(&server.uri())
+        .with_root_config(&format!("chatgpt_base_url = \"{}\"", server.uri()))
+        .with_provider_config("supports_websockets = false")
+        .with_extra_config("[features.current_time_reminder]\nenabled = true\nsleep_tool = true")
+        .write(codex_home.path())?;
+    let mut app = TestAppServer::builder()
+        .with_codex_home(codex_home.path())
+        .with_env_overrides(&[("OPENAI_API_KEY", None)])
+        .without_managed_config()
+        .build_initialized()
+        .await?;
+    let thread = app.start_thread(ThreadStartParams {
+        config: Some(HashMap::from([("features.untrusted_as_tool_output".to_string(), json!(true))])),
+        ..Default::default()
+    }).await?.thread;
+    let TurnStartResponse { turn } = app.request(|request_id| ClientRequest::TurnStart {
+        request_id,
+        params: TurnStartParams {
+            thread_id: thread.id.clone(),
+            input: vec![V2UserInput::Text { text: "Wait for a message".to_string(), text_elements: Vec::new() }],
+            ..Default::default()
+        },
+    }).await?;
+    wait_for_sleep_started(&mut app, "sleep-call").await?;
+    let steer = |expected: String, marker: &str| TurnSteerParams {
+        thread_id: thread.id.clone(),
+        client_user_message_id: None,
+        input: vec![V2UserInput::Text { text: "A new IRC message is available in the untrusted context.".to_string(), text_elements: Vec::new() }],
+        responsesapi_client_metadata: None,
+        responsesapi_client_metadata_patch: None,
+        additional_context: Some(HashMap::from([("irc_message".to_string(), AdditionalContextEntry {
+            value: marker.to_string(), kind: AdditionalContextKind::Untrusted, name: Some("irc".to_string()),
+        })])),
+        expected_turn_id: expected,
+    };
+    let stale = app.send_turn_steer_request(steer("wrong-turn".to_string(), "STALE_MUST_NOT_APPEAR")).await?;
+    let _: JSONRPCError = timeout(DEFAULT_READ_TIMEOUT, app.read_stream_until_error_message(RequestId::Integer(stale))).await??;
+    let accepted: TurnSteerResponse = app.request(|request_id| ClientRequest::TurnSteer {
+        request_id,
+        params: steer(turn.id.clone(), "FRESH_IRC_CONTENT"),
+    }).await?;
+    assert_eq!(accepted.turn_id, turn.id);
+    timeout(DEFAULT_READ_TIMEOUT, wait_for_sleep_completed(&mut app, "sleep-call")).await??;
+    timeout(DEFAULT_READ_TIMEOUT, app.read_stream_until_notification_message("turn/completed")).await??;
+    let idle = app.send_turn_steer_request(steer(turn.id.clone(), "IDLE_MUST_NOT_START")).await?;
+    let _: JSONRPCError = timeout(DEFAULT_READ_TIMEOUT, app.read_stream_until_error_message(RequestId::Integer(idle))).await??;
+    let requests = model.requests();
+    assert_eq!(requests.len(), 2, "rejected idle steer must not start a model turn");
+    assert!(requests[1].function_call_output_text("sleep-call").is_some_and(|output| output.contains("Sleep interrupted by new input.")));
+    let input = requests[1].input();
+    assert_eq!(input.iter().filter(|item| item["type"] == "function_call_output" && item["namespace"] == "agent" && item["name"] == "irc" && item["output"] == "FRESH_IRC_CONTENT").count(), 1);
+    let body = serde_json::to_string(&input)?;
+    assert!(!body.contains("STALE_MUST_NOT_APPEAR"));
+    assert!(!body.contains("IDLE_MUST_NOT_START"));
+    timeout(DEFAULT_READ_TIMEOUT, app.shutdown_gracefully()).await??;
+    Ok(())
+}
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn external_tool_output_wakes_sleep_and_starts_idle_turn() -> Result<()> {
