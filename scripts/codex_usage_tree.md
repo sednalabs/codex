@@ -152,13 +152,62 @@ python3 scripts/codex_usage_tree.py \
   --thread-id <root-thread-uuid> \
   --database <active-sqlite-home>/usage_1.sqlite \
   --also-database <historical-sqlite-home>/usage_1.sqlite \
-  --aggregate-recorded
+  --aggregate-recorded \
+  --checkpoint-file <private-owner-only-checkpoint.sqlite> \
+  --continue-until-complete
 ```
 
 Both paths must name distinct existing databases. The command reads only those
 two files, read-only and query-only; it performs no discovery, migration, or
 ledger write. Each source gets its own lineage and recorded aggregate. The
-cross-ledger merge counts a non-empty `provider_call_id` once only when its
+optional checkpoint is a separate owner-only SQLite file that retains the
+minimum provider-call identity and aggregate state needed to resume; it may
+contain sensitive call IDs and should be kept private. It must be a regular,
+non-symlink file with owner-only permissions. Reuse the same explicit
+checkpoint path and command arguments to continue. Without a checkpoint,
+bounded work is reported but cannot resume. Each run processes at most 25,000
+provider-call rows per source, with the existing per-query, per-source,
+whole-operation, thread, row, memory, and group limits still in force. When a
+run limit is reached, per-source subtotals are returned and the output marks
+the result resumable; merged totals remain withheld until both source scans
+finish. The cumulative 200,000-row per-source and 300,000-row total limits are
+not resumable beyond those caps.
+
+`--continue-until-complete` repeats the exact bounded operation with the same
+checkpoint, printing only per-source row counts and continuation status to
+stderr. It stops at completion, a detected source/checkpoint/cumulative-limit
+condition, or after its pass budget. `--max-resume-passes N` selects a budget
+from 1 through 16 (default 16); the helper idles for one second between passes.
+The maximum is 16 × 24 seconds of operation-bound time plus 15 seconds idle,
+or 6 minutes 39 seconds plus small startup overhead. Use
+`--max-resume-passes 1` for a single small probe. If a pass limit is reached,
+rerun the same command and checkpoint; no query parameters need to be guessed
+or changed. Ctrl-C stops the process with exit 130; committed checkpoint pages
+remain safe to resume, while the current uncommitted page is retried. The live
+ledgers remain read-only throughout.
+
+The first page for each source freezes its known thread lineage and records a
+`usage_provider_calls.rowid` high-water mark. Later pages use indexed keyset
+queries up to that mark, so appends after it are excluded instead of forcing a
+restart. The two source snapshots are captured independently and are not
+atomic with one another or across separate command invocations. In-repository
+runtime call rows are inserted once; repeated thread registration may upsert
+`usage_threads` parent/root/fork metadata after the lineage snapshot, and this
+mode does not reconcile those changes. The later `final_model` and
+`model_snapshot` update is excluded from the report's effective-model and
+deduplication fields; effective model uses `actual_model_used` only, so it does
+not fall back to a later finalized model. The report assumes call rows at or below the saved
+high-water mark are otherwise immutable. It detects source path/device/inode,
+SQLite format-header, or usage-schema replacement and invalidates those saved
+pages. It cannot detect out-of-band in-place call-row edits or deletes,
+`VACUUM`/rebuild that preserves the observed source identity, rowid reuse after
+deletion, replacement preserving every observed identity marker, or manual or
+runtime lineage changes after a source's frozen first page. Output exposes
+these limits under `snapshot`; a completed scan means all rows selected under
+that bounded snapshot contract were read, not that a single atomic historical
+database snapshot was proven.
+
+The cross-ledger merge counts a non-empty `provider_call_id` once only when its
 thread, turn, request, provider, time, model provenance, status, token and
 reported-credit content match and both schemas contain every compared column.
 Matching IDs with different content are conflicts; matching IDs from a schema
@@ -169,14 +218,28 @@ withheld altogether. The output reports per-source column coverage, scanned
 timestamps, dedupe/conflict/unverifiable counts, and coverage limits without
 printing database paths or provider-call IDs.
 
-Cross-ledger work is bounded to 900 known threads per source, 200,000 scanned
-call rows per source, 300,000 total rows, a 192 MiB estimated retained-merge
-budget, at most 100 merged groups, 4 seconds per query, 12 seconds per source,
-and 24 seconds for the complete operation. The provider-call query plan must
-use an exact-thread index; otherwise the merge fails closed. When any bound is
-hit, per-source aggregates are retained and the merged result is explicitly
-unavailable rather than a partial subset presented as a union. Results remain
-partial for historical lineage regardless of cross-ledger deduplication.
+Cross-ledger work is bounded to 900 known threads per source, 25,000 rows per
+source per invocation, 200,000 scanned call rows per source, 300,000 total
+rows, a 192 MiB estimated retained-merge budget, at most 100 merged groups,
+4 seconds per query, 12 seconds per source, and 24 seconds for the complete
+operation. The provider-call query plan must use an exact-thread index;
+otherwise the merge fails closed. Cumulative row, memory, and group limits are
+terminal for that request. Per-run time/row limits are checkpoint-resumable;
+the output keeps per-source aggregates visible and withholds merged totals
+until both sources finish. Results remain partial for historical lineage
+regardless of cross-ledger deduplication.
+
+If a source has no indexed parent/fork lookup, the helper uses its existing
+`root_thread_id` index with a 901-row sentinel query and verifies selected
+parent/fork chains within the 900-thread memory bound. It does not scan the
+whole thread table. The output labels this as
+`root_thread_id_index_fallback`; merged totals are scoped and labelled
+`known_root_indexed_rows_only`, not as a complete descendant census. The
+fallback cannot discover descendants whose stored root marker is absent or
+incorrect. Broken or cyclic parent chains, inconsistent root metadata, missing
+root indexes, or the thread cap make lineage incomplete and withhold merged
+totals; a missing persistent root index fails closed before its candidate
+query.
 Calculated credit estimates retain known subtotals and missing-rate/token
 labels; provider-reported credits are not verified account debits, and actual
 debit remains unobserved. If a standard ledger-rate scenario is selected, the

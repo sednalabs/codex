@@ -4,6 +4,8 @@ use pretty_assertions::assert_eq;
 use super::BearerInsufficientScope;
 use super::InsufficientScopeChallenge;
 use super::insufficient_scope_challenge;
+use super::invalid_token_challenge;
+use super::is_bearer_invalid_token_challenge;
 use super::parse_bearer_insufficient_scope;
 
 #[test]
@@ -122,5 +124,52 @@ fn selects_bearer_challenge_from_a_later_www_authenticate_field_value() {
             www_authenticate_header: headers[1].value.clone(),
             required_scope: Some("files:read".to_string()),
         })
+    );
+}
+
+#[test]
+fn recognizes_only_an_explicit_bearer_invalid_token_error() {
+    for header in [
+        r#"Bearer error="invalid_token""#,
+        r#"Basic realm="example", Bearer error="invalid_token", error_description="expired, renew""#,
+        r#"Newauth realm="example", Bearer scope="ops:read", error="invalid_token""#,
+    ] {
+        assert!(
+            is_bearer_invalid_token_challenge(header),
+            "header: {header}"
+        );
+    }
+
+    for header in [
+        r#"Basic realm="example""#,
+        r#"Bearer realm="example""#,
+        r#"Bearer error="insufficient_scope""#,
+        r#"Bearer error="invalid_token", error="insufficient_scope""#,
+        r#"Bearer error_description="invalid_token""#,
+        r#"Bearer error="invalid_token", error_description="unterminated"#,
+    ] {
+        assert!(
+            !is_bearer_invalid_token_challenge(header),
+            "header: {header}"
+        );
+    }
+}
+
+#[test]
+fn selects_a_later_invalid_token_bearer_field_value() {
+    let headers = vec![
+        HttpHeader {
+            name: "www-authenticate".to_string(),
+            value: r#"Basic realm="example""#.to_string(),
+        },
+        HttpHeader {
+            name: "WWW-Authenticate".to_string(),
+            value: r#"Bearer error="invalid_token""#.to_string(),
+        },
+    ];
+
+    assert_eq!(
+        invalid_token_challenge(&headers),
+        Some(headers[1].value.clone())
     );
 }

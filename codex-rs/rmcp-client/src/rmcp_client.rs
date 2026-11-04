@@ -86,6 +86,7 @@ use crate::event_notification_transport::event_notification_channel;
 use crate::http_client_adapter::StreamableHttpClientAdapter;
 use crate::http_client_adapter::StreamableHttpClientAdapterError;
 use crate::http_client_adapter::StreamableHttpRedirectMode;
+use crate::http_client_adapter::is_bearer_invalid_token_challenge;
 use crate::in_process_transport::InProcessTransportFactory;
 use crate::oauth::OAuthCredentialStore;
 use crate::oauth::OAuthPersistor;
@@ -148,6 +149,9 @@ enum ClientState {
     },
     Ready {
         service: Arc<RunningService<RoleClient, ElicitationClientService>>,
+        oauth: Option<OAuthRuntime>,
+    },
+    Expired {
         oauth: Option<OAuthRuntime>,
     },
     Closed,
@@ -298,8 +302,55 @@ where
 pub(crate) enum ClientOperationError {
     #[error(transparent)]
     Service(#[from] rmcp::service::ServiceError),
+    #[error("MCP request outcome is uncertain: {source}")]
+    UncertainService {
+        #[source]
+        source: rmcp::service::ServiceError,
+    },
+    #[error(
+        "code=mcp_oauth_invalid_token_refreshed_no_replay; auth=refreshed; outcome=unknown; retry=read_only_only. The server returned an invalid-token denial and this request was not replayed. Do not repeat a mutation; submit a new request only when the operation is independently known to be read-only."
+    )]
+    OAuthTokenRefreshed {
+        #[source]
+        source: rmcp::service::ServiceError,
+    },
+    #[error(
+        "MCP session expired during tools/call; this invocation was not retried and its result is unknown. The expired session was retired if it was still current. Make a separate independent call to continue; it will initialize a fresh session if needed. Do not repeat this call unless its operation is independently known to be read-only."
+    )]
+    ExpiredSessionUncertain {
+        #[source]
+        source: rmcp::service::ServiceError,
+    },
     #[error("timed out awaiting {label} after {duration:.0?}")]
     Timeout { label: String, duration: Duration },
+}
+
+/// Returns true only for the fixed Agent Ops active-holder rejection carried
+/// by the remote MCP error response. This keeps the closed discriminator
+/// available to callers without exposing arbitrary remote error contents.
+pub fn is_ops_holder_conflict_error(error: &(dyn std::error::Error + 'static)) -> bool {
+    let Some(error) = error.downcast_ref::<ClientOperationError>() else {
+        return false;
+    };
+    let service_error = match error {
+        ClientOperationError::Service(error)
+        | ClientOperationError::UncertainService { source: error }
+        | ClientOperationError::OAuthTokenRefreshed { source: error }
+        | ClientOperationError::ExpiredSessionUncertain { source: error } => error,
+        _ => return false,
+    };
+    let rmcp::service::ServiceError::McpError(error) = service_error else {
+        return false;
+    };
+    error.code == rmcp::model::ErrorCode::INTERNAL_ERROR
+        && error.message.as_ref()
+            == "work_item_execution.holder_conflict: another active execution holds this work item."
+        && error
+            .data
+            .as_ref()
+            .and_then(|data| data.get("code"))
+            .and_then(serde_json::Value::as_str)
+            == Some("work_item_execution.holder_conflict")
 }
 
 fn remaining_operation_timeout(
@@ -693,7 +744,9 @@ impl RmcpClient {
                     Some(transport) => transport,
                     None => return Err(anyhow!("client already initializing")),
                 },
-                ClientState::Ready { .. } => return Err(anyhow!("client already initialized")),
+                ClientState::Ready { .. } | ClientState::Expired { .. } => {
+                    return Err(anyhow!("client already initialized"));
+                }
                 ClientState::Closed => return Err(anyhow!("MCP client is shut down")),
             }
         };
@@ -745,7 +798,7 @@ impl RmcpClient {
         }
         let cancellation = self.request_cancellation();
         let result = self
-            .run_service_operation("tools/list", timeout, move |service| {
+            .run_service_operation("tools/list", timeout, true, move |service| {
                 let params = params.clone();
                 async move {
                     if matches!(cancellation, RequestCancellation::Disabled) {
@@ -823,7 +876,7 @@ impl RmcpClient {
         self.refresh_oauth_if_needed().await?;
         let cancellation = self.request_cancellation();
         let result = self
-            .run_service_operation("resources/list", timeout, move |service| {
+            .run_service_operation("resources/list", timeout, true, move |service| {
                 let params = params.clone();
                 async move {
                     if matches!(cancellation, RequestCancellation::Disabled) {
@@ -861,7 +914,7 @@ impl RmcpClient {
         self.refresh_oauth_if_needed().await?;
         let cancellation = self.request_cancellation();
         let result = self
-            .run_service_operation("resources/templates/list", timeout, move |service| {
+            .run_service_operation("resources/templates/list", timeout, true, move |service| {
                 let params = params.clone();
                 async move {
                     if matches!(cancellation, RequestCancellation::Disabled) {
@@ -903,7 +956,7 @@ impl RmcpClient {
         let cancellation = self.request_cancellation();
         let requested_modern = self.protocol_mode != McpProtocolMode::Legacy;
         let result = self
-            .run_service_operation("resources/read", timeout, move |service| {
+            .run_service_operation("resources/read", timeout, true, move |service| {
                 let params = params.clone();
                 async move {
                     if matches!(cancellation, RequestCancellation::OnDrop) {
@@ -947,6 +1000,7 @@ impl RmcpClient {
             .run_service_operation_with_pause_state(
                 "resources/read",
                 timeout,
+                true,
                 pause_state.clone(),
                 move |service| {
                     let params = params.clone();
@@ -1077,6 +1131,7 @@ impl RmcpClient {
             .run_service_operation_with_pause_state(
                 "tools/call",
                 timeout,
+                /*retry_read_only_after_invalid_token*/ false,
                 pause_state.clone(),
                 move |service| {
                     let mut rmcp_params = rmcp_params.clone();
@@ -1189,6 +1244,7 @@ impl RmcpClient {
         self.run_service_operation(
             "notifications/custom",
             /*timeout*/ None,
+            /*retry_read_only_after_invalid_token*/ false,
             move |service| {
                 let params = params.clone();
                 async move {
@@ -1228,7 +1284,7 @@ impl RmcpClient {
         self.refresh_oauth_if_needed().await?;
         let cancellation = self.request_cancellation();
         let response = self
-            .run_service_operation("requests/custom", timeout, move |service| {
+            .run_service_operation("requests/custom", timeout, false, move |service| {
                 let params = params.clone();
                 async move {
                     let request = crate::trace_context::traced_custom_request(method, params);
@@ -1271,11 +1327,21 @@ impl RmcpClient {
     }
 
     async fn service(&self) -> Result<Arc<RunningService<RoleClient, ElicitationClientService>>> {
-        let guard = self.state.lock().await;
-        match &*guard {
-            ClientState::Ready { service, .. } => Ok(Arc::clone(service)),
-            ClientState::Connecting { .. } => Err(anyhow!("MCP client not initialized")),
-            ClientState::Closed => Err(anyhow!("MCP client is shut down")),
+        loop {
+            let expired = {
+                let guard = self.state.lock().await;
+                match &*guard {
+                    ClientState::Ready { service, .. } => return Ok(Arc::clone(service)),
+                    ClientState::Expired { .. } => true,
+                    ClientState::Connecting { .. } => {
+                        return Err(anyhow!("MCP client not initialized"));
+                    }
+                    ClientState::Closed => return Err(anyhow!("MCP client is shut down")),
+                }
+            };
+            if expired {
+                self.reinitialize_expired_service().await?;
+            }
         }
     }
 
@@ -1285,6 +1351,9 @@ impl RmcpClient {
             ClientState::Ready {
                 oauth: Some(runtime),
                 ..
+            }
+            | ClientState::Expired {
+                oauth: Some(runtime),
             } => Some(runtime.clone()),
             _ => None,
         }
@@ -1306,6 +1375,7 @@ impl RmcpClient {
             ClientState::Ready { service, .. } => {
                 service.is_closed() || service.peer().is_transport_closed()
             }
+            ClientState::Expired { .. } => false,
             ClientState::Connecting { .. } => false,
             ClientState::Closed => true,
         }
@@ -1736,6 +1806,7 @@ impl RmcpClient {
         &self,
         label: &str,
         timeout: Option<Duration>,
+        retry_read_only_after_invalid_token: bool,
         operation: F,
     ) -> Result<T>
     where
@@ -1745,6 +1816,7 @@ impl RmcpClient {
         self.run_service_operation_with_pause_state(
             label,
             timeout,
+            retry_read_only_after_invalid_token,
             self.elicitation_pause_state.clone(),
             operation,
         )
@@ -1755,6 +1827,7 @@ impl RmcpClient {
         &self,
         label: &str,
         timeout: Option<Duration>,
+        retry_read_only_after_invalid_token: bool,
         pause_state: ElicitationPauseState,
         operation: F,
     ) -> Result<T>
@@ -1763,31 +1836,100 @@ impl RmcpClient {
         Fut: std::future::Future<Output = std::result::Result<T, rmcp::service::ServiceError>>,
     {
         let service = self.service().await?;
-        match Self::run_service_operation_with_transient_retries(
+        let mut deadline = timeout.map(|duration| Instant::now() + duration);
+        let oauth_runtime = self.oauth_runtime().await;
+        let rejected_access_token = match oauth_runtime.as_ref() {
+            Some(runtime) => runtime.access_token_snapshot().await,
+            None => None,
+        };
+        let mut result = Self::run_service_operation_with_transient_retries(
             Arc::clone(&service),
             label,
             timeout,
             pause_state.clone(),
             &operation,
         )
-        .await
+        .await;
+
+        if result
+            .as_ref()
+            .is_err_and(Self::is_confirmed_invalid_token_operation_error)
+            && let Some(oauth_runtime) = oauth_runtime
         {
-            Ok(result) => Ok(result),
-            Err(error) if Self::is_session_expired_404(&error) => {
-                self.reinitialize_after_session_expiry(&service).await?;
-                let recovered_service = self.service().await?;
-                Self::run_service_operation_with_transient_retries(
-                    recovered_service,
+            let refresh_started_at = Instant::now();
+            let refresh_result = oauth_runtime
+                .refresh_after_unauthorized(rejected_access_token.as_deref())
+                .await;
+            extend_operation_deadline(&mut deadline, refresh_started_at.elapsed());
+            if let Err(refresh_error) = refresh_result {
+                // Keep the server's original challenge so callers can surface the correct
+                // reauthentication signal when refresh is definitively unavailable.
+                if is_authentication_required_error(&refresh_error) {
+                    return result.map_err(Into::into);
+                }
+                return Err(refresh_error);
+            }
+            if retry_read_only_after_invalid_token {
+                let remaining = remaining_operation_timeout(label, timeout, deadline)?;
+                result = Self::run_service_operation_with_transient_retries(
+                    Arc::clone(&service),
                     label,
-                    timeout,
-                    pause_state,
+                    remaining,
+                    pause_state.clone(),
                     &operation,
                 )
-                .await
-                .map_err(Into::into)
+                .await;
+            } else {
+                return result
+                    .map_err(|error| match error {
+                        ClientOperationError::Service(source) => {
+                            ClientOperationError::OAuthTokenRefreshed { source }
+                        }
+                        error => error,
+                    })
+                    .map_err(Into::into);
             }
-            Err(error) => Err(error.into()),
         }
+
+        if result.as_ref().is_err_and(Self::is_session_expired_404) {
+            {
+                let mut guard = self.state.lock().await;
+                let expired_oauth = match &*guard {
+                    ClientState::Ready {
+                        service: current,
+                        oauth,
+                    } if Arc::ptr_eq(current, &service) => Some(oauth.clone()),
+                    _ => None,
+                };
+                if let Some(oauth) = expired_oauth {
+                    *guard = ClientState::Expired { oauth };
+                }
+            }
+
+            if label == "tools/call" {
+                return result
+                    .map_err(|error| match error {
+                        ClientOperationError::UncertainService { source } => {
+                            ClientOperationError::ExpiredSessionUncertain { source }
+                        }
+                        error => error,
+                    })
+                    .map_err(Into::into);
+            }
+
+            let recovered_service = self.service().await?;
+            let remaining = remaining_operation_timeout(label, timeout, deadline)?;
+            result = Self::run_service_operation_with_transient_retries(
+                recovered_service,
+                label,
+                remaining,
+                pause_state,
+                &operation,
+            )
+            .await;
+        }
+
+        result.map_err(Into::into)
     }
 
     async fn run_service_operation_with_transient_retries<T, F, Fut>(
@@ -1865,9 +2007,25 @@ impl RmcpClient {
                         label: label.to_string(),
                         duration,
                     })?
-                    .map_err(ClientOperationError::from)
+                    .map_err(|error| Self::classify_operation_error(label, error))
             }
-            None => operation(service).await.map_err(ClientOperationError::from),
+            None => operation(service)
+                .await
+                .map_err(|error| Self::classify_operation_error(label, error)),
+        }
+    }
+
+    fn classify_operation_error(
+        label: &str,
+        error: rmcp::service::ServiceError,
+    ) -> ClientOperationError {
+        if label == "tools/call"
+            && matches!(&error, rmcp::service::ServiceError::TransportSend(_))
+            && !Self::is_pre_execution_auth_failure(&error)
+        {
+            ClientOperationError::UncertainService { source: error }
+        } else {
+            ClientOperationError::Service(error)
         }
     }
 
@@ -1888,9 +2046,14 @@ impl RmcpClient {
     }
 
     fn is_session_expired_404(error: &ClientOperationError) -> bool {
-        let ClientOperationError::Service(rmcp::service::ServiceError::TransportSend(error)) =
-            error
-        else {
+        let service_error = match error {
+            ClientOperationError::Service(source)
+            | ClientOperationError::UncertainService { source }
+            | ClientOperationError::OAuthTokenRefreshed { source }
+            | ClientOperationError::ExpiredSessionUncertain { source } => source,
+            ClientOperationError::Timeout { .. } => return false,
+        };
+        let rmcp::service::ServiceError::TransportSend(error) = service_error else {
             return false;
         };
 
@@ -1907,10 +2070,49 @@ impl RmcpClient {
             })
     }
 
-    async fn reinitialize_after_session_expiry(
-        &self,
-        failed_service: &Arc<RunningService<RoleClient, ElicitationClientService>>,
-    ) -> Result<()> {
+    fn is_confirmed_invalid_token_operation_error(error: &ClientOperationError) -> bool {
+        let ClientOperationError::Service(service_error) = error else {
+            return false;
+        };
+        Self::is_confirmed_invalid_token_service_error(service_error)
+    }
+
+    fn is_confirmed_invalid_token_service_error(
+        service_error: &rmcp::service::ServiceError,
+    ) -> bool {
+        let rmcp::service::ServiceError::TransportSend(error) = service_error else {
+            return false;
+        };
+
+        error
+            .error
+            .downcast_ref::<StreamableHttpError<StreamableHttpClientAdapterError>>()
+            .is_some_and(|error| match error {
+                StreamableHttpError::AuthRequired(challenge) => {
+                    is_bearer_invalid_token_challenge(&challenge.www_authenticate_header)
+                }
+                _ => false,
+            })
+    }
+
+    fn is_pre_execution_auth_failure(service_error: &rmcp::service::ServiceError) -> bool {
+        let rmcp::service::ServiceError::TransportSend(error) = service_error else {
+            return false;
+        };
+
+        error
+            .error
+            .downcast_ref::<StreamableHttpError<StreamableHttpClientAdapterError>>()
+            .is_some_and(|error| match error {
+                StreamableHttpError::Auth(AuthError::AuthorizationRequired) => true,
+                StreamableHttpError::AuthRequired(challenge) => {
+                    is_bearer_invalid_token_challenge(&challenge.www_authenticate_header)
+                }
+                _ => false,
+            })
+    }
+
+    async fn reinitialize_expired_service(&self) -> Result<()> {
         let _recovery_guard = self
             .session_recovery_lock
             .acquire()
@@ -1920,10 +2122,8 @@ impl RmcpClient {
         {
             let guard = self.state.lock().await;
             match &*guard {
-                ClientState::Ready { service, .. } if !Arc::ptr_eq(service, failed_service) => {
-                    return Ok(());
-                }
-                ClientState::Ready { .. } => {}
+                ClientState::Ready { .. } => return Ok(()),
+                ClientState::Expired { .. } => {}
                 ClientState::Connecting { .. } => {
                     return Err(anyhow!("MCP client not initialized"));
                 }
@@ -1953,8 +2153,13 @@ impl RmcpClient {
 
         {
             let mut guard = self.state.lock().await;
-            if matches!(*guard, ClientState::Closed) {
-                return Err(anyhow!("MCP client is shut down"));
+            match &*guard {
+                ClientState::Closed => return Err(anyhow!("MCP client is shut down")),
+                ClientState::Connecting { .. } => {
+                    return Err(anyhow!("MCP client not initialized"));
+                }
+                ClientState::Ready { .. } => return Ok(()),
+                ClientState::Expired { .. } => {}
             }
             *guard = ClientState::Ready {
                 service,
@@ -2087,9 +2292,13 @@ mod user_verification_cancellation_tests;
 
 #[cfg(test)]
 mod tests {
+    use std::any::TypeId;
     use std::time::Duration;
 
     use pretty_assertions::assert_eq;
+    use rmcp::transport::DynamicTransportError;
+    use rmcp::transport::streamable_http_client::AuthRequiredError;
+    use rmcp::transport::streamable_http_client::InsufficientScopeError;
     use tokio::time;
 
     use super::*;
@@ -2104,6 +2313,159 @@ mod tests {
         assert_eq!(error.to_string(), "timed out awaiting tools/list after 30s");
     }
 
+    #[test]
+    fn ops_holder_conflict_classifier_matches_real_service_operation_wrapper() {
+        let error = ClientOperationError::Service(rmcp::service::ServiceError::McpError(
+            rmcp::ErrorData::new(
+                rmcp::model::ErrorCode::INTERNAL_ERROR,
+                "work_item_execution.holder_conflict: another active execution holds this work item.",
+                Some(serde_json::json!({
+                    "code": "work_item_execution.holder_conflict",
+                    "request_id": "44444444-4444-4444-8444-444444444444"
+                })),
+            ),
+        ));
+        assert!(is_ops_holder_conflict_error(&error));
+
+        let wrong_code = ClientOperationError::Service(rmcp::service::ServiceError::McpError(
+            rmcp::ErrorData::new(
+                rmcp::model::ErrorCode::INTERNAL_ERROR,
+                "work_item_execution.holder_conflict: another active execution holds this work item.",
+                Some(serde_json::json!({"code": "other"})),
+            ),
+        ));
+        assert!(!is_ops_holder_conflict_error(&wrong_code));
+    }
+
+    #[test]
+    fn oauth_refresh_extends_operation_deadline_without_resetting_budget() {
+        let initial_deadline = Instant::now() + Duration::from_secs(30);
+        let mut deadline = Some(initial_deadline);
+
+        extend_operation_deadline(&mut deadline, Duration::from_secs(20));
+
+        assert_eq!(deadline, Some(initial_deadline + Duration::from_secs(20)));
+    }
+
+    fn transport_send_error(
+        error: StreamableHttpError<StreamableHttpClientAdapterError>,
+    ) -> ClientOperationError {
+        ClientOperationError::Service(rmcp::service::ServiceError::TransportSend(
+            DynamicTransportError::from_parts("test", TypeId::of::<()>(), Box::new(error)),
+        ))
+    }
+
+    #[test]
+    fn locally_synthesized_authorization_required_does_not_trigger_refresh() {
+        let error =
+            transport_send_error(StreamableHttpError::Auth(AuthError::AuthorizationRequired));
+
+        assert!(!RmcpClient::is_confirmed_invalid_token_operation_error(
+            &error
+        ));
+        assert!(!RmcpClient::is_session_expired_404(&error));
+        let ClientOperationError::Service(source) = error else {
+            unreachable!();
+        };
+        assert!(matches!(
+            RmcpClient::classify_operation_error("tools/call", source),
+            ClientOperationError::Service(_)
+        ));
+    }
+
+    #[test]
+    fn generic_http_auth_challenge_does_not_trigger_refresh() {
+        let error = transport_send_error(StreamableHttpError::AuthRequired(
+            AuthRequiredError::new("Bearer resource_metadata=\"https://example.test\"".to_string()),
+        ));
+
+        assert!(!RmcpClient::is_confirmed_invalid_token_operation_error(
+            &error
+        ));
+        assert!(!RmcpClient::is_session_expired_404(&error));
+    }
+
+    #[test]
+    fn bare_http_unauthorized_status_is_not_a_confirmed_token_denial() {
+        let error = transport_send_error(StreamableHttpError::Client(
+            StreamableHttpClientAdapterError::HttpStatus {
+                status: 401,
+                body: String::new(),
+                retry_after: None,
+                diagnostics: Default::default(),
+            },
+        ));
+
+        assert!(!RmcpClient::is_confirmed_invalid_token_operation_error(
+            &error
+        ));
+        let ClientOperationError::Service(source) = error else {
+            unreachable!();
+        };
+        assert!(matches!(
+            RmcpClient::classify_operation_error("tools/call", source),
+            ClientOperationError::UncertainService { .. }
+        ));
+    }
+
+    #[test]
+    fn confirmed_bearer_invalid_token_denial_is_recoverable() {
+        let error =
+            transport_send_error(StreamableHttpError::AuthRequired(AuthRequiredError::new(
+                r#"Basic realm="example", Bearer error="invalid_token""#.to_string(),
+            )));
+
+        assert!(RmcpClient::is_confirmed_invalid_token_operation_error(
+            &error
+        ));
+        assert!(matches!(
+            RmcpClient::classify_operation_error(
+                "tools/call",
+                match error {
+                    ClientOperationError::Service(error) => error,
+                    _ => unreachable!(),
+                }
+            ),
+            ClientOperationError::Service(_)
+        ));
+    }
+
+    #[test]
+    fn insufficient_scope_does_not_trigger_token_refresh() {
+        let error = transport_send_error(StreamableHttpError::InsufficientScope(
+            InsufficientScopeError::new(
+                r#"Bearer error="insufficient_scope""#.to_string(),
+                Some("ops:write".to_string()),
+            ),
+        ));
+
+        assert!(!RmcpClient::is_confirmed_invalid_token_operation_error(
+            &error
+        ));
+    }
+
+    #[test]
+    fn uncertain_tool_call_auth_error_is_never_replayed_or_refreshed() {
+        let ClientOperationError::Service(source) =
+            transport_send_error(StreamableHttpError::AuthRequired(AuthRequiredError::new(
+                r#"Bearer error="invalid_token""#.to_string(),
+            )))
+        else {
+            unreachable!();
+        };
+        let error = ClientOperationError::UncertainService { source };
+
+        assert!(!RmcpClient::is_confirmed_invalid_token_operation_error(
+            &error
+        ));
+    }
+
+    #[test]
+    fn unrelated_streamable_http_errors_do_not_reinitialize_mcp_client() {
+        let error = transport_send_error(StreamableHttpError::UnexpectedEndOfStream);
+
+        assert!(!RmcpClient::is_session_expired_404(&error));
+    }
     #[tokio::test]
     async fn active_time_timeout_pauses_while_elicitation_is_pending() {
         let pause_state = ElicitationPauseState::new();

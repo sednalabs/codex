@@ -61,4 +61,57 @@ impl OAuthRuntime {
             }
         }
     }
+
+    /// Refreshes only after the server explicitly rejected an OAuth bearer token. The rejection
+    /// path remains serialized and credential-store-owned in both runtime modes.
+    #[expect(
+        clippy::await_holding_invalid_type,
+        reason = "AuthorizationManager access follows RMCP's manager-before-credential lock order"
+    )]
+    pub(crate) async fn refresh_after_unauthorized(
+        &self,
+        rejected_access_token: Option<&str>,
+    ) -> Result<()> {
+        match self {
+            Self::Legacy(persistor) => {
+                persistor
+                    .refresh_after_unauthorized(rejected_access_token)
+                    .await
+            }
+            Self::Coordinated {
+                auth_manager,
+                store,
+            } => {
+                let auth_manager = Arc::clone(auth_manager);
+                let store = store.clone();
+                let rejected_access_token = rejected_access_token.map(str::to_owned);
+                tokio::spawn(async move {
+                    let mut manager = auth_manager.lock().await;
+                    let result = store
+                        .refresh_after_unauthorized(
+                            &mut manager,
+                            rejected_access_token.as_deref(),
+                        )
+                        .await;
+                    if result.is_err() {
+                        // Keep this summary inside the owned task; never log token/provider data.
+                        warn!("MCP OAuth unauthorized refresh failed");
+                    }
+                    result
+                })
+                .await
+                .context("OAuth refresh task failed")?
+            }
+        }
+    }
+
+    pub(crate) async fn access_token_snapshot(&self) -> Option<String> {
+        match self {
+            Self::Legacy(persistor) => persistor.access_token_snapshot().await,
+            Self::Coordinated { store, .. } => store
+                .stored_credentials()
+                .await
+                .map(|tokens| tokens.token_response.0.access_token().secret().to_owned()),
+        }
+    }
 }

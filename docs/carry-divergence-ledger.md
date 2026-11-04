@@ -3224,6 +3224,21 @@ bundles during upstream sync merely because they once shared this carry entry.
   handing credentials to RMCP so refresh requests do not broaden explicit
   persisted scopes with authorization-server-advertised `offline_access`; Codex
   preserves the durable stored scope set when the provider omits scopes.
+- Reactive recovery runs only after Streamable HTTP receives a real `401` with
+  a parsed Bearer `invalid_token` challenge. A local `AuthorizationRequired`, a
+  generic 401, `insufficient_scope`, an uncertain transport outcome, or an MCP
+  tool-result `_meta` challenge does not trigger the refresh path.
+- One successful refresh retries only the fixed read-only protocol operations
+  (`tools/list`, `resources/list`, `resources/templates/list`, and
+  `resources/read`). Tool calls, custom requests, and custom notifications
+  refresh credentials for future calls and return
+  `mcp_oauth_invalid_token_refreshed_no_replay` with `auth=refreshed`,
+  `outcome=unknown`, and `retry=read_only_only`. Callers must not repeat a
+  mutation; a new request is appropriate only when the operation is independently
+  known to be read-only. Remote tool annotations are untrusted hints and never
+  authorize a tool-call replay. The client reuses its existing serialized OAuth
+  transaction and does not add credentials, login flows, or a parallel session
+  store.
 - During future syncs, do not "simplify" the OAuth helpers by dropping either
   the secrets-backed keyring path or the downstream resolved-store reread/save
   discipline unless an upstream replacement covers those behaviors and the
@@ -3236,6 +3251,12 @@ bundles during upstream sync merely because they once shared this carry entry.
   - `codex-rs/rmcp-client/src/rmcp_client.rs`
   - `codex-rs/rmcp-client/src/startup_error.rs`
   - `codex-rs/codex-mcp/src/connection_manager.rs`
+  - `codex-rs/codex-mcp/src/binding.rs`
+  - `codex-rs/codex-mcp/src/connection_manager_tests.rs`
+  - `codex-rs/codex-mcp/src/tools.rs`
+  - `codex-rs/rmcp-client/src/http_client_adapter.rs`
+  - `codex-rs/rmcp-client/src/http_client_adapter/www_authenticate.rs`
+  - `codex-rs/rmcp-client/src/http_client_adapter/www_authenticate_tests.rs`
 
 ### MCP OAuth Device Login For Headless Servers
 
