@@ -177,7 +177,7 @@ jobs:
       matrix:
         include: >-
           ${{ fromJSON(github.repository == 'sednalabs/codex' &&
-            '[{"name":"Linux","runner":"ubuntu-24.04","timeout_minutes":30},{"name":"macOS","runner":"macos-15","timeout_minutes":30}]' ||
+            '[{"name":"Linux","runner":"ubuntu-24.04","timeout_minutes":30},{"name":"macOS","runner":"macos-15","timeout_minutes":45}]' ||
             '[{"name":"Linux","runner":"ubuntu-24.04","timeout_minutes":30},{"name":"macOS","runner":"macos-15","timeout_minutes":30},{"name":"Windows","runner":"windows-2022","timeout_minutes":30}]') }}
     steps:
       - name: Check whether argument comment lint should run
