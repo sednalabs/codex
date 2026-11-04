@@ -1295,12 +1295,9 @@ fn supervise_child(
         .context(McpFailureStage::Bootstrap);
     }
 
-    let proof_authority = crate::signer::LauncherProofAuthority::new(
-        certificate,
-        runtime_seed,
-        &executable.digest,
-    )
-    .context(McpFailureStage::Signer)?;
+    let proof_authority =
+        crate::signer::LauncherProofAuthority::new(certificate, runtime_seed, &executable.digest)
+            .context(McpFailureStage::Signer)?;
     if let Some(context) = &lifecycle_context {
         lifecycle::require_manager_start(&context.manager_binding, child.id(), policy_sha256)?;
         if Instant::now() >= task_deadline {
