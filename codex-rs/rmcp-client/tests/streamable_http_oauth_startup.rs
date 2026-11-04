@@ -31,6 +31,9 @@ use oauth2::AccessToken;
 use oauth2::RefreshToken;
 use oauth2::basic::BasicTokenType;
 use pretty_assertions::assert_eq;
+use rmcp::model::CallToolResult;
+use rmcp::model::ContentBlock;
+use rmcp::model::MetaObject;
 use rmcp::transport::auth::OAuthTokenResponse;
 use rmcp::transport::auth::VendorExtraTokenFields;
 use serde_json::Value;
@@ -87,7 +90,7 @@ enum IssuerMismatchAccessToken {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 1)]
-async fn tool_call_preserves_challenge_only_after_silent_refresh_fails() -> anyhow::Result<()> {
+async fn tool_call_is_not_replayed_after_silent_refresh() -> anyhow::Result<()> {
     for refresh_succeeds in [true, false] {
         let server = MockServer::start().await;
         let server_url = format!("{}/mcp", server.uri());
@@ -180,13 +183,13 @@ async fn tool_call_preserves_challenge_only_after_silent_refresh_fails() -> anyh
                     .is_some_and(|body| body["method"] == "tools/call")
             })
             .count();
-        assert_eq!(tool_calls, if refresh_succeeds { 2 } else { 1 });
+        assert_eq!(tool_calls, 1);
     }
     Ok(())
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 1)]
-#[ignore = "spawned by tool_call_preserves_challenge_only_after_silent_refresh_fails"]
+#[ignore = "spawned by tool_call_is_not_replayed_after_silent_refresh"]
 async fn oauth_tool_call_child() -> anyhow::Result<()> {
     let server_url = std::env::var(CHILD_SERVER_URL_ENV)?;
     let refresh_succeeds = std::env::var(CHILD_REFRESH_SUCCEEDS_ENV)? == "true";
@@ -235,12 +238,19 @@ async fn oauth_tool_call_child() -> anyhow::Result<()> {
         )
         .await?;
     if refresh_succeeds {
-        assert_eq!(
-            serde_json::to_value(result)?,
+        let mut expected = CallToolResult::error(vec![ContentBlock::text(
+            "OAuth credentials were refreshed; the original tool call was not replayed and its outcome is unknown. Do not repeat a mutation. Submit a separate request only if the operation is independently known to be read-only.",
+        )]);
+        expected.meta = Some(MetaObject::from(serde_json::Map::from_iter([(
+            "codex/oauth_recovery".to_string(),
             json!({
-                "content": [{"type": "text", "text": "refreshed"}],
-            })
-        );
+                "code": "mcp_oauth_invalid_token_refreshed_no_replay",
+                "auth": "refreshed",
+                "outcome": "unknown",
+                "retry": "read_only_only",
+            }),
+        )])));
+        assert_eq!(result, expected);
     } else {
         assert_eq!(result.is_error, Some(true));
         assert_eq!(
