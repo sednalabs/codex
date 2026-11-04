@@ -786,6 +786,15 @@ impl OAuthPersistor {
         normalized_oauth_credentials(credentials.as_ref())
     }
 
+    pub(crate) async fn access_token_snapshot(&self) -> Option<String> {
+        self.inner
+            .last_credentials
+            .lock()
+            .await
+            .as_ref()
+            .map(|tokens| tokens.token_response.0.access_token().secret().to_string())
+    }
+
     /// Persists RMCP-managed credential changes back to this client's resolved authority.
     #[expect(
         clippy::await_holding_invalid_type,

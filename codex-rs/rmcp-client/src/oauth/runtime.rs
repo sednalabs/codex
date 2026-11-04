@@ -27,6 +27,13 @@ pub(crate) enum OAuthRuntime {
 }
 
 impl OAuthRuntime {
+    pub(crate) async fn access_token_snapshot(&self) -> Option<String> {
+        match self {
+            Self::Legacy(persistor) => persistor.access_token_snapshot().await,
+            Self::Coordinated { store, .. } => store.access_token_snapshot().await,
+        }
+    }
+
     #[expect(
         clippy::await_holding_invalid_type,
         reason = "AuthorizationManager access follows RMCP's manager-before-credential lock order"
@@ -58,6 +65,44 @@ impl OAuthRuntime {
                 })
                 .await
                 .context("OAuth refresh task failed")?
+            }
+        }
+    }
+
+    #[expect(
+        clippy::await_holding_invalid_type,
+        reason = "AuthorizationManager access follows RMCP's manager-before-credential lock order"
+    )]
+    /// Performs one bounded refresh after the caller classified an invalid-token denial.
+    pub(crate) async fn refresh_after_unauthorized(
+        &self,
+        rejected_access_token: &str,
+    ) -> Result<()> {
+        match self {
+            Self::Legacy(persistor) => {
+                persistor
+                    .refresh_after_unauthorized(rejected_access_token)
+                    .await
+            }
+            Self::Coordinated {
+                auth_manager,
+                store,
+            } => {
+                let auth_manager = Arc::clone(auth_manager);
+                let store = store.clone();
+                let rejected_access_token = rejected_access_token.to_string();
+                tokio::spawn(async move {
+                    let mut manager = auth_manager.lock().await;
+                    let result = store
+                        .refresh_after_unauthorized(&mut manager, &rejected_access_token)
+                        .await;
+                    if result.is_err() {
+                        warn!("MCP OAuth recovery after invalid_token failed");
+                    }
+                    result
+                })
+                .await
+                .context("OAuth invalid-token recovery task failed")?
             }
         }
     }

@@ -93,7 +93,33 @@ impl<K: KeyringStore + Clone + 'static> OAuthCredentialStore<K> {
         }
     }
 
+    pub(crate) async fn access_token_snapshot(&self) -> Option<String> {
+        self.inner
+            .last_credentials
+            .lock()
+            .await
+            .as_ref()
+            .map(|tokens| tokens.token_response.0.access_token().secret().to_string())
+    }
+
     pub(crate) async fn refresh_if_needed(&self, manager: &mut AuthorizationManager) -> Result<()> {
+        self.refresh(manager, None).await
+    }
+
+    /// Refreshes a rejected token or adopts a newer, unexpired stored access token.
+    pub(crate) async fn refresh_after_unauthorized(
+        &self,
+        manager: &mut AuthorizationManager,
+        rejected_access_token: &str,
+    ) -> Result<()> {
+        self.refresh(manager, Some(rejected_access_token)).await
+    }
+
+    async fn refresh(
+        &self,
+        manager: &mut AuthorizationManager,
+        rejected_access_token: Option<&str>,
+    ) -> Result<()> {
         let guard = self.acquire_transaction_guard().await?;
         let tokens = self
             .inner
@@ -102,7 +128,16 @@ impl<K: KeyringStore + Clone + 'static> OAuthCredentialStore<K> {
             .await
             .clone()
             .ok_or(AuthError::AuthorizationRequired)?;
-        if !token_needs_refresh(tokens.expires_at) {
+        if let Some(rejected_access_token) = rejected_access_token {
+            let latest_access_token = tokens.token_response.0.access_token().secret();
+            if latest_access_token != rejected_access_token
+                && !token_needs_refresh(tokens.expires_at)
+            {
+                manager.set_credential_store(self.clone());
+                manager.initialize_from_store().await?;
+                return Ok(());
+            }
+        } else if !token_needs_refresh(tokens.expires_at) {
             return Ok(());
         }
         let metadata = manager.resolve_metadata().await?.metadata;

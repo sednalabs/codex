@@ -4,6 +4,7 @@ use pretty_assertions::assert_eq;
 use super::BearerInsufficientScope;
 use super::InsufficientScopeChallenge;
 use super::insufficient_scope_challenge;
+use super::is_bearer_invalid_token_challenge;
 use super::parse_bearer_insufficient_scope;
 
 #[test]
@@ -57,6 +58,36 @@ fn does_not_treat_other_bearer_errors_as_insufficient_scope() {
         parse_bearer_insufficient_scope(r#"Bearer error="invalid_token", scope="files:read""#),
         None
     );
+}
+
+#[test]
+fn recognizes_only_a_valid_bearer_invalid_token_challenge() {
+    let matching = [
+        r#"Bearer error="invalid_token""#,
+        r#"Basic realm="example", Bearer error="invalid_token""#,
+        r#"Bearer realm="api", error=invalid_token"#,
+    ];
+    for header in matching {
+        assert!(
+            is_bearer_invalid_token_challenge(header),
+            "header: {header}"
+        );
+    }
+
+    let not_matching = [
+        r#"Basic error="invalid_token""#,
+        r#"Bearer error="insufficient_scope""#,
+        r#"Bearer error_description="invalid_token""#,
+        r#"Bearer error="invalid_token", error="other""#,
+        r#"Bearer error="invalid_token" trailing"#,
+        r#"Bearer error="unterminated"#,
+    ];
+    for header in not_matching {
+        assert!(
+            !is_bearer_invalid_token_challenge(header),
+            "header: {header}"
+        );
+    }
 }
 
 #[test]

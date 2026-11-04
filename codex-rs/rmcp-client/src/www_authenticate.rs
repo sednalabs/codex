@@ -60,6 +60,49 @@ impl BearerChallenge {
             Parameter::Missing | Parameter::Value(_) | Parameter::Invalid => None,
         }
     }
+
+    fn has_error(&self, expected: &str) -> bool {
+        matches!(&self.error, Parameter::Value(error) if error == expected)
+    }
+}
+
+/// Returns true only for a syntactically valid Bearer challenge whose error is
+/// exactly `invalid_token`. Other schemes, malformed parameters, and
+/// insufficient-scope challenges do not authorize OAuth refresh.
+pub(crate) fn is_bearer_invalid_token_challenge(header: &str) -> bool {
+    let Some(segments) = split_unquoted_segments(header) else {
+        return false;
+    };
+    let mut bearer_challenge: Option<BearerChallenge> = None;
+
+    for segment in segments {
+        if let Some((name, value)) = parse_auth_param(segment) {
+            if let Some(challenge) = bearer_challenge.as_mut() {
+                challenge.add_parameter(name, value);
+            }
+            continue;
+        }
+
+        if bearer_challenge
+            .take()
+            .is_some_and(|challenge| challenge.has_error("invalid_token"))
+        {
+            return true;
+        }
+
+        let Some((scheme, parameter)) = parse_challenge_start(segment) else {
+            return false;
+        };
+        if scheme.eq_ignore_ascii_case("Bearer") {
+            let mut challenge = BearerChallenge::default();
+            if let Some((name, value)) = parameter {
+                challenge.add_parameter(name, value);
+            }
+            bearer_challenge = Some(challenge);
+        }
+    }
+
+    bearer_challenge.is_some_and(|challenge| challenge.has_error("invalid_token"))
 }
 
 /// Finds a Bearer insufficient-scope challenge among all `WWW-Authenticate`

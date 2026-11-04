@@ -2,6 +2,9 @@
 
 mod streamable_http_test_support;
 
+use std::sync::Arc;
+use std::sync::atomic::AtomicUsize;
+use std::sync::atomic::Ordering;
 use std::time::Duration;
 use std::time::SystemTime;
 use std::time::UNIX_EPOCH;
@@ -9,8 +12,11 @@ use std::time::UNIX_EPOCH;
 use codex_config::types::AuthKeyringBackendKind;
 use codex_config::types::OAuthCredentialsStoreMode;
 use codex_exec_server::Environment;
+use codex_rmcp_client::McpOAuthRefreshMode;
+use codex_rmcp_client::McpProtocolMode;
 use codex_rmcp_client::RmcpClient;
 use codex_rmcp_client::StoredOAuthTokens;
+use codex_rmcp_client::StreamableHttpRedirectMode;
 use codex_rmcp_client::WrappedOAuthTokenResponse;
 use codex_rmcp_client::is_authentication_required_error;
 use codex_rmcp_client::save_oauth_tokens;
@@ -21,6 +27,7 @@ use oauth2::basic::BasicTokenType;
 use pretty_assertions::assert_eq;
 use rmcp::model::CallToolResult;
 use rmcp::model::ContentBlock;
+use rmcp::model::MetaObject;
 use rmcp::transport::auth::OAuthTokenResponse;
 use rmcp::transport::auth::VendorExtraTokenFields;
 use serde_json::Value;
@@ -53,6 +60,9 @@ async fn runtime_oauth_recovery() -> anyhow::Result<()> {
         "unexpired",
         "unknown-expiry",
         "revoked",
+        "reactive-refreshable",
+        "reactive-refreshable-coordinated",
+        "read-only-list",
     ])
     .await
 }
@@ -95,6 +105,15 @@ async fn runtime_oauth_child() -> anyhow::Result<()> {
     let server_url = format!("{}/mcp", mcp.uri());
     let startup = scenario.starts_with("startup-");
     let revoked = scenario == "revoked";
+    let reactive_tool_call = matches!(
+        scenario.as_str(),
+        "reactive-refreshable" | "reactive-refreshable-coordinated"
+    );
+    let reactive_tools_list = scenario == "read-only-list";
+    let tool_call_count = Arc::new(AtomicUsize::new(0));
+    let tools_list_count = Arc::new(AtomicUsize::new(0));
+    let tool_call_count_for_handler = Arc::clone(&tool_call_count);
+    let tools_list_count_for_handler = Arc::clone(&tools_list_count);
     Mock::given(method("GET"))
         .and(path("/.well-known/oauth-authorization-server/mcp"))
         .respond_with(ResponseTemplate::new(200).set_body_json(json!({
@@ -118,11 +137,25 @@ async fn runtime_oauth_child() -> anyhow::Result<()> {
                     },
                 })),
                 Some("notifications/initialized") => ResponseTemplate::new(202),
+                Some("tools/list")
+                    if reactive_tools_list
+                        && tools_list_count_for_handler.fetch_add(1, Ordering::SeqCst) == 0 =>
+                {
+                    ResponseTemplate::new(401)
+                        .insert_header("www-authenticate", "Bearer error=\"invalid_token\"")
+                }
                 Some("tools/list") => ResponseTemplate::new(200).set_body_json(json!({
                     "jsonrpc": "2.0", "id": body["id"], "result": {"tools": []},
                 })),
                 Some("tools/call") if revoked => ResponseTemplate::new(401)
                     .insert_header("www-authenticate", "Bearer error=\"invalid_token\""),
+                Some("tools/call")
+                    if reactive_tool_call
+                        && tool_call_count_for_handler.fetch_add(1, Ordering::SeqCst) == 0 =>
+                {
+                    ResponseTemplate::new(401)
+                        .insert_header("www-authenticate", "Bearer error=\"invalid_token\"")
+                }
                 Some("tools/call") => ResponseTemplate::new(200).set_body_json(json!({
                     "jsonrpc": "2.0", "id": body["id"],
                     "result": {"content": [{"type": "text", "text": "tool ran"}]},
@@ -135,7 +168,11 @@ async fn runtime_oauth_child() -> anyhow::Result<()> {
     // A zero lifetime expires after the handshake; 30 seconds exercises the early-refresh
     // window while the token remains valid. Neither case needs sleeps or clock changes.
     let expires_in = match scenario.as_str() {
-        "unexpired" | "startup-refreshable" => Some(3600),
+        "unexpired"
+        | "startup-refreshable"
+        | "reactive-refreshable"
+        | "reactive-refreshable-coordinated"
+        | "read-only-list" => Some(3600),
         "early-malformed" | "early-transient" => Some(30),
         "unknown-expiry" => None,
         _ => Some(0),
@@ -169,7 +206,7 @@ async fn runtime_oauth_child() -> anyhow::Result<()> {
         issuer: Some(server_url.clone()),
         client_id: "test-client".to_string(),
         token_response: WrappedOAuthTokenResponse(response),
-        expires_at: Some(if revoked {
+        expires_at: Some(if revoked || reactive_tool_call || reactive_tools_list {
             u64::try_from(SystemTime::now().duration_since(UNIX_EPOCH)?.as_millis())? + 3_600_000
         } else {
             0
@@ -182,18 +219,37 @@ async fn runtime_oauth_child() -> anyhow::Result<()> {
         AuthKeyringBackendKind::default(),
     )
     .await?;
-    let client = RmcpClient::new_streamable_http_client(
-        SERVER_NAME,
-        &server_url,
-        /*bearer_token*/ None,
-        /*http_headers*/ None,
-        /*env_http_headers*/ None,
-        OAuthCredentialsStoreMode::File,
-        AuthKeyringBackendKind::default(),
-        Environment::default_for_tests().get_http_client(),
-        /*auth_provider*/ None,
-    )
-    .await?;
+    let client = if scenario == "reactive-refreshable-coordinated" {
+        RmcpClient::new_streamable_http_client_with_protocol_mode_and_redirect_mode(
+            SERVER_NAME,
+            &server_url,
+            /*bearer_token*/ None,
+            /*http_headers*/ None,
+            /*env_http_headers*/ None,
+            /*oauth_config*/ None,
+            OAuthCredentialsStoreMode::File,
+            AuthKeyringBackendKind::default(),
+            Environment::default_for_tests().get_http_client(),
+            /*auth_provider*/ None,
+            McpProtocolMode::Legacy,
+            StreamableHttpRedirectMode::Legacy,
+            McpOAuthRefreshMode::Coordinated,
+        )
+        .await?
+    } else {
+        RmcpClient::new_streamable_http_client(
+            SERVER_NAME,
+            &server_url,
+            /*bearer_token*/ None,
+            /*http_headers*/ None,
+            /*env_http_headers*/ None,
+            OAuthCredentialsStoreMode::File,
+            AuthKeyringBackendKind::default(),
+            Environment::default_for_tests().get_http_client(),
+            /*auth_provider*/ None,
+        )
+        .await?
+    };
     let initialization = initialize_client(&client).await;
     if startup {
         if scenario == "startup-refreshable" {
@@ -278,7 +334,10 @@ async fn runtime_oauth_child() -> anyhow::Result<()> {
         .await?;
     }
     let refresh_response = match scenario.as_str() {
-        "refreshable" => ResponseTemplate::new(200).set_body_json(json!({
+        "refreshable"
+        | "reactive-refreshable"
+        | "reactive-refreshable-coordinated"
+        | "read-only-list" => ResponseTemplate::new(200).set_body_json(json!({
             "access_token": "renewed-token", "token_type": "Bearer", "expires_in": 3600,
         })),
         "malformed" | "early-malformed" => {
@@ -308,6 +367,51 @@ async fn runtime_oauth_child() -> anyhow::Result<()> {
         .mount(&authorization)
         .await;
 
+    if reactive_tools_list {
+        let result = client
+            .list_tools(/*params*/ None, Some(Duration::from_secs(5)))
+            .await?;
+        assert!(result.tools.is_empty());
+        let list_requests = mcp
+            .received_requests()
+            .await
+            .expect("request recording")
+            .into_iter()
+            .filter(|request| {
+                request
+                    .body_json::<Value>()
+                    .ok()
+                    .is_some_and(|body| body["method"] == "tools/list")
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(list_requests.len(), 2);
+        for (request, expected_token) in list_requests
+            .iter()
+            .zip(["Bearer old-token", "Bearer renewed-token"])
+        {
+            assert_eq!(
+                request
+                    .headers
+                    .get("authorization")
+                    .and_then(|value| value.to_str().ok()),
+                Some(expected_token)
+            );
+        }
+        let after = stored_oauth_credentials(
+            SERVER_NAME,
+            &server_url,
+            OAuthCredentialsStoreMode::File,
+            AuthKeyringBackendKind::default(),
+        )?
+        .expect("credentials are not deleted");
+        assert_eq!(
+            after.token_response.0.access_token().secret(),
+            "renewed-token"
+        );
+        authorization.verify().await;
+        return Ok(());
+    }
+
     let result = client
         .call_tool(
             "echo".to_string(),
@@ -331,12 +435,13 @@ async fn runtime_oauth_child() -> anyhow::Result<()> {
             assert_eq!(result?, expected);
         }
         "revoked" => {
-            let mut expected =
-                CallToolResult::error(vec![ContentBlock::text("Authentication required")]);
+            let mut expected = CallToolResult::error(vec![ContentBlock::text(
+                "MCP authentication required. Reconnect to continue using this server.",
+            )]);
             expected.meta = Some(
                 serde_json::Map::from_iter([(
                     "mcp/www_authenticate".to_string(),
-                    json!(["Bearer error=\"invalid_token\""]),
+                    json!("Bearer error=\"invalid_token\""),
                 )])
                 .into(),
             );
@@ -350,6 +455,70 @@ async fn runtime_oauth_child() -> anyhow::Result<()> {
             let result = result?;
             assert_eq!(result.content, vec![ContentBlock::text("tool ran")]);
             assert_eq!(result.meta, None);
+        }
+        "reactive-refreshable" | "reactive-refreshable-coordinated" => {
+            let mut expected = CallToolResult::error(vec![ContentBlock::text(
+                "OAuth credentials were refreshed; the original tool call was not replayed and its outcome is unknown. Do not repeat a mutation. Submit a separate request only if the operation is independently known to be read-only.",
+            )]);
+            expected.meta = Some(MetaObject::from(serde_json::Map::from_iter([(
+                "codex/oauth_recovery".to_string(),
+                json!({
+                    "code": "mcp_oauth_invalid_token_refreshed_no_replay",
+                    "auth": "refreshed",
+                    "outcome": "unknown",
+                    "retry": "read_only_only",
+                }),
+            )])));
+            assert_eq!(result?, expected);
+            let tool_calls_after_denial = mcp
+                .received_requests()
+                .await
+                .expect("request recording")
+                .into_iter()
+                .filter(|request| {
+                    request
+                        .body_json::<Value>()
+                        .ok()
+                        .is_some_and(|body| body["method"] == "tools/call")
+                })
+                .collect::<Vec<_>>();
+            assert_eq!(tool_calls_after_denial.len(), 1);
+            assert_eq!(
+                tool_calls_after_denial[0]
+                    .headers
+                    .get("authorization")
+                    .and_then(|value| value.to_str().ok()),
+                Some("Bearer old-token")
+            );
+            let separate_read = client
+                .call_tool(
+                    "echo".to_string(),
+                    /*arguments*/ None,
+                    |_| Ok(None),
+                    Some(Duration::from_secs(5)),
+                )
+                .await?;
+            assert_eq!(separate_read.content, vec![ContentBlock::text("tool ran")]);
+            let tool_calls_after_separate_read = mcp
+                .received_requests()
+                .await
+                .expect("request recording")
+                .into_iter()
+                .filter(|request| {
+                    request
+                        .body_json::<Value>()
+                        .ok()
+                        .is_some_and(|body| body["method"] == "tools/call")
+                })
+                .collect::<Vec<_>>();
+            assert_eq!(tool_calls_after_separate_read.len(), 2);
+            assert_eq!(
+                tool_calls_after_separate_read[1]
+                    .headers
+                    .get("authorization")
+                    .and_then(|value| value.to_str().ok()),
+                Some("Bearer renewed-token")
+            );
         }
         _ => unreachable!("scenario selected by parent test"),
     }
@@ -365,13 +534,12 @@ async fn runtime_oauth_child() -> anyhow::Result<()> {
                 .is_some_and(|body| body["method"] == "tools/call")
         })
         .count();
-    assert_eq!(
-        tool_calls,
-        usize::from(matches!(
-            scenario.as_str(),
-            "refreshable" | "unexpired" | "unknown-expiry" | "revoked"
-        ))
-    );
+    let expected_tool_calls = match scenario.as_str() {
+        "refreshable" | "unexpired" | "unknown-expiry" | "revoked" => 1,
+        "reactive-refreshable" | "reactive-refreshable-coordinated" => 2,
+        _ => 0,
+    };
+    assert_eq!(tool_calls, expected_tool_calls);
     let after = stored_oauth_credentials(
         SERVER_NAME,
         &server_url,
@@ -379,7 +547,10 @@ async fn runtime_oauth_child() -> anyhow::Result<()> {
         AuthKeyringBackendKind::default(),
     )?
     .expect("credentials are not deleted");
-    if scenario != "refreshable" {
+    if !matches!(
+        scenario.as_str(),
+        "refreshable" | "reactive-refreshable" | "reactive-refreshable-coordinated"
+    ) {
         assert_eq!(before, after);
     }
     authorization.verify().await;

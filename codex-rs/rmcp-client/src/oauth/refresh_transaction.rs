@@ -35,6 +35,20 @@ use super::validate_refresh_token_issuer;
 
 pub(super) const REFRESH_REQUEST_TIMEOUT: Duration = Duration::from_secs(45);
 
+pub(super) enum RefreshReason {
+    Expiry,
+    Unauthorized { rejected_access_token: String },
+}
+
+impl RefreshReason {
+    fn as_str(&self) -> &'static str {
+        match self {
+            Self::Expiry => "expiry",
+            Self::Unauthorized { .. } => "invalid_token",
+        }
+    }
+}
+
 impl OAuthPersistor {
     pub(crate) async fn refresh_if_needed(&self) -> Result<()> {
         self.refresh_if_needed_in(&DefaultKeyringStore, REFRESH_REQUEST_TIMEOUT)
@@ -56,8 +70,39 @@ impl OAuthPersistor {
             return Ok(());
         }
 
+        self.spawn_refresh_transaction(
+            RefreshReason::Expiry,
+            keyring_store,
+            refresh_request_timeout,
+        )
+        .await
+    }
+
+    /// Refreshes after a confirmed invalid-token denial, adopting a newer stored access token
+    /// instead of consuming its refresh token again when another client already rotated it.
+    pub(crate) async fn refresh_after_unauthorized(
+        &self,
+        rejected_access_token: &str,
+    ) -> Result<()> {
+        self.spawn_refresh_transaction(
+            RefreshReason::Unauthorized {
+                rejected_access_token: rejected_access_token.to_string(),
+            },
+            &DefaultKeyringStore,
+            REFRESH_REQUEST_TIMEOUT,
+        )
+        .await
+    }
+
+    async fn spawn_refresh_transaction<K: KeyringStore + Clone + 'static>(
+        &self,
+        reason: RefreshReason,
+        keyring_store: &K,
+        refresh_request_timeout: Duration,
+    ) -> Result<()> {
         let persistor = self.clone();
         let keyring_store = keyring_store.clone();
+        let reason_label = reason.as_str();
         // Once the provider can consume a rotating token, caller cancellation must not cancel
         // persistence. The owned task continues with independently bounded lock and request waits.
         // A provider timeout leaves the outcome unknown and permits a later serialized retry:
@@ -65,14 +110,14 @@ impl OAuthPersistor {
         // risk is preferred to holding the credential lock indefinitely.
         let transaction_task = tokio::spawn(async move {
             let result = persistor
-                .refresh_transaction(&keyring_store, refresh_request_timeout)
+                .refresh_transaction(reason, &keyring_store, refresh_request_timeout)
                 .await;
 
             // Keep this summary inside the owned task so caller cancellation cannot suppress it.
             if let Err(error) = &result {
                 warn!(
                     server_name = %persistor.inner.server_name,
-                    refresh_reason = "expiry",
+                    refresh_reason = reason_label,
                     error = %error,
                     "MCP OAuth refresh transaction failed"
                 );
@@ -97,12 +142,13 @@ impl OAuthPersistor {
         skip_all,
         fields(
             server_name = %self.inner.server_name,
-            refresh_reason = "expiry",
+            refresh_reason = reason.as_str(),
         ),
         err
     )]
     async fn refresh_transaction<K: KeyringStore + Clone + 'static>(
         &self,
+        reason: RefreshReason,
         keyring_store: &K,
         refresh_request_timeout: Duration,
     ) -> Result<()> {
@@ -138,7 +184,15 @@ impl OAuthPersistor {
             });
         };
 
-        if !token_needs_refresh(latest.expires_at) {
+        let latest_access_token = latest.token_response.0.access_token().secret();
+        let should_adopt = !token_needs_refresh(latest.expires_at)
+            && match &reason {
+                RefreshReason::Expiry => true,
+                RefreshReason::Unauthorized {
+                    rejected_access_token,
+                } => rejected_access_token != latest_access_token,
+            };
+        if should_adopt {
             debug!("adopting newer MCP OAuth credentials without contacting the provider");
             let manager = self.inner.authorization_manager.clone();
             let mut guard = manager.lock().await;
