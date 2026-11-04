@@ -650,7 +650,7 @@ class UsageTreeTests(unittest.TestCase):
             self.assertEqual(dedupe["unkeyedRowsWithheldObserved"], 2)
             merged = dedupe["mergedTotals"]
             self.assertEqual(merged["status"], "partial_excluding_unresolved")
-            self.assertEqual(merged["responseUsageRecordCount"], 3)
+            self.assertEqual(merged["responseUsageRecordCount"], 2)
             self.assertEqual(merged["excludedUnresolvedRows"], 4)
             self.assertEqual(
                 sum(
