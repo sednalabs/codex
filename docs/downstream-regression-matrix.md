@@ -84,8 +84,10 @@ after replacing only executable/group identities that are separately pinned by
 exact-text checks. A missing current
 same-principal bearer or unresolved effect leaves lease recovery intact. These
 hosted source/package checks do not establish protected service admission or
-live host activation. The source pin does not prove that a child cannot transfer
-its separately scoped runtime MCP credentials outside the fixed unit.
+live host activation. The launcher-side broker keeps the Ops bearer and proof key
+outside the child and admits fixed scoped requests over a per-invocation,
+kernel-authenticated Unix channel. This does not establish broad confinement of
+the separate Responses credential or task-readable data.
 
 ## Core default path
 
@@ -1200,20 +1202,23 @@ certificate/key/artifact and fixed lease validation, per-request signature
 verification, mismatched server/recipient rejection, distinct root/delegate
 session nonces with a shared MCP manager, protection-drift key erasure,
 bootstrap frame bounds and descriptor closure, and reserved metadata collision
-and result redaction. The CLI seam
-must show protected bootstrap initialization occurs before argument dispatch,
+and result redaction. The lifecycle seam also verifies that an unresolved MCP
+request blocks END until response acknowledgement, and that its request ID cannot
+be replaced or cleared. Broker transport regressions bind frames to kernel peer
+credentials and reject a different child PID. The CLI seam must show protected
+bootstrap initialization occurs before argument dispatch,
 environment handling, or asynchronous startup. Run the crate/core focused
 unit suites, CLI startup-order check, `codex.mcp-safety-targeted`,
 `core-runtime-surface-smoke`, and the downstream-doc integration guard on the
 hosted validation surface. The ignored Linux root fixture must be invoked
 explicitly and prove real ChatGPT ephemeral import, provider Authorization and
-account headers, selected MCP bearer, root/delegate signatures, and echo
-redaction. Its negative cases cover mismatched context/config, expired auth,
+account headers, launcher-side Ops signing, kernel-authenticated broker
+frames, root/delegate execution binding, and echo redaction. Its negative cases cover mismatched context/config, expired auth,
 wrong effective provider endpoint or credential class, a delegate role that
 changes the provider URL, and altered or over-segmented synthetic JWTs; every
-invalid bootstrap must have zero provider and MCP credential egress; the
-delegate override case must have zero off-path provider and child MCP egress
-while the valid root request still succeeds. A skip is not proof. A source-level
+invalid bootstrap must have zero provider and brokered Ops request egress;
+the delegate override case must have zero off-path provider or brokered Ops
+calls while the valid root request still succeeds. A skip is not proof. A source-level
 test or successful build alone does not establish launcher FD provenance,
 protected Linux process
 state, issuer validation by the service, or an end-to-end lease; those require

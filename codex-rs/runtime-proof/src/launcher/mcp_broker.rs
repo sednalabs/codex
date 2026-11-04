@@ -1,5 +1,5 @@
 use super::*;
-use anyhow::Context;
+use anyhow::Context as AnyhowContext;
 use codex_exec_server_protocol::ByteChunk;
 use codex_exec_server_protocol::HttpHeader;
 use codex_exec_server_protocol::HttpRedirectPolicy;

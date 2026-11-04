@@ -3885,20 +3885,24 @@ authority; its protected invocation context retains that digest with the manager
 path, device and inode, boot, unit, InvocationID, and cgroup identity, and
 rechecks it at each boundary. The added context field advances the private
 context format to version 3; older contexts fail closed. This binds the observed
-manager to policy; it does
-not establish that the child's runtime MCP key or bearer cannot be copied outside
-the unit. The child needs those credentials for the admitted MCP work. Its
-certificate limits mutations to the fixed principal, project, Work item, and
-claim/release pairs for at most 30 minutes; each mutation proof binds the exact
-arguments and native session evidence for at most 60 seconds. The issuer key
-that signs lifecycle witnesses remains in the root launcher. No live transfer
-or host containment proof is implied by these source checks.
+manager to policy. In the native MCP path, only the parent launcher retains the
+Ops bearer and proof-signing authority. Child requests go over a per-invocation
+Unix `SOCK_SEQPACKET` broker that checks kernel-supplied `SCM_CREDENTIALS` for
+the exact child PID and UID and rechecks process and manager/cgroup identity at
+each request boundary. The broker admits only scoped claim/release mutations
+and current-work or exact-request receipt reads. It does not put portable Ops
+epoch authority in the child; it does not confine the separate Responses
+credential or task-readable data. A potentially effective mutation's request
+UUID is persisted in the protected invocation context before send. The existing
+receipt path must resolve that same request before END; unknown effects remain
+lease-recovery cases.
 
-Protected startup also consumes a separate finite authentication frame from
-the root launcher. It imports ChatGPT credentials through the existing
-ephemeral auth path and keeps the selected MCP bearer in private runtime state.
-The endpoint check uses the effective built-in Responses provider URL, and
-every resolved model provider is checked against the canonical built-in
+Protected startup also consumes a separate finite provider-auth frame from
+the root launcher. The child imports ChatGPT credentials through the existing
+ephemeral auth path. The selected Ops MCP bearer and proof authority stay in the
+parent launcher and are used only through the invocation-scoped broker described
+above. The endpoint check uses the effective built-in Responses provider URL,
+and every resolved model provider is checked against the canonical built-in
 configuration before auth resolution and again before HTTP or websocket
 transport construction. This rejects role-level provider or auth overrides,
 including transport overrides, before protected credentials can leave the
@@ -3943,11 +3947,12 @@ root-owned policy selects one Work task, principal, project, MCP recipient,
 lease, and task instruction. It starts the measured `codex-dev` ELF through an
 already hashed file descriptor, drops to the configured runtime UID/GID, and
 checks the actual executable and process identity before reading any of the
-fixed `LoadCredential` inputs. It then sends the existing root-peer bootstrap
-and authentication frames, waits for the startup ACK, supplies the fixed task
-prompt through a deadline-bounded pipe, and enforces the certificate deadline
-while supervising the child. Issuer, provider-auth and bearer buffers are
-zeroized after their corresponding signed frame is prepared or sent. Runtime
+fixed `LoadCredential` inputs. It then sends the existing root-peer bootstrap and finite provider-auth
+frame, passes the invocation-scoped broker socket, waits for the startup ACK,
+supplies the fixed task prompt through a deadline-bounded pipe, and enforces the
+certificate deadline while supervising the child. Issuer seed, Ops bearer and
+proof authority stay in the parent broker context; provider-auth buffers are
+zeroized after the frame is prepared or sent. Runtime
 directories are populated while root still has owner write access, then child
 ownership and final immutable modes are applied without requiring
 `CAP_DAC_OVERRIDE`; installation state is chowned only after its final mode is
@@ -4077,8 +4082,8 @@ or live execution authority.
 The optional native supervised path additionally supports issuer-signed lifecycle
 events. The same pinned launcher reports start only after a matching receipt and
 before bootstrap; the measured child is held with uncatchable `SIGSTOP` until both
-bootstrap and auth packets are queued, and start proof requires the fixed cgroup's
-task count to equal the launcher's threads plus that stopped child. It preserves a
+the bootstrap and finite provider-auth packets are queued, and start proof requires
+the fixed cgroup's task count to equal the launcher's threads plus that stopped child. It preserves a
 reaped exit, signal, or timeout. Its root-only
 context binds the system manager executable and boot, fixed unit, InvocationID,
 and cgroup path plus filesystem identity. The unit uses control-group kill,
