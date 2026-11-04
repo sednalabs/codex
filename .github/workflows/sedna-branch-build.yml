@@ -495,8 +495,11 @@ jobs:
             "resourcesDir": "codex-resources",
             "pathDir": "codex-path",
         }
-        if any(metadata.get(key) != value for key, value in expected.items()):
-            raise SystemExit("canonical package metadata does not match the exact preview identity")
+        mismatches = [key for key, value in expected.items() if metadata.get(key) != value]
+        if mismatches:
+            raise SystemExit(
+                "canonical package metadata mismatch keys: " + ",".join(mismatches)
+            )
         PY
 
         rm -rf "${stage_dir}"
