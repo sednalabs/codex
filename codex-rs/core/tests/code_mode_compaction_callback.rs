@@ -108,13 +108,24 @@ async fn code_mode_nested_callback_progresses_during_mid_turn_compaction(
     .await;
     let compaction_started = Arc::new(tokio::sync::Notify::new());
     let notify = Arc::clone(&compaction_started);
+    let gate_output = Arc::new(Mutex::new(None::<String>));
+    let observed_output = Arc::clone(&gate_output);
     responses::mount_response_once_match(
         &server,
         move |request: &Request| {
             let body = String::from_utf8_lossy(&request.body);
-            let target_request = body.contains("gate-ready")
+            let output = serde_json::from_slice::<serde_json::Value>(&request.body)
+                .ok()
+                .and_then(|body| body.get("input")?.as_array()?.iter().find(|item| {
+                    item.get("type").and_then(serde_json::Value::as_str)
+                        == Some("custom_tool_call_output")
+                        && item.get("call_id").and_then(serde_json::Value::as_str)
+                            == Some("call-background")
+                }).and_then(|item| item.get("output")).map(ToString::to_string));
+            let target_request = output.is_some()
                 && body.contains("nested-callback-midturn-compaction-prompt") == expect_compaction;
             if target_request {
+                *observed_output.lock().unwrap() = output;
                 notify.notify_one();
             }
             target_request
@@ -168,7 +179,9 @@ async fn code_mode_nested_callback_progresses_during_mid_turn_compaction(
     let result: Result<()> = async {
         tokio::time::timeout(Duration::from_secs(30), compaction_started.notified())
             .await
-            .context("did not observe the target request with the launched gate")?;
+            .context("did not observe the target request with a cell output")?;
+        let output = gate_output.lock().unwrap().clone().unwrap_or_default();
+        anyhow::ensure!(output.contains("gate-ready"), "gate setup failed: {output}");
         compaction_held.store(true, Ordering::Release);
         fs::write(&marker, "continue")?;
         match tokio::time::timeout(Duration::from_secs(5), &mut callback_rx).await {
