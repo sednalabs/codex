@@ -6,7 +6,6 @@ use crate::provider_auth::ensure_protected_cloud_config_ineligible;
 use crate::provider_auth::valid_provider_recipient;
 #[cfg(target_os = "linux")]
 use crate::provider_auth::validate_provider_credential;
-use crate::signer;
 use anyhow::Context;
 use anyhow::Result;
 use anyhow::bail;
@@ -572,7 +571,6 @@ fn invalidate_auth(stored: &mut Option<BootstrapAuth>) -> Result<()> {
         &PROTECTED_RUNTIME_EVER_ACTIVE,
         &PROTECTED_RUNTIME_FAILED,
     );
-    signer::erase_signer_authority()?;
     Ok(())
 }
 

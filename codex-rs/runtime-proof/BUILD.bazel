@@ -3,5 +3,5 @@ load("//:defs.bzl", "codex_rust_crate")
 codex_rust_crate(
     name = "runtime-proof",
     crate_name = "codex_runtime_proof",
-    test_data_extra = ["systemd/codex-runtime-proof-claim.service"],
+    compile_data = ["systemd/codex-runtime-proof-claim.service"],
 )

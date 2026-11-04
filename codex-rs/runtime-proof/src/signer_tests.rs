@@ -125,16 +125,6 @@ fn certificate_validation_binds_key_artifact_and_fixed_execution_lease() {
     );
 }
 
-#[test]
-fn protection_drift_erases_the_process_signing_capability() {
-    let mut state = SignerState::Ready(Box::new(signer()));
-    assert!(
-        erase_on_protection_failure(&mut state, Err(anyhow::anyhow!("protection changed")),)
-            .is_err()
-    );
-    assert!(matches!(state, SignerState::Unconfigured));
-}
-
 fn parameters(note: &str) -> Value {
     serde_json::json!({
         "work_item_ref": "example-work-item",

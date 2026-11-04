@@ -8,11 +8,7 @@ use std::time::Duration;
 use std::time::Instant;
 
 fn claim_service_unit() -> String {
-    let package_root = option_env!("BAZEL_PACKAGE")
-        .map(std::path::PathBuf::from)
-        .unwrap_or_else(|| std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")));
-    std::fs::read_to_string(package_root.join("systemd/codex-runtime-proof-claim.service"))
-        .expect("read fixed claim service unit")
+    include_str!("../systemd/codex-runtime-proof-claim.service").to_string()
 }
 
 #[test]

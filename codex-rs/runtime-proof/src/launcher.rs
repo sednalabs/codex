@@ -231,8 +231,8 @@ pub fn lifecycle_stop() -> Result<i32> {
         inputs,
         lifecycle::Source::Systemd,
         lifecycle::Cause::Unobserved,
-        None,
-        None,
+        /*exit_code*/ None,
+        /*signal*/ None,
     )?;
     Ok(0)
 }
@@ -1296,7 +1296,7 @@ fn supervise_child(
     }
 
     let proof_authority = crate::signer::LauncherProofAuthority::new(
-        certificate.clone(),
+        certificate,
         runtime_seed,
         &executable.digest,
     )
@@ -1480,7 +1480,7 @@ fn verify_child_image_and_identity(
         executable.inode,
         target.runtime_uid,
         target.runtime_gid,
-        None,
+        /*expected_start_time*/ None,
     )
 }
 

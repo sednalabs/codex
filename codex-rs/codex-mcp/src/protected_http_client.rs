@@ -20,7 +20,10 @@ impl ProtectedMcpHttpClient {
         }
     }
 
-    fn prepare(&self, mut params: HttpRequestParams) -> Result<HttpRequestParams, ExecServerError> {
+    pub(crate) fn prepare(
+        &self,
+        mut params: HttpRequestParams,
+    ) -> Result<HttpRequestParams, ExecServerError> {
         if params.headers.iter().any(|header| {
             header.name.eq_ignore_ascii_case("authorization")
                 || header.name.eq_ignore_ascii_case("proxy-authorization")

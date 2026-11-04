@@ -3882,7 +3882,7 @@
         "fixed_task_prompt_write_obeys_the_execution_deadline_under_backpressure",
         "launcher_policy_rejects_unsafe_project_ids_and_noncanonical_issuer_pins",
         "runtime_home_layout_preserves_child_write_and_protected_config_boundaries",
-        "protection_drift_erases_the_process_signing_capability",
+        "response_body_redacts_launcher_credentials_and_proof",
         "selected_claim_rejects_a_mismatched_server_or_recipient",
         "signs_each_final_claim_request_with_native_context_and_fresh_nonce",
         "bootstrap_frame_is_bounded_and_descriptor_closes",

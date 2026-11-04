@@ -1,7 +1,9 @@
 use anyhow::Context;
 use anyhow::Result;
 use anyhow::bail;
+#[cfg(test)]
 use std::fs::File;
+#[cfg(test)]
 use std::io::Read;
 
 const AUTH_DESCRIPTOR_ENV: &str = "OPS_RUNTIME_AUTH_FD";
@@ -11,7 +13,7 @@ pub fn initialize_from_environment() -> Result<()> {
     let auth_configured = std::env::var_os(AUTH_DESCRIPTOR_ENV).is_some();
     let broker_configured = std::env::var_os(BROKER_DESCRIPTOR_ENV).is_some();
     if !auth_configured && !broker_configured {
-        return crate::signer::install_unconfigured();
+        return Ok(());
     }
     if !auth_configured || !broker_configured {
         bail!("protected runtime auth and broker descriptors must be configured together");
@@ -21,20 +23,15 @@ pub fn initialize_from_environment() -> Result<()> {
         verify_inherited_protection()?;
         set_non_dumpable()?;
         verify_runtime_protection()?;
-        crate::signer::install_unconfigured()?;
         let auth_socket = match crate::auth::initialize_from_environment() {
             Ok(socket) => socket,
-            Err(error) => {
-                crate::signer::erase_signer_authority()?;
-                return Err(error).context("initialize protected runtime authentication");
-            }
+            Err(error) => return Err(error).context("initialize protected runtime authentication"),
         };
         if let Err(error) = crate::mcp_broker::install_child_socket_from_environment()
             .and_then(|()| verify_runtime_protection())
             .and_then(|()| crate::auth::send_auth_ack(&auth_socket))
         {
             crate::auth::erase_auth_authority()?;
-            crate::signer::erase_signer_authority()?;
             return Err(error);
         }
         Ok(())
@@ -177,7 +174,8 @@ fn set_non_dumpable() -> Result<()> {
     bail!("protected runtime proof requires Linux")
 }
 
-pub(crate) fn current_artifact_sha256() -> Result<String> {
+#[cfg(test)]
+fn current_artifact_sha256() -> Result<String> {
     let executable = std::env::current_exe().context("cannot locate runtime executable")?;
     let mut file = File::open(executable).context("cannot open runtime executable")?;
     let mut hash = sha2::Sha256::new();

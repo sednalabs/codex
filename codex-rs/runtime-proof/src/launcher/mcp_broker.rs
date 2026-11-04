@@ -168,9 +168,7 @@ impl Context {
             Err(error) => return Err(error),
         };
         ensure_active(active, child_is_live)?;
-        if let Err(error) = verify_boundary() {
-            return Err(error);
-        }
+        verify_boundary()?;
         let encoded = serde_json::to_vec(&response).context("encode protected MCP response")?;
         if let Some(request_id) = mutation_request_id
             && (200..300).contains(&response.status)
@@ -499,3 +497,7 @@ fn redact_bytes(body: &mut Vec<u8>, secret: &str) {
         offset = start + replacement.len();
     }
 }
+
+#[cfg(test)]
+#[path = "mcp_broker_tests.rs"]
+mod tests;

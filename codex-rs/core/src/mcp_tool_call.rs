@@ -384,7 +384,7 @@ async fn handle_approved_mcp_tool_call(
 
     let start = Instant::now();
     let mut protected_call = false;
-    let mut runtime_redaction_context: Option<codex_runtime_proof::McpRedactionContext> = None;
+    let runtime_redaction_context: Option<codex_runtime_proof::McpRedactionContext> = None;
     let mut tool_input = arguments_value
         .clone()
         .unwrap_or_else(|| JsonValue::Object(serde_json::Map::new()));
@@ -457,29 +457,8 @@ async fn handle_approved_mcp_tool_call(
                         codex_runtime_proof::is_protected_mcp_target(&server, recipient)
                             .map_err(anyhow::Error::msg)?;
                 }
-                let empty_arguments = JsonValue::Null;
-                let proof_parameters = rewritten_arguments.as_ref().unwrap_or(&empty_arguments);
-                let proof = if protected_call {
-                    // The root launcher adds mutation proof at its authenticated MCP broker.
-                    None
-                } else {
-                    codex_runtime_proof::sign_protected_mcp_proof(
-                        &sess.execution_nonce,
-                        &sess.thread_id.to_string(),
-                        &server,
-                        transport_url.as_deref(),
-                        &tool_name,
-                        proof_parameters,
-                    )?
-                };
-                if protected_call && proof.is_some() {
-                    runtime_redaction_context = codex_runtime_proof::capture_mcp_redaction_context(
-                        &server,
-                        transport_url.as_deref().unwrap_or_default(),
-                        proof.as_ref(),
-                    )?;
-                }
-                let request_meta = add_runtime_proof_meta(request_meta, proof)?;
+                // The launcher adds protected Ops proof at its authenticated broker.
+                let request_meta = add_runtime_proof_meta(request_meta, None)?;
                 Ok((rewritten_arguments, request_meta))
             })
             .await
