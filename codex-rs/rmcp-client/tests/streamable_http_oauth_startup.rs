@@ -222,8 +222,7 @@ async fn invalid_token_refresh_never_replays_tool_calls() -> anyhow::Result<()> 
                             mutating_attempts_for_response.fetch_add(1, Ordering::SeqCst)
                         }
                         Some("result_challenge") => {
-                            metadata_challenge_attempts_for_response
-                                .fetch_add(1, Ordering::SeqCst);
+                            metadata_challenge_attempts_for_response.fetch_add(1, Ordering::SeqCst);
                             return ResponseTemplate::new(200).set_body_json(json!({
                                 "jsonrpc": "2.0",
                                 "id": id,
@@ -267,7 +266,10 @@ async fn invalid_token_refresh_never_replays_tool_calls() -> anyhow::Result<()> 
         .env(CHILD_SERVER_URL_ENV, server_url)
         .status()
         .await?;
-    assert!(status.success(), "OAuth invalid_token child failed: {status}");
+    assert!(
+        status.success(),
+        "OAuth invalid_token child failed: {status}"
+    );
     assert_eq!(refresh_attempts.load(Ordering::SeqCst), 2);
     assert_eq!(read_only_attempts.load(Ordering::SeqCst), 1);
     assert_eq!(mutating_attempts.load(Ordering::SeqCst), 1);
@@ -331,8 +333,16 @@ async fn invalid_token_recovery_child() -> anyhow::Result<()> {
         )
         .await
         .expect_err("read-only annotation cannot authorize automatic replay");
-    assert!(read_only_error.to_string().contains("credentials were refreshed"));
-    assert!(read_only_error.to_string().contains("request was not replayed"));
+    assert!(
+        read_only_error
+            .to_string()
+            .contains("credentials were refreshed")
+    );
+    assert!(
+        read_only_error
+            .to_string()
+            .contains("request was not replayed")
+    );
 
     let mutating = client
         .call_tool(
@@ -343,7 +353,11 @@ async fn invalid_token_recovery_child() -> anyhow::Result<()> {
         )
         .await;
     let mutating_error = mutating.expect_err("mutating tool call must not be replayed");
-    assert!(mutating_error.to_string().contains("request was not replayed"));
+    assert!(
+        mutating_error
+            .to_string()
+            .contains("request was not replayed")
+    );
 
     let result_challenge = client
         .call_tool(

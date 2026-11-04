@@ -2074,11 +2074,10 @@ mod tests {
 
     #[test]
     fn confirmed_bearer_invalid_token_denial_is_recoverable() {
-        let error = transport_send_error(StreamableHttpError::AuthRequired(
-            AuthRequiredError::new(
+        let error =
+            transport_send_error(StreamableHttpError::AuthRequired(AuthRequiredError::new(
                 r#"Basic realm="example", Bearer error="invalid_token""#.to_string(),
-            ),
-        ));
+            )));
 
         assert!(RmcpClient::is_confirmed_invalid_token_operation_error(
             &error
@@ -2111,11 +2110,11 @@ mod tests {
 
     #[test]
     fn uncertain_tool_call_auth_error_is_never_replayed_or_refreshed() {
-        let ClientOperationError::Service(source) = transport_send_error(
-            StreamableHttpError::AuthRequired(AuthRequiredError::new(
+        let ClientOperationError::Service(source) =
+            transport_send_error(StreamableHttpError::AuthRequired(AuthRequiredError::new(
                 r#"Bearer error="invalid_token""#.to_string(),
-            )),
-        ) else {
+            )))
+        else {
             unreachable!();
         };
         let error = ClientOperationError::UncertainService { source };
