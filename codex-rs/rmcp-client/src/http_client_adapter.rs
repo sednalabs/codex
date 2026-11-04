@@ -63,8 +63,7 @@ pub(super) fn is_successful_tools_call_json_response(
     response_body: &[u8],
     expected_request_id: &serde_json::Value,
 ) -> bool {
-    let Ok(expected_request_id) =
-        serde_json::from_value::<RequestId>(expected_request_id.clone())
+    let Ok(expected_request_id) = serde_json::from_value::<RequestId>(expected_request_id.clone())
     else {
         return false;
     };

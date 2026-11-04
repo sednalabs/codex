@@ -169,9 +169,9 @@ impl Context {
         };
         ensure_active(active, child_is_live)?;
         verify_boundary()?;
-        let mutation_response_is_complete = mutation_rpc_id.as_ref().is_some_and(|rpc_id| {
-            response_confirms_mutation(&response, rpc_id)
-        });
+        let mutation_response_is_complete = mutation_rpc_id
+            .as_ref()
+            .is_some_and(|rpc_id| response_confirms_mutation(&response, rpc_id));
         let encoded = serde_json::to_vec(&response).context("encode protected MCP response")?;
         if let Some(request_id) = mutation_request_id
             && mutation_response_is_complete
@@ -198,7 +198,12 @@ impl Context {
     fn prepare(
         &mut self,
         mut request: HttpRequestParams,
-    ) -> Result<(HttpRequestParams, Option<String>, Option<Uuid>, Option<Value>)> {
+    ) -> Result<(
+        HttpRequestParams,
+        Option<String>,
+        Option<Uuid>,
+        Option<Value>,
+    )> {
         if request.url != self.recipient
             || !matches!(request.method.as_str(), "POST" | "GET" | "DELETE")
             || (request.method != "POST" && request.body.is_some())
@@ -473,10 +478,7 @@ fn is_valid_json_rpc_id(value: &Value) -> bool {
     match value {
         Value::String(_) => true,
         Value::Number(value) => {
-            value.as_i64().is_some()
-                || value
-                    .as_u64()
-                    .is_some_and(|value| value <= i64::MAX as u64)
+            value.as_i64().is_some() || value.as_u64().is_some_and(|value| value <= i64::MAX as u64)
         }
         _ => false,
     }

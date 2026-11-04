@@ -35,10 +35,7 @@ pub fn is_successful_tools_call_json_response(
     response_body: &[u8],
     expected_request_id: &serde_json::Value,
 ) -> bool {
-    http_client_adapter::is_successful_tools_call_json_response(
-        response_body,
-        expected_request_id,
-    )
+    http_client_adapter::is_successful_tools_call_json_response(response_body, expected_request_id)
 }
 pub use in_process_transport::InProcessTransportFactory;
 pub use oauth::StoredOAuthTokens;
