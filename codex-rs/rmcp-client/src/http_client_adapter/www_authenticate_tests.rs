@@ -4,8 +4,8 @@ use pretty_assertions::assert_eq;
 use super::BearerInsufficientScope;
 use super::InsufficientScopeChallenge;
 use super::insufficient_scope_challenge;
-use super::is_bearer_invalid_token_challenge;
 use super::invalid_token_challenge;
+use super::is_bearer_invalid_token_challenge;
 use super::parse_bearer_insufficient_scope;
 
 #[test]
@@ -166,5 +166,8 @@ fn selects_a_later_invalid_token_bearer_field_value() {
         },
     ];
 
-    assert_eq!(invalid_token_challenge(&headers), Some(headers[1].value.clone()));
+    assert_eq!(
+        invalid_token_challenge(&headers),
+        Some(headers[1].value.clone())
+    );
 }
