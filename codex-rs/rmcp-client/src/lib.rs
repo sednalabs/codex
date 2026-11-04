@@ -13,6 +13,7 @@ mod program_resolver;
 mod protocol_mode;
 mod request_cancellation_guard;
 mod rmcp_client;
+mod single_attempt_oauth_client;
 mod startup_error;
 mod stdio_server_launcher;
 mod utils;
