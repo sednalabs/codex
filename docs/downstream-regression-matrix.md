@@ -72,8 +72,10 @@ The optional native launcher lifecycle path requires a separately issuer-signed
 event and matching start receipt before bootstrap. Its focused tests cover the
 event/witness binding, closed causes, exact receipt comparison, immutable
 potentially-sent proof timing, and a single read after an uncertain POST. The
-manager-proof tests reject changed/unknown systemd properties and require start
-task accounting to equal the launcher's threads plus the held measured child;
+manager-proof tests reject changed/unknown systemd properties, require the
+observed PID 1 executable digest to match the admin-selected root-policy pin at
+capture and recheck, and require start task accounting to equal the launcher's
+threads plus the held measured child;
 the child receives no authority until the start receipt and final boundary check.
 End requires the fixed invocation, `MainPID=0`, `ControlPID=self`, stop-post
 state, self cgroup membership, and hierarchical `pids.current=1`. A normalized validation copy of
@@ -82,7 +84,8 @@ after replacing only executable/group identities that are separately pinned by
 exact-text checks. A missing current
 same-principal bearer or unresolved effect leaves lease recovery intact. These
 hosted source/package checks do not establish protected service admission or
-live host activation.
+live host activation. The source pin does not prove that a child cannot transfer
+its separately scoped runtime MCP credentials outside the fixed unit.
 
 ## Core default path
 

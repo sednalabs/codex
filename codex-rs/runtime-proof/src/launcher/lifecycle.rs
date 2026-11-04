@@ -40,6 +40,7 @@ const REQUEST_TIMEOUT: Duration = Duration::from_secs(8);
 const MAX_RESPONSE_BYTES: usize = 64 * 1024;
 const STATE_DIRECTORY: &str = "/var/lib/codex-runtime-proof-lifecycle";
 const MAX_CONTEXT_BYTES: usize = 64 * 1024;
+const CONTEXT_VERSION: u8 = 3;
 
 struct RemoveTemporaryFile(PathBuf);
 
@@ -260,8 +261,8 @@ fn parse_manager_invocation(raw: &str) -> Result<Uuid> {
     Ok(invocation)
 }
 
-pub(super) fn capture_manager_binding() -> Result<ManagerBinding> {
-    manager::capture_start_binding()
+pub(super) fn capture_manager_binding(expected_manager_sha256: &str) -> Result<ManagerBinding> {
+    manager::capture_start_binding(expected_manager_sha256)
 }
 
 pub(super) fn require_manager_start(
@@ -690,7 +691,7 @@ fn verified_certificate(
     invocation: Uuid,
 ) -> Result<wire::CertificateClaims> {
     context.manager_binding.validate()?;
-    if context.version != 2
+    if context.version != CONTEXT_VERSION
         || context.policy_sha256 != policy_sha256
         || context.manager_binding.invocation_id != invocation
         || context.manager_binding.invocation_id != context.pending_start.event.manager_invocation
@@ -916,7 +917,7 @@ pub(super) fn start(
     // Persist the potentially-sent tuple before the HTTP request can begin.
     pending_start.may_have_been_sent = true;
     let mut context = Context {
-        version: 2,
+        version: CONTEXT_VERSION,
         certificate: certificate.to_string(),
         policy_sha256: policy_sha256.to_string(),
         manager_binding: manager_binding.clone(),

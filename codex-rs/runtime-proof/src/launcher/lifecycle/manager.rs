@@ -1,5 +1,6 @@
 //! Fixed system-manager and cgroup proof for the lifecycle stop observer.
 
+use super::super::sha256_file;
 use anyhow::Result;
 use anyhow::bail;
 use serde::Deserialize;
@@ -33,6 +34,7 @@ const UNIT_PROPERTIES: &str = "Id,InvocationID,ControlGroup,MainPID,ControlPID,T
 pub(in crate::launcher) struct ManagerBinding {
     pub(super) boot_id: Uuid,
     pub(super) manager_executable: String,
+    pub(super) manager_executable_sha256: String,
     pub(super) manager_pid: u32,
     pub(super) manager_executable_device: u64,
     pub(super) manager_executable_inode: u64,
@@ -59,9 +61,14 @@ struct UnitSnapshot {
 }
 
 /// Capture the exact systemd invocation before the launcher can release a certificate.
-pub(super) fn capture_start_binding() -> Result<ManagerBinding> {
-    let (manager_pid, manager_executable, manager_device, manager_inode) =
-        trusted_system_manager()?;
+pub(super) fn capture_start_binding(expected_manager_sha256: &str) -> Result<ManagerBinding> {
+    let (
+        manager_pid,
+        manager_executable,
+        manager_device,
+        manager_inode,
+        manager_executable_sha256,
+    ) = trusted_system_manager(expected_manager_sha256)?;
     let boot_id = current_boot_id()?;
     let invocation_id = invocation_id_from_environment()?;
     let snapshot = query_unit()?;
@@ -78,6 +85,7 @@ pub(super) fn capture_start_binding() -> Result<ManagerBinding> {
     Ok(ManagerBinding {
         boot_id,
         manager_executable,
+        manager_executable_sha256,
         manager_pid,
         manager_executable_device: manager_device,
         manager_executable_inode: manager_inode,
@@ -122,6 +130,7 @@ pub(super) fn require_stop_binding(binding: &ManagerBinding) -> Result<()> {
 
 impl ManagerBinding {
     pub(super) fn validate(&self) -> Result<()> {
+        super::super::validate_sha256(&self.manager_executable_sha256)?;
         if self.boot_id.is_nil()
             || self.manager_pid != 1
             || !valid_systemd_path(&self.manager_executable)
@@ -141,14 +150,20 @@ impl ManagerBinding {
 
 fn verify_binding(binding: &ManagerBinding) -> Result<UnitSnapshot> {
     binding.validate()?;
-    let (manager_pid, manager_executable, manager_device, manager_inode) =
-        trusted_system_manager()?;
+    let (
+        manager_pid,
+        manager_executable,
+        manager_device,
+        manager_inode,
+        manager_sha256,
+    ) = trusted_system_manager(&binding.manager_executable_sha256)?;
     validate_manager_identity(
         binding,
         manager_pid,
         &manager_executable,
         manager_device,
         manager_inode,
+        &manager_sha256,
     )?;
     if current_boot_id()? != binding.boot_id
         || invocation_id_from_environment()? != binding.invocation_id
@@ -173,11 +188,13 @@ fn validate_manager_identity(
     manager_executable: &str,
     manager_device: u64,
     manager_inode: u64,
+    manager_sha256: &str,
 ) -> Result<()> {
     if manager_pid != binding.manager_pid
         || manager_executable != binding.manager_executable
         || manager_device != binding.manager_executable_device
         || manager_inode != binding.manager_executable_inode
+        || manager_sha256 != binding.manager_executable_sha256
     {
         bail!("lifecycle system manager identity changed");
     }
@@ -347,7 +364,7 @@ fn invocation_id_from_environment() -> Result<Uuid> {
     parse_systemd_invocation(&std::env::var("INVOCATION_ID")?)
 }
 
-fn trusted_system_manager() -> Result<(u32, String, u64, u64)> {
+fn trusted_system_manager(expected_sha256: &str) -> Result<(u32, String, u64, u64, String)> {
     if unsafe { libc::geteuid() } != 0 || unsafe { libc::getppid() } != 1 {
         bail!("lifecycle observer is not a root child of the system manager");
     }
@@ -355,20 +372,35 @@ fn trusted_system_manager() -> Result<(u32, String, u64, u64)> {
     if !valid_systemd_path(&executable.to_string_lossy()) {
         bail!("lifecycle system manager executable is invalid");
     }
-    let metadata = fs::metadata("/proc/1/exe")?;
+    let file = File::open("/proc/1/exe")?;
+    let metadata = file.metadata()?;
+    let path_metadata = fs::metadata(&executable)?;
     if !metadata.is_file()
         || metadata.uid() != 0
         || metadata.mode() & 0o111 == 0
         || metadata.mode() & 0o022 != 0
+        || metadata.dev() != path_metadata.dev()
+        || metadata.ino() != path_metadata.ino()
     {
         bail!("lifecycle system manager executable is not root controlled");
     }
+    let digest = sha256_file(&file)?;
+    validate_manager_digest(expected_sha256, &digest)?;
     Ok((
         1,
         executable.to_string_lossy().into_owned(),
         metadata.dev(),
         metadata.ino(),
+        digest,
     ))
+}
+
+fn validate_manager_digest(expected_sha256: &str, observed_sha256: &str) -> Result<()> {
+    super::super::validate_sha256(expected_sha256)?;
+    if observed_sha256 != expected_sha256 {
+        bail!("lifecycle system manager differs from the root policy pin");
+    }
+    Ok(())
 }
 
 fn valid_systemd_path(value: &str) -> bool {
@@ -538,6 +570,7 @@ mod tests {
         ManagerBinding {
             boot_id: Uuid::from_u128(1),
             manager_executable: "/usr/lib/systemd/systemd".to_string(),
+            manager_executable_sha256: "a".repeat(64),
             manager_pid: 1,
             manager_executable_device: 1,
             manager_executable_inode: 2,
@@ -547,6 +580,14 @@ mod tests {
             control_group_device: 1,
             control_group_inode: 2,
         }
+    }
+
+    #[test]
+    fn manager_executable_must_match_the_protected_policy_pin() {
+        let expected = "a".repeat(64);
+        assert!(validate_manager_digest(&expected, &expected).is_ok());
+        assert!(validate_manager_digest(&expected, &"b".repeat(64)).is_err());
+        assert!(validate_manager_digest("", &expected).is_err());
     }
 
     #[test]
@@ -614,10 +655,51 @@ mod tests {
     fn binding_is_fixed_to_one_system_unit_and_epoch() {
         let binding = binding();
         assert!(binding.validate().is_ok());
-        assert!(validate_manager_identity(&binding, 1, "/usr/lib/systemd/systemd", 1, 2).is_ok());
-        assert!(validate_manager_identity(&binding, 1, "/usr/lib/systemd/systemd", 1, 3).is_err());
-        assert!(validate_manager_identity(&binding, 1, "/usr/lib/systemd/systemd", 2, 2).is_err());
-        assert!(validate_manager_identity(&binding, 2, "/usr/lib/systemd/systemd", 1, 2).is_err());
+        assert!(validate_manager_identity(
+            &binding,
+            1,
+            "/usr/lib/systemd/systemd",
+            1,
+            2,
+            &binding.manager_executable_sha256,
+        )
+        .is_ok());
+        assert!(validate_manager_identity(
+            &binding,
+            1,
+            "/usr/lib/systemd/systemd",
+            1,
+            3,
+            &binding.manager_executable_sha256,
+        )
+        .is_err());
+        assert!(validate_manager_identity(
+            &binding,
+            1,
+            "/usr/lib/systemd/systemd",
+            2,
+            2,
+            &binding.manager_executable_sha256,
+        )
+        .is_err());
+        assert!(validate_manager_identity(
+            &binding,
+            2,
+            "/usr/lib/systemd/systemd",
+            1,
+            2,
+            &binding.manager_executable_sha256,
+        )
+        .is_err());
+        assert!(validate_manager_identity(
+            &binding,
+            1,
+            "/usr/lib/systemd/systemd",
+            1,
+            2,
+            &"b".repeat(64),
+        )
+        .is_err());
         let mut changed = binding;
         changed.control_group = "/system.slice/other.service".to_string();
         assert!(changed.validate().is_err());

@@ -123,6 +123,7 @@ struct McpLaunchConfig {
 #[serde(deny_unknown_fields)]
 struct LifecycleConfig {
     observer_sha256: String,
+    manager_sha256: String,
 }
 
 #[derive(Deserialize)]
@@ -511,7 +512,7 @@ fn run_mcp(
         open_verified_self_executable(&config.observer_sha256)?;
         let binding = {
             let _lifecycle_lock = lifecycle::lock_cohort()?;
-            lifecycle::capture_manager_binding()?
+            lifecycle::capture_manager_binding(&config.manager_sha256)?
         };
         Some(binding)
     } else {
@@ -761,6 +762,7 @@ fn validate_policy(policy: &LauncherPolicy) -> Result<()> {
         LauncherTarget::Mcp(target) => {
             if let Some(lifecycle) = &target.lifecycle {
                 validate_sha256(&lifecycle.observer_sha256)?;
+                validate_sha256(&lifecycle.manager_sha256)?;
             }
             if target.runtime_uid == 0
                 || target.runtime_gid == 0

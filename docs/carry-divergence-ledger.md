@@ -3878,6 +3878,22 @@ two fields must not share an encoding change. The
 `certificate_digest_matches_ops_protocol_vector` regression pins this producer
 contract to the Ops protocol's expected digest.
 
+The optional systemd lifecycle policy requires a lowercase `manager_sha256`
+selected through the root-owned launcher policy. The launcher hashes the opened
+PID 1 executable and requires that digest to match before releasing start
+authority; its protected invocation context retains that digest with the manager
+path, device and inode, boot, unit, InvocationID, and cgroup identity, and
+rechecks it at each boundary. The added context field advances the private
+context format to version 3; older contexts fail closed. This binds the observed
+manager to policy; it does
+not establish that the child's runtime MCP key or bearer cannot be copied outside
+the unit. The child needs those credentials for the admitted MCP work. Its
+certificate limits mutations to the fixed principal, project, Work item, and
+claim/release pairs for at most 30 minutes; each mutation proof binds the exact
+arguments and native session evidence for at most 60 seconds. The issuer key
+that signs lifecycle witnesses remains in the root launcher. No live transfer
+or host containment proof is implied by these source checks.
+
 Protected startup also consumes a separate finite authentication frame from
 the root launcher. It imports ChatGPT credentials through the existing
 ephemeral auth path and keeps the selected MCP bearer in private runtime state.

@@ -234,7 +234,7 @@ fn fixed_policy(seed: &[u8; RUNTIME_SEED_BYTES]) -> LauncherPolicy {
         issuer_kid: "issuer-v1".to_string(),
         issuer_public_key: URL_SAFE_NO_PAD.encode(issuer.verifying_key().as_bytes()),
         execution_lease_seconds: 60,
-        target: LauncherTarget::Mcp(McpLaunchConfig {
+        target: LauncherTarget::Mcp(Box::new(McpLaunchConfig {
             codex_dev_path: PathBuf::from("/"),
             codex_dev_sha256: "a".repeat(64),
             runtime_uid: 65534,
@@ -250,7 +250,7 @@ fn fixed_policy(seed: &[u8; RUNTIME_SEED_BYTES]) -> LauncherPolicy {
             },
             task_prompt: "Claim the fixed Work item after checking its current state.".to_string(),
             lifecycle: None,
-        }),
+        })),
     }
 }
 
@@ -276,9 +276,26 @@ fn lifecycle_policy_is_opt_in_and_closed() {
         serde_json::from_value(value.clone()).expect("ordinary MCP profile");
     assert!(original.lifecycle.is_none());
     value["lifecycle"] = serde_json::json!({"observer_sha256": "b".repeat(64)});
+    assert!(serde_json::from_value::<McpLaunchConfig>(value.clone()).is_err());
+    value["lifecycle"] = serde_json::json!({
+        "observer_sha256": "b".repeat(64),
+        "manager_sha256": "c".repeat(64)
+    });
     let enabled: McpLaunchConfig =
         serde_json::from_value(value.clone()).expect("lifecycle profile");
     assert!(enabled.lifecycle.is_some());
+    value["lifecycle"]["manager_sha256"] = serde_json::json!("C".repeat(64));
+    let invalid_digest: McpLaunchConfig =
+        serde_json::from_value(value.clone()).expect("lifecycle digest remains a closed string field");
+    let mut policy = fixed_policy(&[7_u8; RUNTIME_SEED_BYTES]);
+    if let LauncherTarget::Mcp(target) = &mut policy.target {
+        target.lifecycle = Some(enabled.lifecycle.expect("lifecycle policy"));
+    }
+    assert!(validate_policy(&policy).is_ok());
+    if let LauncherTarget::Mcp(target) = &mut policy.target {
+        target.lifecycle = Some(invalid_digest.lifecycle.expect("lifecycle config"));
+    }
+    assert!(validate_policy(&policy).is_err());
     value["lifecycle"]["unexpected"] = serde_json::json!(true);
     assert!(serde_json::from_value::<McpLaunchConfig>(value).is_err());
 }
