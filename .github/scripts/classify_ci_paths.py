@@ -73,11 +73,6 @@ PACKAGE_ROOT_PATHS = {
     "pnpm-workspace.yaml",
 }
 
-USAGE_TREE_REPORTING_PATHS = {
-    "scripts/codex_usage_tree.py",
-    "scripts/test_codex_usage_tree.py",
-}
-
 BAZEL_ROOT_PATHS = {
     ".bazelrc",
     "MODULE.bazel",
@@ -200,7 +195,6 @@ def classify(paths: Iterable[str]) -> Scope:
             path == ".github/workflows/repo-checks.yml"
             or path in PACKAGE_ROOT_PATHS
             or path == "scripts/stage_npm_packages.py"
-            or path in USAGE_TREE_REPORTING_PATHS
             or _starts(path, "scripts/codex_package/", "scripts/install/", "codex-cli/")
         ):
             repo_package = True

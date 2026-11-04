@@ -2,11 +2,15 @@ import contextlib
 import io
 import json
 import sqlite3
+import sys
 import tempfile
 import unittest
 from decimal import Decimal
 from pathlib import Path
 from unittest.mock import patch
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[1] / ".github" / "scripts"))
+from classify_ci_paths import classify  # noqa: E402
 
 from codex_usage_tree import (
     RpcError,
@@ -101,6 +105,14 @@ class SyntheticErrorAppServer:
 
 
 class UsageTreeTests(unittest.TestCase):
+    def test_usage_tree_python_files_select_existing_format_lane(self):
+        for path in (
+            "scripts/codex_usage_tree.py",
+            "scripts/test_codex_usage_tree.py",
+        ):
+            with self.subTest(path=path):
+                self.assertTrue(classify([path]).repo_format)
+
     def _write_union_ledger(self, database, calls):
         connection = sqlite3.connect(database)
         connection.executescript(
