@@ -95,7 +95,7 @@ async fn code_mode_nested_callback_progresses_during_mid_turn_compaction(
     let marker = marker_dir.path().join("compaction-started");
     let wait_command = format!("while [ ! -e '{}' ]; do sleep 0.05; done", marker.display());
     let script = format!(
-        "const gate = await tools.exec_command({{cmd: {}, yield_time_ms: 1000}}); if (!gate.session_id) throw Error('gate session missing'); text('gate-ready'); yield_control(); await tools.write_stdin({{session_id: gate.session_id, chars: '', yield_time_ms: 30000}}); await tools.test_sync_tool({{}});",
+        "const gate = await tools.exec_command({{cmd: {}, yield_time_ms: 1000}}); if (!gate.session_id) throw Error('gate session missing: ' + JSON.stringify(gate)); text('gate-ready'); yield_control(); await tools.write_stdin({{session_id: gate.session_id, chars: '', yield_time_ms: 30000}}); await tools.test_sync_tool({{}});",
         serde_json::to_string(&wait_command)?
     );
     responses::mount_sse_once(
