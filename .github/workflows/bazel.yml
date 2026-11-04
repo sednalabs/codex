@@ -103,6 +103,10 @@ jobs:
             --test_verbose_timeout_warnings
             --build_metadata=COMMIT_SHA=${GITHUB_SHA}
           )
+          if [[ "${RUNNER_OS}" == "Linux" ]]; then
+            # Bound concurrent local Rust actions on standard Linux runners.
+            bazel_test_args+=(--jobs=2)
+          fi
           if [[ "${W14939_FOCUSED_TESTS}" == "true" ]]; then
             focused_status=0
             ./.github/scripts/run-bazel-ci.sh \
@@ -482,7 +486,7 @@ jobs:
 
   clippy:
     if: ${{ github.event_name != 'workflow_dispatch' || !inputs.w14939_focused_tests }}
-    timeout-minutes: ${{ matrix.os == 'macos-15' && 90 || 30 }}
+    timeout-minutes: ${{ matrix.os == 'windows-2022' && 30 || 90 }}
     strategy:
       fail-fast: false
       matrix:
@@ -532,6 +536,10 @@ jobs:
           )
           bazel_wrapper_args=()
           bazel_target_list_args=()
+          if [[ "${RUNNER_OS}" == "Linux" ]]; then
+            # Bound concurrent local Rust actions on standard Linux runners.
+            bazel_clippy_args+=(--jobs=1)
+          fi
           if [[ "${RUNNER_OS}" == "Windows" ]]; then
             # Keep this aligned with the fast Windows Bazel test job: use
             # Linux RBE for clippy build actions while targeting Windows
@@ -587,7 +595,7 @@ jobs:
 
   verify-release-build:
     if: ${{ github.event_name != 'workflow_dispatch' || !inputs.w14939_focused_tests }}
-    timeout-minutes: ${{ matrix.os == 'macos-15' && 90 || 30 }}
+    timeout-minutes: ${{ matrix.os == 'windows-2022' && 30 || 90 }}
     strategy:
       fail-fast: false
       matrix:
@@ -651,6 +659,12 @@ jobs:
             --build_metadata=TAG_job=verify-release-build
             --build_metadata=TAG_rust_debug_assertions=off
           )
+          if [[ "${RUNNER_OS}" == "Linux" ]]; then
+            # The hosted Linux runner can exhaust memory and swap when several
+            # large Rust targets compile concurrently. Keep the full target set
+            # while limiting build concurrency.
+            bazel_build_args+=(--jobs=1)
+          fi
 
           bazel_target_lines="$(bash ./scripts/list-bazel-release-targets.sh)"
           bazel_targets=()

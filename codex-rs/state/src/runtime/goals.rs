@@ -9,6 +9,14 @@ pub struct GoalStore {
     pool: Arc<SqlitePool>,
 }
 
+/// Holds SQLite's writer slot while an external wake is registered.
+///
+/// Dropping the dedicated connection releases its read-only transaction;
+/// it is never returned to the shared pool with a changed busy timeout.
+pub struct GoalWakeGuard {
+    _connection: sqlx::SqliteConnection,
+}
+
 impl GoalStore {
     pub(crate) fn new(pool: Arc<SqlitePool>) -> Self {
         Self { pool }
@@ -40,6 +48,32 @@ pub enum GoalAccountingMode {
 }
 
 impl GoalStore {
+    /// Try to serialize an active-goal wake against other goal writers.
+    ///
+    /// This deliberately uses a short-lived dedicated connection with a zero
+    /// busy timeout. Contention must defer the source, not block an interrupt.
+    /// The database must already exist and share identity with all goal writers.
+    pub async fn try_active_wake_guard(
+        &self,
+        thread_id: ThreadId,
+    ) -> anyhow::Result<Option<GoalWakeGuard>> {
+        let mut connection = crate::sqlite::open_goal_wake_connection(&self.pool).await?;
+        sqlx::query("BEGIN IMMEDIATE")
+            .execute(&mut connection)
+            .await?;
+        let status: Option<String> =
+            sqlx::query_scalar("SELECT status FROM thread_goals WHERE thread_id = ?")
+                .bind(thread_id.to_string())
+                .fetch_optional(&mut connection)
+                .await?;
+        if status.as_deref() != Some("active") {
+            return Ok(None);
+        }
+        Ok(Some(GoalWakeGuard {
+            _connection: connection,
+        }))
+    }
+
     pub async fn get_thread_goal(
         &self,
         thread_id: ThreadId,
@@ -769,6 +803,79 @@ mod tests {
             .upsert_thread(&metadata)
             .await
             .expect("test thread should be upserted");
+    }
+
+    #[tokio::test]
+    async fn wake_guard_fails_fast_on_contention_and_rechecks_committed_status() {
+        let runtime = test_runtime().await;
+        let thread_id = test_thread_id();
+        runtime
+            .thread_goals()
+            .replace_thread_goal(
+                thread_id,
+                "active",
+                crate::ThreadGoalStatus::Active,
+                /*token_budget*/ None,
+            )
+            .await
+            .expect("active goal");
+        let guard = runtime
+            .thread_goals()
+            .try_active_wake_guard(thread_id)
+            .await
+            .expect("admission query")
+            .expect("active goal admitted");
+        let contended = tokio::time::timeout(
+            std::time::Duration::from_secs(2),
+            runtime.thread_goals().try_active_wake_guard(thread_id),
+        )
+        .await
+        .expect("contention must not wait for SQLite's default busy timeout");
+        assert!(contended.is_err());
+        // An actual write from a distinct connection reaches SQLite while the
+        // wake guard is held. Do not infer lock contention from task timing.
+        let mut writer = crate::sqlite::open_goal_wake_connection(&runtime.thread_goals().pool)
+            .await
+            .expect("independent writer");
+        let error = sqlx::query("UPDATE thread_goals SET status = 'paused' WHERE thread_id = ?")
+            .bind(thread_id.to_string())
+            .execute(&mut writer)
+            .await
+            .expect_err("the goal write must be blocked");
+        let code = error
+            .as_database_error()
+            .and_then(sqlx::error::DatabaseError::code);
+        assert!(matches!(code.as_deref(), Some("5" | "261" | "517" | "773")));
+        assert_eq!(
+            runtime
+                .thread_goals()
+                .get_thread_goal(thread_id)
+                .await
+                .expect("read goal")
+                .expect("goal exists")
+                .status,
+            crate::ThreadGoalStatus::Active,
+        );
+        drop(writer);
+        drop(guard);
+        runtime
+            .thread_goals()
+            .replace_thread_goal(
+                thread_id,
+                "paused",
+                crate::ThreadGoalStatus::Paused,
+                /*token_budget*/ None,
+            )
+            .await
+            .expect("pause goal");
+        assert!(
+            runtime
+                .thread_goals()
+                .try_active_wake_guard(thread_id)
+                .await
+                .expect("admission query")
+                .is_none()
+        );
     }
 
     #[tokio::test]

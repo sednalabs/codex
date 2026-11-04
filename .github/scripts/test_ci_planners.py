@@ -8338,6 +8338,40 @@ class RustCiModeScriptTests(unittest.TestCase):
         self.assertIn('"timeout_minutes": 30', matrix_plan_run)
         self.assertIn('"runner": "macos-15"', matrix_plan_run)
 
+        for repository, expected_prebuilt in (
+            (
+                "sednalabs/codex",
+                [("ubuntu-24.04", 30), ("macos-15", 45)],
+            ),
+            (
+                "example/codex",
+                [("ubuntu-24.04", 30), ("macos-15", 30), ("windows-2022", 30)],
+            ),
+        ):
+            with self.subTest(repository=repository), tempfile.TemporaryDirectory() as tmp:
+                output = Path(tmp) / "github-output"
+                subprocess.run(
+                    ["bash", "-e", "-c", matrix_plan_run],
+                    env={
+                        **os.environ,
+                        "GITHUB_REPOSITORY": repository,
+                        "GITHUB_OUTPUT": str(output),
+                    },
+                    check=True,
+                    capture_output=True,
+                    text=True,
+                )
+                values = dict(line.split("=", 1) for line in output.read_text().splitlines())
+                prebuilt = json.loads(values["argument_comment_lint_matrix"])["include"]
+                self.assertEqual(
+                    [(entry["runner"], entry["timeout_minutes"]) for entry in prebuilt],
+                    expected_prebuilt,
+                )
+                bazel = json.loads(values["argument_comment_bazel_matrix"])["include"]
+                self.assertEqual(
+                    [entry["runner"] for entry in bazel], ["ubuntu-24.04", "macos-15"]
+                )
+
         arglint_job = jobs.get("argument_comment_lint_prebuilt") or {}
         self.assertEqual(arglint_job.get("needs"), ["changed", "matrix_plan"])
         self.assertEqual(

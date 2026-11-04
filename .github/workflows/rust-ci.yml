@@ -33,21 +33,31 @@ jobs:
         run: |
           python3 - <<'PY' >> "$GITHUB_OUTPUT"
           import json
+          import os
 
-          # Downstream heavy validation is intentionally Linux x86_64 only for now.
-          linux_x86_64_only = [
+          downstream = os.environ.get("GITHUB_REPOSITORY") == "sednalabs/codex"
+          prebuilt_platforms = [
               {
                   "name": "Linux x86_64",
                   "runner": "ubuntu-24.04",
                   "timeout_minutes": 30,
-              }
+              },
+              {
+                  "name": "macOS",
+                  "runner": "macos-15",
+                  "timeout_minutes": 45 if downstream else 30,
+              },
           ]
+          if not downstream:
+              prebuilt_platforms.append(
+                  {"name": "Windows", "runner": "windows-2022", "timeout_minutes": 30}
+              )
           linux_macos_bazel = [
               {"name": "Linux x86_64", "runner": "ubuntu-24.04"},
               {"name": "macOS", "runner": "macos-15"},
           ]
 
-          payload = json.dumps({"include": linux_x86_64_only}, separators=(",", ":"))
+          payload = json.dumps({"include": prebuilt_platforms}, separators=(",", ":"))
           print(f"argument_comment_lint_matrix={payload}")
           bazel_payload = json.dumps({"include": linux_macos_bazel}, separators=(",", ":"))
           print(f"argument_comment_bazel_matrix={bazel_payload}")

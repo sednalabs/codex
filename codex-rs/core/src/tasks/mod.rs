@@ -269,6 +269,18 @@ where
     }
 }
 
+#[derive(Clone, Copy)]
+enum MailboxStart {
+    Drain,
+    Defer,
+}
+
+#[cfg(test)]
+pub(crate) struct ExternalTaskRegistrationTestBarrier {
+    pub entered: Arc<tokio::sync::Notify>,
+    pub release: Arc<tokio::sync::Notify>,
+}
+
 impl Session {
     pub async fn spawn_task<T: SessionTask>(
         self: &Arc<Self>,
@@ -281,16 +293,38 @@ impl Session {
         self.start_task(turn_context, input, task).await;
     }
 
-    #[expect(
-        clippy::await_holding_invalid_type,
-        reason = "record the started turn atomically with task registration"
-    )]
     pub(crate) async fn start_task<T: SessionTask>(
         self: &Arc<Self>,
         turn_context: Arc<TurnContext>,
         input: Vec<TurnInput>,
         task: T,
     ) {
+        self.start_task_inner(turn_context, input, task, MailboxStart::Drain)
+            .await;
+    }
+
+    /// Keep mailbox messages in their original queue until the new task exists.
+    pub(crate) async fn start_external_task<T: SessionTask>(
+        self: &Arc<Self>,
+        turn_context: Arc<TurnContext>,
+        input: Vec<TurnInput>,
+        task: T,
+    ) -> bool {
+        self.start_task_inner(turn_context, input, task, MailboxStart::Defer)
+            .await
+    }
+
+    #[expect(
+        clippy::await_holding_invalid_type,
+        reason = "record the started turn atomically with task registration"
+    )]
+    async fn start_task_inner<T: SessionTask>(
+        self: &Arc<Self>,
+        turn_context: Arc<TurnContext>,
+        input: Vec<TurnInput>,
+        task: T,
+        mailbox_start: MailboxStart,
+    ) -> bool {
         // Replace the cache; in-flight acquisitions retain their previous Arc.
         self.services
             .thread_extension_data
@@ -325,7 +359,10 @@ impl Session {
         let cancellation_token = CancellationToken::new();
         let done = Arc::new(Notify::new());
 
-        let (pending_items, _) = self.input_queue.drain_mailbox_input_items().await;
+        let pending_items = match mailbox_start {
+            MailboxStart::Drain => self.input_queue.drain_mailbox_input_items().await.0,
+            MailboxStart::Defer => Vec::new(),
+        };
         let turn_state = {
             let mut active = self.active_turn.lock().await;
             let turn = active.get_or_insert_with(ActiveTurn::default);
@@ -344,15 +381,64 @@ impl Session {
         )
         .await;
 
-        let mut active = self.active_turn.lock().await;
+        #[cfg(test)]
+        if matches!(mailbox_start, MailboxStart::Defer)
+            && let Some(barrier) = self
+                .services
+                .thread_extension_data
+                .get::<ExternalTaskRegistrationTestBarrier>()
+        {
+            barrier.entered.notify_one();
+            barrier.release.notified().await;
+        }
+
+        let goal_guard = if matches!(mailbox_start, MailboxStart::Defer) {
+            match crate::session::external_event::try_active_goal_wake_guard(self).await {
+                Some(guard) => Some(guard),
+                None => {
+                    self.emit_turn_stop_lifecycle(turn_context.extension_data.as_ref())
+                        .await;
+                    return false;
+                }
+            }
+        } else {
+            None
+        };
+        // A wake must not wait on runtime locks while holding SQLite's writer
+        // slot. If either lock is busy, its source will retry the same batch.
+        let mut active = if goal_guard.is_some() {
+            match self.active_turn.try_lock() {
+                Ok(active) => active,
+                Err(_) => {
+                    drop(goal_guard);
+                    self.emit_turn_stop_lifecycle(turn_context.extension_data.as_ref())
+                        .await;
+                    return false;
+                }
+            }
+        } else {
+            self.active_turn.lock().await
+        };
         let turn = active.get_or_insert_with(ActiveTurn::default);
         debug_assert!(turn.task.is_none());
         // Record lineage only when the task starts: settings changes can invalidate a reservation.
-        self.record_started_turn(
-            &turn_context.sub_id,
-            (task_kind == TaskKind::Regular).then(|| turn_context.attribution()),
-        )
-        .await;
+        let attribution = (task_kind == TaskKind::Regular).then(|| turn_context.attribution());
+        let external_state_guard = if goal_guard.is_some() {
+            match self.try_record_external_started_turn(&turn_context.sub_id, attribution) {
+                Some(state) => Some(state),
+                None => {
+                    drop(active);
+                    drop(goal_guard);
+                    self.emit_turn_stop_lifecycle(turn_context.extension_data.as_ref())
+                        .await;
+                    return false;
+                }
+            }
+        } else {
+            self.record_started_turn(&turn_context.sub_id, attribution)
+                .await;
+            None
+        };
         let agent_execution_guard = self.services.agent_control.admit_turn(
             turn_context.multi_agent_version,
             &turn_context.session_source,
@@ -437,6 +523,8 @@ impl Session {
             _timer: timer,
         };
         turn.task = Some(running_task);
+        drop(external_state_guard);
+        true
     }
 
     /// Returns whether an extension has marked this thread as durably asleep.
@@ -925,7 +1013,12 @@ impl Session {
             self.send_event(turn_context.as_ref(), event).await;
         }
         if cleared_active_turn {
-            self.emit_thread_idle_lifecycle_if_idle(idle_cause).await;
+            let independent_notice = turn_context
+                .extension_data
+                .get::<codex_extension_api::IndependentExternalNotice>()
+                .is_some();
+            self.emit_thread_idle_lifecycle_with_origin_if_idle(idle_cause, independent_notice)
+                .await;
         }
         // Private reviewers already flushed the terminal event before delivering it.
         // Other buffering writers still need a barrier for the terminal event.
