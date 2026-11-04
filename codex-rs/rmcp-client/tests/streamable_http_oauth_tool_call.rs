@@ -23,6 +23,7 @@ use codex_rmcp_client::save_oauth_tokens;
 use codex_rmcp_client::stored_oauth_credentials;
 use oauth2::AccessToken;
 use oauth2::RefreshToken;
+use oauth2::TokenResponse;
 use oauth2::basic::BasicTokenType;
 use pretty_assertions::assert_eq;
 use rmcp::model::CallToolResult;
