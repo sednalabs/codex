@@ -3237,9 +3237,12 @@ bundles during upstream sync merely because they once shared this carry entry.
 - One successful refresh retries only the fixed read-only protocol operations
   (`tools/list`, `resources/list`, `resources/templates/list`, and
   `resources/read`). Tool calls, custom requests, and custom notifications
-  refresh credentials for future calls and return a clear denial without
-  replay. Remote tool annotations are untrusted hints and never authorize a
-  tool-call replay. The client reuses its existing serialized OAuth
+  refresh credentials for future calls and return
+  `mcp_oauth_invalid_token_refreshed_no_replay` with `auth=refreshed`,
+  `outcome=unknown`, and `retry=read_only_only`. Callers must not repeat a
+  mutation; a new request is appropriate only when the operation is independently
+  known to be read-only. Remote tool annotations are untrusted hints and never
+  authorize a tool-call replay. The client reuses its existing serialized OAuth
   transaction and does not add credentials, login flows, or a parallel session
   store.
 - During future syncs, do not "simplify" the OAuth helpers by dropping either

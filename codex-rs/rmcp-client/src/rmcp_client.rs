@@ -253,7 +253,7 @@ enum ClientOperationError {
         source: rmcp::service::ServiceError,
     },
     #[error(
-        "MCP server rejected the request with an invalid-token response. OAuth credentials were refreshed, but this request was not replayed. Submit a new call if retrying is appropriate."
+        "code=mcp_oauth_invalid_token_refreshed_no_replay; auth=refreshed; outcome=unknown; retry=read_only_only. The server returned an invalid-token denial and this request was not replayed. Do not repeat a mutation; submit a new request only when the operation is independently known to be read-only."
     )]
     OAuthTokenRefreshed {
         #[source]

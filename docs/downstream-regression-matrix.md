@@ -698,8 +698,10 @@ an actual HTTP `401` Bearer `invalid_token` challenge can refresh; an MCP result
 `_meta` challenge, local authorization failure, generic 401,
 `insufficient_scope`, or uncertain send cannot. The existing OAuth transaction
 refreshes once. Fixed read-only protocol operations may retry once; tool calls,
-custom requests, and custom notifications return a clear denial without
-replay. Remote `readOnlyHint` annotations do not authorize retries. The
+custom requests, and custom notifications return
+`mcp_oauth_invalid_token_refreshed_no_replay` with an unknown effect and
+read-only-only manual retry guidance. Remote `readOnlyHint` annotations do not
+authorize retries. The
 `codex.rmcp-client-transport` and `codex.mcp-safety-targeted` hosted lanes cover
 the classifier, refresh behavior, and no-replay guarantee.
 

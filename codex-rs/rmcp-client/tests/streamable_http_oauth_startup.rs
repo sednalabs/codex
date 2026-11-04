@@ -336,13 +336,11 @@ async fn invalid_token_recovery_child() -> anyhow::Result<()> {
     assert!(
         read_only_error
             .to_string()
-            .contains("credentials were refreshed")
+            .contains("code=mcp_oauth_invalid_token_refreshed_no_replay")
     );
-    assert!(
-        read_only_error
-            .to_string()
-            .contains("request was not replayed")
-    );
+    assert!(read_only_error.to_string().contains("outcome=unknown"));
+    assert!(read_only_error.to_string().contains("retry=read_only_only"));
+    assert!(read_only_error.to_string().contains("Do not repeat a mutation"));
 
     let mutating = client
         .call_tool(
@@ -353,11 +351,7 @@ async fn invalid_token_recovery_child() -> anyhow::Result<()> {
         )
         .await;
     let mutating_error = mutating.expect_err("mutating tool call must not be replayed");
-    assert!(
-        mutating_error
-            .to_string()
-            .contains("request was not replayed")
-    );
+    assert!(mutating_error.to_string().contains("outcome=unknown"));
 
     let result_challenge = client
         .call_tool(
