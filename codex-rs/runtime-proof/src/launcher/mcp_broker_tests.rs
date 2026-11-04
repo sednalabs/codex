@@ -57,6 +57,17 @@ fn mutation_response_requires_matching_successful_json_rpc_result() {
         "event: message\ndata: {\"jsonrpc\":\"2.0\",\"id\":\"call-1\",\"result\":{\"content\":[]}}\n\n",
     );
     assert!(!response_confirms_mutation(&sse, &request_id));
+
+    let mut ambiguous_content_type = result.clone();
+    ambiguous_content_type.headers[0].value = "text/event-stream".to_string();
+    ambiguous_content_type.headers.push(HttpHeader {
+        name: "content-type".to_string(),
+        value: "application/json".to_string(),
+    });
+    assert!(!response_confirms_mutation(
+        &ambiguous_content_type,
+        &request_id
+    ));
 }
 
 #[test]

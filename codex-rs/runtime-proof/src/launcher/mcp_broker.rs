@@ -485,15 +485,24 @@ fn is_valid_json_rpc_id(value: &Value) -> bool {
 }
 
 fn response_confirms_mutation(response: &HttpRequestResponse, expected_rpc_id: &Value) -> bool {
+    let mut content_types = response
+        .headers
+        .iter()
+        .filter(|header| header.name.eq_ignore_ascii_case("content-type"));
+    let Some(content_type) = content_types.next() else {
+        return false;
+    };
+    if content_types.next().is_some()
+        || !content_type
+            .value
+            .split(';')
+            .next()
+            .is_some_and(|value| value.trim().eq_ignore_ascii_case("application/json"))
+    {
+        return false;
+    }
+
     response.status == 200
-        && response.headers.iter().any(|header| {
-            header.name.eq_ignore_ascii_case("content-type")
-                && header
-                    .value
-                    .split(';')
-                    .next()
-                    .is_some_and(|value| value.trim().eq_ignore_ascii_case("application/json"))
-        })
         && codex_rmcp_client::is_successful_tools_call_json_response(
             &response.body.0,
             expected_rpc_id,
