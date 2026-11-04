@@ -113,6 +113,7 @@ async fn code_mode_nested_callback_progresses_during_mid_turn_compaction() -> Re
     let test = test_codex()
         .with_model("test-gpt-5.1-codex")
         .with_extensions(Arc::new(extensions.build()))
+        .with_code_mode_host_program(codex_utils_cargo_bin::cargo_bin("codex-code-mode-host")?)
         .with_config(move |config| {
             config.model_provider = provider;
             config.model_context_window = Some(100);

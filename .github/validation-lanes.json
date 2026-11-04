@@ -1,0 +1,25 @@
+{
+  "lanes": [
+    {
+      "lane_id": "codex.code-mode-midturn-callback-diagnostic",
+      "groups": ["core"],
+      "lane_sets": ["all", "core-carry"],
+      "status_class": "active",
+      "frontier_role": "sentinel",
+      "cost_class": "medium",
+      "explicit_only": true,
+      "setup_class": "rust_integration",
+      "working_directory": ".",
+      "script_path": ".github/scripts/validation-lanes/code-mode-midturn-callback.sh",
+      "script_args": [],
+      "needs_just": false,
+      "needs_node": true,
+      "needs_nextest": false,
+      "needs_linux_build_deps": true,
+      "needs_dotslash": false,
+      "needs_sccache": false,
+      "needs_bazel": false
+    }
+  ],
+  "followup_routes": []
+}
