@@ -651,7 +651,6 @@ impl McpConnectionSet {
             .client()
             .await
             .context("failed to get client")?;
-
         let result: rmcp::model::CallToolResult = client
             .client
             .call_tool(tool.to_string(), arguments, meta, view.tool_timeout)
