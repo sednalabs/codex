@@ -18,3 +18,9 @@ cargo build --locked -p codex-code-mode-host --bin codex-code-mode-host
 export CARGO_BIN_EXE_codex_code_mode_host="$CARGO_TARGET_DIR/debug/codex-code-mode-host"
 test -x "$CARGO_BIN_EXE_codex_code_mode_host"
 cargo test --locked -p codex-core --test code_mode_compaction_callback -- --test-threads=1
+for case in \
+  suite::code_mode::yielded_code_mode_tool_callbacks_keep_their_originating_step \
+  suite::code_mode::code_mode_background_keeps_running_on_later_turn_without_wait \
+  suite::code_mode::code_mode_interrupt_terminates_active_cells_and_nested_tools; do
+  cargo test --locked -p codex-core --test all "$case" -- --exact --test-threads=1
+done
