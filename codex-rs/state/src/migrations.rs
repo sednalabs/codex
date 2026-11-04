@@ -161,6 +161,28 @@ pub(crate) async fn runtime_usage_migrator_for_history(
         );
     }
 
+    // T10 already shipped this exact SQL at version 17. Do not replay the
+    // version-23 source port into those databases: its effective-dated rows
+    // are already present. The version-17 chain constraints above must pass,
+    // and both migrations must match by description and checksum before the
+    // source migration can be skipped.
+    if has_exact_t10_usage_migration(&applied, /*version*/ 17) {
+        let t10_rate_migration = T10_USAGE_MIGRATION_HISTORY
+            .iter()
+            .find(|(known_version, _, _)| *known_version == 17);
+        let current_rate_migration = base.iter().find(|migration| migration.version == 23);
+        if let (Some((_, known_description, known_checksum)), Some(migration)) =
+            (t10_rate_migration, current_rate_migration)
+        {
+            anyhow::ensure!(
+                migration.description.as_ref() == *known_description
+                    && checksum_matches_hex(migration.checksum.as_ref(), known_checksum),
+                "usage migration history has T10 v17 rates but current migration 23 is not its exact equivalent"
+            );
+            skip_source_versions.push(23);
+        }
+    }
+
     let migrations: Vec<_> = base
         .iter()
         .filter(|migration| !skip_source_versions.contains(&migration.version))
