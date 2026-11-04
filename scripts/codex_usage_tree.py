@@ -1229,9 +1229,7 @@ def _assert_indexed_root_thread_lookup(
         and "AUTOMATIC" not in detail
         for detail in details
     ):
-        raise UsageError(
-            "usage database has no indexed exact-root lineage lookup"
-        )
+        raise UsageError("usage database has no indexed exact-root lineage lookup")
 
 
 def _root_indexed_lineage_snapshot(
@@ -1244,9 +1242,9 @@ def _root_indexed_lineage_snapshot(
 ) -> tuple[list[sqlite3.Row], bool, int, list[str]]:
     """Use only the bounded, indexed canonical-root set on legacy schemas."""
     select_columns = (
-        'thread.thread_id, thread.parent_thread_id, thread.root_thread_id, '
-        'thread.fork_parent_thread_id, '
-        f'{source_expression}, {thread_kind_expression}'
+        "thread.thread_id, thread.parent_thread_id, thread.root_thread_id, "
+        "thread.fork_parent_thread_id, "
+        f"{source_expression}, {thread_kind_expression}"
     )
     root_sql = (
         f"SELECT {select_columns} FROM usage_threads AS thread "
@@ -1257,9 +1255,7 @@ def _root_indexed_lineage_snapshot(
         "WHERE thread.root_thread_id = ? LIMIT ?"
     )
     candidate_parameters = (root_id, MAX_DATABASE_THREADS + 1)
-    _assert_indexed_root_thread_lookup(
-        connection, candidates_sql, candidate_parameters
-    )
+    _assert_indexed_root_thread_lookup(connection, candidates_sql, candidate_parameters)
 
     deadline = _database_deadline(overall_deadline)
     connection.set_progress_handler(lambda: int(time.monotonic() >= deadline), 10000)
@@ -1289,9 +1285,10 @@ def _root_indexed_lineage_snapshot(
     if len(selected_children) > MAX_DATABASE_THREADS - 1:
         selected_children = selected_children[: MAX_DATABASE_THREADS - 1]
         truncated = True
-    thread_rows = [root_row, *selected_children]
+    candidate_thread_rows = [root_row, *selected_children]
     selected_by_id = {
-        _optional_text(row["thread_id"], "thread_id"): row for row in thread_rows
+        _optional_text(row["thread_id"], "thread_id"): row
+        for row in candidate_thread_rows
     }
 
     unverified_ids: set[str] = set()
@@ -1320,26 +1317,41 @@ def _root_indexed_lineage_snapshot(
             row = selected_by_id.get(current)
             if row is None:
                 return False
+            if _optional_text(row["root_thread_id"], "root_thread_id") != root_id:
+                return False
             parent_id = parent_of(row)
             if not parent_id:
                 return False
             current = parent_id
         return False
 
+    unverified_children_without_id = 0
     for row in selected_children:
         thread_id = _optional_text(row["thread_id"], "thread_id")
         row_root = _optional_text(row["root_thread_id"], "root_thread_id")
         if thread_id is None or row_root != root_id or not reaches_root(thread_id):
             if thread_id is not None:
                 unverified_ids.add(thread_id)
+            else:
+                unverified_children_without_id += 1
+
+    verified_children = [
+        row
+        for row in selected_children
+        if (thread_id := _optional_text(row["thread_id"], "thread_id")) is not None
+        and thread_id not in unverified_ids
+    ]
+    thread_rows = [root_row, *verified_children]
 
     truncation_reasons = []
     if truncated:
         truncation_reasons.append("thread_limit")
-    if unverified_ids:
+    if unverified_ids or unverified_children_without_id:
         truncation_reasons.append("root_or_parent_chain_unverified")
         truncated = True
-    return thread_rows, truncated, len(unverified_ids), truncation_reasons
+    unverified_child_count = len(unverified_ids - {root_id})
+    unverified_child_count += unverified_children_without_id
+    return thread_rows, truncated, unverified_child_count, truncation_reasons
 
 
 def _database_call_order_mode(connection: sqlite3.Connection) -> str:
@@ -3062,11 +3074,12 @@ def collect_database_tree(
                     "coverageNote": (
                         "This legacy-schema fallback uses the indexed root_thread_id "
                         "candidate set and verifies each selected parent/fork chain. "
-                        "Inconsistent metadata or the thread cap marks lineage "
-                        "truncated; descendants omitted by incorrect root markers "
-                        "cannot be found without a broad scan. Unrecorded or "
-                        "historical "
-                        "descendants remain unknown."
+                        "Candidates with unverified root markers or parent/fork chains "
+                        "are excluded from role-attributed per-source totals; root-row "
+                        "metadata anomalies or the thread cap mark lineage truncated. "
+                        "Descendants omitted by incorrect root markers cannot be found "
+                        "without a broad scan, and unrecorded or historical descendants "
+                        "remain unknown."
                         if lineage_resolution == "root_thread_id_index_fallback"
                         else "Unrecorded or historical descendants are unknown."
                     ),
@@ -3583,8 +3596,7 @@ def collect_database_union(
 
     root_index_fallback_used = any(
         isinstance(source.get("lineage"), dict)
-        and source["lineage"].get("resolution")
-        == "root_thread_id_index_fallback"
+        and source["lineage"].get("resolution") == "root_thread_id_index_fallback"
         for source in source_results
     )
     unresolved_rows = (

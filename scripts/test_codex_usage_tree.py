@@ -725,12 +725,8 @@ class UsageTreeTests(unittest.TestCase):
             for group in comparison_result["recordedAggregate"]["groups"]
         }
         self.assertEqual(set(comparison_groups), {"root", "subagent"})
-        self.assertEqual(
-            comparison_groups["root"]["responseUsageRecordCount"], 1
-        )
-        self.assertEqual(
-            comparison_groups["subagent"]["responseUsageRecordCount"], 1
-        )
+        self.assertEqual(comparison_groups["root"]["responseUsageRecordCount"], 1)
+        self.assertEqual(comparison_groups["subagent"]["responseUsageRecordCount"], 1)
         self.assertTrue(
             result["completeness"]["crossLedgerScanCompleteForSelectedLineage"]
         )
@@ -752,9 +748,7 @@ class UsageTreeTests(unittest.TestCase):
             2,
         )
         self.assertEqual(
-            result["crossLedgerDeduplication"][
-                "exactDuplicateRowsOmittedObserved"
-            ],
+            result["crossLedgerDeduplication"]["exactDuplicateRowsOmittedObserved"],
             2,
         )
 
@@ -769,6 +763,45 @@ class UsageTreeTests(unittest.TestCase):
             self._write_union_ledger(comparison, calls)
             self._use_root_thread_index_only(comparison)
             connection = sqlite3.connect(comparison)
+            connection.execute(
+                "INSERT INTO usage_threads VALUES (?, ?, ?, ?, ?, ?, ?)",
+                (
+                    "grandchild",
+                    "child",
+                    "root",
+                    None,
+                    '{"subagent":{"worker":"luna"}}',
+                    "subagent",
+                    "2026-10-03",
+                ),
+            )
+            connection.execute(
+                """
+                INSERT INTO usage_provider_calls (
+                    provider_call_id, thread_id, turn_id, request_id, provider,
+                    requested_model, actual_model_used, provider_reported_credits,
+                    started_at, input_tokens_uncached, input_tokens_cached,
+                    input_tokens_cache_write, output_tokens, total_tokens, status
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    "grandchild-call",
+                    "grandchild",
+                    "turn-grandchild",
+                    "request-grandchild",
+                    "openai",
+                    "gpt-6.1-sol",
+                    "gpt-6.1-sol",
+                    0.75,
+                    "2026-10-03T00:00:00Z",
+                    30,
+                    40,
+                    0,
+                    15,
+                    85,
+                    "ok",
+                ),
+            )
             connection.execute(
                 "UPDATE usage_threads SET root_thread_id = 'other-root' "
                 "WHERE thread_id = 'root'"
@@ -791,6 +824,7 @@ class UsageTreeTests(unittest.TestCase):
         )
         self.assertTrue(comparison_result["lineage"]["truncated"])
         self.assertEqual(comparison_result["lineage"]["unverifiedThreadCount"], 2)
+        self.assertEqual(comparison_result["lineage"]["knownThreadCount"], 1)
         self.assertEqual(
             comparison_result["lineage"]["truncationReasons"],
             ["root_or_parent_chain_unverified"],
@@ -799,7 +833,17 @@ class UsageTreeTests(unittest.TestCase):
             group["role"]: group
             for group in comparison_result["recordedAggregate"]["groups"]
         }
-        self.assertEqual(set(comparison_groups), {"root", "subagent"})
+        self.assertEqual(set(comparison_groups), {"root"})
+        self.assertEqual(
+            comparison_result["recordedAggregate"]["responseUsageRecordCount"], 1
+        )
+        self.assertEqual(comparison_groups["root"]["responseUsageRecordCount"], 1)
+        self.assertEqual(
+            comparison_groups["root"]["tokenTotals"]["inputTokensUncached"][
+                "knownSubtotal"
+            ],
+            10,
+        )
         self.assertFalse(
             result["completeness"]["crossLedgerScanCompleteForSelectedLineage"]
         )
