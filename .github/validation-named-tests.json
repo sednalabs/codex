@@ -42,6 +42,14 @@
       "execution_argv": ["cargo", "test", "--locked", "-p", "codex-core", "--test", "all", "--", "--test-threads=1"]
     },
     {
+      "package": "codex-core",
+      "target_kind": "integration",
+      "target": "code_mode_compaction_callback",
+      "profiles": ["rust_integration"],
+      "inventory_argv": ["cargo", "test", "--locked", "-p", "codex-core", "--test", "code_mode_compaction_callback", "--", "--list"],
+      "execution_argv": ["cargo", "test", "--locked", "-p", "codex-core", "--test", "code_mode_compaction_callback", "--", "--test-threads=1"]
+    },
+    {
       "package": "codex-protocol",
       "target_kind": "lib",
       "target": "",
