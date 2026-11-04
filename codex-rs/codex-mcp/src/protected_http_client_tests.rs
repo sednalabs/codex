@@ -35,7 +35,9 @@ fn protected_transport_rejects_child_authorization_headers() {
 #[test]
 fn protected_transport_rejects_a_changed_recipient() {
     let client = ProtectedMcpHttpClient::new(SERVER, RECIPIENT);
-    assert!(client
-        .prepare(request("https://ops.example/other", Vec::new()))
-        .is_err());
+    assert!(
+        client
+            .prepare(request("https://ops.example/other", Vec::new()))
+            .is_err()
+    );
 }

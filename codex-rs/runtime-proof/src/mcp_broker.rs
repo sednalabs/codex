@@ -368,7 +368,7 @@ fn close_received_rights(message: &libc::msghdr) -> Result<bool> {
         let offset = header_start
             .checked_sub(control_start)
             .context("protected MCP ancillary data is outside its buffer")?;
-        let header_len = libc::CMSG_LEN(0) as usize;
+        let header_len = unsafe { libc::CMSG_LEN(0) } as usize;
         let available = message
             .msg_controllen
             .saturating_sub(offset.saturating_add(header_len));
@@ -402,7 +402,8 @@ fn verify_message_peer(message: &libc::msghdr, expected: PeerIdentity) -> Result
     let header = unsafe { &*first };
     if header.cmsg_level != libc::SOL_SOCKET
         || header.cmsg_type != libc::SCM_CREDENTIALS
-        || header.cmsg_len != unsafe { libc::CMSG_LEN(std::mem::size_of::<libc::ucred>() as _) }
+        || header.cmsg_len
+            != unsafe { libc::CMSG_LEN(std::mem::size_of::<libc::ucred>() as _) } as usize
         || !unsafe { libc::CMSG_NXTHDR(message, first) }.is_null()
     {
         bail!("protected MCP broker packet has unexpected ancillary data");

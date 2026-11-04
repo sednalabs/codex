@@ -5,6 +5,7 @@ mod manager;
 pub(super) use manager::ManagerBinding;
 
 use crate::wire;
+use anyhow::Context;
 use anyhow::Result;
 use anyhow::bail;
 use base64::Engine as _;

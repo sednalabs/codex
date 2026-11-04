@@ -1316,7 +1316,8 @@ async fn make_rmcp_client(
             }
             let http_client = if protected_target {
                 Arc::new(crate::protected_http_client::ProtectedMcpHttpClient::new(
-                    server_name, &url,
+                    server_name,
+                    &url,
                 )) as Arc<dyn HttpClient>
             } else {
                 let http_client = resolved_environment.as_ref().map_or_else(

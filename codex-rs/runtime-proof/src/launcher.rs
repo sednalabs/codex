@@ -1366,7 +1366,7 @@ fn supervise_child(
         task_deadline,
         lifecycle_context
             .as_ref()
-            .map(|context| context.manager_binding.invocation_id),
+            .map(|context| context.manager_binding.invocation_id()),
     )
     .context(McpFailureStage::RuntimeSetup)?;
     let broker_active = Arc::new(AtomicBool::new(true));

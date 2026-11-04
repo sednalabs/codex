@@ -132,6 +132,10 @@ pub(super) fn require_stop_binding(binding: &ManagerBinding) -> Result<()> {
 }
 
 impl ManagerBinding {
+    pub(in crate::launcher) fn invocation_id(&self) -> Uuid {
+        self.invocation_id
+    }
+
     pub(super) fn validate(&self) -> Result<()> {
         super::super::validate_sha256(&self.manager_executable_sha256)?;
         if self.boot_id.is_nil()

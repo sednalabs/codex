@@ -207,6 +207,10 @@ mod tests {
     fn current_artifact_digest_is_lowercase_sha256() {
         let digest = current_artifact_sha256().expect("current artifact digest");
         assert_eq!(digest.len(), 64);
-        assert!(digest.bytes().all(|byte| byte.is_ascii_hexdigit() && !byte.is_ascii_uppercase()));
+        assert!(
+            digest
+                .bytes()
+                .all(|byte| byte.is_ascii_hexdigit() && !byte.is_ascii_uppercase())
+        );
     }
 }

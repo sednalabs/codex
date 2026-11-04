@@ -6,9 +6,9 @@ mod api_bearer_provisioner;
 mod api_claim;
 mod auth;
 #[cfg(target_os = "linux")]
-mod mcp_broker;
-#[cfg(target_os = "linux")]
 pub mod launcher;
+#[cfg(target_os = "linux")]
+mod mcp_broker;
 #[cfg(target_os = "linux")]
 mod mcp_oauth;
 #[cfg(target_os = "linux")]
