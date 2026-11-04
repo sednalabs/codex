@@ -54,6 +54,9 @@ jobs:
       - name: Test native visual response production CodeQL contract verifier
         run: python3 .github/scripts/test_verify_native_visual_response_contract.py
 
+      - name: Test bounded exact-root usage report
+        run: python3 scripts/test_codex_usage_report_exact_root.py
+
       - name: Check for a clean worktree
         if: always() && !cancelled()
         uses: ./.github/actions/check-clean-worktree
