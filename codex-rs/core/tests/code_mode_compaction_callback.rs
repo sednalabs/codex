@@ -68,7 +68,7 @@ async fn code_mode_nested_callback_progresses_during_mid_turn_compaction() -> Re
     let marker = marker_dir.path().join("compaction-started");
     let wait_command = format!("while [ ! -e '{}' ]; do sleep 0.05; done", marker.display());
     let script = format!(
-        "const gate = tools.exec_command({{cmd: {}, yield_time_ms: 30000}}); yield_control(); await gate; await tools.test_sync_tool({{}});",
+        "const gate = await tools.exec_command({{cmd: {}, yield_time_ms: 1000}}); if (!gate.session_id) throw Error('gate session missing'); text('gate-ready'); yield_control(); await tools.write_stdin({{session_id: gate.session_id, chars: '', yield_time_ms: 30000}}); await tools.test_sync_tool({{}});",
         serde_json::to_string(&wait_command)?
     );
     responses::mount_sse_once(
@@ -84,8 +84,9 @@ async fn code_mode_nested_callback_progresses_during_mid_turn_compaction() -> Re
     responses::mount_response_once_match(
         &server,
         move |request: &Request| {
-            let is_compaction = String::from_utf8_lossy(&request.body)
-                .contains("nested-callback-midturn-compaction-prompt");
+            let body = String::from_utf8_lossy(&request.body);
+            let is_compaction = body.contains("nested-callback-midturn-compaction-prompt")
+                && body.contains("gate-ready");
             if is_compaction {
                 notify.notify_one();
             }
@@ -132,16 +133,23 @@ async fn code_mode_nested_callback_progresses_during_mid_turn_compaction() -> Re
             text_elements: Vec::new(),
         }]))
         .await?;
+    let mut callback_rx = callback_rx;
     let result: Result<()> = async {
         tokio::time::timeout(Duration::from_secs(30), compaction_started.notified())
             .await
             .context("did not observe the mid-turn compaction request")?;
         compaction_held.store(true, Ordering::Release);
         fs::write(&marker, "continue")?;
-        tokio::time::timeout(Duration::from_secs(5), callback_rx)
-            .await
-            .context("nested callback did not finish while compaction was held")?
-            .context("nested callback observer closed")?;
+        match tokio::time::timeout(Duration::from_secs(5), &mut callback_rx).await {
+            Ok(callback) => callback.context("nested callback observer closed")?,
+            Err(_) => {
+                tokio::time::timeout(Duration::from_secs(30), &mut callback_rx)
+                    .await
+                    .context("nested callback did not recover after compaction")?
+                    .context("nested callback observer closed after compaction")?;
+                anyhow::bail!("nested callback stalled during compaction and recovered afterwards");
+            }
+        }
         Ok(())
     }
     .await;
