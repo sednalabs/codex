@@ -64,9 +64,9 @@ use tracing::instrument;
 use tracing::warn;
 
 use crate::elicitation_client_service::ElicitationClientService;
-use crate::http_client_adapter::is_bearer_invalid_token_challenge;
 use crate::http_client_adapter::StreamableHttpClientAdapter;
 use crate::http_client_adapter::StreamableHttpClientAdapterError;
+use crate::http_client_adapter::is_bearer_invalid_token_challenge;
 use crate::in_process_transport::InProcessTransportFactory;
 use crate::oauth::OAuthPersistor;
 use crate::oauth::ResolvedOAuthCredentialStore;
@@ -1769,8 +1769,8 @@ mod tests {
     use pretty_assertions::assert_eq;
     use rmcp::model::JsonObject;
     use rmcp::transport::DynamicTransportError;
-    use rmcp::transport::streamable_http_client::InsufficientScopeError;
     use rmcp::transport::streamable_http_client::AuthRequiredError;
+    use rmcp::transport::streamable_http_client::InsufficientScopeError;
     use tokio::time;
 
     use super::*;

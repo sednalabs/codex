@@ -340,7 +340,11 @@ async fn invalid_token_recovery_child() -> anyhow::Result<()> {
     );
     assert!(read_only_error.to_string().contains("outcome=unknown"));
     assert!(read_only_error.to_string().contains("retry=read_only_only"));
-    assert!(read_only_error.to_string().contains("Do not repeat a mutation"));
+    assert!(
+        read_only_error
+            .to_string()
+            .contains("Do not repeat a mutation")
+    );
 
     let mutating = client
         .call_tool(
