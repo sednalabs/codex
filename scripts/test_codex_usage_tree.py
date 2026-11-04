@@ -1172,9 +1172,7 @@ class UsageTreeTests(unittest.TestCase):
                         ]
                     )
                     if invocation == 0:
-                        self.assertEqual(
-                            result["continuation"]["status"], "resumable"
-                        )
+                        self.assertEqual(result["continuation"]["status"], "resumable")
                         self.assertTrue(
                             all(
                                 source["rowScan"]["reason"] == "per_run_row_limit"
@@ -1195,9 +1193,7 @@ class UsageTreeTests(unittest.TestCase):
                         )
                         self.assertEqual(per_run_rows[-1], [25_000, 25_000])
                     elif invocation == 1:
-                        self.assertEqual(
-                            result["continuation"]["status"], "resumable"
-                        )
+                        self.assertEqual(result["continuation"]["status"], "resumable")
                         self.assertTrue(
                             all(
                                 source["rowScan"]["reason"] == "per_run_row_limit"
@@ -1294,10 +1290,7 @@ class UsageTreeTests(unittest.TestCase):
                 all(rows[0] <= 25_000 and rows[1] <= 25_000 for rows in per_run_rows)
             )
             self.assertTrue(
-                all(
-                    rows[0] <= 4_096 and rows[1] <= 4_096
-                    for rows in per_run_rows[1:]
-                )
+                all(rows[0] <= 4_096 and rows[1] <= 4_096 for rows in per_run_rows[1:])
             )
             self.assertEqual(
                 result["crossLedgerDeduplication"]["rowsScannedBySource"],

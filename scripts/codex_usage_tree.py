@@ -4233,11 +4233,7 @@ def main(argv: list[str] | None = None) -> int:
                 "--max-rows-per-source-per-pass requires --also-database "
                 "and --checkpoint-file"
             )
-        if not (
-            1
-            <= args.max_rows_per_source_per_pass
-            <= MAX_DATABASE_UNION_CALLS_PER_RUN
-        ):
+        if not (1 <= args.max_rows_per_source_per_pass <= MAX_DATABASE_UNION_CALLS_PER_RUN):
             parser.error(
                 "--max-rows-per-source-per-pass must be in "
                 f"1..{MAX_DATABASE_UNION_CALLS_PER_RUN}"
