@@ -383,7 +383,7 @@ async fn invalid_token_recovery_child() -> anyhow::Result<()> {
         .await?;
     assert!(result_challenge.is_error.unwrap_or(false));
     let tools = client
-        .list_tools(None, Some(Duration::from_secs(5)))
+        .list_tools(/*params*/ None, Some(Duration::from_secs(5)))
         .await?;
     assert!(tools.tools.is_empty());
     client.shutdown().await;
