@@ -33,8 +33,12 @@ use wiremock::Request;
 // mid-turn compaction request is in flight. This covers the listener heartbeat
 // path rather than just proving that a cell id survives a later manual compact.
 #[cfg(unix)]
+#[test_case::test_case(true; "during_compaction")]
+#[test_case::test_case(false; "without_compaction")]
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn code_mode_nested_callback_progresses_during_mid_turn_compaction() -> Result<()> {
+async fn code_mode_nested_callback_progresses_during_mid_turn_compaction(
+    expect_compaction: bool,
+) -> Result<()> {
     skip_if_no_network!(Ok(()));
 
     struct CallbackObserver {
@@ -108,12 +112,12 @@ async fn code_mode_nested_callback_progresses_during_mid_turn_compaction() -> Re
         &server,
         move |request: &Request| {
             let body = String::from_utf8_lossy(&request.body);
-            let is_compaction = body.contains("nested-callback-midturn-compaction-prompt")
-                && body.contains("gate-ready");
-            if is_compaction {
+            let target_request = body.contains("gate-ready")
+                && body.contains("nested-callback-midturn-compaction-prompt") == expect_compaction;
+            if target_request {
                 notify.notify_one();
             }
-            is_compaction
+            target_request
         },
         responses::sse_response(sse(vec![
             ev_assistant_message("summary", "summary"),
@@ -143,8 +147,9 @@ async fn code_mode_nested_callback_progresses_during_mid_turn_compaction() -> Re
         .with_code_mode_host_program(codex_utils_cargo_bin::cargo_bin("codex-code-mode-host")?)
         .with_config(move |config| {
             config.model_provider = provider;
-            config.model_context_window = Some(100);
-            config.model_auto_compact_token_limit = Some(90);
+            config.model_context_window = Some(if expect_compaction { 100 } else { 100_000 });
+            config.model_auto_compact_token_limit =
+                Some(if expect_compaction { 90 } else { 90_000 });
             config.compact_prompt = Some("nested-callback-midturn-compaction-prompt".to_string());
             config.features.enable(Feature::CodeMode).unwrap();
             config.features.enable(Feature::CodeModeHost).unwrap();
@@ -163,7 +168,7 @@ async fn code_mode_nested_callback_progresses_during_mid_turn_compaction() -> Re
     let result: Result<()> = async {
         tokio::time::timeout(Duration::from_secs(30), compaction_started.notified())
             .await
-            .context("did not observe the mid-turn compaction request")?;
+            .context("did not observe the target request with the launched gate")?;
         compaction_held.store(true, Ordering::Release);
         fs::write(&marker, "continue")?;
         match tokio::time::timeout(Duration::from_secs(5), &mut callback_rx).await {
