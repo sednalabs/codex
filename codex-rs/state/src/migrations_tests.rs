@@ -9,11 +9,11 @@ use sqlx::migrate::Migrator;
 use sqlx::sqlite::SqlitePoolOptions;
 
 use super::STATE_MIGRATOR;
+use super::T10_USAGE_MIGRATION_HISTORY;
 use super::THREAD_HISTORY_MIGRATOR;
 use super::USAGE_MIGRATOR;
-use super::T10_USAGE_MIGRATION_HISTORY;
-use super::runtime_usage_migrator_for_history;
 use super::repair_state_migration_version_collisions;
+use super::runtime_usage_migrator_for_history;
 
 const PRE_RECENCY_MIGRATION_VERSION: i64 = 42;
 const LEGACY_RECENCY_MIGRATION_VERSION: i64 = 38;
@@ -1337,8 +1337,7 @@ async fn exact_t10_september_30_rate_history_skips_the_equivalent_source_migrati
 #[tokio::test]
 async fn partial_or_corrupt_t10_rate_history_fails_closed() {
     let partial_pool = pool_with_t10_usage_history(&[17]).await;
-    let partial_result =
-        runtime_usage_migrator_for_history(&partial_pool, &USAGE_MIGRATOR).await;
+    let partial_result = runtime_usage_migrator_for_history(&partial_pool, &USAGE_MIGRATOR).await;
     assert!(
         partial_result.is_err(),
         "a T10 v17 row without its required chain must not be accepted"
@@ -1351,8 +1350,7 @@ async fn partial_or_corrupt_t10_rate_history_fails_closed() {
         .execute(&corrupt_pool)
         .await
         .expect("test should corrupt the T10 v17 checksum");
-    let corrupt_result =
-        runtime_usage_migrator_for_history(&corrupt_pool, &USAGE_MIGRATOR).await;
+    let corrupt_result = runtime_usage_migrator_for_history(&corrupt_pool, &USAGE_MIGRATOR).await;
     assert!(
         corrupt_result.is_err(),
         "a T10 v17 row with a different checksum must not be accepted"
