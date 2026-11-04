@@ -217,7 +217,7 @@ fn unresolved_mcp_request_receipt_blocks_end_until_recorded() {
     assert!(require_no_unresolved_mcp_request(unresolved).is_err());
 
     require_recorded_execution_receipt(crate::api_claim::ExecutionReceiptResolution::Recorded)
-    .expect("matching historical receipt proves the operation was recorded");
+        .expect("matching historical receipt proves the operation was recorded");
     resolve_unresolved_mcp_request_id(&mut unresolved, request_id)
         .expect("resolve only the exact recorded request");
     assert!(require_no_unresolved_mcp_request(unresolved).is_ok());
