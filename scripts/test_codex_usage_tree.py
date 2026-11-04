@@ -789,9 +789,7 @@ class UsageTreeTests(unittest.TestCase):
         def call(call_index):
             thread = "root" if call_index % 2 == 0 else "child"
             started_at = (
-                "2026-10-01T00:00:00Z"
-                if thread == "root"
-                else "2026-10-02T00:00:00Z"
+                "2026-10-01T00:00:00Z" if thread == "root" else "2026-10-02T00:00:00Z"
             )
             return (
                 f"bulk-call-{call_index:06d}",
@@ -933,8 +931,7 @@ class UsageTreeTests(unittest.TestCase):
             self.assertGreater(len(progress_rows), 1)
             self.assertTrue(
                 all(
-                    previous[0] < current[0]
-                    and previous[1] < current[1]
+                    previous[0] < current[0] and previous[1] < current[1]
                     for previous, current in zip(progress_rows, progress_rows[1:])
                 )
             )
@@ -955,7 +952,10 @@ class UsageTreeTests(unittest.TestCase):
             self.assertEqual(merged["responseUsageRecordCount"], call_count)
             self.assertEqual(merged["excludedUnresolvedRows"], 4)
             self.assertEqual(
-                {group["role"]: group["responseUsageRecordCount"] for group in merged["groups"]},
+                {
+                    group["role"]: group["responseUsageRecordCount"]
+                    for group in merged["groups"]
+                },
                 {"root": call_count // 2, "subagent": call_count // 2},
             )
             self.assertTrue(
@@ -984,7 +984,9 @@ class UsageTreeTests(unittest.TestCase):
             for source in result["sources"]:
                 per_source_groups = source["recordedAggregate"]["groups"]
                 self.assertEqual(
-                    sum(group["responseUsageRecordCount"] for group in per_source_groups),
+                    sum(
+                        group["responseUsageRecordCount"] for group in per_source_groups
+                    ),
                     call_count,
                 )
                 self.assertEqual(
@@ -1013,9 +1015,7 @@ class UsageTreeTests(unittest.TestCase):
             self.assertTrue(
                 result["snapshot"]["providerCallRowsAssumedAppendOnlyThroughCutoff"]
             )
-            self.assertEqual(
-                result["snapshot"]["crossInvocationAtomic"], False
-            )
+            self.assertEqual(result["snapshot"]["crossInvocationAtomic"], False)
             self.assertEqual(checkpoint.stat().st_mode & 0o777, 0o600)
             self.assertLess(checkpoint.stat().st_size, 256 * 1024 * 1024)
             serialized = json.dumps(result)

@@ -75,6 +75,20 @@ class ClassifyCiPathsTests(unittest.TestCase):
         self.assertTrue(scope.repo_format)
         self.assertEqual(scope.codeql_languages, ("python",))
 
+    def test_usage_tree_source_and_tests_select_package_lane(self) -> None:
+        for path in (
+            "scripts/codex_usage_tree.py",
+            "scripts/test_codex_usage_tree.py",
+        ):
+            with self.subTest(path=path):
+                scope = classify([path])
+                self.assertTrue(scope.repo_package)
+                self.assertTrue(scope.repo_format)
+
+        self.assertFalse(
+            classify(["sdk/python/src/openai_codex/client.py"]).repo_package
+        )
+
     def test_workflow_change_selects_actions_codeql(self) -> None:
         scope = classify([".github/workflows/docs-sanity.yml"])
         self.assertEqual(scope.codeql_languages, ("actions",))

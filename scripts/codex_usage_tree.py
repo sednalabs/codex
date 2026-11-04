@@ -1128,7 +1128,9 @@ def _database_source_identity(database_path: str) -> dict[str, Any]:
             ).encode("utf-8")
         ).hexdigest()
     except (OSError, sqlite3.Error) as exc:
-        raise UsageError("could not identify the explicit read-only usage database") from exc
+        raise UsageError(
+            "could not identify the explicit read-only usage database"
+        ) from exc
     finally:
         if connection is not None:
             connection.close()
@@ -1141,7 +1143,9 @@ def _database_source_identity(database_path: str) -> dict[str, Any]:
             "formatHeaderSha256": before["database"]["formatHeaderSha256"],
         },
     ):
-        raise UsageError("usage database changed while its checkpoint identity was read")
+        raise UsageError(
+            "usage database changed while its checkpoint identity was read"
+        )
     return {
         "path": str(resolved),
         "files": after,
@@ -1187,7 +1191,9 @@ def _assert_indexed_thread_call_lookup(
             "usage database has no indexed exact-thread provider-call lookup"
         )
     if require_ordered and any("TEMP B-TREE" in detail for detail in details):
-        raise UsageError("usage database cannot serve bounded call pages from its index")
+        raise UsageError(
+            "usage database cannot serve bounded call pages from its index"
+        )
 
 
 def _database_call_order_mode(connection: sqlite3.Connection) -> str:
@@ -1195,8 +1201,7 @@ def _database_call_order_mode(connection: sqlite3.Connection) -> str:
     for index in connection.execute('PRAGMA index_list("usage_provider_calls")'):
         index_name = str(index[1]).replace('"', '""')
         columns = [
-            row[2]
-            for row in connection.execute(f'PRAGMA index_info("{index_name}")')
+            row[2] for row in connection.execute(f'PRAGMA index_info("{index_name}")')
         ]
         if columns[:2] == ["thread_id", "started_at"]:
             return "thread_started_rowid"
@@ -1465,7 +1470,9 @@ class _MergedUsageTotals:
                     or not isinstance(pair[1], int)
                     or pair[1] < 0
                 ):
-                    raise UsageError("usage checkpoint has an invalid aggregate counter")
+                    raise UsageError(
+                        "usage checkpoint has an invalid aggregate counter"
+                    )
                 result[pair[0]] = pair[1]
             return result
 
@@ -1475,7 +1482,9 @@ class _MergedUsageTotals:
                 not isinstance(key, list)
                 or len(key) != 3
                 or not isinstance(key[0], str)
-                or any(value is not None and not isinstance(value, str) for value in key)
+                or any(
+                    value is not None and not isinstance(value, str) for value in key
+                )
             ):
                 raise UsageError("usage checkpoint has an invalid aggregate group key")
             totals.groups[(key[0], key[1], key[2])] = {
@@ -1766,7 +1775,9 @@ class _CrossLedgerCheckpoint:
         if requested_info is not None and stat.S_ISLNK(requested_info.st_mode):
             raise UsageError("checkpoint must not be a symbolic link")
         if any(path == Path(source["path"]) for source in identity["sources"]):
-            raise UsageError("checkpoint path must be separate from both usage databases")
+            raise UsageError(
+                "checkpoint path must be separate from both usage databases"
+            )
         if not path.parent.is_dir():
             raise UsageError("checkpoint parent directory does not exist")
         try:
@@ -1806,7 +1817,9 @@ class _CrossLedgerCheckpoint:
             }
             if "checkpoint_meta" not in tables:
                 if info.st_size != 0 or tables:
-                    raise UsageError("checkpoint file is not a recognized usage checkpoint")
+                    raise UsageError(
+                        "checkpoint file is not a recognized usage checkpoint"
+                    )
                 self.connection.executescript(
                     "CREATE TABLE checkpoint_meta (key TEXT PRIMARY KEY, value TEXT NOT NULL);"
                     "CREATE TABLE union_calls ("
@@ -1965,12 +1978,12 @@ class _CrossLedgerCheckpoint:
             union.rate_context_missing_by_source = []
             for item in missing:
                 if not isinstance(item, dict) or any(
-                    not isinstance(key, str)
-                    or not isinstance(value, int)
-                    or value < 0
+                    not isinstance(key, str) or not isinstance(value, int) or value < 0
                     for key, value in item.items()
                 ):
-                    raise UsageError("checkpoint has invalid missing-rate-context counters")
+                    raise UsageError(
+                        "checkpoint has invalid missing-rate-context counters"
+                    )
                 union.rate_context_missing_by_source.append(Counter(item))
             expected_memory_bytes = union_state["estimatedMemoryBytes"]
             union.estimated_memory_bytes = 0
@@ -1985,7 +1998,10 @@ class _CrossLedgerCheckpoint:
                 raise UsageError("checkpoint exceeds cross-ledger union bounds")
             union.estimated_memory_bytes = expected_memory_bytes
             group_counts = union_state["groupCounts"]
-            if not isinstance(group_counts, list) or len(group_counts) > MAX_DATABASE_UNION_GROUPS:
+            if (
+                not isinstance(group_counts, list)
+                or len(group_counts) > MAX_DATABASE_UNION_GROUPS
+            ):
                 raise UsageError("checkpoint has invalid merged group counts")
             for item in group_counts:
                 if (
@@ -1993,7 +2009,10 @@ class _CrossLedgerCheckpoint:
                     or len(item) != 2
                     or not isinstance(item[0], list)
                     or len(item[0]) != 3
-                    or any(value is not None and not isinstance(value, str) for value in item[0])
+                    or any(
+                        value is not None and not isinstance(value, str)
+                        for value in item[0]
+                    )
                     or not isinstance(item[1], int)
                     or item[1] <= 0
                 ):
@@ -2008,7 +2027,8 @@ class _CrossLedgerCheckpoint:
                 if (
                     not isinstance(source, dict)
                     or not isinstance(source.get("complete"), bool)
-                    or source.get("orderMode") not in (None, "thread_started_rowid", "thread_rowid")
+                    or source.get("orderMode")
+                    not in (None, "thread_started_rowid", "thread_rowid")
                     or source.get("cursor") is not None
                     and not isinstance(source.get("cursor"), list)
                     or source.get("snapshotMaxRowid") is not None
@@ -2038,7 +2058,13 @@ class _CrossLedgerCheckpoint:
                     "usage checkpoint load exceeded its operation time limit"
                 ) from exc
             raise UsageError("could not read the private usage checkpoint") from exc
-        except (KeyError, TypeError, ValueError, InvalidOperation, json.JSONDecodeError) as exc:
+        except (
+            KeyError,
+            TypeError,
+            ValueError,
+            InvalidOperation,
+            json.JSONDecodeError,
+        ) as exc:
             raise UsageError("checkpoint state is corrupt or incompatible") from exc
         finally:
             self.connection.set_progress_handler(None, 0)
@@ -2062,7 +2088,9 @@ class _CrossLedgerCheckpoint:
         if row[1] is None:
             return None, None
         values = json.loads(row[2])
-        if not isinstance(values, list) or len(values) != len(UNION_CONTRIBUTION_FIELDS):
+        if not isinstance(values, list) or len(values) != len(
+            UNION_CONTRIBUTION_FIELDS
+        ):
             raise UsageError("checkpoint has invalid provider-call contribution")
         credits_index = UNION_CONTRIBUTION_FIELDS.index("providerReportedCredits")
         if values[credits_index] is not None:
@@ -2085,7 +2113,9 @@ class _CrossLedgerCheckpoint:
             "SELECT contribution FROM union_calls ORDER BY provider_call_id"
         ):
             values = json.loads(row[0])
-            if not isinstance(values, list) or len(values) != len(UNION_CONTRIBUTION_FIELDS):
+            if not isinstance(values, list) or len(values) != len(
+                UNION_CONTRIBUTION_FIELDS
+            ):
                 raise UsageError("checkpoint has invalid provider-call contribution")
             credits_index = UNION_CONTRIBUTION_FIELDS.index("providerReportedCredits")
             if values[credits_index] is not None:
@@ -2142,7 +2172,10 @@ class _CrossLedgerCheckpoint:
             )
             connection.executemany(
                 "INSERT OR IGNORE INTO conflicting_ids(provider_call_id) VALUES(?)",
-                [(provider_call_id,) for provider_call_id in union.pending_conflicting_ids],
+                [
+                    (provider_call_id,)
+                    for provider_call_id in union.pending_conflicting_ids
+                ],
             )
             connection.executemany(
                 "INSERT OR IGNORE INTO schema_unverifiable_ids(provider_call_id) VALUES(?)",
@@ -2387,7 +2420,9 @@ def collect_database_tree(
                 or connection.execute("PRAGMA journal_mode").fetchone()[0]
                 != stable["journalMode"]
             ):
-                raise UsageError("usage database identity changed after checkpoint validation")
+                raise UsageError(
+                    "usage database identity changed after checkpoint validation"
+                )
         tables = {
             row["name"]
             for row in connection.execute(
@@ -2604,7 +2639,9 @@ def collect_database_tree(
                 order_mode = _database_call_order_mode(connection)
                 stored_order_mode = resume_state.get("orderMode")
                 if stored_order_mode not in (None, order_mode):
-                    raise UsageError("checkpoint keyset order no longer matches the ledger")
+                    raise UsageError(
+                        "checkpoint keyset order no longer matches the ledger"
+                    )
                 resume_state["orderMode"] = order_mode
                 if checkpoint_callback is not None:
                     resume_state["totals"] = source_totals.checkpoint_state()
@@ -2693,9 +2730,7 @@ def collect_database_tree(
                                 if rows_scanned_this_run >= row_limit:
                                     truncated = True
                                     additional_row_observed = True
-                                    truncation_reason = (
-                                        union_row_limit_reason
-                                    )
+                                    truncation_reason = union_row_limit_reason
                                     break
                                 if time.monotonic() >= query_deadline:
                                     truncated = True
@@ -2732,10 +2767,14 @@ def collect_database_tree(
                                         "maximumStartedAtObserved"
                                     )
                                     resume_state["minimumStartedAtObserved"] = (
-                                        started_at if minimum is None else min(minimum, started_at)
+                                        started_at
+                                        if minimum is None
+                                        else min(minimum, started_at)
                                     )
                                     resume_state["maximumStartedAtObserved"] = (
-                                        started_at if maximum is None else max(maximum, started_at)
+                                        started_at
+                                        if maximum is None
+                                        else max(maximum, started_at)
                                     )
                                 if accepted is False:
                                     truncated = True
@@ -2757,7 +2796,11 @@ def collect_database_tree(
                             source_rows_before + rows_scanned_this_run
                         )
                         resume_state["totals"] = source_totals.checkpoint_state()
-                        if page_rows < query_limit and not truncated and not page_interrupted:
+                        if (
+                            page_rows < query_limit
+                            and not truncated
+                            and not page_interrupted
+                        ):
                             resume_state["complete"] = True
                         if expected_source_identity is not None and (
                             not _same_database_generation(
@@ -2788,7 +2831,9 @@ def collect_database_tree(
                 union_scan = {
                     "rowsScanned": resume_state.get("rowsScanned", source_rows_before),
                     "rowsScannedThisRun": rows_scanned_this_run,
-                    "rowsScannedAtLeast": resume_state.get("rowsScanned", source_rows_before)
+                    "rowsScannedAtLeast": resume_state.get(
+                        "rowsScanned", source_rows_before
+                    )
                     + (1 if additional_row_observed else 0),
                     "complete": resume_state["complete"],
                     "truncated": not resume_state["complete"],
@@ -3168,9 +3213,7 @@ def collect_database_union(
     try:
         if checkpoint is None:
             union = _CrossLedgerUnion()
-            source_states = [
-                _empty_cross_ledger_source_state(rates) for _ in range(2)
-            ]
+            source_states = [_empty_cross_ledger_source_state(rates) for _ in range(2)]
         else:
             union, source_states = checkpoint.load(rates, overall_deadline)
         source_totals = [
@@ -3190,8 +3233,7 @@ def collect_database_union(
             remaining_total = max(0, MAX_DATABASE_UNION_CALLS_TOTAL - processed_before)
             remaining_source = max(
                 0,
-                MAX_DATABASE_UNION_CALLS_PER_SOURCE
-                - union.source_rows[source_index],
+                MAX_DATABASE_UNION_CALLS_PER_SOURCE - union.source_rows[source_index],
             )
             row_limit = min(remaining_source, remaining_total)
             resumable_run_limit = row_limit > MAX_DATABASE_UNION_CALLS_PER_RUN
@@ -3290,9 +3332,7 @@ def collect_database_union(
                     "columnCoverage": result["columnCoverage"],
                     "recordedAggregate": result["recordedAggregate"],
                     "rowScan": scan,
-                    "unkeyedProviderCallRowsScanned": union.unkeyed_rows[
-                        source_index
-                    ],
+                    "unkeyedProviderCallRowsScanned": union.unkeyed_rows[source_index],
                     "conflictingRowsWithheldObserved": union.conflict_rows_by_source[
                         source_index
                     ],
@@ -3978,10 +4018,7 @@ def main(argv: list[str] | None = None) -> int:
                 if args.continue_until_complete:
                     result["continuation"]["resumePassesCompleted"] = pass_number
                     result["continuation"]["resumePassLimit"] = passes
-                    if (
-                        continuation_status == "resumable"
-                        and pass_number == passes
-                    ):
+                    if continuation_status == "resumable" and pass_number == passes:
                         result["continuation"]["status"] = "resume_pass_limit_reached"
                         result["continuation"]["nextAction"] = (
                             "rerun this same command with the same checkpoint file to continue"
