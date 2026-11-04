@@ -63,7 +63,7 @@ use crate::http_client_redirect::SameOriginRedirectHttpClient;
 use crate::www_authenticate::insufficient_scope_challenge;
 
 pub(super) fn is_bearer_invalid_token_challenge(header: &str) -> bool {
-    www_authenticate::is_bearer_invalid_token_challenge(header)
+    crate::www_authenticate::is_bearer_invalid_token_challenge(header)
 }
 
 const EVENT_STREAM_MIME_TYPE: &str = "text/event-stream";

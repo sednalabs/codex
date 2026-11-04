@@ -372,6 +372,12 @@ fn remaining_operation_timeout(
     }
 }
 
+fn extend_operation_deadline(deadline: &mut Option<Instant>, excluded_time: Duration) {
+    if let Some(deadline) = deadline.as_mut() {
+        *deadline += excluded_time;
+    }
+}
+
 #[derive(Debug, Clone, PartialEq)]
 pub enum Elicitation {
     Mcp(ElicitRequestParams),
