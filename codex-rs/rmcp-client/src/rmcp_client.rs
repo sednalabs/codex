@@ -102,6 +102,7 @@ use crate::oauth_refresh_mode::McpOAuthRefreshMode;
 use crate::ordered_byte_transport::OrderedByteTransport;
 use crate::protocol_mode::McpProtocolMode;
 use crate::request_cancellation::RequestCancellation;
+use crate::single_attempt_oauth_client::SingleAttemptOAuthClient;
 use crate::startup_error::is_authentication_required_error;
 use crate::stdio_server_launcher::StdioProcessSlot;
 use crate::stdio_server_launcher::StdioServerCommand;
@@ -135,11 +136,13 @@ enum PendingTransport {
         transport: StreamableHttpClientTransport<StreamableHttpClientAdapter>,
     },
     StreamableHttpWithOAuth {
-        transport: StreamableHttpClientTransport<AuthClient<StreamableHttpClientAdapter>>,
+        transport:
+            StreamableHttpClientTransport<SingleAttemptOAuthClient<StreamableHttpClientAdapter>>,
         oauth_runtime: OAuthRuntime,
     },
     StreamableHttpWithAccessTokenOnly {
-        transport: StreamableHttpClientTransport<AuthClient<StreamableHttpClientAdapter>>,
+        transport:
+            StreamableHttpClientTransport<SingleAttemptOAuthClient<StreamableHttpClientAdapter>>,
     },
 }
 
@@ -2162,7 +2165,7 @@ async fn create_oauth_transport_and_runtime(
     let auth_manager = auth_client.auth_manager.clone();
 
     let transport = StreamableHttpClientTransport::with_client(
-        auth_client,
+        SingleAttemptOAuthClient::new(auth_client),
         StreamableHttpClientTransportConfig::with_uri(url.to_string()),
     );
 
