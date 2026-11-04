@@ -538,8 +538,8 @@ jobs:
     needs: changed
     if: ${{ needs.changed.outputs.run_argument_comment_lint_package == 'true' }}
     env:
-      CARGO_DYLINT_VERSION: 5.0.0
-      DYLINT_LINK_VERSION: 5.0.0
+      CARGO_DYLINT_VERSION: 6.3.2
+      DYLINT_LINK_VERSION: 6.3.2
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -572,8 +572,9 @@ jobs:
         if: ${{ steps.cargo_dylint_cache.outputs.cache-hit != 'true' }}
         shell: bash
         run: |
-          cargo install --locked cargo-dylint --version "$CARGO_DYLINT_VERSION"
-          cargo install --locked dylint-link --version "$DYLINT_LINK_VERSION"
+          rustup toolchain install stable --profile minimal
+          cargo +stable install --locked cargo-dylint --version "$CARGO_DYLINT_VERSION"
+          cargo +stable install --locked dylint-link --version "$DYLINT_LINK_VERSION"
       - name: Check Python wrapper syntax
         run: python3 -m py_compile tools/argument-comment-lint/wrapper_common.py tools/argument-comment-lint/run.py tools/argument-comment-lint/run-prebuilt-linter.py tools/argument-comment-lint/test_wrapper_common.py
       - name: Test Python wrapper helpers
