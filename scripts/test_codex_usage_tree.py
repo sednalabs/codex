@@ -10,11 +10,14 @@ from unittest.mock import patch
 
 from codex_usage_tree import (
     RpcError,
+    UsageError,
+    _database_compact_aggregate,
     app_server_argv,
     collect_database_tree,
     collect_local_tree,
     collect_tree,
     error_document,
+    load_ledger_standard_rates,
     load_rates,
     main,
     rpc_request_document,
@@ -97,6 +100,90 @@ class SyntheticErrorAppServer:
 
 
 class UsageTreeTests(unittest.TestCase):
+    def test_recorded_aggregate_preserves_unknowns_and_other_descendants(self):
+        connection = sqlite3.connect(":memory:")
+        connection.row_factory = sqlite3.Row
+        connection.executescript(
+            """
+            CREATE TABLE usage_threads (thread_id TEXT PRIMARY KEY);
+            CREATE TABLE usage_provider_calls (
+                thread_id TEXT, requested_model TEXT, input_tokens_uncached INTEGER,
+                input_tokens_cached INTEGER, input_tokens_cache_write INTEGER,
+                output_tokens INTEGER
+            );
+            INSERT INTO usage_threads VALUES ('other');
+            INSERT INTO usage_provider_calls VALUES
+                ('other', 'gpt-6-luna', 100, NULL, 0, 1);
+            """
+        )
+        result = _database_compact_aggregate(
+            connection,
+            ["other"],
+            "root",
+            load_rates(None),
+            {
+                "requested_model",
+                "input_tokens_uncached",
+                "input_tokens_cached",
+                "input_tokens_cache_write",
+                "output_tokens",
+            },
+            {"thread_id"},
+        )
+        connection.close()
+        group = result["groups"][0]
+        self.assertEqual(group["role"], "other_descendant")
+        self.assertIsNone(group["providerEffectiveModel"])
+        self.assertEqual(
+            group["tokenTotals"]["input_tokens_cached"]["missingValues"], 1
+        )
+        self.assertIsNone(group["calculatedCreditEstimate"]["value"])
+        self.assertEqual(
+            group["calculatedCreditEstimate"]["knownSubtotal"], "0.0002625"
+        )
+        self.assertFalse(result["actualDebitObserved"])
+
+    def test_ledger_rates_are_dated_standard_and_skip_ambiguous_models(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            database = Path(temp_dir) / "usage.sqlite"
+            connection = sqlite3.connect(database)
+            connection.executescript(
+                """
+                CREATE TABLE usage_codex_credit_rates (
+                    model TEXT, provider TEXT, service_tier TEXT, speed_mode TEXT,
+                    rate_card_kind TEXT, credits_per_1m_uncached_input REAL,
+                    credits_per_1m_cached_input REAL, credits_per_1m_output REAL,
+                    effective_from TEXT, effective_to TEXT
+                );
+                INSERT INTO usage_codex_credit_rates VALUES
+                    ('priced', 'openai', 'default', 'standard', 'codex_token_based',
+                     10, 1, 50, '2026-01-01', '2026-10-01'),
+                    ('priced', 'openai', 'default', 'standard', 'codex_token_based',
+                     20, 2, 100, '2026-10-01', NULL),
+                    ('priced', 'openai', 'priority', 'fast', 'codex_token_based',
+                     40, 4, 200, '2026-10-01', NULL),
+                    ('ambiguous', 'openai', 'default', 'standard', 'codex_token_based',
+                     1, 1, 1, '2026-01-01', NULL),
+                    ('ambiguous', 'openai', 'default', 'standard', 'codex_token_based',
+                     2, 2, 2, '2026-01-01', NULL),
+                    ('image', 'openai', 'default', 'standard', 'codex_token_based_image',
+                     3, 3, 3, '2026-01-01', NULL);
+                """
+            )
+            connection.commit()
+            connection.close()
+            before = database.read_bytes()
+            rates = load_ledger_standard_rates(str(database), "2026-10-15T00:00:00Z")
+            self.assertEqual(rates["models"]["priced"]["input"], Decimal("20.0"))
+            self.assertNotIn("ambiguous", rates["models"])
+            self.assertNotIn("image", rates["models"])
+            self.assertIn("not established", rates["source"])
+            earlier = load_ledger_standard_rates(str(database), "2026-09-15T00:00:00Z")
+            self.assertEqual(earlier["models"]["priced"]["input"], Decimal("10.0"))
+            with self.assertRaises(UsageError):
+                load_ledger_standard_rates(str(database), "2026-10-15")
+            self.assertEqual(database.read_bytes(), before)
+
     def test_supported_cli_argv_and_wire_field_names(self):
         self.assertEqual(
             app_server_argv("codex"),
@@ -211,6 +298,9 @@ class UsageTreeTests(unittest.TestCase):
                     thread_source TEXT,
                     created_at TEXT NOT NULL
                 );
+                CREATE INDEX usage_threads_reporting_parent_idx ON usage_threads(
+                    COALESCE(NULLIF(parent_thread_id, ''), NULLIF(fork_parent_thread_id, ''))
+                );
                 CREATE TABLE usage_provider_calls (
                     provider_call_id TEXT PRIMARY KEY,
                     thread_id TEXT NOT NULL,
@@ -247,7 +337,36 @@ class UsageTreeTests(unittest.TestCase):
             connection.close()
             original_bytes = database.read_bytes()
 
-            result = collect_database_tree("root", str(database), load_rates(None))
+            plans = []
+
+            class TracingConnection(sqlite3.Connection):
+                def execute(self, sql, parameters=()):
+                    if "WITH RECURSIVE lineage" in sql:
+                        plans.extend(
+                            row[3]
+                            for row in super().execute(
+                                "EXPLAIN QUERY PLAN " + sql, parameters
+                            )
+                        )
+                    return super().execute(sql, parameters)
+
+            real_connect = sqlite3.connect
+
+            def connect_with_plan(*args, **kwargs):
+                return real_connect(*args, factory=TracingConnection, **kwargs)
+
+            with patch(
+                "codex_usage_tree.sqlite3.connect", side_effect=connect_with_plan
+            ):
+                result = collect_database_tree("root", str(database), load_rates(None))
+
+            self.assertTrue(
+                any(
+                    "SEARCH child USING INDEX usage_threads_reporting_parent_idx" in p
+                    for p in plans
+                ),
+                plans,
+            )
 
             self.assertEqual(result["status"], "partial")
             self.assertFalse(result["completeness"]["historicalCoverageComplete"])
@@ -279,11 +398,62 @@ class UsageTreeTests(unittest.TestCase):
                 "cacheWriteInputTokens",
                 child_group["calculatedCreditEstimate"]["missingTokenDimensions"],
             )
+            with patch("codex_usage_tree.MAX_DATABASE_CALLS", 1):
+                bounded = collect_database_tree(
+                    "root", str(database), load_rates(None), aggregate=True
+                )
+            self.assertTrue(bounded["usage"]["truncated"])
+            aggregate_groups = {
+                group["role"]: group for group in bounded["recordedAggregate"]["groups"]
+            }
+            self.assertEqual(set(aggregate_groups), {"root", "subagent"})
+            self.assertEqual(
+                aggregate_groups["root"]["calculatedCreditEstimate"]["value"], "302.5"
+            )
+            self.assertIsNone(
+                aggregate_groups["subagent"]["calculatedCreditEstimate"]["value"]
+            )
+            self.assertIn(
+                "cache_write_pricing",
+                aggregate_groups["subagent"]["calculatedCreditEstimate"][
+                    "missingTokenDimensions"
+                ],
+            )
             output = io.StringIO()
             with contextlib.redirect_stdout(output):
                 exit_code = main(["--thread-id", "root", "--database", str(database)])
             self.assertEqual(exit_code, 2)
             self.assertEqual(json.loads(output.getvalue())["status"], "partial")
+            output = io.StringIO()
+            with contextlib.redirect_stdout(output):
+                exit_code = main(
+                    [
+                        "--thread-id",
+                        "root",
+                        "--database",
+                        str(database),
+                        "--aggregate-recorded",
+                    ]
+                )
+            aggregate_only = json.loads(output.getvalue())
+            self.assertEqual(exit_code, 2)
+            self.assertNotIn("threads", aggregate_only)
+            self.assertEqual(len(aggregate_only["recordedAggregate"]["groups"]), 2)
+
+            class InterruptedConnection(sqlite3.Connection):
+                def set_progress_handler(self, callback, count):
+                    return super().set_progress_handler(
+                        (lambda: 1) if callback is not None else None, 1
+                    )
+
+            def connect_interrupted(*args, **kwargs):
+                return real_connect(*args, factory=InterruptedConnection, **kwargs)
+
+            with patch(
+                "codex_usage_tree.sqlite3.connect", side_effect=connect_interrupted
+            ):
+                with self.assertRaisesRegex(UsageError, "exceeded its time limit"):
+                    collect_database_tree("root", str(database), load_rates(None))
             self.assertEqual(database.read_bytes(), original_bytes)
 
     def test_a_list_cap_marks_lineage_incomplete_instead_of_claiming_full_tree(self):

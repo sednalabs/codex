@@ -129,15 +129,14 @@ pub(super) async fn read(
     }))
 }
 
-/// One bounded, scan-and-repair page of local roots, shared by task and credit reporting.
+/// One bounded page of indexed local roots, shared by task and credit reporting.
 pub(super) async fn roots(
     handle: &AppServerRequestHandle,
     cursor: Option<String>,
 ) -> Result<RootThreads, String> {
     let cutoff = chrono::Utc::now().timestamp() - 30 * 24 * 60 * 60;
-    // UpdatedAt sorting requires a filesystem mtime scan across the whole rollout tree. Use
-    // creation-ordered ThreadList pages instead, retaining its scan-and-repair behavior for the
-    // returned page. The UI exposes the cursor so older active roots remain reachable.
+    // Filesystem scan-and-repair can exceed the interactive deadline even for one page.
+    // Use the existing state index and expose its potentially incomplete coverage in the UI.
     let page: ThreadListResponse = handle
         .request_typed(ClientRequest::ThreadList {
             request_id: RequestId::String(uuid::Uuid::new_v4().to_string()),
@@ -190,7 +189,7 @@ pub(super) fn list_params(cursor: Option<String>) -> ThreadListParams {
         section_id: None,
         project_id: None,
         cwd: None,
-        use_state_db_only: false,
+        use_state_db_only: true,
         search_term: None,
         parent_thread_id: None,
         ancestor_thread_id: None,

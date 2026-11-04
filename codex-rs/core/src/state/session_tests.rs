@@ -38,6 +38,7 @@ async fn record_token_usage_continues_restored_totals() {
         "root-turn".to_string(),
         "response-d".to_string(),
         Some("requested-model".to_string()),
+        &mut None,
         &usage(20),
     );
     assert_eq!(
@@ -55,6 +56,37 @@ async fn record_token_usage_continues_restored_totals() {
             thread_token_usage: usage(250),
         }
     );
+}
+
+#[tokio::test]
+async fn record_token_usage_preserves_turn_totals_when_turns_interleave() {
+    let thread_id = ThreadId::new();
+    let session_id = SessionId::from(ThreadId::new());
+    let usage = |total_tokens| TokenUsage {
+        total_tokens,
+        ..TokenUsage::default()
+    };
+    let mut state = SessionState::new(make_session_configuration_for_tests().await);
+    let mut foreground_usage = None;
+    let mut background_usage = None;
+    let mut record =
+        |turn: &str, response: &str, tokens, recorded_usage: &mut Option<TokenUsage>| {
+            state.record_token_usage(
+                thread_id,
+                turn,
+                session_id,
+                turn.to_string(),
+                response.to_string(),
+                /*requested_model*/ None,
+                recorded_usage,
+                &usage(tokens),
+            )
+        };
+    record("foreground", "first", 91_000, &mut foreground_usage);
+    record("background", "compaction", 3_000, &mut background_usage);
+    let continuation = record("foreground", "continuation", 3_000, &mut foreground_usage);
+    assert_eq!(continuation.turn_token_usage.total_tokens, 94_000);
+    assert_eq!(continuation.thread_token_usage.total_tokens, 97_000);
 }
 
 #[tokio::test]

@@ -165,8 +165,8 @@ async fn bounded_repairing_chat_listing_keeps_estimate_budget_and_marks_partial_
     assert_eq!(
         rpc.await.unwrap(),
         vec![
-            json!([null, 100, false, [], "created_at"]),
-            json!([next_cursor, 100, false, [], "created_at"])
+            json!([null, 100, true, [], "created_at"]),
+            json!([next_cursor, 100, true, [], "created_at"])
         ]
     );
 }

@@ -17,6 +17,70 @@ use crate::PINNED_THREAD_SECTION_NAME;
 
 const CUSTOM_THREAD_SECTION_ID: &str = "01984de2-8f74-7c91-a3b2-5c5e937cf317";
 
+#[tokio::test]
+async fn usage_migrator_preserves_known_legacy_twenty_and_retains_index_repair() {
+    let sqlite_home = crate::runtime::test_support::unique_temp_dir();
+    tokio::fs::create_dir_all(&sqlite_home)
+        .await
+        .expect("sqlite home should be created");
+    let _cleanup = scopeguard::guard(sqlite_home.clone(), |sqlite_home| {
+        let _ = std::fs::remove_dir_all(sqlite_home);
+    });
+    let sqlite = crate::SqliteConfig::new_for_testing(sqlite_home.as_path().abs());
+    let pool = sqlite
+        .open_read_write_pool(&sqlite.usage_db_path())
+        .await
+        .expect("usage database should open");
+    sqlx::query(
+        "CREATE TABLE _sqlx_migrations (version BIGINT PRIMARY KEY, description TEXT NOT NULL, success BOOLEAN NOT NULL, checksum BLOB NOT NULL)",
+    )
+    .execute(&pool)
+    .await
+    .expect("migration table");
+    for (version, description, checksum_hex) in T10_USAGE_MIGRATION_HISTORY
+        .iter()
+        .filter(|(version, _, _)| [1, 5, 15, 20].contains(version))
+    {
+        let checksum = checksum_hex
+            .as_bytes()
+            .chunks_exact(2)
+            .map(|pair| {
+                (super::hex_nibble(pair[0]).unwrap() << 4) | super::hex_nibble(pair[1]).unwrap()
+            })
+            .collect::<Vec<_>>();
+        sqlx::query("INSERT INTO _sqlx_migrations VALUES (?, ?, TRUE, ?)")
+            .bind(version)
+            .bind(*description)
+            .bind(checksum)
+            .execute(&pool)
+            .await
+            .expect("legacy migration row");
+    }
+    let base = runtime_usage_migrator();
+    let compatible = runtime_usage_migrator_for_history(&pool, &base)
+        .await
+        .expect("exact legacy history is accepted");
+    assert!(!compatible.iter().any(|migration| migration.version == 20));
+    assert!(compatible.iter().any(|migration| migration.version == 22));
+    let description: String =
+        sqlx::query_scalar("SELECT description FROM _sqlx_migrations WHERE version = 20")
+            .fetch_one(&pool)
+            .await
+            .expect("legacy row retained");
+    assert_eq!(description, "usage automatic turn reference");
+
+    sqlx::query("UPDATE _sqlx_migrations SET checksum = X'00' WHERE version = 20")
+        .execute(&pool)
+        .await
+        .expect("introduce unknown identity");
+    assert!(
+        runtime_usage_migrator_for_history(&pool, &base)
+            .await
+            .is_err()
+    );
+    pool.close().await;
+}
+
 fn migrator_through(version: i64) -> Migrator {
     Migrator {
         migrations: Cow::Owned(

@@ -75,13 +75,15 @@ Settings: relative to window 1
 07:additional_tools/developer (1; hash=26cd263a29587cc7):
         - namespace/functions; hash=771cad2ff250d2f3
           - custom/exec
-08:message/developer:
-    <model_instructions>
-    The current model is updated-tools-model.
-    The following instructions replace the previous base instructions:
+08:message/developer[3]:
+    [01]
+        The current model is updated-tools-model.
+        The following instructions replace the previous base instructions:
 
-    Review results before responding.
-    </model_instructions>
+
+    [02] <MODEL_INSTRUCTIONS>
+    [03]
+
 09:message/user:
     Continue with the updated execution instructions.
 -- request 4 (turn) --

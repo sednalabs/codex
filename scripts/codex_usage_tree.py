@@ -10,6 +10,7 @@ import sqlite3
 import subprocess
 import threading
 import time
+from datetime import datetime
 from decimal import Decimal, InvalidOperation
 from pathlib import Path
 from typing import Any
@@ -201,6 +202,64 @@ def load_rates(path: str | None) -> dict[str, Any]:
             "rates must be finite, non-negative credits per million"
         ) from exc
     return {"source": raw["source"], "date": raw["date"], "models": models}
+
+
+def load_ledger_standard_rates(database_path: str, at: str) -> dict[str, Any]:
+    """Select an explicit standard-rate scenario, not a provider debit."""
+    connection = None
+    try:
+        instant = datetime.fromisoformat(at.replace("Z", "+00:00"))
+        if instant.tzinfo is None or instant.utcoffset() is None:
+            raise UsageError("ledger rate scenario needs a timestamp with a timezone")
+        uri = Path(database_path).resolve(strict=True).as_uri() + "?mode=ro"
+        connection = sqlite3.connect(uri, uri=True, timeout=5.0)
+        connection.execute("PRAGMA query_only = ON")
+        if connection.execute("SELECT julianday(?)", (at,)).fetchone()[0] is None:
+            raise UsageError("ledger rate scenario needs a valid SQLite date/time")
+        rows = connection.execute(
+            """SELECT model, credits_per_1m_uncached_input,
+                      credits_per_1m_cached_input, credits_per_1m_output
+               FROM usage_codex_credit_rates
+               WHERE provider = 'openai' AND service_tier = 'default'
+                 AND speed_mode = 'standard' AND rate_card_kind = 'codex_token_based'
+                 AND julianday(effective_from) <= julianday(?)
+                 AND (effective_to IS NULL OR julianday(effective_to) > julianday(?))
+               LIMIT 1001""",
+            (at, at),
+        ).fetchall()
+        if len(rows) > 1000:
+            raise UsageError("ledger rate scenario exceeds the 1,000-row bound")
+        candidates: dict[str, set[tuple[Decimal, Decimal, Decimal]]] = {}
+        for model, uncached, cached, output in rows:
+            if not isinstance(model, str) or not model.strip():
+                continue
+            values = tuple(Decimal(str(value)) for value in (uncached, cached, output))
+            if any(not value.is_finite() or value < 0 for value in values):
+                raise UsageError("ledger scenario contains an invalid rate")
+            candidates.setdefault(model, set()).add(values)
+        models = {}
+        for model, choices in candidates.items():
+            if len(choices) != 1:
+                continue  # Never choose between conflicting overlapping rates.
+            uncached, cached, output = next(iter(choices))
+            models[model] = {
+                "input": uncached,
+                "cached_input": cached,
+                "output": output,
+            }
+        return {
+            "source": (
+                "local ledger standard-rate scenario; effective call tier, speed and "
+                "debit are not established; historical calls may use different rates"
+            ),
+            "date": at,
+            "models": models,
+        }
+    except (OSError, sqlite3.Error, InvalidOperation, TypeError, ValueError) as exc:
+        raise UsageError("could not read the requested ledger rate scenario") from exc
+    finally:
+        if connection is not None:
+            connection.close()
 
 
 def _optional_int(value: Any, field: str) -> int | None:
@@ -893,8 +952,143 @@ def _database_model_groups(
     return groups
 
 
+def _database_compact_aggregate(
+    connection: sqlite3.Connection,
+    thread_ids: list[str],
+    root_id: str,
+    rates: dict[str, Any],
+    call_columns: set[str],
+    thread_columns: set[str],
+) -> dict[str, Any]:
+    """Bound a summary independently from the number of detailed call records."""
+
+    def call_field(name: str) -> str:
+        return f'c."{name}"' if name in call_columns else "NULL"
+
+    source = 't."source"' if "source" in thread_columns else "NULL"
+    kind = 't."thread_source"' if "thread_source" in thread_columns else "NULL"
+    fields = (
+        "input_tokens_uncached",
+        "input_tokens_cached",
+        "input_tokens_cache_write",
+        "output_tokens",
+        "total_tokens",
+    )
+    dimensions = []
+    for field in fields:
+        value = call_field(field)
+        dimensions.extend(
+            [
+                f"SUM({value}) AS {field}",
+                f"SUM(CASE WHEN {value} IS NULL THEN 1 ELSE 0 END) AS {field}_missing",
+                f"SUM(CASE WHEN {value} IS NOT NULL AND "
+                f"(typeof({value}) != 'integer' OR {value} < 0) THEN 1 ELSE 0 END) AS {field}_invalid",
+            ]
+        )
+    uncached = call_field("input_tokens_uncached")
+    cache_write = call_field("input_tokens_cache_write")
+    requested = call_field("requested_model")
+    actual = call_field("actual_model_used")
+    final = call_field("final_model")
+    placeholders = ", ".join("?" for _ in thread_ids)
+    sql = f"""
+        SELECT CASE WHEN c.thread_id = ? THEN 'root'
+                    WHEN {kind} = 'subagent' OR lower(COALESCE({source}, '')) LIKE '%subagent%'
+                    THEN 'subagent' ELSE 'other_descendant' END AS role,
+               {requested} AS requested_model, {actual} AS actual_model,
+               {final} AS final_model, COUNT(*) AS calls,
+               {", ".join(dimensions)},
+               SUM(CASE WHEN {cache_write} = 0 THEN {uncached} ELSE 0 END) AS priced_uncached,
+               SUM(CASE WHEN {cache_write} IS NULL OR {cache_write} != 0 THEN 1 ELSE 0 END) AS unpriced_cache_write
+        FROM usage_provider_calls c JOIN usage_threads t ON t.thread_id = c.thread_id
+        WHERE c.thread_id IN ({placeholders})
+        GROUP BY role, requested_model, actual_model, final_model
+        LIMIT 101
+    """
+    deadline = time.monotonic() + 4.0
+    connection.set_progress_handler(lambda: int(time.monotonic() >= deadline), 10000)
+    try:
+        rows = connection.execute(sql, (root_id, *thread_ids)).fetchall()
+    except sqlite3.OperationalError as exc:
+        if "interrupt" not in str(exc).lower():
+            raise
+        return {"status": "unavailable", "reason": "aggregate_time_limit"}
+    finally:
+        connection.set_progress_handler(None, 0)
+
+    groups = []
+    for row in rows[:100]:
+        if any(row[f"{field}_invalid"] for field in fields):
+            raise UsageError("usage database contains invalid aggregate token values")
+        requested_model = (
+            _optional_text(row["requested_model"], "requested_model") or None
+        )
+        actual_model = _optional_text(row["actual_model"], "actual_model_used") or None
+        final_model = _optional_text(row["final_model"], "final_model") or None
+        effective = final_model or actual_model
+        model = effective or requested_model
+        missing = [field for field in fields if row[f"{field}_missing"]]
+        if row["unpriced_cache_write"]:
+            missing.append("cache_write_pricing")
+        cost = _cost(
+            {
+                "model": model,
+                "netNewInputTokens": row["priced_uncached"] or 0,
+                "cachedInputTokens": row["input_tokens_cached"] or 0,
+                "outputTokens": row["output_tokens"] or 0,
+            },
+            rates,
+        )
+        complete_estimate = not missing and cost["complete"]
+        groups.append(
+            {
+                "role": row["role"],
+                "requestedModel": requested_model,
+                "providerEffectiveModel": effective,
+                "providerEffectiveModelSource": "final_model"
+                if final_model
+                else "actual_model_used"
+                if actual_model
+                else None,
+                "responseUsageRecordCount": row["calls"],
+                "tokenTotals": {
+                    field: {
+                        "knownSubtotal": row[field] or 0,
+                        "missingValues": row[f"{field}_missing"],
+                    }
+                    for field in fields
+                },
+                "calculatedCreditEstimate": {
+                    "value": cost["credits"] if complete_estimate else None,
+                    "knownSubtotal": cost["knownSubtotal"],
+                    "rateModel": model,
+                    "completeForSelectedRecordedRows": complete_estimate,
+                    "rateModelBasis": "provider_effective_model"
+                    if effective
+                    else "requested_model_fallback"
+                    if requested_model
+                    else "unknown_model",
+                    "missingTokenDimensions": missing,
+                    "missingRates": cost["missingRates"],
+                },
+            }
+        )
+    return {
+        "status": "partial" if len(rows) > 100 else "recorded_rows_only",
+        "groups": groups,
+        "groupsTruncated": len(rows) > 100,
+        "actualDebitObserved": False,
+        "note": "Only selected recorded threads; historical lineage and actual debits remain unproven.",
+    }
+
+
 def collect_database_tree(
-    root_id: str, database_path: str, rates: dict[str, Any]
+    root_id: str,
+    database_path: str,
+    rates: dict[str, Any],
+    *,
+    aggregate: bool = False,
+    aggregate_only: bool = False,
 ) -> dict[str, Any]:
     """Read an explicitly named usage database without startup, migration, or writes."""
     if not isinstance(root_id, str) or not root_id.strip():
@@ -949,6 +1143,12 @@ def collect_database_tree(
             if "thread_source" in thread_columns
             else 'NULL AS "thread_source"'
         )
+        # Keep the recursive row outermost and remove its TEXT affinity: SQLite
+        # can then search the existing parent/fork expression index per child.
+        deadline = time.monotonic() + 4.0
+        connection.set_progress_handler(
+            lambda: int(time.monotonic() >= deadline), 10000
+        )
         thread_rows = connection.execute(
             f"""
             WITH RECURSIVE lineage(thread_id, depth, visited) AS (
@@ -957,13 +1157,13 @@ def collect_database_tree(
                 UNION ALL
                 SELECT child.thread_id, lineage.depth + 1,
                        lineage.visited || child.thread_id || ','
-                FROM usage_threads AS child
-                JOIN lineage
-                  ON COALESCE(
+                FROM lineage
+                CROSS JOIN usage_threads AS child
+                WHERE COALESCE(
                       NULLIF(child.parent_thread_id, ''),
                       NULLIF(child.fork_parent_thread_id, '')
-                  ) = lineage.thread_id
-                WHERE instr(lineage.visited, ',' || child.thread_id || ',') = 0
+                  ) = +lineage.thread_id
+                  AND instr(lineage.visited, ',' || child.thread_id || ',') = 0
                   AND lineage.depth < ?
                 LIMIT ?
             ),
@@ -999,6 +1199,7 @@ def collect_database_tree(
                 MAX_DATABASE_THREADS + 1,
             ),
         ).fetchall()
+        connection.set_progress_handler(None, 0)
         threads_truncated = len(thread_rows) > MAX_DATABASE_THREADS
         thread_rows = thread_rows[:MAX_DATABASE_THREADS]
         thread_ids = [row["thread_id"] for row in thread_rows]
@@ -1027,6 +1228,37 @@ def collect_database_tree(
             for field in selected_fields
         ]
         placeholders = ", ".join("?" for _ in thread_ids)
+        aggregate_result = (
+            _database_compact_aggregate(
+                connection, thread_ids, root_id, rates, call_columns, thread_columns
+            )
+            if aggregate or aggregate_only
+            else None
+        )
+        if aggregate_only:
+            return {
+                "schema": "codex-usage-tree/v1",
+                "status": "partial",
+                "scope": "root_and_known_descendants",
+                "rootThreadId": root_id,
+                "lineage": {
+                    "knownThreadCount": len(thread_rows),
+                    "truncated": threads_truncated,
+                    "complete": False,
+                    "coverageNote": "Unrecorded or historical descendants are unknown.",
+                },
+                "rateMap": {
+                    "source": rates["source"],
+                    "date": rates["date"],
+                    "unit": "credits per 1,000,000 exact-model tokens",
+                },
+                "recordedAggregate": aggregate_result,
+                "actualDebitObserved": False,
+            }
+        deadline = time.monotonic() + 4.0
+        connection.set_progress_handler(
+            lambda: int(time.monotonic() >= deadline), 10000
+        )
         call_rows = connection.execute(
             f"""
             SELECT provider_call_id, thread_id, {", ".join(expressions)}
@@ -1037,11 +1269,14 @@ def collect_database_tree(
             """,
             (*thread_ids, MAX_DATABASE_CALLS + 1),
         ).fetchall()
+        connection.set_progress_handler(None, 0)
         calls_truncated = len(call_rows) > MAX_DATABASE_CALLS
         call_rows = call_rows[:MAX_DATABASE_CALLS]
     except UsageError:
         raise
     except (OSError, sqlite3.Error, ValueError) as exc:
+        if getattr(exc, "sqlite_errorcode", None) == sqlite3.SQLITE_INTERRUPT:
+            raise UsageError("usage database query exceeded its time limit") from exc
         raise UsageError(
             "could not read the explicitly supplied usage database in read-only mode"
         ) from exc
@@ -1187,6 +1422,7 @@ def collect_database_tree(
         "status": "partial",
         "scope": "root_and_known_descendants",
         "rootThreadId": root_id,
+        "recordedAggregate": aggregate_result,
         "lineage": {
             "source": "usage_threads parent, fork-parent, and root fields",
             "knownThreadCount": len(thread_rows),
@@ -1498,6 +1734,11 @@ def main(argv: list[str] | None = None) -> int:
         ),
     )
     parser.add_argument(
+        "--aggregate-recorded",
+        action="store_true",
+        help="show a time-bounded aggregate without loading detailed call records",
+    )
+    parser.add_argument(
         "--expected-child-id",
         action="append",
         default=[],
@@ -1513,6 +1754,10 @@ def main(argv: list[str] | None = None) -> int:
         "--rates-json", help="rate map JSON replacing the embedded dated map"
     )
     parser.add_argument(
+        "--standard-ledger-rates-at",
+        help="use ledger default/standard rates at this date/time as an explicit scenario",
+    )
+    parser.add_argument(
         "--max-threads-per-state", type=int, default=DEFAULT_MAX_THREADS_PER_STATE
     )
     parser.add_argument("--timeout-seconds", type=int, default=20)
@@ -1524,6 +1769,12 @@ def main(argv: list[str] | None = None) -> int:
         parser.error("--database and --rollout-file select different local query modes")
     if args.database and args.allow_local_app_server_startup:
         parser.error("read-only database mode does not start an app-server")
+    if args.aggregate_recorded and not args.database:
+        parser.error("--aggregate-recorded requires --database")
+    if args.standard_ledger_rates_at and (not args.database or args.rates_json):
+        parser.error(
+            "--standard-ledger-rates-at requires --database and no --rates-json"
+        )
     if args.rollout_file and args.allow_local_app_server_startup:
         parser.error("local rollout mode does not start an app-server")
     if args.expected_child_id and not args.rollout_file:
@@ -1545,7 +1796,11 @@ def main(argv: list[str] | None = None) -> int:
         )
     client = None
     try:
-        rates = load_rates(args.rates_json)
+        rates = (
+            load_ledger_standard_rates(args.database, args.standard_ledger_rates_at)
+            if args.standard_ledger_rates_at
+            else load_rates(args.rates_json)
+        )
         if args.rollout_file:
             result = collect_local_tree(
                 args.thread_id,
@@ -1560,6 +1815,7 @@ def main(argv: list[str] | None = None) -> int:
                 args.thread_id,
                 args.database,
                 rates,
+                aggregate_only=args.aggregate_recorded,
             )
             print(json.dumps(result, indent=2, sort_keys=True))
             return 0 if result["status"] == "complete" else 2

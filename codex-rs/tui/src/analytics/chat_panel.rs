@@ -22,7 +22,7 @@ impl AnalyticsView {
         let width = row_width.saturating_sub(/*rhs*/ 1).max(/*other*/ 1);
         let wrap = |lines: Vec<Line<'static>>| word_wrap_lines(lines, RtOptions::new(width));
         let mut lines = wrap(vec![
-            "Active in past 30 days · sorted by lifetime credits"
+            "Indexed chats may be incomplete · estimated credits"
                 .set_style(secondary_style())
                 .into(),
         ]);
@@ -49,7 +49,7 @@ impl AnalyticsView {
         if chats.rows.is_empty() {
             lines.extend(wrap(vec![if chats.truncated {
                 if chats.next_cursor.is_some() {
-                    "No recent roots in this creation-ordered page; later pages may contain active chats. Press n to continue."
+                    "No recent roots in this creation-ordered page. Continue with n for older pages."
                 } else {
                     "No recent roots on this page. Press R to restart at the newest page."
                 }
@@ -81,11 +81,11 @@ impl AnalyticsView {
         lines.extend(wrap(vec![columns(
             "  Chat".bold().into(),
             if stacked_amounts {
-                "Est. $ / credits"
+                "Est. $ / est. credits"
             } else if show_usd {
-                "Est. $ spent  Lifetime credits"
+                "Est. $ spent  Est. lifetime credits"
             } else {
-                "Lifetime credits"
+                "Est. lifetime credits"
             }
             .bold()
             .into(),
@@ -199,7 +199,7 @@ impl AnalyticsView {
                                     .set_style(secondary_style())
                                     .into()
                             },
-                            "Credits".bold().into(),
+                            "Est. credits".bold().into(),
                             width,
                         ));
                     }

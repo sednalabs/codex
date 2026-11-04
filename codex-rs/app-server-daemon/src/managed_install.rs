@@ -122,7 +122,16 @@ pub(crate) async fn supports_daemon_update_loop(codex_bin: &Path) -> bool {
 
 /// Probe an internal daemon command without running a long-lived process.
 pub(crate) async fn supports_daemon_command(codex_bin: &Path, args: &[&str]) -> bool {
-    let mut command = Command::new(codex_bin);
+    let probe_bin = std::fs::canonicalize(codex_bin).unwrap_or_else(|_| codex_bin.to_path_buf());
+    let mut command = Command::new(&probe_bin);
+    // A managed daemon can be restarted after its original project directory is
+    // removed. Run this short-lived capability probe from the installed binary's
+    // directory so process creation does not depend on that caller working dir.
+    if probe_bin.is_absolute()
+        && let Some(bin_dir) = probe_bin.parent()
+    {
+        command.current_dir(bin_dir);
+    }
     #[cfg(windows)]
     command.creation_flags(windows_sys::Win32::System::Threading::CREATE_NO_WINDOW);
     timeout(

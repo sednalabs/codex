@@ -363,6 +363,12 @@ async fn incremental_tools_append_changed_catalog_without_rewriting_history(
         assert_eq!(bytes, BTreeMap::new());
     }
     if use_responses_lite {
+        // The snapshot normalizes client-owned instructions, so also check the
+        // actual replacement text sent in the model-switch request.
+        assert!(requests[2].body_contains_text("Review results before responding."));
+        assert!(requests[2].body_contains_text(
+            "The following instructions replace the previous base instructions:"
+        ));
         for request in &requests[..5] {
             assert_eq!(
                 request.instructions_text(),

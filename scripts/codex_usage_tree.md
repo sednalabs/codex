@@ -108,6 +108,24 @@ verified as an account debit; `actualDebit` remains `not_observed`.
 For new projected responses, stored timestamps are observation time; provider
 start time and latency are not independently measured.
 
+To use the database's wider rate table instead of the embedded map, choose an
+explicit date/time for a **standard-rate scenario**:
+
+```sh
+python3 scripts/codex_usage_tree.py \
+  --thread-id <root-thread-uuid> \
+  --database <effective-sqlite-home>/usage_1.sqlite \
+  --standard-ledger-rates-at 2026-10-01T00:00:00Z
+```
+
+The argument is an ISO timestamp with an explicit timezone. The selected rates
+apply to the whole report as a scenario; they do not prove
+the tier or price of each call, and historical calls may have different rates.
+Only default/standard Codex token rates are selected. Conflicting overlapping
+rates and image/text-specific rate classes are omitted instead of guessed;
+unpriced models remain explicitly missing. This option cannot be combined with
+`--rates-json`.
+
 Database results are always `partial`: they cover only usage-bearing responses
 successfully projected to this database and known lineage rows. They have no
 independent expected-response denominator, so they cannot prove a complete
@@ -117,6 +135,14 @@ zero-token response. Current limits are 900 known threads and 10,000 response
 rows; reaching either limit is reported as truncation. The response-level rows
 include request/turn identifiers, token classes, status, requested/effective
 model identity, and any provider-reported credits present in the ledger.
+
+Add `--aggregate-recorded` to request a model and role summary over the
+selected recorded threads instead of loading detailed rows. This is
+an estimate using the selected rate map, not an account debit; requested-model
+fallback and missing token dimensions are labelled. The aggregate has a
+four-second query limit and a 100-group output limit, and remains partial if
+lineage is incomplete or truncated. Normal detailed reports remain separately
+bounded.
 `selectedLedgerRowsComplete` and the separate lineage/response truncation flags
 show whether those bounded queried rows were fully read; they do not change the
 always-false `historicalCoverageComplete` claim.

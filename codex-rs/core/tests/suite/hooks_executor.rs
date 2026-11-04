@@ -483,7 +483,41 @@ async fn environment_hook_receives_prompt_and_reports_exit_status(
         (run.status, entries),
         (expected_status, vec![expected_output])
     );
-    wait_for_event(thread, |event| matches!(event, EventMsg::TurnComplete(_))).await;
+    if expected_status == HookRunStatus::Blocked {
+        let mut observed_nonterminal_events = 0;
+        let mut observed_error_event = false;
+        let terminal = timeout(Duration::from_secs(10), async {
+            loop {
+                let event = thread
+                    .next_event()
+                    .await
+                    .expect("event stream should remain open after hook completion");
+                match event.msg {
+                    EventMsg::TurnComplete(_) => break "TurnComplete".to_string(),
+                    EventMsg::TurnAborted(event) => {
+                        break format!("TurnAborted({:?})", event.reason);
+                    }
+                    EventMsg::Error(_) => {
+                        observed_error_event = true;
+                        observed_nonterminal_events += 1;
+                    }
+                    _ => observed_nonterminal_events += 1,
+                }
+            }
+        })
+        .await;
+        let terminal = terminal.unwrap_or_else(|_| {
+            panic!(
+                "blocked UserPromptSubmit hook did not produce a terminal event within 10s; observed {observed_nonterminal_events} other events, error event seen: {observed_error_event}"
+            )
+        });
+        assert_eq!(
+            terminal, "TurnComplete",
+            "a blocked UserPromptSubmit hook should finish the turn normally"
+        );
+    } else {
+        wait_for_event(thread, |event| matches!(event, EventMsg::TurnComplete(_))).await;
+    }
     Ok(())
 }
 

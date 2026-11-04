@@ -168,15 +168,15 @@ impl AnalyticsView {
         let metric = self.task_metric();
         let mut lines = wrap(vec![
             format!(
-                "Usage estimates · active in past 30 days · sorted by {}",
+                "Indexed chats may be incomplete · sorted by {}",
                 METRICS[metric]
             )
             .set_style(secondary_style())
             .into(),
             if metric == 2 {
-                "Credits debited from balance · includes adjustments"
+                "Balance debits · indexed descendants may be incomplete"
             } else {
-                "Recorded usage / current full limit · may exceed 100%"
+                "Usage / limit · indexed descendants may be incomplete"
             }
             .set_style(secondary_style())
             .into(),

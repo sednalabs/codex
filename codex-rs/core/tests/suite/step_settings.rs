@@ -104,6 +104,7 @@ use core_test_support::test_codex::TestCodexBuilder;
 use core_test_support::test_codex::test_codex;
 use core_test_support::wait_for_event;
 use core_test_support::wait_for_event_match;
+use core_test_support::wait_for_event_with_timeout;
 use core_test_support::wait_for_mcp_server;
 use image::GenericImageView;
 use pretty_assertions::assert_eq;
@@ -410,17 +411,21 @@ async fn tool_result_history_keeps_originating_model_across_switch_and_replay() 
                 response: response.clone(),
             })
             .await?;
-        raw_outputs.push(
-            wait_for_event_match(&test.codex, |event| match event {
-                EventMsg::RawResponseItem(event)
-                    if matches!(&event.item, ResponseItem::FunctionCallOutput { .. }) =>
-                {
-                    Some(serde_json::to_value(&event.item).expect("raw output"))
-                }
-                _ => None,
-            })
-            .await,
-        );
+        // Preparing and resizing the 2048px diagnostic image can be slow under
+        // the full sharded suite; keep a bounded wait without relaxing assertions.
+        let raw = wait_for_event_with_timeout(
+            &test.codex,
+            |event| {
+                matches!(event, EventMsg::RawResponseItem(event)
+                if matches!(&event.item, ResponseItem::FunctionCallOutput { .. }))
+            },
+            std::time::Duration::from_secs(60),
+        )
+        .await;
+        let EventMsg::RawResponseItem(raw) = raw else {
+            unreachable!("matched raw response item")
+        };
+        raw_outputs.push(serde_json::to_value(&raw.item).expect("raw output"));
     }
     let paused_request = wait_for_event_match(&test.codex, |event| match event {
         EventMsg::RequestUserInput(request) => Some(request.clone()),
