@@ -436,8 +436,11 @@ async fn handle_approved_mcp_tool_call(
                     call_id,
                     Some(&metadata),
                 );
-                let request_meta =
-                    with_mcp_tool_call_thread_id_meta(request_meta, &sess.thread_id.to_string());
+                let request_meta = with_mcp_tool_call_thread_id_meta(
+                    request_meta,
+                    &sess.thread_id.to_string(),
+                    &sess.execution_nonce.to_string(),
+                );
                 let request_meta = augment_mcp_tool_request_meta_with_sandbox_state(
                     step_context,
                     &prepared_call,
@@ -456,30 +459,20 @@ async fn handle_approved_mcp_tool_call(
                 }
                 let empty_arguments = JsonValue::Null;
                 let proof_parameters = rewritten_arguments.as_ref().unwrap_or(&empty_arguments);
-                let proof = codex_runtime_proof::sign_protected_mcp_proof(
-                    &sess.execution_nonce,
-                    &sess.thread_id.to_string(),
-                    &server,
-                    transport_url.as_deref(),
-                    &tool_name,
-                    proof_parameters,
-                )?;
-                let protected_read_without_proof = if protected_call {
-                    codex_runtime_proof::is_protected_mcp_read_tool(
-                        &server,
-                        transport_url.as_deref().unwrap_or_default(),
-                        &tool_name,
-                    )
-                    .map_err(anyhow::Error::msg)?
+                let proof = if protected_call {
+                    // The root launcher adds mutation proof at its authenticated MCP broker.
+                    None
                 } else {
-                    false
+                    codex_runtime_proof::sign_protected_mcp_proof(
+                        &sess.execution_nonce,
+                        &sess.thread_id.to_string(),
+                        &server,
+                        transport_url.as_deref(),
+                        &tool_name,
+                        proof_parameters,
+                    )?
                 };
-                if protected_call && proof.is_none() && !protected_read_without_proof {
-                    anyhow::bail!(
-                        "protected MCP operation is outside its issuer-bound claim scope"
-                    );
-                }
-                if protected_call {
+                if protected_call && proof.is_some() {
                     runtime_redaction_context = codex_runtime_proof::capture_mcp_redaction_context(
                         &server,
                         transport_url.as_deref().unwrap_or_default(),
@@ -1221,6 +1214,7 @@ const MCP_TOOL_UI_RESOURCE_URI_META_KEY: &str = "ui/resourceUri";
 const MCP_TOOL_LINK_ID_META_KEY: &str = "link_id";
 const MCP_TOOL_PLUGIN_ID_META_KEY: &str = "plugin_id";
 const MCP_TOOL_THREAD_ID_META_KEY: &str = "threadId";
+const MCP_TOOL_EXECUTION_NONCE_META_KEY: &str = "runtime/execution-nonce";
 const MCP_TOOL_CONNECTED_ACCOUNT_EMAIL_META_KEY: &str = "connected_account_email";
 const MCP_TOOL_RESOURCE_URI_META_KEY: &str = "resource_uri";
 
@@ -1321,12 +1315,17 @@ fn build_mcp_tool_call_request_meta(
 fn with_mcp_tool_call_thread_id_meta(
     meta: Option<serde_json::Value>,
     thread_id: &str,
+    execution_nonce: &str,
 ) -> Option<serde_json::Value> {
     match meta {
         Some(serde_json::Value::Object(mut map)) => {
             map.insert(
                 MCP_TOOL_THREAD_ID_META_KEY.to_string(),
                 serde_json::Value::String(thread_id.to_string()),
+            );
+            map.insert(
+                MCP_TOOL_EXECUTION_NONCE_META_KEY.to_string(),
+                serde_json::Value::String(execution_nonce.to_string()),
             );
             Some(serde_json::Value::Object(map))
         }
@@ -1335,6 +1334,10 @@ fn with_mcp_tool_call_thread_id_meta(
             map.insert(
                 MCP_TOOL_THREAD_ID_META_KEY.to_string(),
                 serde_json::Value::String(thread_id.to_string()),
+            );
+            map.insert(
+                MCP_TOOL_EXECUTION_NONCE_META_KEY.to_string(),
+                serde_json::Value::String(execution_nonce.to_string()),
             );
             Some(serde_json::Value::Object(map))
         }

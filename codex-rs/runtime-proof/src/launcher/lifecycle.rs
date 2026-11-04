@@ -124,6 +124,9 @@ pub(super) struct Context {
     observed_end: Option<EndObservation>,
     pending_end: Option<PendingEvent>,
     end_acknowledged: bool,
+    // A potentially sent Ops mutation without a complete response delivered to the child.
+    #[serde(default)]
+    unresolved_mcp_request_id: Option<Uuid>,
 }
 
 pub(super) struct Inputs<'a> {
@@ -212,6 +215,59 @@ pub(super) fn load_context(invocation: Uuid) -> Result<Option<Context>> {
     Ok(Some(serde_json::from_slice(&bytes)?))
 }
 
+pub(super) fn record_unresolved_mcp_request(invocation: Uuid, request_id: Uuid) -> Result<()> {
+    let _lock = lock_cohort()?;
+    let mut context = load_context(invocation)?
+        .context("lifecycle context is unavailable for the protected MCP request")?;
+    require_context_invocation(&context, invocation)?;
+    if context.end_acknowledged || context.pending_end.is_some() {
+        bail!("lifecycle end has already begun for the protected MCP request");
+    }
+    record_unresolved_mcp_request_id(&mut context.unresolved_mcp_request_id, request_id)?;
+    persist_context(&context, /*create*/ false)
+}
+
+pub(super) fn resolve_unresolved_mcp_request(invocation: Uuid, request_id: Uuid) -> Result<()> {
+    let _lock = lock_cohort()?;
+    let mut context = load_context(invocation)?
+        .context("lifecycle context is unavailable for the protected MCP response")?;
+    require_context_invocation(&context, invocation)?;
+    resolve_unresolved_mcp_request_id(&mut context.unresolved_mcp_request_id, request_id)?;
+    persist_context(&context, /*create*/ false)
+}
+
+fn require_context_invocation(context: &Context, invocation: Uuid) -> Result<()> {
+    if context.manager_binding.invocation_id != invocation
+        || context.pending_start.event.manager_invocation != invocation
+    {
+        bail!("lifecycle context belongs to a different manager invocation");
+    }
+    Ok(())
+}
+
+fn record_unresolved_mcp_request_id(current: &mut Option<Uuid>, request_id: Uuid) -> Result<()> {
+    if request_id.is_nil() || current.is_some_and(|existing| existing != request_id) {
+        bail!("protected MCP request identity cannot be recorded");
+    }
+    *current = Some(request_id);
+    Ok(())
+}
+
+fn resolve_unresolved_mcp_request_id(current: &mut Option<Uuid>, request_id: Uuid) -> Result<()> {
+    if request_id.is_nil() || *current != Some(request_id) {
+        bail!("protected MCP response does not match the unresolved request");
+    }
+    *current = None;
+    Ok(())
+}
+
+fn require_no_unresolved_mcp_request(request_id: Option<Uuid>) -> Result<()> {
+    if request_id.is_some() {
+        bail!("protected MCP request remains unresolved");
+    }
+    Ok(())
+}
+
 fn persist_context(context: &Context, create: bool) -> Result<()> {
     let directory = state_directory()?;
     let bytes = serde_json::to_vec(context)?;
@@ -271,6 +327,15 @@ pub(super) fn require_manager_start(
     policy_sha256: &str,
 ) -> Result<()> {
     manager::require_start_binding(binding, child_pid)?;
+    require_current_policy(policy_sha256)
+}
+
+pub(super) fn require_manager_running(
+    binding: &ManagerBinding,
+    child_pid: u32,
+    policy_sha256: &str,
+) -> Result<()> {
+    manager::require_running_binding(binding, child_pid)?;
     require_current_policy(policy_sha256)
 }
 
@@ -701,6 +766,10 @@ fn verified_certificate(
         || context.end_event_id.is_nil()
         || context.end_event_id == context.pending_start.event.event_id
         || (context.end_acknowledged && context.pending_end.is_none())
+        || (context.end_acknowledged && context.unresolved_mcp_request_id.is_some())
+        || context
+            .unresolved_mcp_request_id
+            .is_some_and(|request_id| request_id.is_nil())
     {
         bail!("lifecycle context binding is invalid");
     }
@@ -868,12 +937,12 @@ fn require_policy_digest(current: &[u8], expected: &str) -> Result<()> {
     Ok(())
 }
 
-fn require_current_policy(expected: &str) -> Result<()> {
+pub(super) fn require_current_policy(expected: &str) -> Result<()> {
     let current = super::read_root_file(Path::new(super::POLICY_PATH), super::MAX_POLICY_BYTES)?;
     require_policy_digest(&current, expected)
 }
 
-/// Persist and acknowledge start before the child receives bootstrap authority.
+/// Persist and acknowledge start before the child can use the launcher broker.
 pub(super) fn start(
     inputs: Inputs<'_>,
     manager_binding: &ManagerBinding,
@@ -927,6 +996,7 @@ pub(super) fn start(
         observed_end: None,
         pending_end: None,
         end_acknowledged: false,
+        unresolved_mcp_request_id: None,
     };
     verified_certificate(
         &context,
@@ -983,6 +1053,8 @@ pub(super) fn finish(
         None
     };
     let invocation = manager_invocation()?;
+    *context =
+        load_context(invocation)?.context("lifecycle context is unavailable for finalization")?;
     verified_certificate(
         context,
         policy,
@@ -1023,6 +1095,7 @@ pub(super) fn finish(
         return Ok(());
     }
     require_manager_stop(&context.manager_binding)?;
+    require_no_unresolved_mcp_request(context.unresolved_mcp_request_id)?;
     let now = super::api_claim::unix_seconds()?;
     if context.pending_end.is_none() {
         let mut event = context.pending_start.event.clone();

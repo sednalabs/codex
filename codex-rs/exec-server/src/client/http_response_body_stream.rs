@@ -58,6 +58,9 @@ enum HttpResponseBodyStreamInner {
     Local {
         body: Pin<Box<dyn futures::Stream<Item = Result<Bytes, HttpError>> + Send>>,
     },
+    Buffered {
+        body: Option<Bytes>,
+    },
     Remote {
         inner: Arc<Inner>,
         request_id: String,
@@ -86,6 +89,16 @@ impl HttpResponseBodyStream {
         }
     }
 
+    /// Creates a one-chunk stream from a response body buffered by a trusted
+    /// local transport.
+    pub fn from_bytes(body: Vec<u8>) -> Self {
+        Self {
+            inner: HttpResponseBodyStreamInner::Buffered {
+                body: (!body.is_empty()).then(|| Bytes::from(body)),
+            },
+        }
+    }
+
     pub(super) fn remote(
         inner: Arc<Inner>,
         request_id: String,
@@ -109,6 +122,9 @@ impl HttpResponseBodyStream {
     /// stream errors into protocol errors.
     pub async fn recv(&mut self) -> Result<Option<Vec<u8>>, ExecServerError> {
         match &mut self.inner {
+            HttpResponseBodyStreamInner::Buffered { body } => {
+                Ok(body.take().map(|bytes| bytes.to_vec()))
+            }
             HttpResponseBodyStreamInner::Local { body } => match body.next().await {
                 Some(chunk) => match chunk {
                     Ok(bytes) => Ok(Some(bytes.to_vec())),

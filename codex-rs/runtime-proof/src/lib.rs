@@ -6,6 +6,8 @@ mod api_bearer_provisioner;
 mod api_claim;
 mod auth;
 #[cfg(target_os = "linux")]
+mod mcp_broker;
+#[cfg(target_os = "linux")]
 pub mod launcher;
 #[cfg(target_os = "linux")]
 mod mcp_oauth;
@@ -32,6 +34,13 @@ pub fn bearer_for_mcp(
     recipient: &str,
 ) -> anyhow::Result<Option<zeroize::Zeroizing<String>>> {
     auth::bearer_for_mcp(server, recipient)
+}
+
+#[cfg(target_os = "linux")]
+pub async fn broker_protected_mcp_http_request(
+    request: codex_exec_server_protocol::HttpRequestParams,
+) -> anyhow::Result<codex_exec_server_protocol::HttpRequestResponse> {
+    mcp_broker::request(request).await
 }
 
 pub fn is_protected_mcp_target(server: &str, recipient: &str) -> anyhow::Result<bool> {

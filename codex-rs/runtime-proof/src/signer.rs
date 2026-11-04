@@ -23,6 +23,58 @@ struct RuntimeProofSigner {
     seed: Zeroizing<[u8; 32]>,
 }
 
+/// Launcher-owned proof authority. This value never crosses the child IPC
+/// boundary; the launcher uses it to sign a single validated MCP request.
+pub(crate) struct LauncherProofAuthority(RuntimeProofSigner);
+
+impl LauncherProofAuthority {
+    pub(crate) fn new(
+        certificate: String,
+        seed: Zeroizing<[u8; 32]>,
+        artifact_sha256: &str,
+    ) -> Result<Self> {
+        let (header, claims) = wire::parse_certificate(&certificate)?;
+        validate_certificate(&header, &claims, &seed, artifact_sha256, unix_seconds()?)?;
+        Ok(Self(RuntimeProofSigner {
+            certificate,
+            claims,
+            seed,
+        }))
+    }
+
+    pub(crate) fn sign(
+        &self,
+        execution_nonce: &ExecutionNonce,
+        provider_thread_id: &str,
+        tool: &str,
+        parameters: &Value,
+    ) -> Result<Value> {
+        self.0
+            .create_protected_mcp_proof(execution_nonce, provider_thread_id, tool, parameters)?
+            .context("launcher proof authority rejected the MCP operation")
+    }
+
+    pub(crate) fn work_item_ref(&self) -> &str {
+        &self.0.claims.work_item_ref
+    }
+
+    pub(crate) fn project_id(&self) -> u64 {
+        self.0.claims.project_id
+    }
+
+    pub(crate) fn recipient(&self) -> &str {
+        &self.0.claims.recipient
+    }
+
+    pub(crate) fn certificate(&self) -> &str {
+        &self.0.certificate
+    }
+
+    pub(crate) fn runtime_incarnation(&self) -> Uuid {
+        self.0.claims.runtime_incarnation
+    }
+}
+
 #[derive(Default)]
 enum SignerState {
     #[default]
@@ -35,24 +87,6 @@ static SIGNER: OnceLock<Mutex<SignerState>> = OnceLock::new();
 
 fn signer_state() -> &'static Mutex<SignerState> {
     SIGNER.get_or_init(|| Mutex::new(SignerState::Uninitialized))
-}
-
-pub(crate) fn install_bootstrap(certificate: String, seed: Zeroizing<[u8; 32]>) -> Result<()> {
-    let artifact_sha256 = startup::current_artifact_sha256()?;
-    let (header, claims) = wire::parse_certificate(&certificate)?;
-    validate_certificate(&header, &claims, &seed, &artifact_sha256, unix_seconds()?)?;
-    let mut state = signer_state()
-        .lock()
-        .map_err(|_| anyhow::anyhow!("runtime proof signer state is unavailable"))?;
-    if !matches!(&*state, SignerState::Uninitialized) {
-        bail!("runtime proof startup was already initialized");
-    }
-    *state = SignerState::Ready(Box::new(RuntimeProofSigner {
-        certificate,
-        claims,
-        seed,
-    }));
-    Ok(())
 }
 
 pub(crate) fn install_unconfigured() -> Result<()> {
@@ -72,19 +106,6 @@ pub(crate) fn erase_signer_authority() -> Result<()> {
         .map_err(|_| anyhow::anyhow!("runtime proof signer state is unavailable"))?;
     *state = SignerState::Unconfigured;
     Ok(())
-}
-
-pub(crate) fn certificate_for_auth() -> Result<(wire::CertificateClaims, String)> {
-    let state = signer_state()
-        .lock()
-        .map_err(|_| anyhow::anyhow!("runtime proof signer state is unavailable"))?;
-    let SignerState::Ready(signer) = &*state else {
-        bail!("protected runtime proof certificate is unavailable");
-    };
-    Ok((
-        signer.claims.clone(),
-        wire::certificate_digest(signer.certificate.as_bytes()),
-    ))
 }
 
 pub fn sign_protected_mcp_proof(

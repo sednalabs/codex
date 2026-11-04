@@ -95,7 +95,6 @@ pub(crate) fn ensure_protected_cloud_config_ineligible(plan_type: Option<&str>) 
 pub(crate) fn validate_provider_credential(
     provider: &ProviderAuth,
     recipient: &str,
-    mcp_bearer: &str,
     expires_at: i64,
 ) -> Result<()> {
     match &provider.credential_class {
@@ -108,7 +107,6 @@ pub(crate) fn validate_provider_credential(
             if !valid_provider_recipient(recipient, &provider.credential_class)
                 || provider.account_id != "00000000-0000-4000-8000-000000000001"
                 || provider.plan_type.as_deref() != Some("free")
-                || mcp_bearer != "runtime-proof-fixture-mcp-token-v1"
                 || provider.access_token.0 != synthetic_access_token(expires_at)?
             {
                 bail!("synthetic provider credential does not match its fixed fixture contract");

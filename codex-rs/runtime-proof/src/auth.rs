@@ -1,15 +1,12 @@
 #[cfg(target_os = "linux")]
 use crate::provider_auth::ProviderAuth;
 #[cfg(target_os = "linux")]
-use crate::provider_auth::SecretString;
-#[cfg(target_os = "linux")]
 use crate::provider_auth::ensure_protected_cloud_config_ineligible;
 #[cfg(target_os = "linux")]
 use crate::provider_auth::valid_provider_recipient;
 #[cfg(target_os = "linux")]
 use crate::provider_auth::validate_provider_credential;
 use crate::signer;
-use crate::wire;
 use anyhow::Context;
 use anyhow::Result;
 use anyhow::bail;
@@ -43,17 +40,14 @@ struct BootstrapAuth {
     recipient: String,
     provider_recipient: String,
     expires_at: i64,
-    bearer: Zeroizing<String>,
 }
 
 pub struct McpRedactionContext {
-    bearer: Zeroizing<String>,
     proof_tokens: Vec<Zeroizing<String>>,
 }
 
 impl McpRedactionContext {
     pub fn redact(&self, value: &mut serde_json::Value) {
-        redact_value(value, &self.bearer);
         for token in &self.proof_tokens {
             redact_value(value, token);
         }
@@ -69,8 +63,6 @@ static PROTECTED_RUNTIME_FAILED: AtomicBool = AtomicBool::new(false);
 #[serde(deny_unknown_fields)]
 pub(crate) struct AuthFrame {
     pub(crate) version: u8,
-    pub(crate) certificate_sha256: String,
-    pub(crate) runtime_incarnation: uuid::Uuid,
     pub(crate) principal: uuid::Uuid,
     pub(crate) project_id: u64,
     pub(crate) codex_home: String,
@@ -80,14 +72,10 @@ pub(crate) struct AuthFrame {
     pub(crate) provider_recipient: String,
     pub(crate) expires_at: i64,
     pub(crate) provider: ProviderAuth,
-    pub(crate) mcp_bearer: SecretString,
 }
 
 #[cfg(target_os = "linux")]
-pub(crate) fn initialize_from_environment(
-    claims: &wire::CertificateClaims,
-    certificate_sha256: &str,
-) -> Result<()> {
+pub(crate) fn initialize_from_environment() -> Result<std::fs::File> {
     for name in [
         "OPENAI_API_KEY",
         "OPENAI_BASE_URL",
@@ -101,7 +89,7 @@ pub(crate) fn initialize_from_environment(
         }
     }
     let Some(fd_value) = std::env::var_os(AUTH_FD_ENV) else {
-        bail!("protected runtime proof requires its matching auth descriptor");
+        bail!("protected runtime requires its matching auth descriptor");
     };
     unsafe { std::env::remove_var(AUTH_FD_ENV) };
     let fd = fd_value
@@ -118,37 +106,33 @@ pub(crate) fn initialize_from_environment(
     let frame_bytes = receive_auth_frame(&socket)?;
     let frame: AuthFrame =
         serde_json::from_slice(&frame_bytes).context("decode protected runtime auth frame")?;
-    validate_and_import(frame, claims, certificate_sha256)
+    validate_and_import(frame)?;
+    Ok(socket)
 }
 
 #[cfg(not(target_os = "linux"))]
-pub(crate) fn initialize_from_environment(
-    _claims: &wire::CertificateClaims,
-    _certificate_sha256: &str,
-) -> Result<()> {
+pub(crate) fn initialize_from_environment() -> Result<std::fs::File> {
+    bail!("protected runtime authentication requires Linux")
+}
+
+#[cfg(not(target_os = "linux"))]
+pub(crate) fn send_auth_ack(_file: &std::fs::File) -> Result<()> {
     bail!("protected runtime authentication requires Linux")
 }
 
 #[cfg(target_os = "linux")]
-fn validate_and_import(
-    mut frame: AuthFrame,
-    claims: &wire::CertificateClaims,
-    certificate_sha256: &str,
-) -> Result<()> {
-    if frame.version != 1
-        || frame.certificate_sha256 != certificate_sha256
-        || frame.runtime_incarnation != claims.runtime_incarnation
-        || frame.principal != claims.principal
-        || frame.project_id != claims.project_id
-        || Some(frame.mcp_server.as_str()) != claims.mcp_server.as_deref()
-        || frame.recipient != claims.recipient
+fn validate_and_import(frame: AuthFrame) -> Result<()> {
+    if frame.version != 2
+        || frame.principal.is_nil()
+        || frame.project_id == 0
+        || frame.mcp_server != "ops"
         || !valid_provider_recipient(&frame.provider_recipient, &frame.provider.credential_class)
     {
-        bail!("runtime auth frame does not match its issuer-bound certificate");
+        bail!("runtime auth frame is outside its fixed protected profile");
     }
     let now = unix_seconds()?;
-    if frame.expires_at <= now || frame.expires_at > claims.exp {
-        bail!("runtime auth frame is outside the certificate validity period");
+    if frame.expires_at <= now || frame.expires_at.saturating_sub(now) > 30 * 60 {
+        bail!("runtime auth frame is outside its fixed validity period");
     }
     if frame.provider.kind != "chatgpt_access_token"
         || frame.provider.access_token.0.is_empty()
@@ -160,18 +144,10 @@ fn validate_and_import(
         || frame.provider.plan_type.as_ref().is_some_and(|plan| {
             plan.is_empty() || plan.len() > 64 || plan.chars().any(char::is_control)
         })
-        || frame.mcp_bearer.0.is_empty()
-        || frame.mcp_bearer.0.len() > 16 * 1024
-        || frame.mcp_bearer.0.chars().any(char::is_control)
     {
         bail!("runtime auth frame contains invalid credential material");
     }
-    validate_provider_credential(
-        &frame.provider,
-        &frame.provider_recipient,
-        &frame.mcp_bearer.0,
-        frame.expires_at,
-    )?;
+    validate_provider_credential(&frame.provider, &frame.provider_recipient, frame.expires_at)?;
     ensure_protected_cloud_config_ineligible(frame.provider.plan_type.as_deref())?;
 
     let home = Path::new(&frame.codex_home).canonicalize()?;
@@ -206,7 +182,6 @@ fn validate_and_import(
         recipient: frame.recipient,
         provider_recipient: frame.provider_recipient,
         expires_at: frame.expires_at,
-        bearer: Zeroizing::new(std::mem::take(&mut frame.mcp_bearer.0)),
     };
     let store = BOOTSTRAP_AUTH.get_or_init(|| Mutex::new(None));
     let mut stored = store
@@ -217,6 +192,26 @@ fn validate_and_import(
     }
     *stored = Some(auth);
     PROTECTED_RUNTIME_EVER_ACTIVE.store(true, Ordering::Release);
+    Ok(())
+}
+
+#[cfg(target_os = "linux")]
+pub(crate) fn send_auth_ack(file: &std::fs::File) -> Result<()> {
+    const AUTH_ACK: &[u8; 4] = b"ACK1";
+    let sent = unsafe {
+        libc::send(
+            file.as_raw_fd(),
+            AUTH_ACK.as_ptr().cast(),
+            AUTH_ACK.len(),
+            libc::MSG_NOSIGNAL,
+        )
+    };
+    if sent < 0 {
+        return Err(std::io::Error::last_os_error()).context("acknowledge protected runtime auth");
+    }
+    if sent != AUTH_ACK.len() as isize {
+        bail!("protected runtime auth acknowledgement was incomplete");
+    }
     Ok(())
 }
 
@@ -344,7 +339,7 @@ fn verify_root_seqpacket_peer(file: &std::fs::File) -> Result<()> {
     } != 0
         || peer_size as usize != std::mem::size_of_val(&peer)
         || peer.uid != 0
-        || peer.pid <= 0
+        || peer.pid != unsafe { libc::getppid() }
     {
         bail!("runtime auth peer must be the root launcher");
     }
@@ -398,7 +393,7 @@ pub fn bearer_for_mcp(server: &str, recipient: &str) -> Result<Option<Zeroizing<
         return Ok(None);
     };
     if server == auth.server && recipient == auth.recipient {
-        return Ok(Some(Zeroizing::new(auth.bearer.to_string())));
+        bail!("protected MCP bearer is launcher-held and unavailable in the child");
     }
     if server == auth.server || recipient == auth.recipient {
         bail!("protected MCP auth target differs from its pinned server and URL");
@@ -528,10 +523,7 @@ pub fn capture_mcp_redaction_context(
             }
         }
     }
-    Ok(Some(McpRedactionContext {
-        bearer: Zeroizing::new(auth.bearer.to_string()),
-        proof_tokens,
-    }))
+    Ok((!proof_tokens.is_empty()).then_some(McpRedactionContext { proof_tokens }))
 }
 
 fn ensure_auth_active(stored: &mut Option<BootstrapAuth>) -> Result<()> {

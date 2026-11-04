@@ -186,6 +186,33 @@ fn launcher_observation_is_not_an_end_publisher() {
 }
 
 #[test]
+fn unresolved_mcp_request_blocks_end_until_its_response_is_acknowledged() {
+    let request_id = Uuid::from_u128(42);
+    let mut unresolved = None;
+    record_unresolved_mcp_request_id(&mut unresolved, request_id)
+        .expect("record the potentially sent request");
+    assert_eq!(unresolved, Some(request_id));
+    assert!(require_no_unresolved_mcp_request(unresolved).is_err());
+
+    assert!(resolve_unresolved_mcp_request_id(&mut unresolved, Uuid::from_u128(43)).is_err());
+    assert_eq!(unresolved, Some(request_id));
+    resolve_unresolved_mcp_request_id(&mut unresolved, request_id)
+        .expect("clear only the acknowledged request");
+    assert_eq!(unresolved, None);
+    assert!(require_no_unresolved_mcp_request(unresolved).is_ok());
+}
+
+#[test]
+fn unresolved_mcp_request_cannot_be_replaced_or_nil() {
+    let request_id = Uuid::from_u128(42);
+    let mut unresolved = None;
+    assert!(record_unresolved_mcp_request_id(&mut unresolved, Uuid::nil()).is_err());
+    record_unresolved_mcp_request_id(&mut unresolved, request_id).expect("record request");
+    assert!(record_unresolved_mcp_request_id(&mut unresolved, Uuid::from_u128(43)).is_err());
+    assert_eq!(unresolved, Some(request_id));
+}
+
+#[test]
 fn end_authority_rejects_changed_protected_policy() {
     let original = b"synthetic original policy";
     let digest = wire::certificate_digest(original);

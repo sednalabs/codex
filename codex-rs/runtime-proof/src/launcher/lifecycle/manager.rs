@@ -62,13 +62,8 @@ struct UnitSnapshot {
 
 /// Capture the exact systemd invocation before the launcher can release a certificate.
 pub(super) fn capture_start_binding(expected_manager_sha256: &str) -> Result<ManagerBinding> {
-    let (
-        manager_pid,
-        manager_executable,
-        manager_device,
-        manager_inode,
-        manager_executable_sha256,
-    ) = trusted_system_manager(expected_manager_sha256)?;
+    let (manager_pid, manager_executable, manager_device, manager_inode, manager_executable_sha256) =
+        trusted_system_manager(expected_manager_sha256)?;
     let boot_id = current_boot_id()?;
     let invocation_id = invocation_id_from_environment()?;
     let snapshot = query_unit()?;
@@ -116,6 +111,14 @@ pub(super) fn require_start_binding(binding: &ManagerBinding, child_pid: u32) ->
     )
 }
 
+/// Recheck the bound manager invocation while the measured child is executing.
+pub(super) fn require_running_binding(binding: &ManagerBinding, child_pid: u32) -> Result<()> {
+    let snapshot = verify_binding(binding)?;
+    require_current_cgroup(&binding.control_group)?;
+    require_process_cgroup(child_pid, &binding.control_group)?;
+    validate_running_observation(&snapshot, binding, std::process::id())
+}
+
 /// Prove that this process is the only task left in this exact stop invocation.
 pub(super) fn require_stop_binding(binding: &ManagerBinding) -> Result<()> {
     let snapshot = verify_binding(binding)?;
@@ -150,13 +153,8 @@ impl ManagerBinding {
 
 fn verify_binding(binding: &ManagerBinding) -> Result<UnitSnapshot> {
     binding.validate()?;
-    let (
-        manager_pid,
-        manager_executable,
-        manager_device,
-        manager_inode,
-        manager_sha256,
-    ) = trusted_system_manager(&binding.manager_executable_sha256)?;
+    let (manager_pid, manager_executable, manager_device, manager_inode, manager_sha256) =
+        trusted_system_manager(&binding.manager_executable_sha256)?;
     validate_manager_identity(
         binding,
         manager_pid,
@@ -254,6 +252,22 @@ fn validate_stop_observation(
         || hierarchical_tasks != 1
     {
         bail!("lifecycle stop is not the fixed systemd post-stop observer");
+    }
+    Ok(())
+}
+
+fn validate_running_observation(
+    snapshot: &UnitSnapshot,
+    binding: &ManagerBinding,
+    launcher_pid: u32,
+) -> Result<()> {
+    if launcher_pid == 0
+        || snapshot.invocation_id != binding.invocation_id
+        || snapshot.main_pid != launcher_pid
+        || snapshot.control_pid != 0
+        || snapshot.sub_state != "running"
+    {
+        bail!("lifecycle manager invocation is not running its bound task");
     }
     Ok(())
 }
@@ -655,51 +669,61 @@ mod tests {
     fn binding_is_fixed_to_one_system_unit_and_epoch() {
         let binding = binding();
         assert!(binding.validate().is_ok());
-        assert!(validate_manager_identity(
-            &binding,
-            1,
-            "/usr/lib/systemd/systemd",
-            1,
-            2,
-            &binding.manager_executable_sha256,
-        )
-        .is_ok());
-        assert!(validate_manager_identity(
-            &binding,
-            1,
-            "/usr/lib/systemd/systemd",
-            1,
-            3,
-            &binding.manager_executable_sha256,
-        )
-        .is_err());
-        assert!(validate_manager_identity(
-            &binding,
-            1,
-            "/usr/lib/systemd/systemd",
-            2,
-            2,
-            &binding.manager_executable_sha256,
-        )
-        .is_err());
-        assert!(validate_manager_identity(
-            &binding,
-            2,
-            "/usr/lib/systemd/systemd",
-            1,
-            2,
-            &binding.manager_executable_sha256,
-        )
-        .is_err());
-        assert!(validate_manager_identity(
-            &binding,
-            1,
-            "/usr/lib/systemd/systemd",
-            1,
-            2,
-            &"b".repeat(64),
-        )
-        .is_err());
+        assert!(
+            validate_manager_identity(
+                &binding,
+                1,
+                "/usr/lib/systemd/systemd",
+                1,
+                2,
+                &binding.manager_executable_sha256,
+            )
+            .is_ok()
+        );
+        assert!(
+            validate_manager_identity(
+                &binding,
+                1,
+                "/usr/lib/systemd/systemd",
+                1,
+                3,
+                &binding.manager_executable_sha256,
+            )
+            .is_err()
+        );
+        assert!(
+            validate_manager_identity(
+                &binding,
+                1,
+                "/usr/lib/systemd/systemd",
+                2,
+                2,
+                &binding.manager_executable_sha256,
+            )
+            .is_err()
+        );
+        assert!(
+            validate_manager_identity(
+                &binding,
+                2,
+                "/usr/lib/systemd/systemd",
+                1,
+                2,
+                &binding.manager_executable_sha256,
+            )
+            .is_err()
+        );
+        assert!(
+            validate_manager_identity(
+                &binding,
+                1,
+                "/usr/lib/systemd/systemd",
+                1,
+                2,
+                &"b".repeat(64),
+            )
+            .is_err()
+        );
         let mut changed = binding;
         changed.control_group = "/system.slice/other.service".to_string();
         assert!(changed.validate().is_err());
@@ -713,6 +737,26 @@ mod tests {
         assert!(validate_start_observation(&snapshot, &binding, 43, 77, 1, 1, 2).is_err());
         assert!(validate_start_observation(&snapshot, &binding, 42, 42, 1, 1, 2).is_err());
         assert!(validate_start_observation(&snapshot, &binding, 42, 77, 1, 1, 3).is_err());
+    }
+
+    #[test]
+    fn running_manager_binding_requires_the_same_live_main_invocation() {
+        let binding = binding();
+        let snapshot = parse_unit_snapshot(&properties()).expect("running unit snapshot");
+        assert!(validate_running_observation(&snapshot, &binding, 42).is_ok());
+        assert!(validate_running_observation(&snapshot, &binding, 43).is_err());
+
+        let replacement = parse_unit_snapshot(&properties().replace(
+            "InvocationID=00000000000040008000000000000001",
+            "InvocationID=00000000000040008000000000000002",
+        ))
+        .expect("well-formed replacement invocation");
+        assert!(validate_running_observation(&replacement, &binding, 42).is_err());
+
+        let stop_post =
+            parse_unit_snapshot(&properties().replace("SubState=running", "SubState=stop-post"))
+                .expect("well-formed stop-post snapshot");
+        assert!(validate_running_observation(&stop_post, &binding, 42).is_err());
     }
 
     #[test]

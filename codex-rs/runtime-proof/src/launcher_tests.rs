@@ -285,8 +285,8 @@ fn lifecycle_policy_is_opt_in_and_closed() {
         serde_json::from_value(value.clone()).expect("lifecycle profile");
     assert!(enabled.lifecycle.is_some());
     value["lifecycle"]["manager_sha256"] = serde_json::json!("C".repeat(64));
-    let invalid_digest: McpLaunchConfig =
-        serde_json::from_value(value.clone()).expect("lifecycle digest remains a closed string field");
+    let invalid_digest: McpLaunchConfig = serde_json::from_value(value.clone())
+        .expect("lifecycle digest remains a closed string field");
     let mut policy = fixed_policy(&[7_u8; RUNTIME_SEED_BYTES]);
     if let LauncherTarget::Mcp(target) = &mut policy.target {
         target.lifecycle = Some(enabled.lifecycle.expect("lifecycle policy"));
@@ -553,17 +553,10 @@ fn issued_certificate_matches_the_existing_compact_jws_contract() {
 }
 
 #[test]
-fn bootstrap_packet_contains_only_the_length_prefixed_certificate_and_ephemeral_seed() {
-    let certificate = "fixed-certificate";
-    let seed = [9_u8; RUNTIME_SEED_BYTES];
-    let packet = make_bootstrap_packet(certificate, &seed).expect("bounded bootstrap packet");
-    let bytes = packet.as_slice();
-    assert_eq!(
-        u32::from_be_bytes(bytes[..4].try_into().expect("certificate length")) as usize,
-        certificate.len()
-    );
-    assert_eq!(&bytes[4..4 + certificate.len()], certificate.as_bytes());
-    assert_eq!(&bytes[4 + certificate.len()..], &seed);
+fn process_start_time_binds_the_current_process_instance() {
+    let (state, start_time) = process_start_time(std::process::id()).expect("current process stat");
+    assert!(!matches!(state, 'Z' | 'X'));
+    assert!(start_time > 0);
 }
 
 #[test]
