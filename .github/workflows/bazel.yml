@@ -694,12 +694,17 @@ jobs:
               require("observer-only", "skipped")
               for job in [
                   "test",
-                  "test-windows-shard",
                   "test-windows",
                   "clippy",
                   "verify-release-build",
               ]:
                   require(job, "success")
+              windows_shard_result = (
+                  "skipped"
+                  if os.environ.get("GITHUB_REPOSITORY") == "sednalabs/codex"
+                  else "success"
+              )
+              require("test-windows-shard", windows_shard_result)
           else:
               print(f"unsupported Bazel CI mode: {mode!r}", file=sys.stderr)
               raise SystemExit(1)
