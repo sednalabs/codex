@@ -4115,6 +4115,7 @@ dependencies = [
  "anyhow",
  "base64 0.22.1",
  "chrono",
+ "codex-exec-server-protocol",
  "codex-http-client",
  "codex-login",
  "codex-rmcp-client",
