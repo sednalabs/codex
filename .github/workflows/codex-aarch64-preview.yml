@@ -1,13 +1,10 @@
 name: codex-aarch64-preview
-run-name: codex-aarch64-preview [source=${{ inputs.source_ref }} platform=linux-aarch64]
+run-name: codex-aarch64-preview [source=4460f88060e5f234831d9edc4e734be2e4a0e5e3 platform=linux-aarch64]
 
 on:
-  workflow_dispatch:
-    inputs:
-      source_ref:
-        description: Exact source commit to build
-        required: true
-        type: string
+  push:
+    branches:
+      - preview/codex-aarch64-0.164-20261104
 
 permissions:
   contents: read
@@ -26,12 +23,12 @@ jobs:
         with:
           fetch-depth: 0
           persist-credentials: false
-          ref: ${{ inputs.source_ref }}
+          ref: 4460f88060e5f234831d9edc4e734be2e4a0e5e3
       - name: Compute preview version
         id: meta
         shell: bash
         env:
-          CHECKOUT_REF: ${{ inputs.source_ref }}
+          CHECKOUT_REF: 4460f88060e5f234831d9edc4e734be2e4a0e5e3
         run: |
           set -euo pipefail
           if [[ ! "${CHECKOUT_REF}" =~ ^[0-9a-fA-F]{40}$ ]]; then
