@@ -4,12 +4,14 @@
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import queue
 import sqlite3
 import subprocess
 import threading
 import time
+from collections import Counter
 from datetime import datetime
 from decimal import Decimal, InvalidOperation
 from pathlib import Path
@@ -21,6 +23,87 @@ MAX_THREADS_PER_STATE = 500
 MAX_LOCAL_ROLLOUT_BYTES = 10 * 1024 * 1024
 MAX_DATABASE_THREADS = 900
 MAX_DATABASE_CALLS = 10_000
+MAX_DATABASE_UNION_CALLS_PER_SOURCE = 200_000
+MAX_DATABASE_UNION_CALLS_TOTAL = 300_000
+MAX_DATABASE_UNION_MEMORY_BYTES = 192 * 1024 * 1024
+MAX_DATABASE_UNION_GROUPS = 100
+MAX_DATABASE_SOURCE_SECONDS = 12.0
+MAX_DATABASE_UNION_SECONDS = 24.0
+MAX_DATABASE_QUERY_SECONDS = 4.0
+UNION_CALL_FIELDS = (
+    "role",
+    "schemaMissingFields",
+    "threadId",
+    "turnId",
+    "spawnRequestId",
+    "toolCallId",
+    "requestId",
+    "provider",
+    "requestedModel",
+    "providerEffectiveModel",
+    "providerEffectiveModelSource",
+    "requestedServiceTier",
+    "actualServiceTier",
+    "actualServiceTierSource",
+    "fastModeRequested",
+    "fastModeUsed",
+    "billingSurface",
+    "accountPlan",
+    "providerReportedCost",
+    "providerReportedCurrency",
+    "providerReportedCredits",
+    "startedAt",
+    "completedAt",
+    "inputTokensUncached",
+    "inputTokensCached",
+    "cacheWriteInputTokens",
+    "outputTokens",
+    "totalTokens",
+    "status",
+)
+UNION_FIELD_INDEX = {field: index for index, field in enumerate(UNION_CALL_FIELDS)}
+UNION_CONTRIBUTION_FIELDS = (
+    "role",
+    "requestedModel",
+    "providerEffectiveModel",
+    "providerEffectiveModelSource",
+    "providerReportedCredits",
+    "inputTokensUncached",
+    "inputTokensCached",
+    "cacheWriteInputTokens",
+    "outputTokens",
+    "totalTokens",
+    "status",
+)
+DATABASE_CALL_COLUMNS = (
+    "turn_id",
+    "spawn_request_id",
+    "tool_call_id",
+    "request_id",
+    "provider",
+    "requested_model",
+    "actual_model_used",
+    "final_model",
+    "requested_service_tier",
+    "actual_service_tier",
+    "actual_service_tier_source",
+    "fast_mode_requested",
+    "fast_mode_used",
+    "billing_surface",
+    "account_plan",
+    "provider_reported_cost",
+    "provider_reported_currency",
+    "provider_reported_credits",
+    "started_at",
+    "completed_at",
+    "input_tokens_uncached",
+    "input_tokens_cached",
+    "input_tokens_cache_write",
+    "output_tokens",
+    "total_tokens",
+    "status",
+)
+UNION_REQUIRED_COLUMNS = DATABASE_CALL_COLUMNS
 TOKEN_FIELDS = {
     "uncachedInput": ("netNewInputTokens", "input"),
     "cachedInput": ("cachedInputTokens", "cached_input"),
@@ -274,6 +357,18 @@ def _optional_text(value: Any, field: str) -> str | None:
     if value is not None and not isinstance(value, str):
         raise UsageError(f"usage field {field} was not text or null")
     return value
+
+
+def _optional_decimal(value: Any, field: str) -> Decimal | None:
+    if value is None:
+        return None
+    try:
+        result = Decimal(str(value))
+    except InvalidOperation as exc:
+        raise UsageError(f"usage field {field} was not a finite decimal or null") from exc
+    if not result.is_finite():
+        raise UsageError(f"usage field {field} was not a finite decimal or null")
+    return result
 
 
 def _normalize(response: dict[str, Any], thread_id: str) -> dict[str, Any] | None:
@@ -952,6 +1047,392 @@ def _database_model_groups(
     return groups
 
 
+def _database_deadline(overall_deadline: float | None = None) -> float:
+    local_deadline = time.monotonic() + MAX_DATABASE_QUERY_SECONDS
+    return min(local_deadline, overall_deadline) if overall_deadline else local_deadline
+
+
+def _assert_indexed_thread_call_lookup(
+    connection: sqlite3.Connection,
+    thread_ids: list[str],
+    *,
+    sql: str | None = None,
+    parameters: tuple[Any, ...] | list[str] | None = None,
+) -> None:
+    if sql is None:
+        placeholders = ", ".join("?" for _ in thread_ids)
+        sql = (
+            "SELECT provider_call_id FROM usage_provider_calls "
+            f"WHERE thread_id IN ({placeholders}) LIMIT 1"
+        )
+        parameters = thread_ids
+    plan = connection.execute("EXPLAIN QUERY PLAN " + sql, parameters or ()).fetchall()
+    details = [str(row[3]).upper() for row in plan]
+    if not any("SEARCH" in detail and "INDEX" in detail and "THREAD_ID" in detail for detail in details):
+        raise UsageError(
+            "usage database has no indexed exact-thread provider-call lookup"
+        )
+
+
+def _normalize_database_call(
+    row: sqlite3.Row,
+    thread_roles: dict[str, str],
+    call_columns: set[str],
+) -> dict[str, Any]:
+    thread_id = _optional_text(row["thread_id"], "thread_id")
+    if not thread_id:
+        raise UsageError("usage database contains a provider call without a thread ID")
+    requested_model = (
+        _optional_text(row["requested_model"], "requested_model") or None
+    )
+    actual_model = _optional_text(row["actual_model_used"], "actual_model_used") or None
+    final_model = _optional_text(row["final_model"], "final_model") or None
+    effective_model = final_model or actual_model
+    effective_model_source = (
+        "final_model"
+        if final_model
+        else "actual_model_used"
+        if actual_model
+        else None
+    )
+    reported_cost = _optional_decimal(
+        row["provider_reported_cost"], "provider_reported_cost"
+    )
+    reported_credits = _optional_decimal(
+        row["provider_reported_credits"], "provider_reported_credits"
+    )
+    return {
+        "role": thread_roles.get(thread_id, "other_descendant"),
+        "schemaMissingFields": tuple(
+            field for field in UNION_REQUIRED_COLUMNS if field not in call_columns
+        ),
+        "threadId": thread_id,
+        "providerCallId": _optional_text(row["provider_call_id"], "provider_call_id"),
+        "turnId": _optional_text(row["turn_id"], "turn_id"),
+        "spawnRequestId": _optional_text(row["spawn_request_id"], "spawn_request_id"),
+        "toolCallId": _optional_text(row["tool_call_id"], "tool_call_id"),
+        "requestId": _optional_text(row["request_id"], "request_id"),
+        "provider": _optional_text(row["provider"], "provider"),
+        "requestedModel": requested_model,
+        "providerEffectiveModel": effective_model,
+        "providerEffectiveModelSource": effective_model_source,
+        "requestedServiceTier": _optional_text(
+            row["requested_service_tier"], "requested_service_tier"
+        ),
+        "actualServiceTier": _optional_text(row["actual_service_tier"], "actual_service_tier"),
+        "actualServiceTierSource": _optional_text(
+            row["actual_service_tier_source"], "actual_service_tier_source"
+        ),
+        "fastModeRequested": _optional_int(
+            row["fast_mode_requested"], "fast_mode_requested"
+        ),
+        "fastModeUsed": _optional_int(row["fast_mode_used"], "fast_mode_used"),
+        "billingSurface": _optional_text(row["billing_surface"], "billing_surface"),
+        "accountPlan": _optional_text(row["account_plan"], "account_plan"),
+        "providerReportedCost": reported_cost,
+        "providerReportedCurrency": _optional_text(
+            row["provider_reported_currency"], "provider_reported_currency"
+        ),
+        "providerReportedCredits": reported_credits,
+        "startedAt": _optional_text(row["started_at"], "started_at"),
+        "completedAt": _optional_text(row["completed_at"], "completed_at"),
+        "inputTokensUncached": _optional_int(
+            row["input_tokens_uncached"], "input_tokens_uncached"
+        ),
+        "inputTokensCached": _optional_int(
+            row["input_tokens_cached"], "input_tokens_cached"
+        ),
+        "cacheWriteInputTokens": _optional_int(
+            row["input_tokens_cache_write"], "input_tokens_cache_write"
+        ),
+        "outputTokens": _optional_int(row["output_tokens"], "output_tokens"),
+        "totalTokens": _optional_int(row["total_tokens"], "total_tokens"),
+        "status": _optional_text(row["status"], "status"),
+    }
+
+
+def _union_call_values(call: dict[str, Any]) -> tuple[Any, ...]:
+    values = tuple(call[field] for field in UNION_CALL_FIELDS)
+    text_bytes = 0
+    for field, value in zip(UNION_CALL_FIELDS, values):
+        if not isinstance(value, str):
+            continue
+        encoded_length = len(value.encode("utf-8"))
+        text_bytes += encoded_length
+        field_limit = 256 if field == "providerCallId" else 1024
+        if encoded_length > field_limit or text_bytes > 4096:
+            raise ValueError("cross-ledger identity fields exceed their safe size bound")
+    return values
+
+
+def _union_contribution(values: tuple[Any, ...]) -> tuple[Any, ...]:
+    return tuple(values[UNION_FIELD_INDEX[field]] for field in UNION_CONTRIBUTION_FIELDS)
+
+
+def _union_call_fingerprint(values: tuple[Any, ...]) -> bytes:
+    serializable = list(values)
+    for field in ("providerReportedCost", "providerReportedCredits"):
+        value_index = UNION_FIELD_INDEX[field]
+        value = serializable[value_index]
+        if isinstance(value, Decimal):
+            serializable[value_index] = _decimal_text(value)
+    payload = json.dumps(serializable, ensure_ascii=True, separators=(",", ":"))
+    return hashlib.sha256(payload.encode("utf-8")).digest()
+
+
+class _MergedUsageTotals:
+    """Compact totals for the keyed rows that survive cross-ledger comparison."""
+
+    def __init__(self, rates: dict[str, Any]):
+        self.rates = rates
+        self.groups: dict[tuple[str, str | None, str | None], dict[str, Any]] = {}
+
+    @staticmethod
+    def group_key(values: tuple[Any, ...]) -> tuple[str, str | None, str | None]:
+        call = dict(zip(UNION_CONTRIBUTION_FIELDS, values))
+        return (
+            call["role"],
+            call["requestedModel"],
+            call["providerEffectiveModel"],
+        )
+
+    def can_add_group(self, key: tuple[str, str | None, str | None]) -> bool:
+        return key in self.groups or len(self.groups) < MAX_DATABASE_UNION_GROUPS
+
+    def add(self, values: tuple[Any, ...]) -> None:
+        call = dict(zip(UNION_CONTRIBUTION_FIELDS, values))
+        group_key = self.group_key(values)
+        state = self.groups.setdefault(
+            group_key,
+            {
+                "count": 0,
+                "statusCounts": Counter(),
+                "effectiveSources": Counter(),
+                "tokenSums": Counter(),
+                "tokenMissing": Counter(),
+                "estimateSubtotal": Decimal(0),
+                "estimateIncomplete": 0,
+                "missingTokenDimensions": Counter(),
+                "missingRates": Counter(),
+                "reportedSubtotal": Decimal(0),
+                "reportedMissing": 0,
+            },
+        )
+        state["count"] += 1
+        state["statusCounts"][call["status"] or "unknown"] += 1
+        if call["providerEffectiveModelSource"]:
+            state["effectiveSources"][call["providerEffectiveModelSource"]] += 1
+        for field in (
+            "inputTokensUncached",
+            "inputTokensCached",
+            "cacheWriteInputTokens",
+            "outputTokens",
+            "totalTokens",
+        ):
+            value = call[field]
+            if value is None:
+                state["tokenMissing"][field] += 1
+            else:
+                state["tokenSums"][field] += value
+
+        cost = _database_call_cost(call, self.rates)[2]
+        state["estimateSubtotal"] += Decimal(cost["knownSubtotal"])
+        if not cost["complete"]:
+            state["estimateIncomplete"] += 1
+        for field in cost["missingTokenDimensions"]:
+            state["missingTokenDimensions"][field] += 1
+        for field in cost["missingRates"]:
+            state["missingRates"][field] += 1
+
+        reported = call["providerReportedCredits"]
+        if reported is None:
+            state["reportedMissing"] += 1
+        else:
+            state["reportedSubtotal"] += reported
+
+    def output(self, *, complete_scan: bool, unresolved_rows: int) -> list[dict[str, Any]]:
+        groups = []
+        for (role, requested, effective), state in sorted(
+            self.groups.items(), key=lambda item: tuple(value or "" for value in item[0])
+        ):
+            token_totals = {}
+            for field in (
+                "inputTokensUncached",
+                "inputTokensCached",
+                "cacheWriteInputTokens",
+                "outputTokens",
+                "totalTokens",
+            ):
+                missing = state["tokenMissing"][field]
+                subtotal = state["tokenSums"][field]
+                field_complete = missing == 0
+                token_totals[field] = {
+                    "value": subtotal
+                    if complete_scan and unresolved_rows == 0 and field_complete
+                    else None,
+                    "knownSubtotal": subtotal,
+                    "completeForIncludedRows": field_complete,
+                    "missingValues": missing,
+                }
+
+            rate_model = effective or requested
+            rate_basis = (
+                "provider_effective_model"
+                if effective
+                else "requested_model_fallback"
+                if requested
+                else "unknown_model"
+            )
+            estimate_complete = state["estimateIncomplete"] == 0
+            reported_complete = state["reportedMissing"] == 0
+            effective_sources = sorted(state["effectiveSources"])
+            groups.append(
+                {
+                    "role": role,
+                    "requestedModel": requested,
+                    "providerEffectiveModel": effective,
+                    "providerEffectiveModelSources": effective_sources,
+                    "responseUsageRecordCount": state["count"],
+                    "statusCounts": dict(sorted(state["statusCounts"].items())),
+                    "tokenTotals": token_totals,
+                    "calculatedCreditEstimate": {
+                        "estimateType": "model_rate_scenario_not_verified_billing",
+                        "value": _decimal_text(state["estimateSubtotal"])
+                        if complete_scan
+                        and unresolved_rows == 0
+                        and estimate_complete
+                        else None,
+                        "knownSubtotal": _decimal_text(state["estimateSubtotal"]),
+                        "completeForIncludedRows": estimate_complete,
+                        "rateModel": rate_model,
+                        "rateModelBasis": rate_basis,
+                        "missingTokenDimensions": sorted(
+                            state["missingTokenDimensions"]
+                        ),
+                        "missingRates": sorted(state["missingRates"]),
+                    },
+                    "providerReportedCredits": {
+                        "value": _decimal_text(state["reportedSubtotal"])
+                        if complete_scan
+                        and unresolved_rows == 0
+                        and reported_complete
+                        else None,
+                        "knownSubtotal": _decimal_text(state["reportedSubtotal"]),
+                        "completeForIncludedRows": reported_complete,
+                        "missingValues": state["reportedMissing"],
+                        "note": (
+                            "reported ledger field; not independently verified "
+                            "as an account debit"
+                        ),
+                    },
+                    "actualDebit": {"value": None, "status": "not_observed"},
+                }
+            )
+        return groups
+
+
+class _CrossLedgerUnion:
+    def __init__(self):
+        self.calls_by_id: dict[str, tuple[bytes, tuple[Any, ...], int, int, bool]] = {}
+        self.group_counts: Counter = Counter()
+        self.conflicting_ids: set[str] = set()
+        self.schema_unverifiable_ids: set[str] = set()
+        self.exact_duplicate_rows = 0
+        self.exact_duplicate_rows_by_source = [0, 0]
+        self.conflict_rows = 0
+        self.conflict_rows_by_source = [0, 0]
+        self.schema_unverifiable_rows = 0
+        self.schema_unverifiable_rows_by_source = [0, 0]
+        self.unkeyed_rows = [0, 0]
+        self.source_rows = [0, 0]
+        self.rate_context_missing_by_source = [Counter(), Counter()]
+        self.estimated_memory_bytes = 0
+        self.rejection_reason = None
+
+    def add(self, source_index: int, call: dict[str, Any]) -> bool:
+        self.source_rows[source_index] += 1
+        for field, label in (
+            ("providerEffectiveModel", "provider_effective_model"),
+            ("provider", "provider"),
+            ("actualServiceTier", "actual_service_tier"),
+            ("actualServiceTierSource", "actual_service_tier_source"),
+            ("fastModeUsed", "fast_mode_used"),
+            ("billingSurface", "billing_surface"),
+            ("accountPlan", "account_plan"),
+            ("startedAt", "started_at"),
+        ):
+            value = call[field]
+            if value is None or (isinstance(value, str) and not value.strip()):
+                self.rate_context_missing_by_source[source_index][label] += 1
+        provider_call_id = call["providerCallId"]
+        if not provider_call_id or not provider_call_id.strip():
+            self.unkeyed_rows[source_index] += 1
+            return True
+        try:
+            values = _union_call_values(call)
+        except ValueError:
+            self.rejection_reason = "identity_field_size_limit"
+            return False
+        schema_complete = not call["schemaMissingFields"]
+        fingerprint = _union_call_fingerprint(values)
+        contribution = _union_contribution(values)
+        existing = self.calls_by_id.get(provider_call_id)
+        if provider_call_id in self.conflicting_ids:
+            self.conflict_rows += 1
+            self.conflict_rows_by_source[source_index] += 1
+            return True
+        if provider_call_id in self.schema_unverifiable_ids:
+            self.schema_unverifiable_rows += 1
+            self.schema_unverifiable_rows_by_source[source_index] += 1
+            return True
+        if existing is None:
+            group_key = _MergedUsageTotals.group_key(contribution)
+            if group_key not in self.group_counts and len(self.group_counts) >= MAX_DATABASE_UNION_GROUPS:
+                self.rejection_reason = "group_limit"
+                return False
+            key_bytes = len(provider_call_id.encode("utf-8"))
+            contribution_bytes = sum(
+                len(value.encode("utf-8"))
+                for value in contribution
+                if isinstance(value, str)
+            )
+            entry_bytes = 768 + key_bytes + contribution_bytes
+            if self.estimated_memory_bytes + entry_bytes > MAX_DATABASE_UNION_MEMORY_BYTES:
+                self.rejection_reason = "memory_limit"
+                return False
+            self.calls_by_id[provider_call_id] = (
+                fingerprint,
+                contribution,
+                entry_bytes,
+                key_bytes,
+                schema_complete,
+            )
+            self.estimated_memory_bytes += entry_bytes
+            self.group_counts[group_key] += 1
+            return True
+        if existing[4] and schema_complete and existing[0] == fingerprint:
+            self.exact_duplicate_rows += 1
+            self.exact_duplicate_rows_by_source[source_index] += 1
+            return True
+        if existing[4] and schema_complete:
+            self.conflicting_ids.add(provider_call_id)
+            self.conflict_rows += 2
+            self.conflict_rows_by_source[0] += 1
+            self.conflict_rows_by_source[source_index] += 1
+        else:
+            self.schema_unverifiable_ids.add(provider_call_id)
+            self.schema_unverifiable_rows += 2
+            self.schema_unverifiable_rows_by_source[0] += 1
+            self.schema_unverifiable_rows_by_source[source_index] += 1
+        self.calls_by_id.pop(provider_call_id, None)
+        self.estimated_memory_bytes -= existing[2] - (128 + existing[3])
+        group_key = _MergedUsageTotals.group_key(existing[1])
+        self.group_counts[group_key] -= 1
+        if self.group_counts[group_key] == 0:
+            del self.group_counts[group_key]
+        return True
+
+
 def _database_compact_aggregate(
     connection: sqlite3.Connection,
     thread_ids: list[str],
@@ -959,6 +1440,7 @@ def _database_compact_aggregate(
     rates: dict[str, Any],
     call_columns: set[str],
     thread_columns: set[str],
+    overall_deadline: float | None = None,
 ) -> dict[str, Any]:
     """Bound a summary independently from the number of detailed call records."""
 
@@ -1005,10 +1487,14 @@ def _database_compact_aggregate(
         GROUP BY role, requested_model, actual_model, final_model
         LIMIT 101
     """
-    deadline = time.monotonic() + 4.0
+    deadline = _database_deadline(overall_deadline)
+    parameters = (root_id, *thread_ids)
+    _assert_indexed_thread_call_lookup(
+        connection, thread_ids, sql=sql, parameters=parameters
+    )
     connection.set_progress_handler(lambda: int(time.monotonic() >= deadline), 10000)
     try:
-        rows = connection.execute(sql, (root_id, *thread_ids)).fetchall()
+        rows = connection.execute(sql, parameters).fetchall()
     except sqlite3.OperationalError as exc:
         if "interrupt" not in str(exc).lower():
             raise
@@ -1089,10 +1575,16 @@ def collect_database_tree(
     *,
     aggregate: bool = False,
     aggregate_only: bool = False,
+    union_callback: Any | None = None,
+    union_row_limit: int | None = None,
+    overall_deadline: float | None = None,
 ) -> dict[str, Any]:
     """Read an explicitly named usage database without startup, migration, or writes."""
     if not isinstance(root_id, str) or not root_id.strip():
         raise UsageError("root thread ID must be non-empty")
+    source_deadline = time.monotonic() + MAX_DATABASE_SOURCE_SECONDS
+    if overall_deadline is not None:
+        source_deadline = min(source_deadline, overall_deadline)
     connection = None
     try:
         uri = Path(database_path).resolve(strict=True).as_uri() + "?mode=ro"
@@ -1145,7 +1637,7 @@ def collect_database_tree(
         )
         # Keep the recursive row outermost and remove its TEXT affinity: SQLite
         # can then search the existing parent/fork expression index per child.
-        deadline = time.monotonic() + 4.0
+        deadline = _database_deadline(source_deadline)
         connection.set_progress_handler(
             lambda: int(time.monotonic() >= deadline), 10000
         )
@@ -1205,24 +1697,9 @@ def collect_database_tree(
         thread_ids = [row["thread_id"] for row in thread_rows]
         if root_id not in thread_ids:
             raise UsageError("root thread was omitted by the bounded lineage query")
+        _assert_indexed_thread_call_lookup(connection, thread_ids)
 
-        selected_fields = (
-            "turn_id",
-            "request_id",
-            "provider",
-            "requested_model",
-            "actual_model_used",
-            "final_model",
-            "provider_reported_credits",
-            "started_at",
-            "completed_at",
-            "input_tokens_uncached",
-            "input_tokens_cached",
-            "input_tokens_cache_write",
-            "output_tokens",
-            "total_tokens",
-            "status",
-        )
+        selected_fields = DATABASE_CALL_COLUMNS
         expressions = [
             f'"{field}" AS "{field}"' if field in call_columns else f'NULL AS "{field}"'
             for field in selected_fields
@@ -1230,13 +1707,123 @@ def collect_database_tree(
         placeholders = ", ".join("?" for _ in thread_ids)
         aggregate_result = (
             _database_compact_aggregate(
-                connection, thread_ids, root_id, rates, call_columns, thread_columns
+                connection,
+                thread_ids,
+                root_id,
+                rates,
+                call_columns,
+                thread_columns,
+                source_deadline,
             )
             if aggregate or aggregate_only
             else None
         )
         if aggregate_only:
-            return {
+            union_scan = None
+            if union_callback is not None:
+                if union_row_limit is None or not 0 <= union_row_limit <= MAX_DATABASE_UNION_CALLS_PER_SOURCE:
+                    raise UsageError("cross-ledger row limit is outside its safe bound")
+                thread_roles = {}
+                for thread_row in thread_rows:
+                    thread_id = thread_row["thread_id"]
+                    source = _optional_text(thread_row["source"], "thread source")
+                    thread_source = _optional_text(
+                        thread_row["thread_source"], "thread source kind"
+                    )
+                    thread_roles[thread_id] = (
+                        "root"
+                        if thread_id == root_id
+                        else "subagent"
+                        if thread_source == "subagent"
+                        or (source is not None and "subagent" in source.lower())
+                        else "other_descendant"
+                    )
+                selected_fields = DATABASE_CALL_COLUMNS
+                expressions = [
+                    f'"{field}" AS "{field}"'
+                    if field in call_columns
+                    else f'NULL AS "{field}"'
+                    for field in selected_fields
+                ]
+                placeholders = ", ".join("?" for _ in thread_ids)
+                row_limit = union_row_limit or 0
+                query_deadline = _database_deadline(source_deadline)
+                call_sql = f"""
+                    SELECT provider_call_id, thread_id, {", ".join(expressions)}
+                    FROM usage_provider_calls
+                    WHERE thread_id IN ({placeholders})
+                    LIMIT ?
+                """
+                call_parameters = (*thread_ids, row_limit + 1)
+                _assert_indexed_thread_call_lookup(
+                    connection,
+                    thread_ids,
+                    sql=call_sql,
+                    parameters=call_parameters,
+                )
+                connection.set_progress_handler(
+                    lambda: int(time.monotonic() >= query_deadline), 10000
+                )
+                rows_scanned = 0
+                minimum_started_at = None
+                maximum_started_at = None
+                truncated = False
+                extra_row_observed = False
+                truncation_reason = None
+                try:
+                    cursor = connection.execute(call_sql, call_parameters)
+                    for row in cursor:
+                        if rows_scanned >= row_limit:
+                            truncated = True
+                            extra_row_observed = True
+                            truncation_reason = "per_source_or_whole_operation_row_limit"
+                            break
+                        if time.monotonic() >= query_deadline:
+                            truncated = True
+                            extra_row_observed = True
+                            truncation_reason = "query_time_limit"
+                            break
+                        call = _normalize_database_call(
+                            row, thread_roles, call_columns
+                        )
+                        accepted = union_callback(call)
+                        rows_scanned += 1
+                        if accepted is False:
+                            truncated = True
+                            truncation_reason = "union_state_limit"
+                            break
+                        started_at = call["startedAt"]
+                        if started_at is not None:
+                            minimum_started_at = (
+                                started_at
+                                if minimum_started_at is None
+                                else min(minimum_started_at, started_at)
+                            )
+                            maximum_started_at = (
+                                started_at
+                                if maximum_started_at is None
+                                else max(maximum_started_at, started_at)
+                            )
+                except sqlite3.OperationalError as exc:
+                    if getattr(exc, "sqlite_errorcode", None) != sqlite3.SQLITE_INTERRUPT:
+                        raise
+                    truncated = True
+                    truncation_reason = "query_time_limit"
+                finally:
+                    connection.set_progress_handler(None, 0)
+                union_scan = {
+                    "rowsScanned": rows_scanned,
+                    "rowsScannedAtLeast": rows_scanned + 1
+                    if extra_row_observed
+                    else rows_scanned,
+                    "complete": not truncated,
+                    "truncated": truncated,
+                    "reason": truncation_reason,
+                    "minimumStartedAtObserved": minimum_started_at,
+                    "maximumStartedAtObserved": maximum_started_at,
+                    "timestampOrder": "SQLite text order; timestamps are not normalized",
+                }
+            result = {
                 "schema": "codex-usage-tree/v1",
                 "status": "partial",
                 "scope": "root_and_known_descendants",
@@ -1252,23 +1839,52 @@ def collect_database_tree(
                     "date": rates["date"],
                     "unit": "credits per 1,000,000 exact-model tokens",
                 },
+                "columnCoverage": {
+                    "usage_threads": {
+                        field: field in thread_columns
+                        for field in (
+                            "parent_thread_id",
+                            "root_thread_id",
+                            "fork_parent_thread_id",
+                            "source",
+                            "thread_source",
+                        )
+                    },
+                    "usage_provider_calls": {
+                        field: field in call_columns
+                        for field in (
+                            "provider_call_id",
+                            "thread_id",
+                            *selected_fields,
+                        )
+                    },
+                    "indexedExactThreadLookup": True,
+                },
                 "recordedAggregate": aggregate_result,
                 "actualDebitObserved": False,
             }
-        deadline = time.monotonic() + 4.0
-        connection.set_progress_handler(
-            lambda: int(time.monotonic() >= deadline), 10000
-        )
-        call_rows = connection.execute(
-            f"""
+            if union_scan is not None:
+                result["_unionScan"] = union_scan
+            return result
+        deadline = _database_deadline(source_deadline)
+        call_sql = f"""
             SELECT provider_call_id, thread_id, {", ".join(expressions)}
             FROM usage_provider_calls
             WHERE thread_id IN ({placeholders})
             ORDER BY started_at DESC, provider_call_id DESC
             LIMIT ?
-            """,
-            (*thread_ids, MAX_DATABASE_CALLS + 1),
-        ).fetchall()
+        """
+        call_parameters = (*thread_ids, MAX_DATABASE_CALLS + 1)
+        _assert_indexed_thread_call_lookup(
+            connection,
+            thread_ids,
+            sql=call_sql,
+            parameters=call_parameters,
+        )
+        connection.set_progress_handler(
+            lambda: int(time.monotonic() >= deadline), 10000
+        )
+        call_rows = connection.execute(call_sql, call_parameters).fetchall()
         connection.set_progress_handler(None, 0)
         calls_truncated = len(call_rows) > MAX_DATABASE_CALLS
         call_rows = call_rows[:MAX_DATABASE_CALLS]
@@ -1485,6 +2101,252 @@ def collect_database_tree(
         "bounds": {
             "maxThreads": MAX_DATABASE_THREADS,
             "maxResponseUsageRecords": MAX_DATABASE_CALLS,
+        },
+    }
+
+
+def collect_database_union(
+    root_id: str,
+    database_paths: list[str],
+    rates: dict[str, Any],
+) -> dict[str, Any]:
+    """Read two explicitly named ledgers and conservatively deduplicate their calls."""
+    if len(database_paths) != 2:
+        raise UsageError("cross-ledger aggregate requires exactly two databases")
+    try:
+        resolved_paths = [Path(path).resolve(strict=True) for path in database_paths]
+    except (OSError, ValueError) as exc:
+        raise UsageError("could not resolve both explicitly supplied usage databases") from exc
+    if resolved_paths[0] == resolved_paths[1]:
+        raise UsageError("cross-ledger aggregate requires two distinct databases")
+
+    overall_deadline = time.monotonic() + MAX_DATABASE_UNION_SECONDS
+    union = _CrossLedgerUnion()
+    source_results = []
+    all_source_scans_complete = True
+    for source_index, database_path in enumerate(resolved_paths):
+        label = "primary" if source_index == 0 else "comparison"
+        processed_before = sum(union.source_rows)
+        remaining_total = max(0, MAX_DATABASE_UNION_CALLS_TOTAL - processed_before)
+        row_limit = min(MAX_DATABASE_UNION_CALLS_PER_SOURCE, remaining_total)
+        callback = lambda call, index=source_index: union.add(index, call)
+        try:
+            result = collect_database_tree(
+                root_id,
+                str(database_path),
+                rates,
+                aggregate_only=True,
+                union_callback=callback,
+                union_row_limit=row_limit,
+                overall_deadline=overall_deadline,
+            )
+        except (UsageError, OSError, ValueError) as exc:
+            all_source_scans_complete = False
+            detail = str(exc) if isinstance(exc, UsageError) else "read-only source open failed"
+            source_results.append(
+                {
+                    "source": label,
+                    "status": "unavailable",
+                    "reason": detail,
+                    "lineage": None,
+                    "recordedAggregate": None,
+                    "rowScan": {
+                        "rowsScanned": union.source_rows[source_index],
+                        "complete": False,
+                        "truncated": True,
+                        "reason": "source_query_failed",
+                    },
+                    "unkeyedProviderCallRowsScanned": union.unkeyed_rows[source_index],
+                    "conflictingRowsWithheldObserved": union.conflict_rows_by_source[
+                        source_index
+                    ],
+                    "exactDuplicateRowsOmittedObserved": union.exact_duplicate_rows_by_source[
+                        source_index
+                    ],
+                }
+            )
+            continue
+
+        scan = result.pop("_unionScan")
+        if scan["reason"] == "union_state_limit":
+            scan["reason"] = union.rejection_reason or "union_state_limit"
+        if (
+            not scan["complete"]
+            or result["lineage"]["truncated"]
+            or result["recordedAggregate"]["status"] == "unavailable"
+        ):
+            all_source_scans_complete = False
+        source_results.append(
+            {
+                "source": label,
+                "status": "partial",
+                "scope": "recorded rows in bounded known lineage",
+                "lineage": result["lineage"],
+                "columnCoverage": result["columnCoverage"],
+                "recordedAggregate": result["recordedAggregate"],
+                "rowScan": scan,
+                "unkeyedProviderCallRowsScanned": union.unkeyed_rows[source_index],
+                "conflictingRowsWithheldObserved": union.conflict_rows_by_source[
+                    source_index
+                ],
+                "exactDuplicateRowsOmittedObserved": union.exact_duplicate_rows_by_source[
+                    source_index
+                ],
+            }
+        )
+
+    for source_index, source in enumerate(source_results):
+        source["unkeyedProviderCallRowsScanned"] = union.unkeyed_rows[source_index]
+        source["conflictingRowsWithheldObserved"] = union.conflict_rows_by_source[
+            source_index
+        ]
+        source["schemaUnverifiableRowsWithheldObserved"] = (
+            union.schema_unverifiable_rows_by_source[source_index]
+        )
+        source["rateContextMissingRowsObserved"] = dict(
+            sorted(union.rate_context_missing_by_source[source_index].items())
+        )
+        source["exactDuplicateRowsOmittedObserved"] = union.exact_duplicate_rows_by_source[
+            source_index
+        ]
+
+    unresolved_rows = (
+        sum(union.unkeyed_rows)
+        + union.conflict_rows
+        + union.schema_unverifiable_rows
+    )
+    merge_totals_available = all_source_scans_complete
+    merged_totals_accumulator = None
+    if all_source_scans_complete:
+        merged_totals_accumulator = _MergedUsageTotals(rates)
+        for index, (_, contribution, _, _, _) in enumerate(union.calls_by_id.values()):
+            if index % 128 == 0 and time.monotonic() >= overall_deadline:
+                merge_totals_available = False
+                break
+            merged_totals_accumulator.add(contribution)
+        if time.monotonic() >= overall_deadline:
+            merge_totals_available = False
+
+    if merge_totals_available:
+        assert merged_totals_accumulator is not None
+        merged_totals = {
+            "status": "partial_excluding_unresolved"
+            if unresolved_rows
+            else "selected_recorded_rows_deduplicated",
+            "scope": "unique keyed rows in the selected recorded lineages only",
+            "responseUsageRecordCount": len(union.calls_by_id),
+            "excludedUnresolvedRows": unresolved_rows,
+            "groups": merged_totals_accumulator.output(
+                complete_scan=True, unresolved_rows=unresolved_rows
+            ),
+            "note": (
+                "Unkeyed rows, every row for conflicting provider_call_id values, and "
+                "duplicate IDs whose source schemas cannot verify all compared fields "
+                "are excluded. When any are excluded, group values are known subtotals "
+                "only. Historical descendants and actual debits remain unknown."
+            ),
+        }
+    else:
+        operation_timeout = (
+            all_source_scans_complete and time.monotonic() >= overall_deadline
+        )
+        merged_totals = {
+            "status": "unavailable_operation_time_limit"
+            if operation_timeout
+            else "unavailable_incomplete_source_scan",
+            "scope": "no merged total claimed",
+            "responseUsageRecordCount": None,
+            "excludedUnresolvedRows": unresolved_rows,
+            "groups": [],
+            "note": (
+                "The operation exceeded its total time bound or a source scan was "
+                "incomplete; per-source aggregates remain visible, but no merged "
+                "total is offered."
+            ),
+        }
+
+    return {
+        "schema": "codex-usage-tree/v2",
+        "status": "partial",
+        "scope": "two_explicit_read_only_ledgers_for_root_and_known_descendants",
+        "rootThreadId": root_id,
+        "sources": source_results,
+        "crossLedgerDeduplication": {
+            "status": "complete_for_selected_rows"
+            if all_source_scans_complete
+            else "incomplete",
+            "key": "non-empty provider_call_id",
+            "matchRequires": [
+                "matching thread, turn, request and provider identity",
+                "matching timestamps, requested/effective model provenance, status, token fields and reported credits",
+                "matching root/subagent/other-descendant role",
+                "all compared source columns present in both ledgers",
+            ],
+            "rowsScanned": sum(union.source_rows),
+            "rowsScannedBySource": union.source_rows,
+            "estimatedRetainedBytes": union.estimated_memory_bytes,
+            "exactDuplicateRowsOmittedObserved": union.exact_duplicate_rows,
+            "conflictingProviderCallIdsObserved": len(union.conflicting_ids),
+            "conflictingRowsWithheldObserved": union.conflict_rows,
+            "schemaUnverifiableProviderCallIdsObserved": len(
+                union.schema_unverifiable_ids
+            ),
+            "schemaUnverifiableRowsWithheldObserved": union.schema_unverifiable_rows,
+            "unkeyedRowsWithheldObserved": sum(union.unkeyed_rows),
+            "unresolvedRowsWithheldObserved": unresolved_rows,
+            "mergedTotals": merged_totals,
+        },
+        "rateMap": {
+            "source": rates["source"],
+            "date": rates["date"],
+            "unit": "credits per 1,000,000 exact-model tokens",
+        },
+        "pricingCoverage": {
+            "rateMapAppliedAs": "same selected model-rate scenario for both sources",
+            "effectiveDatedPerCallRateMatchPerformed": False,
+            "requiredPerCallContext": [
+                "provider and billing policy",
+                "effective model and call timestamp",
+                "actual service tier and its source",
+                "actual fast/standard mode",
+                "account plan and billing surface",
+            ],
+            "missingContextRowsObservedBySource": [
+                {
+                    "source": "primary",
+                    "missing": dict(sorted(union.rate_context_missing_by_source[0].items())),
+                },
+                {
+                    "source": "comparison",
+                    "missing": dict(sorted(union.rate_context_missing_by_source[1].items())),
+                },
+            ],
+            "note": (
+                "Calculated credits are model-rate scenario estimates, not an "
+                "effective-dated per-call billing match. Missing call context and "
+                "rate gaps remain explicit; provider-reported credits are not "
+                "verified account debits, and actual debit is not observed."
+            ),
+        },
+        "completeness": {
+            "historicalCoverageComplete": False,
+            "crossLedgerScanCompleteForSelectedLineage": all_source_scans_complete,
+            "unresolvedRowsExcludedFromMergedTotals": True,
+            "actualDebitObserved": False,
+            "coverageNote": (
+                "The result covers only recorded calls in the bounded known lineage; "
+                "unrecorded or historical descendants are not discoverable here."
+            ),
+        },
+        "bounds": {
+            "maxThreadsPerSource": MAX_DATABASE_THREADS,
+            "maxRowsPerSource": MAX_DATABASE_UNION_CALLS_PER_SOURCE,
+            "maxRowsTotal": MAX_DATABASE_UNION_CALLS_TOTAL,
+            "maxEstimatedRetainedBytes": MAX_DATABASE_UNION_MEMORY_BYTES,
+            "maxMergedGroups": MAX_DATABASE_UNION_GROUPS,
+            "maxSourceSeconds": MAX_DATABASE_SOURCE_SECONDS,
+            "maxQuerySeconds": MAX_DATABASE_QUERY_SECONDS,
+            "maxOperationSeconds": MAX_DATABASE_UNION_SECONDS,
         },
     }
 
@@ -1734,6 +2596,13 @@ def main(argv: list[str] | None = None) -> int:
         ),
     )
     parser.add_argument(
+        "--also-database",
+        help=(
+            "read one additional exact ledger for a bounded aggregate-only union; "
+            "requires --database and --aggregate-recorded"
+        ),
+    )
+    parser.add_argument(
         "--aggregate-recorded",
         action="store_true",
         help="show a time-bounded aggregate without loading detailed call records",
@@ -1767,6 +2636,8 @@ def main(argv: list[str] | None = None) -> int:
         parser.error("--thread-id cannot be empty")
     if args.database and args.rollout_file:
         parser.error("--database and --rollout-file select different local query modes")
+    if args.also_database and not (args.database and args.aggregate_recorded):
+        parser.error("--also-database requires --database and --aggregate-recorded")
     if args.database and args.allow_local_app_server_startup:
         parser.error("read-only database mode does not start an app-server")
     if args.aggregate_recorded and not args.database:
@@ -1811,11 +2682,19 @@ def main(argv: list[str] | None = None) -> int:
             print(json.dumps(result, indent=2, sort_keys=True))
             return 0 if result["status"] == "complete" else 2
         if args.database:
-            result = collect_database_tree(
-                args.thread_id,
-                args.database,
-                rates,
-                aggregate_only=args.aggregate_recorded,
+            result = (
+                collect_database_union(
+                    args.thread_id,
+                    [args.database, args.also_database],
+                    rates,
+                )
+                if args.also_database
+                else collect_database_tree(
+                    args.thread_id,
+                    args.database,
+                    rates,
+                    aggregate_only=args.aggregate_recorded,
+                )
             )
             print(json.dumps(result, indent=2, sort_keys=True))
             return 0 if result["status"] == "complete" else 2
