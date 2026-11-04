@@ -99,7 +99,7 @@ async fn code_mode_nested_callback_progresses_during_mid_turn_compaction(
     let marker = marker_dir.path().join("compaction-started");
     let wait_command = format!("while [ ! -e '{}' ]; do sleep 0.05; done", marker.display());
     let script = format!(
-        "const gate = await tools.exec_command({{cmd: {}, yield_time_ms: 1000}}); if (!gate.session_id) throw Error('gate session missing: ' + JSON.stringify(gate)); text('gate-ready'); yield_control(); await tools.write_stdin({{session_id: gate.session_id, chars: '', yield_time_ms: 30000}}); await tools.test_sync_tool({{}});",
+        "const gate = await tools.exec_command({{cmd: {}, yield_time_ms: 1000}}); if (!gate.session_id) throw Error('gate session missing: ' + JSON.stringify(gate)); text('gate-ready'); yield_control(); await tools.write_stdin({{session_id: gate.session_id, chars: '', yield_time_ms: 30000}}); await tools.test_sync_tool({{}}); notify('w18854-notify-after-gate'); await new Promise(resolve => setTimeout(resolve, 60000));",
         serde_json::to_string(&wait_command)?
     );
     responses::mount_sse_once(
@@ -141,10 +141,32 @@ async fn code_mode_nested_callback_progresses_during_mid_turn_compaction(
         .set_delay(Duration::from_secs(15)),
     )
     .await;
-    // Keep the next sampling worker alive long enough to distinguish a
-    // compaction-only stall from a broken callback or expired cell.
-    responses::mount_response_once(
+    // The notified event must reach the next model request, not merely be
+    // accepted by the callback or exist in the original script text.
+    let notification_seen = Arc::new(tokio::sync::Notify::new());
+    let signal_notification = Arc::clone(&notification_seen);
+    let notification_count = Arc::new(Mutex::new(0usize));
+    let observed_count = Arc::clone(&notification_count);
+    responses::mount_response_once_match(
         &server,
+        move |request: &Request| {
+            let count = serde_json::from_slice::<serde_json::Value>(&request.body)
+                .ok()
+                .and_then(|body| body.get("input")?.as_array().map(|items| {
+                    items.iter().filter(|item| {
+                        item.get("type").and_then(serde_json::Value::as_str)
+                            == Some("custom_tool_call_output")
+                    }).filter_map(|item| item.get("output"))
+                        .map(|output| output.to_string().matches("w18854-notify-after-gate").count())
+                        .sum()
+                }))
+                .unwrap_or_default();
+            if count > 0 {
+                *observed_count.lock().unwrap() = count;
+                signal_notification.notify_one();
+            }
+            count > 0
+        },
         responses::sse_response(sse(vec![
             ev_assistant_message("done", "done"),
             ev_completed("done"),
@@ -216,6 +238,13 @@ async fn code_mode_nested_callback_progresses_during_mid_turn_compaction(
                 anyhow::bail!("nested callback stalled during compaction and recovered afterwards");
             }
         }
+        tokio::time::timeout(Duration::from_secs(30), notification_seen.notified())
+            .await
+            .context("notification did not reach the next model request")?;
+        anyhow::ensure!(
+            *notification_count.lock().unwrap() == 1,
+            "notification was duplicated in the next model request"
+        );
         Ok(())
     }
     .await;
