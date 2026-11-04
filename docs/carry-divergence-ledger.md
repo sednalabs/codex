@@ -21,10 +21,8 @@ be mistaken for live state.
 - Mirror vs `upstream/main`: `0` ahead, `14` behind (`stale_ff_only`)
 - Downstream-only non-merge commits at audit time: `1800` unique, `0` patch-equivalent
 
-See [`generated/upstream-status.md`](generated/upstream-status.md) for the
-reproducible current-state receipt and
-[`upstream-sync/2026-07-28.md`](upstream-sync/2026-07-28.md) for harvest
-decisions.
+The refs and counts above are an audit-time snapshot, not a live mirror-health
+report.
 
 ## Audit Rules
 
@@ -1252,10 +1250,6 @@ bundles during upstream sync merely because they once shared this carry entry.
   but those presets are not a tracked repository contract.
 - Divergence regression ownership is tracked in
   [`downstream-regression-matrix.md`](downstream-regression-matrix.md).
-- Field-level native tool-surface deltas are summarized in
-  [`downstream-tool-surface-matrix.md`](downstream-tool-surface-matrix.md).
-- Future registry-plus-generation maintenance direction is captured in
-  [`downstream-divergence-tracking.md`](downstream-divergence-tracking.md).
 - Downstream guidance prefers MCP tool surfaces with blocking wait
   semantics over transcript-driven polling when the tool contract supports it.
 - Primary files:

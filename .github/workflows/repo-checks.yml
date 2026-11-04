@@ -74,6 +74,8 @@ jobs:
       - uses: ./.github/actions/setup-ci
 
       - name: Test Codex package builder
+        env:
+          CODEX_REPO_ROOT: ${{ github.workspace }}
         run: python3 -m unittest discover -s scripts/codex_package -p 'test_*.py'
 
       - name: Test standalone installer
