@@ -141,7 +141,7 @@ async fn code_mode_nested_callback_progresses_during_mid_turn_compaction(
         .set_delay(Duration::from_secs(15)),
     )
     .await;
-    // The notified event must reach the next model request, not merely be
+    // The notified event must reach a subsequent model request, not merely be
     // accepted by the callback or exist in the original script text.
     let notification_seen = Arc::new(tokio::sync::Notify::new());
     let signal_notification = Arc::clone(&notification_seen);
@@ -172,6 +172,37 @@ async fn code_mode_nested_callback_progresses_during_mid_turn_compaction(
             ev_completed("done"),
         ]))
         .set_delay(Duration::from_secs(30)),
+    )
+    .await;
+    // Mid-turn compaction can intentionally defer pending input until one
+    // model continuation has completed. Let that request finish instead of
+    // requiring the notification to appear in the very first request.
+    let continuation_seen = Arc::new(AtomicBool::new(false));
+    let observed_continuation = Arc::clone(&continuation_seen);
+    responses::mount_response_once_match(
+        &server,
+        move |request: &Request| {
+            let matches = !serde_json::from_slice::<serde_json::Value>(&request.body)
+                .ok()
+                .and_then(|body| body.get("input")?.as_array().map(|items| {
+                    items.iter().any(|item| {
+                        item.get("type").and_then(serde_json::Value::as_str)
+                            == Some("custom_tool_call_output")
+                            && item.get("output").is_some_and(|output| {
+                                output.to_string().contains("w18854-notify-after-gate")
+                            })
+                    })
+                }))
+                .unwrap_or_default();
+            if matches {
+                observed_continuation.store(true, Ordering::Release);
+            }
+            matches
+        },
+        responses::sse_response(sse(vec![
+            ev_assistant_message("continuation", "continuation"),
+            responses::ev_completed_with_tokens("continuation", 10),
+        ])),
     )
     .await;
     let mut provider = codex_model_provider_info::built_in_model_providers(None)["openai"].clone();
@@ -240,10 +271,13 @@ async fn code_mode_nested_callback_progresses_during_mid_turn_compaction(
         }
         tokio::time::timeout(Duration::from_secs(30), notification_seen.notified())
             .await
-            .context("notification did not reach the next model request")?;
+            .with_context(|| format!(
+                "notification did not reach a subsequent model request; marker-free continuation seen={}",
+                continuation_seen.load(Ordering::Acquire)
+            ))?;
         anyhow::ensure!(
             *notification_count.lock().unwrap() == 1,
-            "notification was duplicated in the next model request"
+            "notification was duplicated in the receiving model request"
         );
         Ok(())
     }
