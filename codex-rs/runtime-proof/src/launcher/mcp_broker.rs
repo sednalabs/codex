@@ -207,10 +207,7 @@ impl Context {
         Ok(())
     }
 
-    fn prepare(
-        &mut self,
-        mut request: HttpRequestParams,
-    ) -> Result<PreparedRequest> {
+    fn prepare(&mut self, mut request: HttpRequestParams) -> Result<PreparedRequest> {
         if request.url != self.recipient
             || !matches!(request.method.as_str(), "POST" | "GET" | "DELETE")
             || (request.method != "POST" && request.body.is_some())
