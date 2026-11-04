@@ -1,0 +1,128 @@
+name: codex-aarch64-preview
+run-name: codex-aarch64-preview [source=${{ inputs.source_ref }} platform=linux-aarch64]
+
+on:
+  workflow_dispatch:
+    inputs:
+      source_ref:
+        description: Exact source commit to build
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+jobs:
+  metadata:
+    name: Resolve source-era preview metadata
+    runs-on: ubuntu-24.04
+    outputs:
+      checkout_ref: ${{ steps.meta.outputs.checkout_ref }}
+      display_ref: ${{ steps.meta.outputs.display_ref }}
+      preview_version: ${{ steps.meta.outputs.preview_version }}
+      artifact_name: ${{ steps.meta.outputs.artifact_name }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+          ref: ${{ inputs.source_ref }}
+      - name: Compute preview version
+        id: meta
+        shell: bash
+        env:
+          CHECKOUT_REF: ${{ inputs.source_ref }}
+        run: |
+          set -euo pipefail
+          if [[ ! "${CHECKOUT_REF}" =~ ^[0-9a-fA-F]{40}$ ]]; then
+            echo "source_ref must be a full commit SHA." >&2
+            exit 1
+          fi
+          if [[ "$(git rev-parse HEAD)" != "${CHECKOUT_REF}" ]]; then
+            echo "Checked-out source does not match source_ref." >&2
+            exit 1
+          fi
+          short_sha="$(git rev-parse --short=8 HEAD)"
+          latest_tag="$(git tag --merged HEAD --list 'v*-sedna.*' --sort=-version:refname | head -n 1)"
+          if [[ -n "${latest_tag}" ]]; then
+            base_version="${latest_tag#v}"
+          else
+            base_version="0.0.0-sedna.0"
+          fi
+          display_ref="source-${short_sha}"
+          branch_slug="$(printf '%s' "${display_ref}" | tr '/:@ ' '-' | tr -cd '[:alnum:]._-' | cut -c1-48)"
+          preview_version="${base_version}-ci.${GITHUB_RUN_NUMBER}+g${short_sha}"
+          {
+            echo "checkout_ref=${CHECKOUT_REF,,}"
+            echo "display_ref=${display_ref}"
+            echo "preview_version=${preview_version}"
+            echo "artifact_name=sedna-branch-${branch_slug}-${short_sha}"
+          } >> "$GITHUB_OUTPUT"
+
+  build-linux-aarch64:
+    needs: metadata
+    uses: sednalabs/codex/.github/workflows/_sedna-linux-rust.yml@73dc0ce2874c3c6cbece36cd890aeab184eb705e
+    with:
+      checkout_ref: ${{ needs.metadata.outputs.checkout_ref }}
+      runner: ubuntu-24.04-arm
+      target: aarch64-unknown-linux-gnu
+      summary_title: Codex ARM64 preview
+      setup_rusty_v8: true
+      release_version: ${{ needs.metadata.outputs.preview_version }}
+      artifact_name: ${{ needs.metadata.outputs.artifact_name }}-aarch64-unknown-linux-gnu
+      artifact_path: dist/*
+      display_ref: ${{ needs.metadata.outputs.display_ref }}
+      run_command: |
+        source_status="$(git status --porcelain --untracked-files=normal)"
+        if [[ -n "${source_status}" ]]; then
+          echo "Refusing to build a preview from a dirty source tree." >&2
+          printf '%s\n' "${source_status}" >&2
+          exit 1
+        fi
+        cargo build --locked --target aarch64-unknown-linux-gnu --release --bin codex --bin codex-code-mode-host --bin codex-responses-api-proxy
+        mkdir -p ../dist
+
+        stage_dir="${RUNNER_TEMP}/sedna-branch/aarch64-unknown-linux-gnu"
+        file_version="${CODEX_RELEASE_VERSION//+/__}"
+        archive_base="codex-sedna-preview-${file_version}-aarch64-unknown-linux-gnu"
+        rm -rf "${stage_dir}"
+        mkdir -p "${stage_dir}"
+        install -Dm 0755 "target/aarch64-unknown-linux-gnu/release/codex" "${stage_dir}/codex"
+        install -Dm 0755 "target/aarch64-unknown-linux-gnu/release/codex-code-mode-host" "${stage_dir}/codex-code-mode-host"
+        install -Dm 0755 "target/aarch64-unknown-linux-gnu/release/codex-responses-api-proxy" "${stage_dir}/codex-responses-api-proxy"
+
+        file "${stage_dir}/codex" | grep -F 'ARM aarch64'
+        readelf -l "${stage_dir}/codex" | grep -F '/lib/ld-linux-aarch64.so.1'
+        version_output="$("${stage_dir}/codex" --version)"
+        printf '%s\n' "${version_output}"
+        if [[ "${version_output}" == *-dirty* ]]; then
+          echo "Preview binary unexpectedly contains dirty git provenance." >&2
+          exit 1
+        fi
+        "${stage_dir}/codex" --help >/dev/null
+        "${stage_dir}/codex" exec --help >/dev/null
+        "${stage_dir}/codex" app-server --help >/dev/null
+        "${stage_dir}/codex-code-mode-host" --help >/dev/null
+        "${stage_dir}/codex-responses-api-proxy" --help >/dev/null
+        tar -C "${stage_dir}" -czf "../dist/${archive_base}.tar.gz" .
+
+        python3 - <<'PY' > "../dist/${archive_base}.json"
+        import json
+        import os
+        import subprocess
+        import sys
+
+        payload = {
+            "repository": os.environ["GITHUB_REPOSITORY"],
+            "commit": subprocess.check_output(["git", "rev-parse", "HEAD"], text=True).strip(),
+            "ref": os.environ["DISPLAY_REF"],
+            "previewVersion": os.environ["CODEX_RELEASE_VERSION"],
+            "target": "aarch64-unknown-linux-gnu",
+            "workflow": (
+                f'{os.environ["GITHUB_SERVER_URL"]}/'
+                f'{os.environ["GITHUB_REPOSITORY"]}/actions/runs/{os.environ["GITHUB_RUN_ID"]}'
+            ),
+        }
+        json.dump(payload, sys.stdout, indent=2)
+        sys.stdout.write("\n")
+        PY
