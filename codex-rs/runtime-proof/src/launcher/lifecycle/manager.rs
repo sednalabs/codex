@@ -739,49 +739,29 @@ mod tests {
         let snapshot = parse_unit_snapshot(&properties()).expect("unit snapshot");
         assert!(
             validate_start_observation(
-                &snapshot,
-                &binding,
-                /*launcher_pid*/ 42,
-                /*child_pid*/ 77,
-                /*launcher_tasks*/ 1,
-                /*child_tasks*/ 1,
-                /*hierarchical_tasks*/ 2,
+                &snapshot, &binding, /*launcher_pid*/ 42, /*child_pid*/ 77,
+                /*launcher_tasks*/ 1, /*child_tasks*/ 1, /*hierarchical_tasks*/ 2,
             )
             .is_ok()
         );
         assert!(
             validate_start_observation(
-                &snapshot,
-                &binding,
-                /*launcher_pid*/ 43,
-                /*child_pid*/ 77,
-                /*launcher_tasks*/ 1,
-                /*child_tasks*/ 1,
-                /*hierarchical_tasks*/ 2,
+                &snapshot, &binding, /*launcher_pid*/ 43, /*child_pid*/ 77,
+                /*launcher_tasks*/ 1, /*child_tasks*/ 1, /*hierarchical_tasks*/ 2,
             )
             .is_err()
         );
         assert!(
             validate_start_observation(
-                &snapshot,
-                &binding,
-                /*launcher_pid*/ 42,
-                /*child_pid*/ 42,
-                /*launcher_tasks*/ 1,
-                /*child_tasks*/ 1,
-                /*hierarchical_tasks*/ 2,
+                &snapshot, &binding, /*launcher_pid*/ 42, /*child_pid*/ 42,
+                /*launcher_tasks*/ 1, /*child_tasks*/ 1, /*hierarchical_tasks*/ 2,
             )
             .is_err()
         );
         assert!(
             validate_start_observation(
-                &snapshot,
-                &binding,
-                /*launcher_pid*/ 42,
-                /*child_pid*/ 77,
-                /*launcher_tasks*/ 1,
-                /*child_tasks*/ 1,
-                /*hierarchical_tasks*/ 3,
+                &snapshot, &binding, /*launcher_pid*/ 42, /*child_pid*/ 77,
+                /*launcher_tasks*/ 1, /*child_tasks*/ 1, /*hierarchical_tasks*/ 3,
             )
             .is_err()
         );
@@ -799,9 +779,7 @@ mod tests {
             "InvocationID=00000000000040008000000000000002",
         ))
         .expect("well-formed replacement invocation");
-        assert!(
-            validate_running_observation(&replacement, &binding, /*launcher_pid*/ 42).is_err()
-        );
+        assert!(validate_running_observation(&replacement, &binding, /*launcher_pid*/ 42).is_err());
 
         let stop_post =
             parse_unit_snapshot(&properties().replace("SubState=running", "SubState=stop-post"))
@@ -819,28 +797,19 @@ mod tests {
         let snapshot = parse_unit_snapshot(&stop).expect("stop observer snapshot");
         assert!(
             validate_stop_observation(
-                &snapshot,
-                &binding,
-                /*observer_pid*/ 77,
-                /*hierarchical_tasks*/ 1,
+                &snapshot, &binding, /*observer_pid*/ 77, /*hierarchical_tasks*/ 1,
             )
             .is_ok()
         );
         assert!(
             validate_stop_observation(
-                &snapshot,
-                &binding,
-                /*observer_pid*/ 78,
-                /*hierarchical_tasks*/ 1,
+                &snapshot, &binding, /*observer_pid*/ 78, /*hierarchical_tasks*/ 1,
             )
             .is_err()
         );
         assert!(
             validate_stop_observation(
-                &snapshot,
-                &binding,
-                /*observer_pid*/ 77,
-                /*hierarchical_tasks*/ 2,
+                &snapshot, &binding, /*observer_pid*/ 77, /*hierarchical_tasks*/ 2,
             )
             .is_err()
         );
@@ -849,10 +818,7 @@ mod tests {
             .expect("live-main snapshot");
         assert!(
             validate_stop_observation(
-                &live_main,
-                &binding,
-                /*observer_pid*/ 77,
-                /*hierarchical_tasks*/ 1,
+                &live_main, &binding, /*observer_pid*/ 77, /*hierarchical_tasks*/ 1,
             )
             .is_err()
         );
@@ -861,10 +827,7 @@ mod tests {
                 .expect("wrong-state snapshot");
         assert!(
             validate_stop_observation(
-                &wrong_state,
-                &binding,
-                /*observer_pid*/ 77,
-                /*hierarchical_tasks*/ 1,
+                &wrong_state, &binding, /*observer_pid*/ 77, /*hierarchical_tasks*/ 1,
             )
             .is_err()
         );
