@@ -3389,8 +3389,19 @@ def collect_database_union(
     rates: dict[str, Any],
     *,
     checkpoint_path: str | None = None,
+    max_rows_per_source_per_pass: int | None = None,
 ) -> dict[str, Any]:
     """Read two explicitly named ledgers and conservatively deduplicate their calls."""
+    if max_rows_per_source_per_pass is not None and (
+        isinstance(max_rows_per_source_per_pass, bool)
+        or not isinstance(max_rows_per_source_per_pass, int)
+        or max_rows_per_source_per_pass < 1
+        or max_rows_per_source_per_pass > MAX_DATABASE_UNION_CALLS_PER_RUN
+    ):
+        raise UsageError(
+            "per-source pass row limit must be in 1.."
+            f"{MAX_DATABASE_UNION_CALLS_PER_RUN}"
+        )
     if len(database_paths) != 2:
         raise UsageError("cross-ledger aggregate requires exactly two databases")
     try:
@@ -3453,10 +3464,14 @@ def collect_database_union(
                 0,
                 MAX_DATABASE_UNION_CALLS_PER_SOURCE - union.source_rows[source_index],
             )
-            row_limit = min(remaining_source, remaining_total)
-            resumable_run_limit = row_limit > MAX_DATABASE_UNION_CALLS_PER_RUN
-            if resumable_run_limit:
-                row_limit = MAX_DATABASE_UNION_CALLS_PER_RUN
+            available_row_limit = min(remaining_source, remaining_total)
+            run_row_limit = (
+                MAX_DATABASE_UNION_CALLS_PER_RUN
+                if max_rows_per_source_per_pass is None
+                else max_rows_per_source_per_pass
+            )
+            row_limit = min(available_row_limit, run_row_limit)
+            resumable_run_limit = row_limit < available_row_limit
             callback = lambda call, index=source_index: union.add(index, call)
 
             def checkpoint_page() -> None:
@@ -4154,6 +4169,15 @@ def main(argv: list[str] | None = None) -> int:
         ),
     )
     parser.add_argument(
+        "--max-rows-per-source-per-pass",
+        type=int,
+        help=(
+            "optional smaller checkpointed row budget per source per pass; "
+            f"1..{MAX_DATABASE_UNION_CALLS_PER_RUN} (default "
+            f"{MAX_DATABASE_UNION_CALLS_PER_RUN})"
+        ),
+    )
+    parser.add_argument(
         "--aggregate-recorded",
         action="store_true",
         help="show a time-bounded aggregate without loading detailed call records",
@@ -4203,6 +4227,19 @@ def main(argv: list[str] | None = None) -> int:
         parser.error(
             f"--max-resume-passes must be in 1..{MAX_DATABASE_UNION_AUTO_RUNS}"
         )
+    if args.max_rows_per_source_per_pass is not None:
+        if not args.also_database or not args.checkpoint_file:
+            parser.error(
+                "--max-rows-per-source-per-pass requires --also-database "
+                "and --checkpoint-file"
+            )
+        if not (
+            1 <= args.max_rows_per_source_per_pass <= MAX_DATABASE_UNION_CALLS_PER_RUN
+        ):
+            parser.error(
+                "--max-rows-per-source-per-pass must be in "
+                f"1..{MAX_DATABASE_UNION_CALLS_PER_RUN}"
+            )
     if args.database and args.allow_local_app_server_startup:
         parser.error("read-only database mode does not start an app-server")
     if args.aggregate_recorded and not args.database:
@@ -4257,6 +4294,9 @@ def main(argv: list[str] | None = None) -> int:
                         [args.database, args.also_database],
                         rates,
                         checkpoint_path=args.checkpoint_file,
+                        max_rows_per_source_per_pass=(
+                            args.max_rows_per_source_per_pass
+                        ),
                     )
                     continuation_status = result["continuation"]["status"]
                     if args.continue_until_complete:
