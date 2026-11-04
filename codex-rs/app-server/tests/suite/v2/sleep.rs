@@ -15,7 +15,9 @@ use codex_app_server_protocol::TurnCompletedNotification;
 use codex_app_server_protocol::TurnStartParams;
 use codex_app_server_protocol::TurnStartResponse;
 use codex_app_server_protocol::TurnStatus;
+use codex_app_server_protocol::TurnToolOutput;
 use codex_app_server_protocol::UserInput as V2UserInput;
+use codex_protocol::models::FunctionCallOutputBody;
 use core_test_support::responses;
 use pretty_assertions::assert_eq;
 use serde_json::json;
@@ -33,6 +35,107 @@ const DEFAULT_READ_TIMEOUT: Duration = Duration::from_secs(25);
 #[cfg(not(windows))]
 const DEFAULT_READ_TIMEOUT: Duration = Duration::from_secs(10);
 const CURRENT_TIME_AT: i64 = 1_781_717_655;
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn external_tool_output_wakes_sleep_and_starts_idle_turn() -> Result<()> {
+    let server = responses::start_mock_server().await;
+    let model = responses::mount_sse_sequence(
+        &server,
+        vec![
+            responses::sse(vec![
+                responses::ev_response_created("sleep-response"),
+                responses::ev_function_call_with_namespace(
+                    "sleep-call",
+                    "clock",
+                    "sleep",
+                    &json!({"duration_ms": 30000}).to_string(),
+                ),
+                responses::ev_completed("sleep-response"),
+            ]),
+            responses::sse(vec![
+                responses::ev_assistant_message("active-answer", "Done"),
+                responses::ev_completed("active-response"),
+            ]),
+            responses::sse(vec![
+                responses::ev_assistant_message("idle-answer", "Done"),
+                responses::ev_completed("idle-response"),
+            ]),
+        ],
+    )
+    .await;
+    let codex_home = TempDir::new()?;
+    MockResponsesConfig::new(&server.uri())
+        .with_root_config(&format!("chatgpt_base_url = \"{}\"", server.uri()))
+        .with_provider_config("supports_websockets = false")
+        .with_extra_config("[features.current_time_reminder]\nenabled = true\nsleep_tool = true")
+        .write(codex_home.path())?;
+    let mut app = TestAppServer::builder()
+        .with_codex_home(codex_home.path())
+        .with_env_overrides(&[("OPENAI_API_KEY", None)])
+        .without_managed_config()
+        .build_initialized()
+        .await?;
+    let thread = app.start_thread(ThreadStartParams::default()).await?.thread;
+    let TurnStartResponse { turn } = app
+        .request(|request_id| ClientRequest::TurnStart {
+            request_id,
+            params: TurnStartParams {
+                thread_id: thread.id.clone(),
+                input: vec![V2UserInput::Text {
+                    text: "Wait for a message".to_string(),
+                    text_elements: Vec::new(),
+                }],
+                ..Default::default()
+            },
+        })
+        .await?;
+    wait_for_sleep_started(&mut app, "sleep-call").await?;
+    let active_request = app
+        .send_turn_start_request(TurnStartParams {
+            thread_id: thread.id.clone(),
+            input: Vec::new(),
+            tool_output: Some(Box::new(TurnToolOutput {
+                name: "message".to_string(),
+                namespace: Some("irc".to_string()),
+                output: FunctionCallOutputBody::Text("active-irc-event".to_string()),
+                retain: false,
+            })),
+            ..Default::default()
+        })
+        .await?;
+    let active: TurnStartResponse = timeout(DEFAULT_READ_TIMEOUT, app.read_response(active_request)).await??;
+    assert_eq!(active.turn.id, turn.id, "active input must not start another turn");
+    timeout(DEFAULT_READ_TIMEOUT, wait_for_sleep_completed(&mut app, "sleep-call")).await??;
+    timeout(DEFAULT_READ_TIMEOUT, app.read_stream_until_notification_message("turn/completed")).await??;
+
+    let idle_request = app
+        .send_turn_start_request(TurnStartParams {
+            thread_id: thread.id,
+            input: Vec::new(),
+            tool_output: Some(Box::new(TurnToolOutput {
+                name: "message".to_string(),
+                namespace: Some("irc".to_string()),
+                output: FunctionCallOutputBody::Text("idle-irc-event".to_string()),
+                retain: false,
+            })),
+            ..Default::default()
+        })
+        .await?;
+    let idle: TurnStartResponse = timeout(DEFAULT_READ_TIMEOUT, app.read_response(idle_request)).await??;
+    assert_ne!(idle.turn.id, turn.id, "idle input should start a new turn");
+    timeout(DEFAULT_READ_TIMEOUT, app.read_stream_until_notification_message("turn/completed")).await??;
+    let requests = model.requests();
+    assert_eq!(requests.len(), 3);
+    assert!(requests[1].function_call_output_text("sleep-call").is_some_and(|output| output.contains("Sleep interrupted by new input.")));
+    for (request, marker) in [(&requests[1], "active-irc-event"), (&requests[2], "idle-irc-event")] {
+        let matching = request.inputs_of_type("function_call_output").into_iter().filter(|item| {
+            item["name"] == "message" && item["namespace"] == "irc" && item["output"] == marker
+        }).count();
+        assert_eq!(matching, 1, "event must reach the model exactly once in this request");
+    }
+    timeout(DEFAULT_READ_TIMEOUT, app.shutdown_gracefully()).await??;
+    Ok(())
+}
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn clock_tools_emit_control_tool_analytics() -> Result<()> {
