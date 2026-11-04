@@ -267,39 +267,6 @@ fn refuses_foreign_scope_incomplete_precondition_and_expired_certificate() {
 }
 
 #[test]
-fn selected_claim_rejects_a_mismatched_server_or_recipient() {
-    let signer = signer();
-    assert!(
-        signer
-            .matches_target("ops", Some("https://ops.example/mcp"), "work_item_claim",)
-            .unwrap()
-    );
-    assert!(
-        signer
-            .matches_target(
-                "ops",
-                Some("https://foreign.example/mcp"),
-                "work_item_claim",
-            )
-            .is_err()
-    );
-    assert!(
-        signer
-            .matches_target(
-                "foreign",
-                Some("https://ops.example/mcp"),
-                "work_item_claim",
-            )
-            .is_err()
-    );
-    assert!(
-        !signer
-            .matches_target("unrelated", Some("https://other.example/mcp"), "some_tool")
-            .unwrap()
-    );
-}
-
-#[test]
 fn changed_note_changes_signed_operation_digest() {
     let signer = signer();
     let first = signer

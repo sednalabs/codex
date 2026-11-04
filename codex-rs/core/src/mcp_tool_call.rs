@@ -458,7 +458,7 @@ async fn handle_approved_mcp_tool_call(
                             .map_err(anyhow::Error::msg)?;
                 }
                 // The launcher adds protected Ops proof at its authenticated broker.
-                let request_meta = add_runtime_proof_meta(request_meta, None)?;
+                let request_meta = add_runtime_proof_meta(request_meta, /*proof*/ None)?;
                 Ok((rewritten_arguments, request_meta))
             })
             .await

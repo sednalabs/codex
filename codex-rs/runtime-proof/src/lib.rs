@@ -42,6 +42,13 @@ pub async fn broker_protected_mcp_http_request(
     mcp_broker::request(request).await
 }
 
+#[cfg(not(target_os = "linux"))]
+pub async fn broker_protected_mcp_http_request(
+    _request: codex_exec_server_protocol::HttpRequestParams,
+) -> anyhow::Result<codex_exec_server_protocol::HttpRequestResponse> {
+    anyhow::bail!("protected MCP broker is only supported on Linux")
+}
+
 pub fn is_protected_mcp_target(server: &str, recipient: &str) -> anyhow::Result<bool> {
     auth::is_protected_mcp_target(server, recipient)
 }

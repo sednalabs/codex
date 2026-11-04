@@ -21,6 +21,13 @@ const MAX_RESPONSE_BYTES: usize = 4 * 1024 * 1024;
 const MAX_HEADERS: usize = 32;
 const MAX_TIMEOUT: Duration = Duration::from_secs(300);
 
+struct PreparedRequest {
+    request: HttpRequestParams,
+    proof: Option<String>,
+    mutation_request_id: Option<Uuid>,
+    mutation_rpc_id: Option<Value>,
+}
+
 pub(super) fn run_worker(
     socket: File,
     expected_peer: crate::mcp_broker::PeerIdentity,
@@ -146,7 +153,12 @@ impl Context {
         verify_boundary()?;
         let request: HttpRequestParams =
             serde_json::from_slice(&bytes).context("decode protected MCP request")?;
-        let (request, proof, mutation_request_id, mutation_rpc_id) = self.prepare(request)?;
+        let PreparedRequest {
+            request,
+            proof,
+            mutation_request_id,
+            mutation_rpc_id,
+        } = self.prepare(request)?;
         ensure_active(active, child_is_live)?;
         verify_boundary()?;
         if let Some(request_id) = mutation_request_id {
@@ -198,12 +210,7 @@ impl Context {
     fn prepare(
         &mut self,
         mut request: HttpRequestParams,
-    ) -> Result<(
-        HttpRequestParams,
-        Option<String>,
-        Option<Uuid>,
-        Option<Value>,
-    )> {
+    ) -> Result<PreparedRequest> {
         if request.url != self.recipient
             || !matches!(request.method.as_str(), "POST" | "GET" | "DELETE")
             || (request.method != "POST" && request.body.is_some())
@@ -244,7 +251,12 @@ impl Context {
             if request.method == "POST" {
                 bail!("protected MCP POST request has no body");
             }
-            return Ok((request, None, None, None));
+            return Ok(PreparedRequest {
+                request,
+                proof: None,
+                mutation_request_id: None,
+                mutation_rpc_id: None,
+            });
         };
         if body.0.is_empty() || body.0.len() > MAX_REQUEST_BYTES {
             bail!("protected MCP request body exceeds its size limit");
@@ -286,7 +298,12 @@ impl Context {
             bail!("protected MCP request body exceeds its size limit");
         }
         request.body = Some(ByteChunk::from(body));
-        Ok((request, proof, mutation_request_id, mutation_rpc_id))
+        Ok(PreparedRequest {
+            request,
+            proof,
+            mutation_request_id,
+            mutation_rpc_id,
+        })
     }
 
     fn add_tool_proof(&mut self, body: &mut Value) -> Result<(Option<String>, Option<Uuid>)> {
