@@ -462,6 +462,14 @@ pub(crate) async fn run_turn(
     let turn_diff_tracker = Arc::new(tokio::sync::Mutex::new(
         TurnDiffTracker::with_environment_display_roots(display_roots),
     ));
+    // Yielded code-mode cells can submit nested calls between sampling
+    // requests, including while inline compaction is in progress. Keep their
+    // dispatcher alive for the turn instead of only for a model request.
+    let _code_mode_worker = sess.services.code_mode_service.start_turn_worker(
+        &sess,
+        Arc::clone(&first_step_context),
+        Arc::clone(&turn_diff_tracker),
+    );
 
     // `ModelClientSession` is turn-scoped and caches WebSocket + sticky routing state, so we reuse
     // one instance across retries within this turn.
@@ -1783,11 +1791,6 @@ async fn run_sampling_request(
 
     let tool_runtime = ToolCallRuntime::new(
         Arc::clone(&sess),
-        Arc::clone(&step_context),
-        Arc::clone(&turn_diff_tracker),
-    );
-    let _code_mode_worker = sess.services.code_mode_service.start_turn_worker(
-        &sess,
         Arc::clone(&step_context),
         Arc::clone(&turn_diff_tracker),
     );
