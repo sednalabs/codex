@@ -2850,6 +2850,72 @@ async fn normalize_preserves_named_function_call_output_without_call_id() {
     );
 }
 
+#[test]
+fn orphaned_code_mode_notification_becomes_named_tool_output() {
+    let mut items = vec![ResponseItemEnvelope {
+        item: ResponseItem::CustomToolCallOutput {
+            id: Some(ResponseItemId::with_suffix("ctco", "notice")),
+            call_id: "compacted-call".to_string(),
+            name: Some("exec".to_string()),
+            output: FunctionCallOutputPayload::from_text("irc event".to_string()),
+            internal_chat_message_metadata_passthrough: None,
+        },
+        metadata: Some(CodexHarnessMetadata {
+            code_mode_notification: true,
+            ..Default::default()
+        }),
+    }];
+    let original = items.clone();
+    normalize::remove_orphan_outputs(&mut items);
+    assert!(matches!(&items[0].item, ResponseItem::FunctionCallOutput {
+        call_id: None, name: Some(name), namespace: Some(namespace), output, ..
+    } if name == "exec" && namespace == "functions"
+        && *output == FunctionCallOutputPayload::from_text("irc event".to_string())));
+    let once = items.clone();
+    normalize::remove_orphan_outputs(&mut items);
+    assert_eq!(items, once);
+    let mut repeated = original;
+    normalize::remove_orphan_outputs(&mut repeated);
+    assert_eq!(repeated, once, "prompt projection must use a stable output ID");
+}
+
+#[test]
+fn paired_code_mode_notification_remains_custom_tool_output() {
+    let mut items = vec![
+        ResponseItemEnvelope::new(ResponseItem::CustomToolCall {
+            id: None, status: None, encrypted_content: None,
+            call_id: "live-call".to_string(), name: "exec".to_string(),
+            namespace: Some("functions".to_string()), input: String::new(),
+            internal_chat_message_metadata_passthrough: None,
+        }),
+        ResponseItemEnvelope {
+            item: ResponseItem::CustomToolCallOutput {
+                id: None, call_id: "live-call".to_string(), name: Some("exec".to_string()),
+                output: FunctionCallOutputPayload::from_text("irc event".to_string()),
+                internal_chat_message_metadata_passthrough: None,
+            },
+            metadata: Some(CodexHarnessMetadata { code_mode_notification: true, ..Default::default() }),
+        },
+    ];
+    let original = items.clone();
+    normalize::remove_orphan_outputs(&mut items);
+    assert_eq!(items, original);
+}
+
+#[cfg(debug_assertions)]
+#[test]
+#[should_panic(expected = "Orphan custom tool call output")]
+fn untagged_orphan_exec_output_is_not_a_notification() {
+    let mut items = vec![ResponseItemEnvelope::new(ResponseItem::CustomToolCallOutput {
+        id: None,
+        call_id: "missing".to_string(),
+        name: Some("exec".to_string()),
+        output: FunctionCallOutputPayload::from_text("ordinary output".to_string()),
+        internal_chat_message_metadata_passthrough: None,
+    })];
+    normalize::remove_orphan_outputs(&mut items);
+}
+
 #[tokio::test]
 async fn for_prompt_assigns_stable_id_to_synthetic_output_without_reordering_history() {
     let items = vec![

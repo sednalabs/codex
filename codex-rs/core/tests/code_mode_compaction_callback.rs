@@ -154,8 +154,16 @@ async fn code_mode_nested_callback_progresses_during_mid_turn_compaction(
                 .ok()
                 .and_then(|body| body.get("input")?.as_array().map(|items| {
                     items.iter().filter(|item| {
-                        item.get("type").and_then(serde_json::Value::as_str)
-                            == Some("custom_tool_call_output")
+                        let kind = item.get("type").and_then(serde_json::Value::as_str);
+                        if expect_compaction {
+                            kind == Some("function_call_output")
+                                && item.get("name").and_then(serde_json::Value::as_str) == Some("exec")
+                                && item.get("namespace").and_then(serde_json::Value::as_str) == Some("functions")
+                                && item.get("call_id").is_none()
+                        } else {
+                            kind == Some("custom_tool_call_output")
+                                && item.get("call_id").and_then(serde_json::Value::as_str) == Some("call-background")
+                        }
                     }).filter_map(|item| item.get("output"))
                         .map(|output| output.to_string().matches("w18854-notify-after-gate").count())
                         .sum()
@@ -186,8 +194,8 @@ async fn code_mode_nested_callback_progresses_during_mid_turn_compaction(
                 .ok()
                 .and_then(|body| body.get("input")?.as_array().map(|items| {
                     items.iter().any(|item| {
-                        item.get("type").and_then(serde_json::Value::as_str)
-                            == Some("custom_tool_call_output")
+                        matches!(item.get("type").and_then(serde_json::Value::as_str),
+                            Some("custom_tool_call_output" | "function_call_output"))
                             && item.get("output").is_some_and(|output| {
                                 output.to_string().contains("w18854-notify-after-gate")
                             })

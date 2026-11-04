@@ -1,6 +1,7 @@
 use codex_context_fragments::set_annotated_content;
 use codex_context_fragments::to_annotated_content;
 use codex_history::ResponseItemEnvelope;
+use codex_protocol::DEFAULT_FUNCTION_NAMESPACE;
 use codex_protocol::ResponseItemId;
 use codex_protocol::models::ContentItem;
 use codex_protocol::models::FunctionCallOutputContentItem;
@@ -195,6 +196,7 @@ pub(crate) fn remove_orphan_outputs(items: &mut Vec<ResponseItemEnvelope>) {
     }
 
     let mut orphan_positions = Vec::new();
+    let mut detached_notifications = Vec::new();
     for (position, envelope) in items.iter().enumerate() {
         match &envelope.item {
             ResponseItem::FunctionCallOutput {
@@ -209,6 +211,15 @@ pub(crate) fn remove_orphan_outputs(items: &mut Vec<ResponseItemEnvelope>) {
             ResponseItem::CustomToolCallOutput { call_id, .. }
                 if !custom_tool_call_ids.contains(call_id.as_str()) =>
             {
+                if envelope
+                    .metadata
+                    .as_ref()
+                    .is_some_and(|metadata| metadata.code_mode_notification)
+                    && matches!(&envelope.item, ResponseItem::CustomToolCallOutput { name: Some(name), .. } if name == "exec")
+                {
+                    detached_notifications.push(position);
+                    continue;
+                }
                 error_or_panic(format!(
                     "Orphan custom tool call output for call id: {call_id}"
                 ));
@@ -223,6 +234,31 @@ pub(crate) fn remove_orphan_outputs(items: &mut Vec<ResponseItemEnvelope>) {
                 orphan_positions.push(position);
             }
             _ => {}
+        }
+    }
+
+    // Only host-tagged notify outputs may detach from their originating call.
+    // Use the existing named external-tool output representation; keep the
+    // message as tool data and leave ordinary orphan detection unchanged.
+    drop((function_call_ids, tool_search_call_ids, custom_tool_call_ids));
+    for position in detached_notifications {
+        let envelope = &mut items[position];
+        if let ResponseItem::CustomToolCallOutput {
+            id,
+            name,
+            output,
+            internal_chat_message_metadata_passthrough,
+            ..
+        } = &envelope.item
+        {
+            envelope.item = ResponseItem::FunctionCallOutput {
+                id: synthetic_output_id("fco", id.as_deref()),
+                call_id: None,
+                name: name.clone(),
+                namespace: Some(DEFAULT_FUNCTION_NAMESPACE.to_string()),
+                output: output.clone(),
+                internal_chat_message_metadata_passthrough: internal_chat_message_metadata_passthrough.clone(),
+            };
         }
     }
 

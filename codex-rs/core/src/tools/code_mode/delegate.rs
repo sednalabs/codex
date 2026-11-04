@@ -482,6 +482,7 @@ impl CoreTurnHost {
                 },
                 metadata: Some(CodexHarnessMetadata {
                     history_truncation_token_limit: Some(output_token_limit),
+                    code_mode_notification: true,
                     ..Default::default()
                 }),
             }])

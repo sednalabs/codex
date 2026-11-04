@@ -99,6 +99,11 @@ pub struct CodexHarnessMetadata {
     )]
     pub history_truncation_token_limit: Option<usize>,
 
+    /// This extra exec output came from notify(), and can outlive its call
+    /// when compaction removes the originating call from prompt history.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub code_mode_notification: bool,
+
     /// Bounded assistant text confirmed by a successful messaging tool result.
     /// Captured after input hooks; untrusted context, never user authorization.
     #[serde(default, skip_serializing_if = "Option::is_none")]
