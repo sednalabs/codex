@@ -1598,157 +1598,50 @@ class RouteSelectionTests(unittest.TestCase):
         self.assertIn("--jobs=96", clippy_run)
         self.assertIn("--loading_phase_threads=8", clippy_run)
 
-    def test_bazel_windows_tests_serialize_host_global_policy_state(self) -> None:
+    def test_bazel_windows_tests_are_explicitly_deferred_for_sedna(self) -> None:
         payload = load_workflow_payload(REPO_ROOT / ".github/workflows/bazel.yml")
-        windows_steps = (
-            ((payload.get("jobs") or {}).get("test-windows-shard") or {}).get("steps")
-            or []
+        windows_job = (payload.get("jobs") or {}).get("test-windows-shard") or {}
+        self.assertIn(
+            "github.repository != 'sednalabs/codex'",
+            windows_job.get("if") or "",
         )
-        windows_test_run = next(
-            step for step in windows_steps if step.get("name") == "bazel test shard"
-        ).get("run") or ""
-        self.assertIn("--local_test_jobs=1", windows_test_run)
+        self.assertIn(
+            "needs.plan.outputs.run_bazel == 'true'",
+            windows_job.get("if") or "",
+        )
+        deferred_job = (payload.get("jobs") or {}).get("test-windows") or {}
+        self.assertIn(
+            "Windows Bazel CI deferred (unqualified)",
+            deferred_job.get("name") or "",
+        )
+        deferred_step = next(
+            step for step in deferred_job.get("steps") or []
+            if step.get("name") == "Report Windows CI deferral for this fork"
+        )
+        self.assertEqual(
+            deferred_step.get("if"), "github.repository == 'sednalabs/codex'"
+        )
+        for job_name in ("clippy", "verify-release-build"):
+            strategy = (
+                ((payload.get("jobs") or {}).get(job_name) or {}).get("strategy") or {}
+            )
+            matrix_include = str((strategy.get("matrix") or {}).get("include", ""))
+            with self.subTest(job=job_name):
+                self.assertIn("github.repository == 'sednalabs/codex'", matrix_include)
+                self.assertIn('"windows-2022"', matrix_include)
 
-    def test_bazel_windows_native_main_uses_gnullvm_proc_macro_toolchain(self) -> None:
+    def test_bazel_windows_native_main_remains_deferred(self) -> None:
         bazel = load_workflow_payload(REPO_ROOT / ".github/workflows/bazel.yml")
-        self.assertNotIn("test-windows-native-main", bazel.get("jobs") or {})
-
-        payload = load_workflow_payload(
-            REPO_ROOT / ".github/workflows/native-windows-bazel-health.yml"
+        jobs = bazel.get("jobs") or {}
+        self.assertNotIn("test-windows-native-main", jobs)
+        self.assertFalse(
+            (REPO_ROOT / ".github/workflows/native-windows-bazel-health.yml").exists()
         )
-        self.assertEqual(payload.get("name"), "Native Windows Bazel health")
-        triggers = payload.get("on") or {}
-        self.assertEqual((triggers.get("push") or {}).get("branches"), ["main"])
-        dispatch_inputs = (triggers.get("workflow_dispatch") or {}).get("inputs") or {}
-        self.assertEqual(
-            (dispatch_inputs.get("collect_diagnostics") or {}).get("type"),
-            "boolean",
-        )
-        self.assertEqual(
-            payload.get("concurrency"),
-            {
-                "group": "native-windows-bazel-health-${{ github.ref }}",
-                "cancel-in-progress": "false",
-                "queue": "max",
-            },
-        )
-
-        native_job = (payload.get("jobs") or {}).get("test-windows-native-main") or {}
-        self.assertEqual(native_job.get("timeout-minutes"), "90")
-        self.assertEqual(native_job.get("runs-on"), "windows-2022")
-        self.assertEqual(
-            native_job.get("name"),
-            "Bazel test on windows-latest for x86_64-pc-windows-gnullvm (native health)",
-        )
-        native_steps = native_job.get("steps") or []
-        prepare_step = next(
-            (step for step in native_steps if step.get("name") == "Prepare Bazel CI"),
-            None,
-        )
-        self.assertIsNotNone(prepare_step, "Step 'Prepare Bazel CI' not found")
-        self.assertEqual(
-            (prepare_step.get("with") or {}).get("target"),
-            "x86_64-pc-windows-gnullvm",
-        )
-        native_step = next(
-            (step for step in native_steps if step.get("name") == "bazel test //..."),
-            None,
-        )
-        self.assertIsNotNone(native_step, "Step 'bazel test //...' not found")
-        self.assertNotIn("continue-on-error", native_step)
-        native_test_run = native_step.get("run") or ""
-        self.assertNotIn("--platforms=", native_test_run)
-        self.assertNotIn("--windows-msvc-host-platform", native_test_run)
-        self.assertNotIn("toolchain_linker_preference=rust", native_test_run)
+        deferred_job = (bazel.get("jobs") or {}).get("test-windows") or {}
         self.assertIn(
-            "--modify_execution_info=Rustc=+no-remote-cache",
-            native_test_run,
+            "Windows Bazel CI deferred (unqualified)",
+            deferred_job.get("name") or "",
         )
-        self.assertIn("--local_test_jobs=1", native_test_run)
-
-        module_bazel = (REPO_ROOT / "MODULE.bazel").read_text(encoding="utf-8")
-        self.assertIn(
-            '"//patches:rules_rs_windows_gnullvm_exec_toolchain.patch"',
-            module_bazel,
-        )
-        gnullvm_exec_patch = (
-            REPO_ROOT / "patches/rules_rs_windows_gnullvm_exec_toolchain.patch"
-        ).read_text(encoding="utf-8")
-        self.assertIn(
-            "SUPPORTED_RUST_EXEC_TRIPLES = SUPPORTED_EXEC_TRIPLES + [",
-            gnullvm_exec_patch,
-        )
-        self.assertIn(
-            '''+SUPPORTED_RUST_EXEC_TRIPLES = SUPPORTED_EXEC_TRIPLES + [
-+    "x86_64-pc-windows-gnullvm",
-+    "aarch64-pc-windows-gnullvm",
-+]''',
-            gnullvm_exec_patch,
-        )
-        self.assertIn(
-            "@@ -61,0 +62,7 @@ SUPPORTED_EXEC_TRIPLES = [",
-            gnullvm_exec_patch,
-        )
-        for hunk, expected_old, observed_old, expected_new, observed_new in (
-            unified_diff_hunk_line_counts(gnullvm_exec_patch)
-        ):
-            with self.subTest(hunk=hunk):
-                self.assertEqual(observed_old, expected_old)
-                self.assertEqual(observed_new, expected_new)
-        # `//:local_windows` inherits the runner CPU. Each compiler-tool
-        # declaration must therefore resolve using full target-triple
-        # constraints, including ARM64 gnullvm rather than an MSVC fallback.
-        self.assertEqual(
-            gnullvm_exec_patch.count(
-                "exec_compatible_with = triple_to_rust_constraint_set(triple),"
-            ),
-            3,
-        )
-        self.assertEqual(
-            gnullvm_exec_patch.count("execs = SUPPORTED_RUST_EXEC_TRIPLES"),
-            3,
-        )
-        self.assertIn(
-            "if triple in SUPPORTED_EXEC_TRIPLES and exec_triple.arch == host_arch "
-            "and exec_triple.system == host_os:",
-            gnullvm_exec_patch,
-        )
-        self.assertEqual(
-            gnullvm_exec_patch.count(
-                "if version in miri_versions and triple in SUPPORTED_EXEC_TRIPLES:"
-            ),
-            2,
-        )
-        self.assertIn(
-            "name = \"miri_{}_{}_{}\".format(exec_triple.system, exec_triple.arch, version_key),",
-            gnullvm_exec_patch,
-        )
-
-        execution_logs_upload = next(
-            step for step in native_steps if step.get("name") == "Upload Bazel execution logs"
-        )
-        self.assertEqual(
-            (execution_logs_upload.get("with") or {}).get("name"),
-            "bazel-execution-logs-test-windows-native-x86_64-pc-windows-gnullvm",
-        )
-
-        diagnostics_step = next(
-            step
-            for step in native_steps
-            if step.get("name") == "Collect native Windows Bazel diagnostics"
-        )
-        self.assertIn("failure()", diagnostics_step.get("if") or "")
-        self.assertIn("inputs.collect_diagnostics", diagnostics_step.get("if") or "")
-        self.assertIn(
-            "collect-native-windows-bazel-diagnostics.ps1",
-            diagnostics_step.get("run") or "",
-        )
-        diagnostics_upload = next(
-            step
-            for step in native_steps
-            if step.get("name") == "Upload native Windows Bazel diagnostics"
-        )
-        self.assertEqual((diagnostics_upload.get("with") or {}).get("retention-days"), "3")
 
     def test_native_windows_health_analyzes_arm64_gnullvm_rust_toolchain_selection(
         self,
@@ -1973,11 +1866,17 @@ class RouteSelectionTests(unittest.TestCase):
         self.assertIn("agent-workflow-sanity.sh", observer_run)
         self.assertIn("workflow-security-targeted.sh", observer_run)
 
-        for job_name in ["test", "test-windows-shard", "clippy", "verify-release-build"]:
+        expected_job_conditions = {
+            "test": "${{ needs.plan.outputs.run_bazel == 'true' }}",
+            "test-windows-shard": "${{ github.repository != 'sednalabs/codex' && needs.plan.outputs.run_bazel == 'true' }}",
+            "clippy": "${{ needs.plan.outputs.run_bazel == 'true' && (github.event_name != 'workflow_dispatch' || !inputs.w14939_focused_tests) }}",
+            "verify-release-build": "${{ needs.plan.outputs.run_bazel == 'true' && (github.event_name != 'workflow_dispatch' || !inputs.w14939_focused_tests) }}",
+        }
+        for job_name, expected_condition in expected_job_conditions.items():
             with self.subTest(job=job_name):
                 job = jobs.get(job_name) or {}
                 self.assertEqual(job.get("needs"), "plan")
-                self.assertEqual(job.get("if"), "${{ needs.plan.outputs.run_bazel == 'true' }}")
+                self.assertEqual(job.get("if"), expected_condition)
 
         windows_gate = jobs.get("test-windows") or {}
         self.assertEqual(windows_gate.get("needs"), ["plan", "test-windows-shard"])
@@ -2008,6 +1907,19 @@ class RouteSelectionTests(unittest.TestCase):
             ).get("run")
             or ""
         )
+        results_env = next(
+            step
+            for step in (results_job.get("steps") or [])
+            if step.get("name") == "Require the selected Bazel CI mode"
+        ).get("env") or {}
+        self.assertEqual(
+            results_env.get("WINDOWS_DEFERRED"),
+            "${{ github.repository == 'sednalabs/codex' }}",
+        )
+        self.assertEqual(
+            results_env.get("FOCUSED_TESTS"),
+            "${{ github.event_name == 'workflow_dispatch' && inputs.w14939_focused_tests }}",
+        )
         self.assertIn('if mode == "docs_only"', results_run)
         self.assertIn('elif mode == "full"', results_run)
         self.assertIn('elif mode == "observer_only"', results_run)
@@ -2018,10 +1930,12 @@ class RouteSelectionTests(unittest.TestCase):
         heredoc_start = "python3 - <<'PY'\n"
         self.assertIn(heredoc_start, results_run)
         gate_script = results_run.split(heredoc_start, 1)[1].rsplit("\nPY", 1)[0]
-        for mode, docs_result, normal_result in [
-            ("docs_only", "success", "skipped"),
-            ("observer_only", "skipped", "skipped"),
-            ("full", "skipped", "success"),
+        for mode, docs_result, normal_result, windows_shard_result, windows_deferred, focused in [
+            ("docs_only", "success", "skipped", "skipped", "false", "false"),
+            ("observer_only", "skipped", "skipped", "skipped", "false", "false"),
+            ("full", "skipped", "success", "success", "false", "false"),
+            ("full", "skipped", "success", "skipped", "true", "false"),
+            ("full", "skipped", "success", "skipped", "true", "true"),
         ]:
             with self.subTest(mode=mode):
                 needs = {
@@ -2029,17 +1943,26 @@ class RouteSelectionTests(unittest.TestCase):
                     "docs-only": {"result": docs_result},
                     "observer-only": {"result": "success" if mode == "observer_only" else "skipped"},
                     "test": {"result": normal_result},
-                    "test-windows-shard": {"result": normal_result},
+                    "test-windows-shard": {"result": windows_shard_result},
                     "test-windows": {"result": normal_result},
-                    "clippy": {"result": normal_result},
-                    "verify-release-build": {"result": normal_result},
+                    "clippy": {
+                        "result": "skipped" if focused == "true" else normal_result
+                    },
+                    "verify-release-build": {
+                        "result": "skipped" if focused == "true" else normal_result
+                    },
                 }
                 proc = subprocess.run(
                     ["python3", "-c", gate_script],
                     check=False,
                     capture_output=True,
                     text=True,
-                    env={**os.environ, "NEEDS_JSON": json.dumps(needs)},
+                    env={
+                        **os.environ,
+                        "NEEDS_JSON": json.dumps(needs),
+                        "WINDOWS_DEFERRED": windows_deferred,
+                        "FOCUSED_TESTS": focused,
+                    },
                 )
                 self.assertEqual(proc.returncode, 0, proc.stderr)
 
@@ -5453,15 +5376,15 @@ class ValidationPlanScriptTests(unittest.TestCase):
         jobs = payload.get("jobs") or {}
 
         self.assertEqual(
-            (jobs["archive"].get("env") or {}).get("INPUT_TARGET"),
+            (jobs["archive"].get("env") or {}).get("CODEX_CI_TARGET"),
             "${{ inputs.target }}",
         )
         self.assertEqual(
-            (jobs["archive"].get("env") or {}).get("INPUT_PROFILE"),
+            (jobs["archive"].get("env") or {}).get("CODEX_CI_PROFILE"),
             "${{ inputs.profile }}",
         )
         self.assertEqual(
-            (jobs["shard"].get("env") or {}).get("INPUT_TEST_THREADS"),
+            (jobs["shard"].get("env") or {}).get("CODEX_CI_TEST_THREADS"),
             "${{ inputs.test_threads }}",
         )
 

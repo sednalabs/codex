@@ -398,9 +398,7 @@ fi
 bazel_console_log="$(mktemp)"
 trap 'rm -f "$bazel_console_log"' EXIT
 
-bazel_run_args=(
-  "${bazel_args[@]}"
-)
+bazel_run_args=("${bazel_args[0]}")
 if [[ -n "${BUILDBUDDY_API_KEY:-}" ]]; then
   if [[ $remote_execution_allowed -eq 1 ]]; then
     echo "BuildBuddy API key is available; trusted remote Bazel execution is enabled."
@@ -413,6 +411,9 @@ else
   if [[ "${bazel_args[0]}" == "test" ]]; then
     bazel_run_args+=("--test_env=INSTA_UPDATE=no")
   fi
+fi
+if (( ${#bazel_args[@]} > 1 )); then
+  bazel_run_args+=("${bazel_args[@]:1}")
 fi
 if (( ${#post_config_bazel_args[@]} > 0 )); then
   bazel_run_args+=("${post_config_bazel_args[@]}")
