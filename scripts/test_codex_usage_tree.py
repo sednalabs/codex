@@ -981,13 +981,34 @@ class UsageTreeTests(unittest.TestCase):
                     self.assertTrue(coverage["completeForIncludedRows"])
                     self.assertEqual(coverage["missingValues"], 0)
             for source in result["sources"]:
+                self.assertIn(source["source"], ("primary", "comparison"))
                 per_source_groups = source["recordedAggregate"]["groups"]
                 self.assertEqual(
                     sum(
                         group["responseUsageRecordCount"] for group in per_source_groups
                     ),
-                    call_count,
+                    call_count + 2,
                 )
+                self.assertEqual(
+                    source["recordedAggregate"]["status"], "recorded_rows_only"
+                )
+                conflict_uncached = 2 if source["source"] == "comparison" else 1
+                expected_by_role = {
+                    "root": {
+                        "inputTokensUncached": call_count // 2 + 1,
+                        "inputTokensCached": (call_count // 2 + 1) * 10,
+                        "cacheWriteInputTokens": 0,
+                        "outputTokens": (call_count // 2 + 1) * 5,
+                        "totalTokens": (call_count // 2) * 16 + 16,
+                    },
+                    "subagent": {
+                        "inputTokensUncached": call_count // 2 + conflict_uncached,
+                        "inputTokensCached": (call_count // 2 + 1) * 10,
+                        "cacheWriteInputTokens": 0,
+                        "outputTokens": (call_count // 2 + 1) * 5,
+                        "totalTokens": (call_count // 2) * 16 + conflict_uncached + 15,
+                    },
+                }
                 self.assertEqual(
                     {
                         group["role"]: group["responseUsageRecordCount"]
@@ -998,6 +1019,13 @@ class UsageTreeTests(unittest.TestCase):
                         "subagent": call_count // 2 + 1,
                     },
                 )
+                for group in per_source_groups:
+                    for field, expected in expected_by_role[group["role"]].items():
+                        coverage = group["tokenTotals"][field]
+                        self.assertEqual(coverage["value"], expected)
+                        self.assertEqual(coverage["knownSubtotal"], expected)
+                        self.assertEqual(coverage["missingValues"], 0)
+                        self.assertTrue(coverage["completeForIncludedRows"])
             self.assertTrue(
                 all(
                     source["rowScan"]["postCutoffLedgerRowsExcludedObserved"]
