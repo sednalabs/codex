@@ -146,7 +146,7 @@ impl Context {
         verify_boundary()?;
         let request: HttpRequestParams =
             serde_json::from_slice(&bytes).context("decode protected MCP request")?;
-        let (request, proof, mutation_request_id) = self.prepare(request)?;
+        let (request, proof, mutation_request_id, mutation_rpc_id) = self.prepare(request)?;
         ensure_active(active, child_is_live)?;
         verify_boundary()?;
         if let Some(request_id) = mutation_request_id {
@@ -169,9 +169,12 @@ impl Context {
         };
         ensure_active(active, child_is_live)?;
         verify_boundary()?;
+        let mutation_response_is_complete = mutation_rpc_id.as_ref().is_some_and(|rpc_id| {
+            response_confirms_mutation(&response, rpc_id)
+        });
         let encoded = serde_json::to_vec(&response).context("encode protected MCP response")?;
         if let Some(request_id) = mutation_request_id
-            && (200..300).contains(&response.status)
+            && mutation_response_is_complete
         {
             self.mutation_response_waiting_ack = Some(request_id);
         }
@@ -195,7 +198,7 @@ impl Context {
     fn prepare(
         &mut self,
         mut request: HttpRequestParams,
-    ) -> Result<(HttpRequestParams, Option<String>, Option<Uuid>)> {
+    ) -> Result<(HttpRequestParams, Option<String>, Option<Uuid>, Option<Value>)> {
         if request.url != self.recipient
             || !matches!(request.method.as_str(), "POST" | "GET" | "DELETE")
             || (request.method != "POST" && request.body.is_some())
@@ -236,7 +239,7 @@ impl Context {
             if request.method == "POST" {
                 bail!("protected MCP POST request has no body");
             }
-            return Ok((request, None, None));
+            return Ok((request, None, None, None));
         };
         if body.0.is_empty() || body.0.len() > MAX_REQUEST_BYTES {
             bail!("protected MCP request body exceeds its size limit");
@@ -252,6 +255,7 @@ impl Context {
             .context("protected MCP request has no method")?;
         let mut proof = None;
         let mut mutation_request_id = None;
+        let mut mutation_rpc_id = None;
         match method {
             "initialize"
             | "notifications/initialized"
@@ -259,9 +263,16 @@ impl Context {
             | "ping"
             | "tools/list" => {}
             "tools/call" => {
+                let request_rpc_id = object.get("id").cloned();
                 let (request_proof, mutation_id) = self.add_tool_proof(&mut body)?;
                 proof = request_proof;
                 mutation_request_id = mutation_id;
+                if mutation_request_id.is_some() {
+                    let request_rpc_id = request_rpc_id
+                        .filter(is_valid_json_rpc_id)
+                        .context("protected mutation has no valid JSON-RPC request id")?;
+                    mutation_rpc_id = Some(request_rpc_id);
+                }
             }
             _ => bail!("protected MCP method is outside the fixed tool surface"),
         }
@@ -270,7 +281,7 @@ impl Context {
             bail!("protected MCP request body exceeds its size limit");
         }
         request.body = Some(ByteChunk::from(body));
-        Ok((request, proof, mutation_request_id))
+        Ok((request, proof, mutation_request_id, mutation_rpc_id))
     }
 
     fn add_tool_proof(&mut self, body: &mut Value) -> Result<(Option<String>, Option<Uuid>)> {
@@ -456,6 +467,35 @@ impl Context {
             body: ByteChunk::from(body),
         })
     }
+}
+
+fn is_valid_json_rpc_id(value: &Value) -> bool {
+    match value {
+        Value::String(_) => true,
+        Value::Number(value) => {
+            value.as_i64().is_some()
+                || value
+                    .as_u64()
+                    .is_some_and(|value| value <= i64::MAX as u64)
+        }
+        _ => false,
+    }
+}
+
+fn response_confirms_mutation(response: &HttpRequestResponse, expected_rpc_id: &Value) -> bool {
+    response.status == 200
+        && response.headers.iter().any(|header| {
+            header.name.eq_ignore_ascii_case("content-type")
+                && header
+                    .value
+                    .split(';')
+                    .next()
+                    .is_some_and(|value| value.trim().eq_ignore_ascii_case("application/json"))
+        })
+        && codex_rmcp_client::is_successful_tools_call_json_response(
+            &response.body.0,
+            expected_rpc_id,
+        )
 }
 
 fn ensure_active(

@@ -269,6 +269,15 @@ fn require_no_unresolved_mcp_request(request_id: Option<Uuid>) -> Result<()> {
     Ok(())
 }
 
+fn require_recorded_execution_receipt(
+    resolution: super::api_claim::ExecutionReceiptResolution,
+) -> Result<()> {
+    if resolution != super::api_claim::ExecutionReceiptResolution::Recorded {
+        bail!("protected MCP request receipt remains unresolved");
+    }
+    Ok(())
+}
+
 fn persist_context(context: &Context, create: bool) -> Result<()> {
     let directory = state_directory()?;
     let bytes = serde_json::to_vec(context)?;
@@ -1096,6 +1105,30 @@ pub(super) fn finish(
         return Ok(());
     }
     require_manager_stop(&context.manager_binding)?;
+    let mut recovery_bearer = None;
+    if let Some(request_id) = context.unresolved_mcp_request_id {
+        let now = super::api_claim::unix_seconds()?;
+        let bearer = read_bearer(credentials, policy, now)?;
+        require_current_policy(policy_sha256)?;
+        if bearer.expires_at <= super::api_claim::unix_seconds()? {
+            bail!("lifecycle API authority expired before receipt recovery");
+        }
+        let resolution = super::api_claim::read_execution_receipt(
+            &bearer.value,
+            policy.project_id,
+            &policy.work_item_ref,
+            request_id,
+        )?;
+        require_recorded_execution_receipt(resolution)?;
+        resolve_unresolved_mcp_request(invocation, request_id)?;
+        context.unresolved_mcp_request_id = None;
+        require_manager_stop(&context.manager_binding)?;
+        require_current_policy(policy_sha256)?;
+        if bearer.expires_at <= super::api_claim::unix_seconds()? {
+            bail!("lifecycle API authority expired after receipt recovery");
+        }
+        recovery_bearer = Some(bearer);
+    }
     require_no_unresolved_mcp_request(context.unresolved_mcp_request_id)?;
     let now = super::api_claim::unix_seconds()?;
     if context.pending_end.is_none() {
@@ -1121,7 +1154,10 @@ pub(super) fn finish(
     }
     // Preserve a known child outcome even when credentials are unavailable.
     // Refresh proof times only before the event can possibly have been sent.
-    let bearer = read_bearer(credentials, policy, now)?;
+    let bearer = match recovery_bearer {
+        Some(bearer) => bearer,
+        None => read_bearer(credentials, policy, now)?,
+    };
     let seed = super::read_issuer_seed(credentials, policy)?;
     require_current_policy(policy_sha256)?;
     if bearer.expires_at <= super::api_claim::unix_seconds()? {

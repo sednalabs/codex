@@ -203,6 +203,27 @@ fn unresolved_mcp_request_blocks_end_until_its_response_is_acknowledged() {
 }
 
 #[test]
+fn unresolved_mcp_request_receipt_blocks_end_until_recorded() {
+    let request_id = Uuid::from_u128(42);
+    let mut unresolved = Some(request_id);
+
+    assert!(require_recorded_execution_receipt(
+        crate::api_claim::ExecutionReceiptResolution::Unresolved
+    )
+    .is_err());
+    assert_eq!(unresolved, Some(request_id));
+    assert!(require_no_unresolved_mcp_request(unresolved).is_err());
+
+    require_recorded_execution_receipt(
+        crate::api_claim::ExecutionReceiptResolution::Recorded,
+    )
+    .expect("matching historical receipt proves the operation was recorded");
+    resolve_unresolved_mcp_request_id(&mut unresolved, request_id)
+        .expect("resolve only the exact recorded request");
+    assert!(require_no_unresolved_mcp_request(unresolved).is_ok());
+}
+
+#[test]
 fn unresolved_mcp_request_cannot_be_replaced_or_nil() {
     let request_id = Uuid::from_u128(42);
     let mut unresolved = None;

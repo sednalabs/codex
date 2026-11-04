@@ -28,6 +28,18 @@ pub use auth_status::discover_streamable_http_oauth;
 pub use auth_status::discover_streamable_http_oauth_with_http_client;
 pub use auth_status::supports_oauth_login;
 pub use codex_protocol::protocol::McpAuthStatus;
+/// Check whether a JSON response completes a successful MCP `tools/call` for
+/// the exact JSON-RPC request ID. Result-less HTTP acknowledgements and SSE
+/// streams do not satisfy this check.
+pub fn is_successful_tools_call_json_response(
+    response_body: &[u8],
+    expected_request_id: &serde_json::Value,
+) -> bool {
+    http_client_adapter::is_successful_tools_call_json_response(
+        response_body,
+        expected_request_id,
+    )
+}
 pub use in_process_transport::InProcessTransportFactory;
 pub use oauth::StoredOAuthTokens;
 pub use oauth::WrappedOAuthTokenResponse;
