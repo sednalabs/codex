@@ -256,7 +256,7 @@ async fn oauth_tool_call_child() -> anyhow::Result<()> {
         assert_eq!(
             serde_json::to_value(result.meta)?,
             json!({
-                "mcp/www_authenticate": [r#"Bearer error="invalid_token""#],
+                "mcp/www_authenticate": r#"Bearer error="invalid_token""#,
             })
         );
     }
