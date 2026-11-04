@@ -10,13 +10,13 @@ jobs:
     runs-on: ubuntu-24.04-arm
     timeout-minutes: 180
     env:
-      PRODUCT_SHA: 80a884f100cb928e803a99ef5c6fcac007261455
+      PRODUCT_SHA: 204552e6b1c1c8fde4f23656235ec0cd3d3a5d70
       TARGET: aarch64-unknown-linux-gnu
       CARGO_BUILD_JOBS: "2"
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
         with:
-          ref: 80a884f100cb928e803a99ef5c6fcac007261455
+          ref: 204552e6b1c1c8fde4f23656235ec0cd3d3a5d70
           fetch-depth: 0
           persist-credentials: false
       - name: Verify exact product checkout
@@ -67,7 +67,7 @@ jobs:
           PY
       - uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f # v7.0.0
         with:
-          name: active-goal-arm-canary-80a884f1
+          name: active-goal-arm-canary-204552e6
           path: dist/app-server-canary
           if-no-files-found: error
           retention-days: 7
