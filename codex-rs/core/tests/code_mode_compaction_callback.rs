@@ -133,15 +133,20 @@ async fn code_mode_nested_callback_progresses_during_mid_turn_compaction() -> Re
         }]))
         .await?;
     let result: Result<()> = async {
-        tokio::time::timeout(Duration::from_secs(30), compaction_started.notified()).await?;
+        tokio::time::timeout(Duration::from_secs(30), compaction_started.notified())
+            .await
+            .context("did not observe the mid-turn compaction request")?;
         compaction_held.store(true, Ordering::Release);
         fs::write(&marker, "continue")?;
-        tokio::time::timeout(Duration::from_secs(5), callback_rx).await??;
+        tokio::time::timeout(Duration::from_secs(5), callback_rx)
+            .await
+            .context("nested callback did not finish while compaction was held")?
+            .context("nested callback observer closed")?;
         Ok(())
     }
     .await;
     // Always stop the intentionally held request and the yielded process.
     test.codex.submit(Op::Interrupt).await?;
     test.codex.shutdown_and_wait().await?;
-    result.context("nested callback did not finish while compaction was held")
+    result
 }
