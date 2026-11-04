@@ -773,6 +773,49 @@ class UsageTreeTests(unittest.TestCase):
         )
         self.assertTrue(all(source["rowScan"]["truncated"] for source in result["sources"]))
 
+    def test_cross_ledger_rejects_oversized_provider_call_id(self):
+        call = (
+            "p" * 257,
+            "root",
+            "turn-oversized",
+            "request-oversized",
+            "openai",
+            "gpt-6.1-sol",
+            None,
+            None,
+            None,
+            "2026-10-01T00:00:00Z",
+            None,
+            10,
+            0,
+            0,
+            5,
+            15,
+            "ok",
+        )
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            primary = Path(temp_dir) / "primary.sqlite"
+            comparison = Path(temp_dir) / "comparison.sqlite"
+            self._write_union_ledger(primary, [call])
+            self._write_union_ledger(comparison, [])
+
+            result = collect_database_union(
+                "root", [str(primary), str(comparison)], load_rates(None)
+            )
+
+        dedupe = result["crossLedgerDeduplication"]
+        self.assertEqual(dedupe["status"], "incomplete")
+        self.assertEqual(dedupe["rowsScannedBySource"], [1, 0])
+        self.assertEqual(
+            result["sources"][0]["rowScan"]["reason"],
+            "identity_field_size_limit",
+        )
+        self.assertEqual(
+            dedupe["mergedTotals"]["status"], "unavailable_incomplete_source_scan"
+        )
+        self.assertNotIn("p" * 257, json.dumps(result))
+
     def test_legacy_schema_duplicate_is_unverifiable_not_silently_deduplicated(self):
         current_call = (
             "pcid-secret-legacy",

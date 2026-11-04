@@ -1152,6 +1152,12 @@ def _normalize_database_call(
 
 
 def _union_call_values(call: dict[str, Any]) -> tuple[Any, ...]:
+    provider_call_id = call["providerCallId"]
+    if (
+        provider_call_id is not None
+        and len(provider_call_id.encode("utf-8")) > 256
+    ):
+        raise ValueError("cross-ledger identity fields exceed their safe size bound")
     values = tuple(call[field] for field in UNION_CALL_FIELDS)
     text_bytes = 0
     for field, value in zip(UNION_CALL_FIELDS, values):
@@ -1159,8 +1165,7 @@ def _union_call_values(call: dict[str, Any]) -> tuple[Any, ...]:
             continue
         encoded_length = len(value.encode("utf-8"))
         text_bytes += encoded_length
-        field_limit = 256 if field == "providerCallId" else 1024
-        if encoded_length > field_limit or text_bytes > 4096:
+        if encoded_length > 1024 or text_bytes > 4096:
             raise ValueError("cross-ledger identity fields exceed their safe size bound")
     return values
 
@@ -1195,9 +1200,6 @@ class _MergedUsageTotals:
             call["requestedModel"],
             call["providerEffectiveModel"],
         )
-
-    def can_add_group(self, key: tuple[str, str | None, str | None]) -> bool:
-        return key in self.groups or len(self.groups) < MAX_DATABASE_UNION_GROUPS
 
     def add(self, values: tuple[Any, ...]) -> None:
         call = dict(zip(UNION_CONTRIBUTION_FIELDS, values))
