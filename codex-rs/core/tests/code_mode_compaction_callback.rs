@@ -9,6 +9,7 @@ use codex_extension_api::ToolCallOutcome;
 use codex_extension_api::ToolFinishInput;
 use codex_extension_api::ToolLifecycleContributor;
 use codex_extension_api::ToolLifecycleFuture;
+use codex_extension_api::ToolStartInput;
 use codex_features::Feature;
 use codex_protocol::protocol::Op;
 use codex_protocol::user_input::UserInput;
@@ -38,11 +39,29 @@ async fn code_mode_nested_callback_progresses_during_mid_turn_compaction() -> Re
 
     struct CallbackObserver {
         compaction_held: Arc<AtomicBool>,
+        wait_started: Arc<AtomicBool>,
+        wait_finished: Arc<AtomicBool>,
         completed: Mutex<Option<oneshot::Sender<()>>>,
     }
     impl ToolLifecycleContributor for CallbackObserver {
+        fn on_tool_start<'a>(&'a self, input: ToolStartInput<'a>) -> ToolLifecycleFuture<'a> {
+            Box::pin(async move {
+                if input.tool_name.name == "write_stdin"
+                    && matches!(input.source, codex_extension_api::ToolCallSource::CodeMode { .. })
+                {
+                    self.wait_started.store(true, Ordering::Release);
+                }
+            })
+        }
+
         fn on_tool_finish<'a>(&'a self, input: ToolFinishInput<'a>) -> ToolLifecycleFuture<'a> {
             Box::pin(async move {
+                if input.tool_name.name == "write_stdin"
+                    && matches!(input.source, codex_extension_api::ToolCallSource::CodeMode { .. })
+                    && input.outcome == (ToolCallOutcome::Completed { success: true })
+                {
+                    self.wait_finished.store(true, Ordering::Release);
+                }
                 if input.tool_name.name == "test_sync_tool"
                     && matches!(input.source, codex_extension_api::ToolCallSource::CodeMode { .. })
                     && input.outcome == (ToolCallOutcome::Completed { success: true })
@@ -57,9 +76,13 @@ async fn code_mode_nested_callback_progresses_during_mid_turn_compaction() -> Re
 
     let (callback_tx, callback_rx) = oneshot::channel();
     let compaction_held = Arc::new(AtomicBool::new(false));
+    let wait_started = Arc::new(AtomicBool::new(false));
+    let wait_finished = Arc::new(AtomicBool::new(false));
     let mut extensions = ExtensionRegistryBuilder::<Config>::new();
     extensions.tool_lifecycle_contributor(Arc::new(CallbackObserver {
         compaction_held: Arc::clone(&compaction_held),
+        wait_started: Arc::clone(&wait_started),
+        wait_finished: Arc::clone(&wait_finished),
         completed: Mutex::new(Some(callback_tx)),
     }));
 
@@ -99,12 +122,15 @@ async fn code_mode_nested_callback_progresses_during_mid_turn_compaction() -> Re
         .set_delay(Duration::from_secs(15)),
     )
     .await;
-    responses::mount_sse_once(
+    // Keep the next sampling worker alive long enough to distinguish a
+    // compaction-only stall from a broken callback or expired cell.
+    responses::mount_response_once(
         &server,
-        sse(vec![
+        responses::sse_response(sse(vec![
             ev_assistant_message("done", "done"),
             ev_completed("done"),
-        ]),
+        ]))
+        .set_delay(Duration::from_secs(30)),
     )
     .await;
     let mut provider = codex_model_provider_info::built_in_model_providers(None)["openai"].clone();
@@ -145,7 +171,13 @@ async fn code_mode_nested_callback_progresses_during_mid_turn_compaction() -> Re
             Err(_) => {
                 tokio::time::timeout(Duration::from_secs(30), &mut callback_rx)
                     .await
-                    .context("nested callback did not recover after compaction")?
+                    .with_context(|| {
+                        format!(
+                            "nested callback did not recover after compaction; wait started={}, finished={}",
+                            wait_started.load(Ordering::Acquire),
+                            wait_finished.load(Ordering::Acquire),
+                        )
+                    })?
                     .context("nested callback observer closed after compaction")?;
                 anyhow::bail!("nested callback stalled during compaction and recovered afterwards");
             }
