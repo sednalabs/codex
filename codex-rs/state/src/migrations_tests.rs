@@ -6,10 +6,13 @@ use sqlx::Connection;
 use sqlx::Row;
 use sqlx::migrate::Migration;
 use sqlx::migrate::Migrator;
+use sqlx::sqlite::SqlitePoolOptions;
 
 use super::STATE_MIGRATOR;
 use super::THREAD_HISTORY_MIGRATOR;
 use super::USAGE_MIGRATOR;
+use super::T10_USAGE_MIGRATION_HISTORY;
+use super::runtime_usage_migrator_for_history;
 use super::repair_state_migration_version_collisions;
 
 const PRE_RECENCY_MIGRATION_VERSION: i64 = 42;
@@ -107,6 +110,48 @@ fn usage_migrator_through(version: i64) -> Migrator {
         create_schemas: USAGE_MIGRATOR.create_schemas.clone(),
         no_tx: USAGE_MIGRATOR.no_tx,
     }
+}
+
+async fn pool_with_t10_usage_history(versions: &[i64]) -> sqlx::SqlitePool {
+    let pool = SqlitePoolOptions::new()
+        .max_connections(1)
+        .connect("sqlite::memory:")
+        .await
+        .expect("in-memory usage database should open");
+    sqlx::query(
+        "CREATE TABLE _sqlx_migrations (version BIGINT PRIMARY KEY, description TEXT NOT NULL, success BOOLEAN NOT NULL, checksum BLOB NOT NULL)",
+    )
+    .execute(&pool)
+    .await
+    .expect("migration history table should be created");
+
+    for version in versions {
+        let (_, description, checksum) = T10_USAGE_MIGRATION_HISTORY
+            .iter()
+            .find(|(known_version, _, _)| known_version == version)
+            .expect("requested version should exist in the T10 history");
+        let checksum = checksum
+            .as_bytes()
+            .chunks_exact(2)
+            .map(|pair| {
+                let high = super::hex_nibble(pair[0]).expect("checksum hex should be valid");
+                let low = super::hex_nibble(pair[1]).expect("checksum hex should be valid");
+                (high << 4) | low
+            })
+            .collect::<Vec<_>>();
+        sqlx::query(
+            "INSERT INTO _sqlx_migrations (version, description, success, checksum) VALUES (?, ?, ?, ?)",
+        )
+        .bind(version)
+        .bind(description)
+        .bind(true)
+        .bind(checksum)
+        .execute(&pool)
+        .await
+        .expect("T10 migration history row should be inserted");
+    }
+
+    pool
 }
 
 fn upstream_external_agent_import_provider_migrator() -> Migrator {
@@ -1261,4 +1306,56 @@ async fn usage_automatic_turn_epochs_backfills_legacy_abort_occurrences() {
     .expect("backfilled abort occurrence should load");
     assert_eq!(abort_occurrence, "occurrence-legacy");
     pool.close().await;
+}
+
+#[tokio::test]
+async fn exact_t10_september_30_rate_history_skips_the_equivalent_source_migration() {
+    let t10_versions = T10_USAGE_MIGRATION_HISTORY
+        .iter()
+        .map(|(version, _, _)| *version)
+        .collect::<Vec<_>>();
+    let pool = pool_with_t10_usage_history(&t10_versions).await;
+
+    let migrator = runtime_usage_migrator_for_history(&pool, &USAGE_MIGRATOR)
+        .await
+        .expect("exact T10 rate history should be accepted");
+
+    assert!(
+        USAGE_MIGRATOR
+            .iter()
+            .find(|migration| migration.version == 23)
+            .is_some_and(|migration| !migration.no_tx),
+        "the new rate migration should keep SQLx's transactional execution"
+    );
+    assert!(
+        migrator.iter().all(|migration| migration.version != 23),
+        "an exact T10 v17 rate interval must not be inserted a second time"
+    );
+    pool.close().await;
+}
+
+#[tokio::test]
+async fn partial_or_corrupt_t10_rate_history_fails_closed() {
+    let partial_pool = pool_with_t10_usage_history(&[17]).await;
+    let partial_result =
+        runtime_usage_migrator_for_history(&partial_pool, &USAGE_MIGRATOR).await;
+    assert!(
+        partial_result.is_err(),
+        "a T10 v17 row without its required chain must not be accepted"
+    );
+    partial_pool.close().await;
+
+    let corrupt_pool = pool_with_t10_usage_history(&[1, 5, 15, 16, 17, 18, 19]).await;
+    sqlx::query("UPDATE _sqlx_migrations SET checksum = ? WHERE version = 17")
+        .bind(vec![0_u8; 48])
+        .execute(&corrupt_pool)
+        .await
+        .expect("test should corrupt the T10 v17 checksum");
+    let corrupt_result =
+        runtime_usage_migrator_for_history(&corrupt_pool, &USAGE_MIGRATOR).await;
+    assert!(
+        corrupt_result.is_err(),
+        "a T10 v17 row with a different checksum must not be accepted"
+    );
+    corrupt_pool.close().await;
 }
