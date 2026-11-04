@@ -11,7 +11,10 @@ use codex_extension_api::ToolLifecycleContributor;
 use codex_extension_api::ToolLifecycleFuture;
 use codex_extension_api::ToolStartInput;
 use codex_features::Feature;
+use codex_protocol::models::PermissionProfile;
+use codex_protocol::protocol::AskForApproval;
 use codex_protocol::protocol::Op;
+use codex_protocol::protocol::ThreadSettingsOverrides;
 use codex_protocol::user_input::UserInput;
 use core_test_support::responses;
 use core_test_support::responses::ev_assistant_message;
@@ -20,6 +23,7 @@ use core_test_support::responses::ev_custom_tool_call;
 use core_test_support::responses::sse;
 use core_test_support::skip_if_no_network;
 use core_test_support::test_codex::test_codex;
+use core_test_support::test_codex::turn_permission_fields;
 use std::fs;
 use std::sync::Arc;
 use std::sync::Mutex;
@@ -169,11 +173,23 @@ async fn code_mode_nested_callback_progresses_during_mid_turn_compaction(
         .build_with_auto_env(&server)
         .await?;
 
+    // Match TestCodex::submit_turn's test-only execution permissions. The
+    // callback must reach a real waiting process before testing compaction.
+    let (sandbox_policy, permission_profile) =
+        turn_permission_fields(PermissionProfile::Disabled, test.config.cwd.as_path());
     test.codex
-        .start_or_steer_turn(TurnInputRequest::user_input(vec![UserInput::Text {
-            text: "Start a background callback and compact".into(),
-            text_elements: Vec::new(),
-        }]))
+        .start_or_steer_turn(
+            TurnInputRequest::user_input(vec![UserInput::Text {
+                text: "Start a background callback and compact".into(),
+                text_elements: Vec::new(),
+            }])
+            .with_thread_settings(ThreadSettingsOverrides {
+                approval_policy: Some(AskForApproval::Never),
+                sandbox_policy: Some(sandbox_policy),
+                permission_profile,
+                ..Default::default()
+            }),
+        )
         .await?;
     let mut callback_rx = callback_rx;
     let result: Result<()> = async {
