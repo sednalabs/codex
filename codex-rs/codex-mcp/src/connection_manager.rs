@@ -653,12 +653,7 @@ impl McpConnectionSet {
             .context("failed to get client")?;
         let result: rmcp::model::CallToolResult = client
             .client
-            .call_tool(
-                tool.to_string(),
-                arguments,
-                meta,
-                view.tool_timeout,
-            )
+            .call_tool(tool.to_string(), arguments, meta, view.tool_timeout)
             .await
             .with_context(|| format!("tool call failed for `{server}/{tool}`"))?;
 

@@ -267,12 +267,7 @@ impl PreparedMcpCall {
         let result = self
             .client
             .client
-            .call_tool(
-                tool_name.clone(),
-                arguments,
-                meta,
-                self.client.tool_timeout,
-            )
+            .call_tool(tool_name.clone(), arguments, meta, self.client.tool_timeout)
             .await
             .with_context(|| format!("tool call failed for `{}/{tool_name}`", self.server_name))?;
         drop(current_revision);
