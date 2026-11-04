@@ -28,6 +28,7 @@ pub fn request_timeout_error(label: &str, duration: Duration) -> Error {
 pub fn request_error_code(error: &Error) -> Option<&'static str> {
     let error = error.downcast_ref::<ClientOperationError>()?;
     Some(match error {
+        ClientOperationError::OAuthTokenRefreshed { .. } => "oauth_token_refreshed_no_replay",
         ClientOperationError::Timeout { .. } => "request_timeout",
         ClientOperationError::Service(error) => match error {
             ServiceError::Timeout { .. } => "request_timeout",

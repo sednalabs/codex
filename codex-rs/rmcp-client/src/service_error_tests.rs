@@ -7,6 +7,12 @@ use pretty_assertions::assert_eq;
 fn request_error_codes_preserve_typed_causes_through_context() {
     for (error, expected) in [
         (
+            anyhow::Error::from(ClientOperationError::OAuthTokenRefreshed {
+                source: ServiceError::TransportClosed,
+            }),
+            Some("oauth_token_refreshed_no_replay"),
+        ),
+        (
             request_timeout_error("tools/call", Duration::from_secs(1)),
             Some("request_timeout"),
         ),
