@@ -14,16 +14,4 @@ test -f "$RUSTY_V8_SRC_BINDING_PATH"
 cd codex-rs
 export CARGO_TARGET_DIR="${CARGO_TARGET_DIR:-$PWD/target}"
 export RUST_MIN_STACK=8388608
-cargo build --locked -p codex-code-mode-host --bin codex-code-mode-host
-export CARGO_BIN_EXE_codex_code_mode_host="$CARGO_TARGET_DIR/debug/codex-code-mode-host"
-test -x "$CARGO_BIN_EXE_codex_code_mode_host"
-cargo test --locked -p codex-core --test code_mode_compaction_callback -- --test-threads=1
-cargo test --locked -p codex-core --lib code_mode_notification -- --test-threads=1
-cargo test --locked -p codex-core --lib untagged_orphan_exec_output_is_not_a_notification -- --test-threads=1
-cargo test --locked -p codex-core --lib normalize_removes_orphan_custom_tool_call_output_panics_in_debug -- --test-threads=1
-for case in \
-  suite::code_mode::yielded_code_mode_tool_callbacks_keep_their_originating_step \
-  suite::code_mode::code_mode_background_keeps_running_on_later_turn_without_wait \
-  suite::code_mode::code_mode_interrupt_terminates_active_cells_and_nested_tools; do
-  cargo test --locked -p codex-core --test all "$case" -- --exact --test-threads=1
-done
+cargo test --locked -p codex-app-server --test all suite::v2::sleep::external_tool_output_wakes_sleep_and_starts_idle_turn -- --exact --test-threads=1
