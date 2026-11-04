@@ -3234,12 +3234,14 @@ bundles during upstream sync merely because they once shared this carry entry.
   a parsed Bearer `invalid_token` challenge. A local `AuthorizationRequired`, a
   generic 401, `insufficient_scope`, an uncertain transport outcome, or an MCP
   tool-result `_meta` challenge does not trigger the refresh path.
-- One successful refresh retries a tool call only when its exact advertised
-  tool definition has `readOnlyHint = true`. Missing and false hints refresh
-  credentials for future calls while returning the original denial without
-  replay; a second denial is not refreshed recursively. The client reuses its
-  existing serialized OAuth transaction and does not add credentials, login
-  flows, or a parallel session store.
+- One successful refresh retries only the fixed read-only protocol operations
+  (`tools/list`, `resources/list`, `resources/templates/list`, and
+  `resources/read`). Tool calls, custom requests, and custom notifications
+  refresh credentials for future calls and return a clear denial without
+  replay. Remote tool annotations are untrusted hints and never authorize a
+  tool-call replay. The client reuses its existing serialized OAuth
+  transaction and does not add credentials, login flows, or a parallel session
+  store.
 - During future syncs, do not "simplify" the OAuth helpers by dropping either
   the secrets-backed keyring path or the downstream resolved-store reread/save
   discipline unless an upstream replacement covers those behaviors and the

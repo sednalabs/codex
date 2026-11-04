@@ -12,7 +12,6 @@ use codex_config::types::OAuthCredentialsStoreMode;
 use codex_exec_server::Environment;
 use codex_rmcp_client::McpAuthState;
 use codex_rmcp_client::McpLoginRequirement;
-use codex_rmcp_client::OAuthUnauthorizedRecovery;
 use codex_rmcp_client::RmcpClient;
 use codex_rmcp_client::StoredOAuthTokens;
 use codex_rmcp_client::WrappedOAuthTokenResponse;
@@ -152,7 +151,7 @@ async fn refreshes_expired_persisted_token_before_initialize() -> anyhow::Result
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 1)]
-async fn invalid_token_refresh_retries_only_read_only_calls() -> anyhow::Result<()> {
+async fn invalid_token_refresh_never_replays_tool_calls() -> anyhow::Result<()> {
     let server = MockServer::start().await;
     Mock::given(method("GET"))
         .and(path("/.well-known/oauth-authorization-server/mcp"))
@@ -251,7 +250,7 @@ async fn invalid_token_refresh_retries_only_read_only_calls() -> anyhow::Result<
                 _ => ResponseTemplate::new(400),
             }
         })
-        .expect(6)
+        .expect(5)
         .mount(&server)
         .await;
 
@@ -270,7 +269,7 @@ async fn invalid_token_refresh_retries_only_read_only_calls() -> anyhow::Result<
         .await?;
     assert!(status.success(), "OAuth invalid_token child failed: {status}");
     assert_eq!(refresh_attempts.load(Ordering::SeqCst), 2);
-    assert_eq!(read_only_attempts.load(Ordering::SeqCst), 2);
+    assert_eq!(read_only_attempts.load(Ordering::SeqCst), 1);
     assert_eq!(mutating_attempts.load(Ordering::SeqCst), 1);
     assert_eq!(metadata_challenge_attempts.load(Ordering::SeqCst), 1);
     server.verify().await;
@@ -278,7 +277,7 @@ async fn invalid_token_refresh_retries_only_read_only_calls() -> anyhow::Result<
 }
 
 #[tokio::test]
-#[ignore = "spawned by invalid_token_refresh_retries_only_read_only_calls"]
+#[ignore = "spawned by invalid_token_refresh_never_replays_tool_calls"]
 async fn invalid_token_recovery_child() -> anyhow::Result<()> {
     let server_url = std::env::var(CHILD_SERVER_URL_ENV)?;
     let mut token_response = OAuthTokenResponse::new(
@@ -323,36 +322,35 @@ async fn invalid_token_recovery_child() -> anyhow::Result<()> {
     .await?;
     initialize_client(&client).await?;
 
-    let read_only = client
-        .call_tool_with_oauth_recovery(
+    let read_only_error = client
+        .call_tool(
             "read_only".to_string(),
             None,
             None,
             Some(Duration::from_secs(5)),
-            OAuthUnauthorizedRecovery::RetryReadOnly,
         )
-        .await?;
-    assert!(!read_only.is_error.unwrap_or(false));
+        .await
+        .expect_err("read-only annotation cannot authorize automatic replay");
+    assert!(read_only_error.to_string().contains("credentials were refreshed"));
+    assert!(read_only_error.to_string().contains("request was not replayed"));
 
     let mutating = client
-        .call_tool_with_oauth_recovery(
+        .call_tool(
             "mutating".to_string(),
             None,
             None,
             Some(Duration::from_secs(5)),
-            OAuthUnauthorizedRecovery::RefreshOnly,
         )
         .await;
     let mutating_error = mutating.expect_err("mutating tool call must not be replayed");
-    assert!(!mutating_error.to_string().contains("uncertain"));
+    assert!(mutating_error.to_string().contains("request was not replayed"));
 
     let result_challenge = client
-        .call_tool_with_oauth_recovery(
+        .call_tool(
             "result_challenge".to_string(),
             None,
             None,
             Some(Duration::from_secs(5)),
-            OAuthUnauthorizedRecovery::RetryReadOnly,
         )
         .await?;
     assert!(result_challenge.is_error.unwrap_or(false));

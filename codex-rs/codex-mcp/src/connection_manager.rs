@@ -43,7 +43,6 @@ use crate::server::McpServerMetadata;
 use crate::tools::ToolFilter;
 use crate::tools::ToolInfo;
 use crate::tools::filter_tools;
-use crate::tools::oauth_unauthorized_recovery;
 use anyhow::Context;
 use anyhow::Result;
 use anyhow::anyhow;
@@ -652,21 +651,13 @@ impl McpConnectionSet {
             .client()
             .await
             .context("failed to get client")?;
-        let recovery = client
-            .listed_tools()
-            .into_iter()
-            .find(|tool_info| tool_info.tool.name.as_ref() == tool)
-            .map(|tool_info| oauth_unauthorized_recovery(&tool_info.tool))
-            .unwrap_or(codex_rmcp_client::OAuthUnauthorizedRecovery::RefreshOnly);
-
         let result: rmcp::model::CallToolResult = client
             .client
-            .call_tool_with_oauth_recovery(
+            .call_tool(
                 tool.to_string(),
                 arguments,
                 meta,
                 view.tool_timeout,
-                recovery,
             )
             .await
             .with_context(|| format!("tool call failed for `{server}/{tool}`"))?;

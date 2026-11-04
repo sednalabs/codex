@@ -253,6 +253,13 @@ enum ClientOperationError {
         source: rmcp::service::ServiceError,
     },
     #[error(
+        "MCP server rejected the request with an invalid-token response. OAuth credentials were refreshed, but this request was not replayed. Submit a new call if retrying is appropriate."
+    )]
+    OAuthTokenRefreshed {
+        #[source]
+        source: rmcp::service::ServiceError,
+    },
+    #[error(
         "MCP session expired during tools/call; this invocation was not retried and its result is unknown. The expired session was retired if it was still current. Make a separate independent call to continue; it will initialize a fresh session if needed. Do not repeat this call unless its operation is independently known to be read-only."
     )]
     ExpiredSessionUncertain {
@@ -261,16 +268,6 @@ enum ClientOperationError {
     },
     #[error("timed out awaiting {label} after {duration:.0?}")]
     Timeout { label: String, duration: Duration },
-}
-
-/// Controls whether Codex may repeat an MCP request after the server rejects
-/// its bearer token before execution and OAuth credentials are refreshed.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum OAuthUnauthorizedRecovery {
-    /// Refresh credentials for later calls, but do not repeat this request.
-    RefreshOnly,
-    /// Refresh credentials and repeat once when the request is known read-only.
-    RetryReadOnly,
 }
 
 /// Returns true only for the fixed Agent Ops active-holder rejection carried
@@ -283,6 +280,7 @@ pub fn is_ops_holder_conflict_error(error: &(dyn std::error::Error + 'static)) -
     let service_error = match error {
         ClientOperationError::Service(error)
         | ClientOperationError::UncertainService { source: error }
+        | ClientOperationError::OAuthTokenRefreshed { source: error }
         | ClientOperationError::ExpiredSessionUncertain { source: error } => error,
         _ => return false,
     };
@@ -760,7 +758,7 @@ impl RmcpClient {
             .run_service_operation(
                 "tools/list",
                 timeout,
-                OAuthUnauthorizedRecovery::RetryReadOnly,
+                /*retry_read_only_after_invalid_token*/ true,
                 move |service| {
                     let params = params.clone();
                     async move { service.list_tools(params).await }.boxed()
@@ -782,7 +780,7 @@ impl RmcpClient {
             .run_service_operation(
                 "tools/list",
                 timeout,
-                OAuthUnauthorizedRecovery::RetryReadOnly,
+                /*retry_read_only_after_invalid_token*/ true,
                 move |service| {
                     let params = params.clone();
                     async move { service.list_tools(params).await }.boxed()
@@ -878,7 +876,7 @@ impl RmcpClient {
             .run_service_operation(
                 "resources/list",
                 timeout,
-                OAuthUnauthorizedRecovery::RetryReadOnly,
+                /*retry_read_only_after_invalid_token*/ true,
                 move |service| {
                     let params = params.clone();
                     async move { service.list_resources(params).await }.boxed()
@@ -899,7 +897,7 @@ impl RmcpClient {
             .run_service_operation(
                 "resources/templates/list",
                 timeout,
-                OAuthUnauthorizedRecovery::RetryReadOnly,
+                /*retry_read_only_after_invalid_token*/ true,
                 move |service| {
                     let params = params.clone();
                     async move { service.list_resource_templates(params).await }.boxed()
@@ -920,7 +918,7 @@ impl RmcpClient {
             .run_service_operation(
                 "resources/read",
                 timeout,
-                OAuthUnauthorizedRecovery::RetryReadOnly,
+                /*retry_read_only_after_invalid_token*/ true,
                 move |service| {
                     let params = params.clone();
                     async move { service.read_resource(params).await }.boxed()
@@ -937,27 +935,6 @@ impl RmcpClient {
         arguments: Option<serde_json::Value>,
         meta: Option<serde_json::Value>,
         timeout: Option<Duration>,
-    ) -> Result<CallToolResult> {
-        self.call_tool_with_oauth_recovery(
-            name,
-            arguments,
-            meta,
-            timeout,
-            OAuthUnauthorizedRecovery::RefreshOnly,
-        )
-        .await
-    }
-
-    /// Calls a tool with an explicit post-denial retry policy. Callers may use
-    /// `RetryReadOnly` only when the exact advertised tool definition marks the
-    /// operation read-only; all other tools must use `RefreshOnly`.
-    pub async fn call_tool_with_oauth_recovery(
-        &self,
-        name: String,
-        arguments: Option<serde_json::Value>,
-        meta: Option<serde_json::Value>,
-        timeout: Option<Duration>,
-        recovery: OAuthUnauthorizedRecovery,
     ) -> Result<CallToolResult> {
         self.refresh_oauth_if_needed().await?;
         let arguments = match arguments {
@@ -981,35 +958,40 @@ impl RmcpClient {
         let mut rmcp_params = CallToolRequestParams::new(name);
         rmcp_params.arguments = arguments;
         let result = self
-            .run_service_operation("tools/call", timeout, recovery, move |service| {
-                let rmcp_params = rmcp_params.clone();
-                let meta = meta.clone();
-                async move {
-                    let mut options = rmcp::service::PeerRequestOptions::no_options();
-                    options.meta = meta;
-                    let request = service
-                        .peer()
-                        .send_request_with_option(
-                            ClientRequest::CallToolRequest(rmcp::model::CallToolRequest::new(
-                                rmcp_params,
-                            )),
-                            options,
-                        )
-                        .await?;
-                    let guard =
-                        RequestCancellationGuard::new(request.peer.clone(), request.id.clone());
-                    // The guard covers caller/task drops and active timeout
-                    // drops; rmcp retains its normal response cleanup path.
-                    let result = request.await_response().await;
-                    guard.disarm();
-                    let result = result?;
-                    match result {
-                        ServerResult::CallToolResult(result) => Ok(result),
-                        _ => Err(rmcp::service::ServiceError::UnexpectedResponse),
+            .run_service_operation(
+                "tools/call",
+                timeout,
+                /*retry_read_only_after_invalid_token*/ false,
+                move |service| {
+                    let rmcp_params = rmcp_params.clone();
+                    let meta = meta.clone();
+                    async move {
+                        let mut options = rmcp::service::PeerRequestOptions::no_options();
+                        options.meta = meta;
+                        let request = service
+                            .peer()
+                            .send_request_with_option(
+                                ClientRequest::CallToolRequest(rmcp::model::CallToolRequest::new(
+                                    rmcp_params,
+                                )),
+                                options,
+                            )
+                            .await?;
+                        let guard =
+                            RequestCancellationGuard::new(request.peer.clone(), request.id.clone());
+                        // The guard covers caller/task drops and active timeout
+                        // drops; rmcp retains its normal response cleanup path.
+                        let result = request.await_response().await;
+                        guard.disarm();
+                        let result = result?;
+                        match result {
+                            ServerResult::CallToolResult(result) => Ok(result),
+                            _ => Err(rmcp::service::ServiceError::UnexpectedResponse),
+                        }
                     }
-                }
-                .boxed()
-            })
+                    .boxed()
+                },
+            )
             .await?;
         self.persist_oauth_tokens().await;
         Ok(result)
@@ -1024,7 +1006,7 @@ impl RmcpClient {
         self.run_service_operation(
             "notifications/custom",
             /*timeout*/ None,
-            OAuthUnauthorizedRecovery::RefreshOnly,
+            /*retry_read_only_after_invalid_token*/ false,
             move |service| {
                 let params = params.clone();
                 async move {
@@ -1056,7 +1038,7 @@ impl RmcpClient {
             .run_service_operation(
                 "requests/custom",
                 /*timeout*/ None,
-                OAuthUnauthorizedRecovery::RefreshOnly,
+                /*retry_read_only_after_invalid_token*/ false,
                 move |service| {
                     let params = params.clone();
                     async move {
@@ -1383,7 +1365,7 @@ impl RmcpClient {
         &self,
         label: &str,
         timeout: Option<Duration>,
-        unauthorized_recovery: OAuthUnauthorizedRecovery,
+        retry_read_only_after_invalid_token: bool,
         operation: F,
     ) -> Result<T>
     where
@@ -1419,7 +1401,7 @@ impl RmcpClient {
                 .await;
             extend_operation_deadline(&mut deadline, refresh_started_at.elapsed());
             refresh_result?;
-            if unauthorized_recovery == OAuthUnauthorizedRecovery::RetryReadOnly {
+            if retry_read_only_after_invalid_token {
                 let remaining = remaining_operation_timeout(label, timeout, deadline)?;
                 result = Self::run_service_operation_with_transient_retries(
                     Arc::clone(&service),
@@ -1429,6 +1411,15 @@ impl RmcpClient {
                     &operation,
                 )
                 .await;
+            } else {
+                return result
+                    .map_err(|error| match error {
+                        ClientOperationError::Service(source) => {
+                            ClientOperationError::OAuthTokenRefreshed { source }
+                        }
+                        error => error,
+                    })
+                    .map_err(Into::into);
             }
         }
 
@@ -1590,6 +1581,7 @@ impl RmcpClient {
         let service_error = match error {
             ClientOperationError::Service(source)
             | ClientOperationError::UncertainService { source }
+            | ClientOperationError::OAuthTokenRefreshed { source }
             | ClientOperationError::ExpiredSessionUncertain { source } => source,
             ClientOperationError::Timeout { .. } => return false,
         };

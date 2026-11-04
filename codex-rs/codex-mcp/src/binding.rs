@@ -26,7 +26,6 @@ use crate::connection_manager::McpConnectionSet;
 use crate::rmcp_client::ManagedClient;
 use crate::server::McpServerMetadata;
 use crate::tools::ToolInfo;
-use crate::tools::oauth_unauthorized_recovery;
 
 /// The exact tool catalog and execution handles for one model sampling request.
 pub struct McpBinding {
@@ -268,12 +267,11 @@ impl PreparedMcpCall {
         let result = self
             .client
             .client
-            .call_tool_with_oauth_recovery(
+            .call_tool(
                 tool_name.clone(),
                 arguments,
                 meta,
                 self.client.tool_timeout,
-                oauth_unauthorized_recovery(&self.tool_info.tool),
             )
             .await
             .with_context(|| format!("tool call failed for `{}/{tool_name}`", self.server_name))?;
