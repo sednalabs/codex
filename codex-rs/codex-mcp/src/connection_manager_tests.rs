@@ -19,6 +19,7 @@ use crate::server::McpServerOrigin;
 use crate::tool_catalog_cache::McpToolCatalogCache;
 use crate::tools::ToolFilter;
 use crate::tools::ToolInfo;
+use crate::tools::oauth_unauthorized_recovery;
 use crate::tools::filter_tools;
 use crate::tools::normalize_tools_for_model_with_prefix;
 use codex_config::AppToolApproval;
@@ -48,6 +49,7 @@ use codex_rmcp_client::InProcessTransportFactory;
 use codex_rmcp_client::McpAuthState;
 use codex_rmcp_client::McpLoginRequirement;
 use codex_rmcp_client::McpProtocolMode;
+use codex_rmcp_client::OAuthUnauthorizedRecovery;
 use codex_rmcp_client::RmcpClient;
 use futures::FutureExt;
 use futures::future::BoxFuture;
@@ -175,6 +177,27 @@ fn create_test_tool(server_name: &str, tool_name: &str) -> ToolInfo {
         connector_name: None,
         plugin_display_names: Vec::new(),
     }
+}
+
+#[test]
+fn oauth_retry_requires_an_explicit_read_only_tool_annotation() {
+    let mut tool = create_test_tool("docs", "lookup");
+    assert_eq!(
+        oauth_unauthorized_recovery(&tool.tool),
+        OAuthUnauthorizedRecovery::RefreshOnly
+    );
+
+    tool.tool.annotations = Some(rmcp::model::ToolAnnotations::new().read_only(true));
+    assert_eq!(
+        oauth_unauthorized_recovery(&tool.tool),
+        OAuthUnauthorizedRecovery::RetryReadOnly
+    );
+
+    tool.tool.annotations = Some(rmcp::model::ToolAnnotations::new().read_only(false));
+    assert_eq!(
+        oauth_unauthorized_recovery(&tool.tool),
+        OAuthUnauthorizedRecovery::RefreshOnly
+    );
 }
 
 fn create_codex_apps_tools_cache_context(

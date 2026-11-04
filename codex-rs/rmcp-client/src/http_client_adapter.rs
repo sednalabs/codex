@@ -53,6 +53,10 @@ mod tests;
 
 use self::www_authenticate::insufficient_scope_challenge;
 
+pub(super) fn is_bearer_invalid_token_challenge(header: &str) -> bool {
+    www_authenticate::is_bearer_invalid_token_challenge(header)
+}
+
 const EVENT_STREAM_MIME_TYPE: &str = "text/event-stream";
 const JSON_MIME_TYPE: &str = "application/json";
 const HEADER_SESSION_ID: &str = "Mcp-Session-Id";
@@ -206,8 +210,8 @@ impl StreamableHttpClient for StreamableHttpClientAdapter {
             ));
         }
         if response.status == StatusCode::UNAUTHORIZED.as_u16()
-            && let Some(header) =
-                response_header(&response.headers, reqwest::header::WWW_AUTHENTICATE)
+            && let Some(header) = www_authenticate::invalid_token_challenge(&response.headers)
+                .or_else(|| response_header(&response.headers, reqwest::header::WWW_AUTHENTICATE))
         {
             return Err(StreamableHttpError::AuthRequired(AuthRequiredError::new(
                 header,

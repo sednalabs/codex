@@ -10,6 +10,7 @@ use std::collections::HashSet;
 
 use codex_config::McpServerConfig;
 use codex_protocol::ToolName;
+use codex_rmcp_client::OAuthUnauthorizedRecovery;
 use rmcp::model::Tool;
 use serde::Deserialize;
 use serde::Serialize;
@@ -52,6 +53,21 @@ pub struct ToolInfo {
     pub connector_name: Option<String>,
     #[serde(default)]
     pub plugin_display_names: Vec<String>,
+}
+
+pub(crate) fn oauth_unauthorized_recovery(
+    tool: &Tool,
+) -> OAuthUnauthorizedRecovery {
+    if tool
+        .annotations
+        .as_ref()
+        .and_then(|annotations| annotations.read_only_hint)
+        == Some(true)
+    {
+        OAuthUnauthorizedRecovery::RetryReadOnly
+    } else {
+        OAuthUnauthorizedRecovery::RefreshOnly
+    }
 }
 
 impl ToolInfo {
