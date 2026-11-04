@@ -235,6 +235,58 @@ class UsageTreeTests(unittest.TestCase):
         connection.commit()
         connection.close()
 
+    def _use_root_thread_index_only(self, database):
+        connection = sqlite3.connect(database)
+        connection.execute("DROP INDEX usage_threads_reporting_parent_idx")
+        connection.execute(
+            "CREATE INDEX usage_threads_root_thread_idx "
+            "ON usage_threads(root_thread_id)"
+        )
+        connection.commit()
+        connection.close()
+
+    def _small_lineage_calls(self):
+        return [
+            (
+                "root-call",
+                "root",
+                "turn-root",
+                "request-root",
+                "openai",
+                "gpt-6.1-sol",
+                "gpt-6.1-sol",
+                None,
+                0.25,
+                "2026-10-01T00:00:00Z",
+                None,
+                10,
+                20,
+                0,
+                5,
+                35,
+                "ok",
+            ),
+            (
+                "child-call",
+                "child",
+                "turn-child",
+                "request-child",
+                "openai",
+                "gpt-6.1-sol",
+                "gpt-6.1-sol",
+                None,
+                0.5,
+                "2026-10-02T00:00:00Z",
+                None,
+                20,
+                30,
+                0,
+                10,
+                60,
+                "ok",
+            ),
+        ]
+
     def test_recorded_aggregate_preserves_unknowns_and_other_descendants(self):
         connection = sqlite3.connect(":memory:")
         connection.row_factory = sqlite3.Row
@@ -644,6 +696,148 @@ class UsageTreeTests(unittest.TestCase):
                     collect_database_tree("root", str(database), load_rates(None))
             self.assertEqual(database.read_bytes(), original_bytes)
 
+    def test_cross_ledger_uses_bounded_root_index_fallback_for_legacy_lineage(self):
+        calls = self._small_lineage_calls()
+        with tempfile.TemporaryDirectory() as temp_dir:
+            primary = Path(temp_dir) / "primary.sqlite"
+            comparison = Path(temp_dir) / "comparison.sqlite"
+            self._write_union_ledger(primary, calls)
+            self._write_union_ledger(comparison, calls)
+            self._use_root_thread_index_only(comparison)
+
+            result = collect_database_union(
+                "root", [str(primary), str(comparison)], load_rates(None)
+            )
+
+        comparison_result = result["sources"][1]
+        self.assertEqual(comparison_result["status"], "partial")
+        self.assertEqual(
+            comparison_result["lineage"]["resolution"],
+            "root_thread_id_index_fallback",
+        )
+        self.assertFalse(comparison_result["lineage"]["truncated"])
+        self.assertEqual(comparison_result["lineage"]["unverifiedThreadCount"], 0)
+        self.assertIn(
+            "indexed root_thread_id", comparison_result["lineage"]["coverageNote"]
+        )
+        comparison_groups = {
+            group["role"]: group
+            for group in comparison_result["recordedAggregate"]["groups"]
+        }
+        self.assertEqual(set(comparison_groups), {"root", "subagent"})
+        self.assertEqual(
+            comparison_groups["root"]["responseUsageRecordCount"], 1
+        )
+        self.assertEqual(
+            comparison_groups["subagent"]["responseUsageRecordCount"], 1
+        )
+        self.assertTrue(
+            result["completeness"]["crossLedgerScanCompleteForSelectedLineage"]
+        )
+        self.assertFalse(result["completeness"]["historicalCoverageComplete"])
+        self.assertTrue(result["completeness"]["rootThreadIndexFallbackUsed"])
+        self.assertFalse(result["completeness"]["rootThreadIndexFallbackIsExhaustive"])
+        self.assertEqual(
+            result["crossLedgerDeduplication"]["status"],
+            "known_root_indexed_rows_only",
+        )
+        self.assertEqual(
+            result["crossLedgerDeduplication"]["mergedTotals"]["status"],
+            "known_root_indexed_rows_only",
+        )
+        self.assertEqual(
+            result["crossLedgerDeduplication"]["mergedTotals"][
+                "responseUsageRecordCount"
+            ],
+            2,
+        )
+        self.assertEqual(
+            result["crossLedgerDeduplication"][
+                "exactDuplicateRowsOmittedObserved"
+            ],
+            2,
+        )
+
+    def test_root_index_fallback_withholds_merge_for_unverified_parent_metadata(
+        self,
+    ):
+        calls = self._small_lineage_calls()
+        with tempfile.TemporaryDirectory() as temp_dir:
+            primary = Path(temp_dir) / "primary.sqlite"
+            comparison = Path(temp_dir) / "comparison.sqlite"
+            self._write_union_ledger(primary, calls)
+            self._write_union_ledger(comparison, calls)
+            self._use_root_thread_index_only(comparison)
+            connection = sqlite3.connect(comparison)
+            connection.execute(
+                "UPDATE usage_threads SET root_thread_id = 'other-root' "
+                "WHERE thread_id = 'root'"
+            )
+            connection.execute(
+                "UPDATE usage_threads SET parent_thread_id = 'missing-parent' "
+                "WHERE thread_id = 'child'"
+            )
+            connection.commit()
+            connection.close()
+
+            result = collect_database_union(
+                "root", [str(primary), str(comparison)], load_rates(None)
+            )
+
+        comparison_result = result["sources"][1]
+        self.assertEqual(
+            comparison_result["lineage"]["resolution"],
+            "root_thread_id_index_fallback",
+        )
+        self.assertTrue(comparison_result["lineage"]["truncated"])
+        self.assertEqual(comparison_result["lineage"]["unverifiedThreadCount"], 2)
+        self.assertEqual(
+            comparison_result["lineage"]["truncationReasons"],
+            ["root_or_parent_chain_unverified"],
+        )
+        comparison_groups = {
+            group["role"]: group
+            for group in comparison_result["recordedAggregate"]["groups"]
+        }
+        self.assertEqual(set(comparison_groups), {"root", "subagent"})
+        self.assertFalse(
+            result["completeness"]["crossLedgerScanCompleteForSelectedLineage"]
+        )
+        self.assertEqual(
+            result["crossLedgerDeduplication"]["mergedTotals"]["status"],
+            "unavailable_incomplete_source_scan",
+        )
+
+    def test_root_index_fallback_fails_closed_without_a_persistent_index(self):
+        calls = self._small_lineage_calls()
+        with tempfile.TemporaryDirectory() as temp_dir:
+            primary = Path(temp_dir) / "primary.sqlite"
+            comparison = Path(temp_dir) / "comparison.sqlite"
+            self._write_union_ledger(primary, calls)
+            self._write_union_ledger(comparison, calls)
+            connection = sqlite3.connect(comparison)
+            connection.execute("DROP INDEX usage_threads_reporting_parent_idx")
+            connection.commit()
+            connection.close()
+
+            result = collect_database_union(
+                "root", [str(primary), str(comparison)], load_rates(None)
+            )
+
+        comparison_result = result["sources"][1]
+        self.assertEqual(comparison_result["status"], "unavailable")
+        self.assertEqual(
+            comparison_result["reason"],
+            "usage database has no indexed exact-root lineage lookup",
+        )
+        self.assertFalse(
+            result["completeness"]["crossLedgerScanCompleteForSelectedLineage"]
+        )
+        self.assertEqual(
+            result["crossLedgerDeduplication"]["mergedTotals"]["status"],
+            "unavailable_incomplete_source_scan",
+        )
+
     def test_cross_ledger_union_deduplicates_and_withholds_unresolved_rows(self):
         def call(call_id, thread, request, uncached, credits, *, status="ok"):
             return (
@@ -866,6 +1060,14 @@ class UsageTreeTests(unittest.TestCase):
             checkpoint = Path(temp_dir) / "private-checkpoint.sqlite"
             self._write_union_ledger(primary, calls("primary"))
             self._write_union_ledger(comparison, calls("comparison"))
+            for database in (primary, comparison):
+                connection = sqlite3.connect(database)
+                connection.execute(
+                    "UPDATE usage_threads SET root_thread_id = 'child' "
+                    "WHERE thread_id = 'child'"
+                )
+                connection.commit()
+                connection.close()
 
             result = None
             progress_rows = []
@@ -905,7 +1107,8 @@ class UsageTreeTests(unittest.TestCase):
                             )
                             connection.execute(
                                 "UPDATE usage_threads SET source = 'cli', "
-                                "thread_source = 'user', parent_thread_id = NULL "
+                                "thread_source = 'user', parent_thread_id = NULL, "
+                                "root_thread_id = 'root' "
                                 "WHERE thread_id = 'child'"
                             )
                             connection.commit()
@@ -939,6 +1142,15 @@ class UsageTreeTests(unittest.TestCase):
 
             self.assertIsNotNone(result)
             self.assertEqual(result["continuation"]["status"], "complete")
+            self.assertFalse(result["completeness"]["historicalCoverageComplete"])
+            self.assertTrue(result["snapshot"]["lineageFrozenAtEachSourceFirstPage"])
+            self.assertIn(
+                "runtime thread registration", result["snapshot"]["coverageNote"]
+            )
+            self.assertIn(
+                "manual or runtime thread-lineage upserts after its frozen ",
+                result["snapshot"]["unsupportedUndetectedSourceMutations"],
+            )
             self.assertGreater(invocation, 0)
             self.assertGreater(len(progress_rows), 1)
             self.assertTrue(
