@@ -143,6 +143,56 @@ fallback and missing token dimensions are labelled. The aggregate has a
 four-second query limit and a 100-group output limit, and remains partial if
 lineage is incomplete or truncated. Normal detailed reports remain separately
 bounded.
+
+To compare the two explicitly known ledger files, add one `--also-database`
+and keep the report aggregate-only:
+
+```sh
+python3 scripts/codex_usage_tree.py \
+  --thread-id <root-thread-uuid> \
+  --database <active-sqlite-home>/usage_1.sqlite \
+  --also-database <historical-sqlite-home>/usage_1.sqlite \
+  --aggregate-recorded
+```
+
+Both paths must name distinct existing databases. The command reads only those
+two files, read-only and query-only; it performs no discovery, migration, or
+ledger write. Each source gets its own lineage and recorded aggregate. The
+cross-ledger merge counts a non-empty `provider_call_id` once only when its
+thread, turn, request, provider, time, model provenance, status, token and
+reported-credit content match and both schemas contain every compared column.
+Matching IDs with different content are conflicts; matching IDs from a schema
+missing any compared column are unverifiable. Unkeyed, conflicting, and
+unverifiable rows remain visible in per-source results and are withheld from
+the merged totals. If a source cannot be scanned completely, merged totals are
+withheld altogether. The output reports per-source column coverage, scanned
+timestamps, dedupe/conflict/unverifiable counts, and coverage limits without
+printing database paths or provider-call IDs.
+
+Cross-ledger work is bounded to 900 known threads per source, 200,000 scanned
+call rows per source, 300,000 total rows, a 192 MiB estimated retained-merge
+budget, at most 100 merged groups, 4 seconds per query, 12 seconds per source,
+and 24 seconds for the complete operation. The provider-call query plan must
+use an exact-thread index; otherwise the merge fails closed. When any bound is
+hit, per-source aggregates are retained and the merged result is explicitly
+unavailable rather than a partial subset presented as a union. Results remain
+partial for historical lineage regardless of cross-ledger deduplication.
+Calculated credit estimates retain known subtotals and missing-rate/token
+labels; provider-reported credits are not verified account debits, and actual
+debit remains unobserved. If a standard ledger-rate scenario is selected, the
+rates loaded from the primary database apply to both sources as a scenario,
+not as historical billing evidence.
+
+This command currently does not join the effective-dated per-call credit view
+or billing-policy table. It uses the selected model-rate map to provide useful
+scenario estimates, keeps provider-effective model separate from requested-model
+fallback, and reports per-source counts of records missing provider, effective
+model, timestamp, service-tier/source, speed, billing-surface, or account-plan
+context. Consequently, an active ledger rate row is not silently treated as a
+historical match for the other ledger: exact per-call policy/rate matching
+remains unavailable here when those fields or an applicable interval are
+missing. Use the estimates only as labelled scenarios until that context is
+present and matched; do not treat them as account charge or debit.
 `selectedLedgerRowsComplete` and the separate lineage/response truncation flags
 show whether those bounded queried rows were fully read; they do not change the
 always-false `historicalCoverageComplete` claim.
