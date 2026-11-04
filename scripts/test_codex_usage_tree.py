@@ -617,8 +617,12 @@ class UsageTreeTests(unittest.TestCase):
                 comparison,
                 [
                     call("pcid-secret-shared", "root", "shared-request", 100, 1.25),
-                    call("pcid-secret-conflict", "child", "conflict-comparison", 200, 9.5),
-                    call("pcid-secret-secondary", "child", "secondary-request", 40, 0.75),
+                    call(
+                        "pcid-secret-conflict", "child", "conflict-comparison", 200, 9.5
+                    ),
+                    call(
+                        "pcid-secret-secondary", "child", "secondary-request", 40, 0.75
+                    ),
                     call(None, "root", "unkeyed-comparison", 50, 0.125),
                 ],
             )
@@ -632,7 +636,9 @@ class UsageTreeTests(unittest.TestCase):
             dedupe = result["crossLedgerDeduplication"]
             self.assertEqual(result["status"], "partial")
             self.assertFalse(result["completeness"]["historicalCoverageComplete"])
-            self.assertTrue(result["completeness"]["unresolvedRowsExcludedFromMergedTotals"])
+            self.assertTrue(
+                result["completeness"]["unresolvedRowsExcludedFromMergedTotals"]
+            )
             self.assertFalse(
                 result["pricingCoverage"]["effectiveDatedPerCallRateMatchPerformed"]
             )
@@ -682,10 +688,7 @@ class UsageTreeTests(unittest.TestCase):
                 all(
                     group["calculatedCreditEstimate"]["estimateType"]
                     == "model_rate_scenario_not_verified_billing"
-                    and Decimal(
-                        group["calculatedCreditEstimate"]["knownSubtotal"]
-                    )
-                    > 0
+                    and Decimal(group["calculatedCreditEstimate"]["knownSubtotal"]) > 0
                     for group in merged["groups"]
                 )
             )
@@ -755,8 +758,9 @@ class UsageTreeTests(unittest.TestCase):
             comparison = Path(temp_dir) / "comparison.sqlite"
             self._write_union_ledger(primary, [call("a1", 10), call("a2", 20)])
             self._write_union_ledger(comparison, [call("b1", 30), call("b2", 40)])
-            with patch("codex_usage_tree.MAX_DATABASE_UNION_CALLS_PER_SOURCE", 1), patch(
-                "codex_usage_tree.MAX_DATABASE_UNION_CALLS_TOTAL", 2
+            with (
+                patch("codex_usage_tree.MAX_DATABASE_UNION_CALLS_PER_SOURCE", 1),
+                patch("codex_usage_tree.MAX_DATABASE_UNION_CALLS_TOTAL", 2),
             ):
                 result = collect_database_union(
                     "root", [str(primary), str(comparison)], load_rates(None)
@@ -771,7 +775,9 @@ class UsageTreeTests(unittest.TestCase):
         self.assertTrue(
             all(source["recordedAggregate"]["groups"] for source in result["sources"])
         )
-        self.assertTrue(all(source["rowScan"]["truncated"] for source in result["sources"]))
+        self.assertTrue(
+            all(source["rowScan"]["truncated"] for source in result["sources"])
+        )
 
     def test_cross_ledger_rejects_oversized_provider_call_id(self):
         call = (
@@ -873,7 +879,9 @@ class UsageTreeTests(unittest.TestCase):
             ]
         )
 
-    def test_cross_ledger_memory_bound_withholds_merge_without_losing_source_summary(self):
+    def test_cross_ledger_memory_bound_withholds_merge_without_losing_source_summary(
+        self,
+    ):
         call = (
             "a1",
             "root",

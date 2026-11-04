@@ -365,7 +365,9 @@ def _optional_decimal(value: Any, field: str) -> Decimal | None:
     try:
         result = Decimal(str(value))
     except InvalidOperation as exc:
-        raise UsageError(f"usage field {field} was not a finite decimal or null") from exc
+        raise UsageError(
+            f"usage field {field} was not a finite decimal or null"
+        ) from exc
     if not result.is_finite():
         raise UsageError(f"usage field {field} was not a finite decimal or null")
     return result
@@ -1068,7 +1070,10 @@ def _assert_indexed_thread_call_lookup(
         parameters = thread_ids
     plan = connection.execute("EXPLAIN QUERY PLAN " + sql, parameters or ()).fetchall()
     details = [str(row[3]).upper() for row in plan]
-    if not any("SEARCH" in detail and "INDEX" in detail and "THREAD_ID" in detail for detail in details):
+    if not any(
+        "SEARCH" in detail and "INDEX" in detail and "THREAD_ID" in detail
+        for detail in details
+    ):
         raise UsageError(
             "usage database has no indexed exact-thread provider-call lookup"
         )
@@ -1082,18 +1087,12 @@ def _normalize_database_call(
     thread_id = _optional_text(row["thread_id"], "thread_id")
     if not thread_id:
         raise UsageError("usage database contains a provider call without a thread ID")
-    requested_model = (
-        _optional_text(row["requested_model"], "requested_model") or None
-    )
+    requested_model = _optional_text(row["requested_model"], "requested_model") or None
     actual_model = _optional_text(row["actual_model_used"], "actual_model_used") or None
     final_model = _optional_text(row["final_model"], "final_model") or None
     effective_model = final_model or actual_model
     effective_model_source = (
-        "final_model"
-        if final_model
-        else "actual_model_used"
-        if actual_model
-        else None
+        "final_model" if final_model else "actual_model_used" if actual_model else None
     )
     reported_cost = _optional_decimal(
         row["provider_reported_cost"], "provider_reported_cost"
@@ -1119,7 +1118,9 @@ def _normalize_database_call(
         "requestedServiceTier": _optional_text(
             row["requested_service_tier"], "requested_service_tier"
         ),
-        "actualServiceTier": _optional_text(row["actual_service_tier"], "actual_service_tier"),
+        "actualServiceTier": _optional_text(
+            row["actual_service_tier"], "actual_service_tier"
+        ),
         "actualServiceTierSource": _optional_text(
             row["actual_service_tier_source"], "actual_service_tier_source"
         ),
@@ -1153,10 +1154,7 @@ def _normalize_database_call(
 
 def _union_call_values(call: dict[str, Any]) -> tuple[Any, ...]:
     provider_call_id = call["providerCallId"]
-    if (
-        provider_call_id is not None
-        and len(provider_call_id.encode("utf-8")) > 256
-    ):
+    if provider_call_id is not None and len(provider_call_id.encode("utf-8")) > 256:
         raise ValueError("cross-ledger identity fields exceed their safe size bound")
     values = tuple(call[field] for field in UNION_CALL_FIELDS)
     text_bytes = 0
@@ -1166,12 +1164,16 @@ def _union_call_values(call: dict[str, Any]) -> tuple[Any, ...]:
         encoded_length = len(value.encode("utf-8"))
         text_bytes += encoded_length
         if encoded_length > 1024 or text_bytes > 4096:
-            raise ValueError("cross-ledger identity fields exceed their safe size bound")
+            raise ValueError(
+                "cross-ledger identity fields exceed their safe size bound"
+            )
     return values
 
 
 def _union_contribution(values: tuple[Any, ...]) -> tuple[Any, ...]:
-    return tuple(values[UNION_FIELD_INDEX[field]] for field in UNION_CONTRIBUTION_FIELDS)
+    return tuple(
+        values[UNION_FIELD_INDEX[field]] for field in UNION_CONTRIBUTION_FIELDS
+    )
 
 
 def _union_call_fingerprint(values: tuple[Any, ...]) -> bytes:
@@ -1252,10 +1254,13 @@ class _MergedUsageTotals:
         else:
             state["reportedSubtotal"] += reported
 
-    def output(self, *, complete_scan: bool, unresolved_rows: int) -> list[dict[str, Any]]:
+    def output(
+        self, *, complete_scan: bool, unresolved_rows: int
+    ) -> list[dict[str, Any]]:
         groups = []
         for (role, requested, effective), state in sorted(
-            self.groups.items(), key=lambda item: tuple(value or "" for value in item[0])
+            self.groups.items(),
+            key=lambda item: tuple(value or "" for value in item[0]),
         ):
             token_totals = {}
             for field in (
@@ -1300,9 +1305,7 @@ class _MergedUsageTotals:
                     "calculatedCreditEstimate": {
                         "estimateType": "model_rate_scenario_not_verified_billing",
                         "value": _decimal_text(state["estimateSubtotal"])
-                        if complete_scan
-                        and unresolved_rows == 0
-                        and estimate_complete
+                        if complete_scan and unresolved_rows == 0 and estimate_complete
                         else None,
                         "knownSubtotal": _decimal_text(state["estimateSubtotal"]),
                         "completeForIncludedRows": estimate_complete,
@@ -1315,9 +1318,7 @@ class _MergedUsageTotals:
                     },
                     "providerReportedCredits": {
                         "value": _decimal_text(state["reportedSubtotal"])
-                        if complete_scan
-                        and unresolved_rows == 0
-                        and reported_complete
+                        if complete_scan and unresolved_rows == 0 and reported_complete
                         else None,
                         "knownSubtotal": _decimal_text(state["reportedSubtotal"]),
                         "completeForIncludedRows": reported_complete,
@@ -1389,7 +1390,10 @@ class _CrossLedgerUnion:
             return True
         if existing is None:
             group_key = _MergedUsageTotals.group_key(contribution)
-            if group_key not in self.group_counts and len(self.group_counts) >= MAX_DATABASE_UNION_GROUPS:
+            if (
+                group_key not in self.group_counts
+                and len(self.group_counts) >= MAX_DATABASE_UNION_GROUPS
+            ):
                 self.rejection_reason = "group_limit"
                 return False
             key_bytes = len(provider_call_id.encode("utf-8"))
@@ -1399,7 +1403,10 @@ class _CrossLedgerUnion:
                 if isinstance(value, str)
             )
             entry_bytes = 768 + key_bytes + contribution_bytes
-            if self.estimated_memory_bytes + entry_bytes > MAX_DATABASE_UNION_MEMORY_BYTES:
+            if (
+                self.estimated_memory_bytes + entry_bytes
+                > MAX_DATABASE_UNION_MEMORY_BYTES
+            ):
                 self.rejection_reason = "memory_limit"
                 return False
             self.calls_by_id[provider_call_id] = (
@@ -1723,7 +1730,10 @@ def collect_database_tree(
         if aggregate_only:
             union_scan = None
             if union_callback is not None:
-                if union_row_limit is None or not 0 <= union_row_limit <= MAX_DATABASE_UNION_CALLS_PER_SOURCE:
+                if (
+                    union_row_limit is None
+                    or not 0 <= union_row_limit <= MAX_DATABASE_UNION_CALLS_PER_SOURCE
+                ):
                     raise UsageError("cross-ledger row limit is outside its safe bound")
                 thread_roles = {}
                 for thread_row in thread_rows:
@@ -1778,16 +1788,16 @@ def collect_database_tree(
                         if rows_scanned >= row_limit:
                             truncated = True
                             extra_row_observed = True
-                            truncation_reason = "per_source_or_whole_operation_row_limit"
+                            truncation_reason = (
+                                "per_source_or_whole_operation_row_limit"
+                            )
                             break
                         if time.monotonic() >= query_deadline:
                             truncated = True
                             extra_row_observed = True
                             truncation_reason = "query_time_limit"
                             break
-                        call = _normalize_database_call(
-                            row, thread_roles, call_columns
-                        )
+                        call = _normalize_database_call(row, thread_roles, call_columns)
                         accepted = union_callback(call)
                         rows_scanned += 1
                         if accepted is False:
@@ -1807,7 +1817,10 @@ def collect_database_tree(
                                 else max(maximum_started_at, started_at)
                             )
                 except sqlite3.OperationalError as exc:
-                    if getattr(exc, "sqlite_errorcode", None) != sqlite3.SQLITE_INTERRUPT:
+                    if (
+                        getattr(exc, "sqlite_errorcode", None)
+                        != sqlite3.SQLITE_INTERRUPT
+                    ):
                         raise
                     truncated = True
                     truncation_reason = "query_time_limit"
@@ -2118,7 +2131,9 @@ def collect_database_union(
     try:
         resolved_paths = [Path(path).resolve(strict=True) for path in database_paths]
     except (OSError, ValueError) as exc:
-        raise UsageError("could not resolve both explicitly supplied usage databases") from exc
+        raise UsageError(
+            "could not resolve both explicitly supplied usage databases"
+        ) from exc
     if resolved_paths[0] == resolved_paths[1]:
         raise UsageError("cross-ledger aggregate requires two distinct databases")
 
@@ -2144,7 +2159,11 @@ def collect_database_union(
             )
         except (UsageError, OSError, ValueError) as exc:
             all_source_scans_complete = False
-            detail = str(exc) if isinstance(exc, UsageError) else "read-only source open failed"
+            detail = (
+                str(exc)
+                if isinstance(exc, UsageError)
+                else "read-only source open failed"
+            )
             source_results.append(
                 {
                     "source": label,
@@ -2208,14 +2227,12 @@ def collect_database_union(
         source["rateContextMissingRowsObserved"] = dict(
             sorted(union.rate_context_missing_by_source[source_index].items())
         )
-        source["exactDuplicateRowsOmittedObserved"] = union.exact_duplicate_rows_by_source[
-            source_index
-        ]
+        source["exactDuplicateRowsOmittedObserved"] = (
+            union.exact_duplicate_rows_by_source[source_index]
+        )
 
     unresolved_rows = (
-        sum(union.unkeyed_rows)
-        + union.conflict_rows
-        + union.schema_unverifiable_rows
+        sum(union.unkeyed_rows) + union.conflict_rows + union.schema_unverifiable_rows
     )
     merge_totals_available = all_source_scans_complete
     merged_totals_accumulator = None
@@ -2316,11 +2333,15 @@ def collect_database_union(
             "missingContextRowsObservedBySource": [
                 {
                     "source": "primary",
-                    "missing": dict(sorted(union.rate_context_missing_by_source[0].items())),
+                    "missing": dict(
+                        sorted(union.rate_context_missing_by_source[0].items())
+                    ),
                 },
                 {
                     "source": "comparison",
-                    "missing": dict(sorted(union.rate_context_missing_by_source[1].items())),
+                    "missing": dict(
+                        sorted(union.rate_context_missing_by_source[1].items())
+                    ),
                 },
             ],
             "note": (
