@@ -1,0 +1,37 @@
+name: w14939 temporary lock generation
+
+on:
+  push:
+    branches:
+      - validation/w14939-lockgen-20261104
+
+permissions:
+  contents: read
+
+jobs:
+  regenerate:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@e081816240890017053eacbb1bdf337761dc5582 # 1.95.0
+        with:
+          toolchain: stable
+      - uses: ./.github/actions/setup-bazel-ci
+        with:
+          target: x86_64-unknown-linux-gnu
+      - name: Update the argument-comment Cargo lock
+        working-directory: tools/argument-comment-lint
+        run: cargo +stable update -p dylint_linting -p dylint_testing
+      - name: Regenerate the Bazel module lock
+        run: bazel mod deps --lockfile_mode=update
+      - uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f # v7.0.0
+        with:
+          name: w14939-generated-locks-${{ github.sha }}
+          path: |
+            MODULE.bazel.lock
+            tools/argument-comment-lint/Cargo.lock
+          if-no-files-found: error
+          retention-days: 1
