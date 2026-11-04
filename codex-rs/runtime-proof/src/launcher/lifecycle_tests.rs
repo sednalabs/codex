@@ -23,7 +23,7 @@ fn start_event() -> Event {
         source: Source::Launcher,
         manager_invocation: Uuid::from_u128(4),
         observer_artifact_sha256: "a".repeat(64),
-        observed_at: timestamp(1_791_158_405).expect("timestamp"),
+        observed_at: timestamp(/*seconds*/ 1_791_158_405).expect("timestamp"),
         cause: Cause::LaunchRegistered,
         exit_code: None,
         signal: None,
@@ -34,7 +34,7 @@ fn start_event() -> Event {
 #[test]
 fn lifecycle_witness_binds_final_operation_and_issuer() {
     let seed = [7_u8; 32];
-    let pending = PendingEvent::new(start_event(), 1_791_158_405).expect("pending event");
+    let pending = PendingEvent::new(start_event(), /*now*/ 1_791_158_405).expect("pending event");
     let header = pending
         .header("synthetic-certificate", &seed, "https://example.invalid")
         .expect("lifecycle envelope");
@@ -86,16 +86,16 @@ fn end_event_requires_actual_closed_cause_and_absence() {
     event.phase = Phase::End;
     event.cause = Cause::Exited;
     event.exit_code = Some(0);
-    assert!(PendingEvent::new(event.clone(), 1_791_158_405).is_err());
+    assert!(PendingEvent::new(event.clone(), /*now*/ 1_791_158_405).is_err());
     event.absence_proven = true;
-    assert!(PendingEvent::new(event.clone(), 1_791_158_405).is_ok());
+    assert!(PendingEvent::new(event.clone(), /*now*/ 1_791_158_405).is_ok());
     event.signal = Some(9);
-    assert!(PendingEvent::new(event, 1_791_158_405).is_err());
+    assert!(PendingEvent::new(event, /*now*/ 1_791_158_405).is_err());
 }
 
 #[test]
 fn receipt_requires_exact_event_and_proof_interval() {
-    let pending = PendingEvent::new(start_event(), 1_791_158_405).expect("pending event");
+    let pending = PendingEvent::new(start_event(), /*now*/ 1_791_158_405).expect("pending event");
     let event = &pending.event;
     let mut receipt = Receipt {
         event_id: event.event_id.to_string(),
@@ -164,10 +164,10 @@ fn possibly_sent_end_keeps_its_original_proof_interval() {
     event.cause = Cause::Exited;
     event.exit_code = Some(0);
     event.absence_proven = true;
-    let mut pending = PendingEvent::new(event, 1_791_158_405).expect("pending end");
-    assert!(arm_end(&mut pending, 1_791_158_410).expect("arm end"));
+    let mut pending = PendingEvent::new(event, /*now*/ 1_791_158_405).expect("pending end");
+    assert!(arm_end(&mut pending, /*now*/ 1_791_158_410).expect("arm end"));
     let original = pending.clone();
-    assert!(!arm_end(&mut pending, 1_791_158_500).expect("read-only resolution"));
+    assert!(!arm_end(&mut pending, /*now*/ 1_791_158_500).expect("read-only resolution"));
     assert_eq!(pending, original);
 }
 
@@ -316,7 +316,7 @@ fn uncertain_post_reads_once_and_never_replays() {
         "synthetic-certificate",
         &[7; 32],
         &pending,
-        true,
+        /*send*/ true,
         || {
             guarded.store(true, Ordering::SeqCst);
             Ok(())

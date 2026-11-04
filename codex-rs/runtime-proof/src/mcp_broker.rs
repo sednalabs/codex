@@ -464,7 +464,7 @@ mod tests {
         let request_id = Uuid::new_v4();
         let sender = std::thread::spawn(move || {
             send_message(&child, request_id, b"request").expect("send broker request");
-            receive_message(&child, None, request_id).expect("receive broker response")
+            receive_message(&child, /*peer*/ None, request_id).expect("receive broker response")
         });
         let active = AtomicBool::new(true);
         let child_is_live: Arc<dyn Fn() -> bool + Send + Sync> = Arc::new(|| true);

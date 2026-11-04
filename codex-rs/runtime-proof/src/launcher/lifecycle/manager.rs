@@ -676,10 +676,10 @@ mod tests {
         assert!(
             validate_manager_identity(
                 &binding,
-                1,
+                /*manager_pid*/ 1,
                 "/usr/lib/systemd/systemd",
-                1,
-                2,
+                /*manager_device*/ 1,
+                /*manager_inode*/ 2,
                 &binding.manager_executable_sha256,
             )
             .is_ok()
@@ -687,10 +687,10 @@ mod tests {
         assert!(
             validate_manager_identity(
                 &binding,
-                1,
+                /*manager_pid*/ 1,
                 "/usr/lib/systemd/systemd",
-                1,
-                3,
+                /*manager_device*/ 1,
+                /*manager_inode*/ 3,
                 &binding.manager_executable_sha256,
             )
             .is_err()
@@ -698,10 +698,10 @@ mod tests {
         assert!(
             validate_manager_identity(
                 &binding,
-                1,
+                /*manager_pid*/ 1,
                 "/usr/lib/systemd/systemd",
-                2,
-                2,
+                /*manager_device*/ 2,
+                /*manager_inode*/ 2,
                 &binding.manager_executable_sha256,
             )
             .is_err()
@@ -709,10 +709,10 @@ mod tests {
         assert!(
             validate_manager_identity(
                 &binding,
-                2,
+                /*manager_pid*/ 2,
                 "/usr/lib/systemd/systemd",
-                1,
-                2,
+                /*manager_device*/ 1,
+                /*manager_inode*/ 2,
                 &binding.manager_executable_sha256,
             )
             .is_err()
@@ -720,10 +720,10 @@ mod tests {
         assert!(
             validate_manager_identity(
                 &binding,
-                1,
+                /*manager_pid*/ 1,
                 "/usr/lib/systemd/systemd",
-                1,
-                2,
+                /*manager_device*/ 1,
+                /*manager_inode*/ 2,
                 &"b".repeat(64),
             )
             .is_err()
@@ -737,30 +737,76 @@ mod tests {
     fn start_requires_only_the_launcher_and_stopped_child_tasks_in_the_cgroup() {
         let binding = binding();
         let snapshot = parse_unit_snapshot(&properties()).expect("unit snapshot");
-        assert!(validate_start_observation(&snapshot, &binding, 42, 77, 1, 1, 2).is_ok());
-        assert!(validate_start_observation(&snapshot, &binding, 43, 77, 1, 1, 2).is_err());
-        assert!(validate_start_observation(&snapshot, &binding, 42, 42, 1, 1, 2).is_err());
-        assert!(validate_start_observation(&snapshot, &binding, 42, 77, 1, 1, 3).is_err());
+        assert!(
+            validate_start_observation(
+                &snapshot,
+                &binding,
+                /*launcher_pid*/ 42,
+                /*child_pid*/ 77,
+                /*launcher_tasks*/ 1,
+                /*child_tasks*/ 1,
+                /*hierarchical_tasks*/ 2,
+            )
+            .is_ok()
+        );
+        assert!(
+            validate_start_observation(
+                &snapshot,
+                &binding,
+                /*launcher_pid*/ 43,
+                /*child_pid*/ 77,
+                /*launcher_tasks*/ 1,
+                /*child_tasks*/ 1,
+                /*hierarchical_tasks*/ 2,
+            )
+            .is_err()
+        );
+        assert!(
+            validate_start_observation(
+                &snapshot,
+                &binding,
+                /*launcher_pid*/ 42,
+                /*child_pid*/ 42,
+                /*launcher_tasks*/ 1,
+                /*child_tasks*/ 1,
+                /*hierarchical_tasks*/ 2,
+            )
+            .is_err()
+        );
+        assert!(
+            validate_start_observation(
+                &snapshot,
+                &binding,
+                /*launcher_pid*/ 42,
+                /*child_pid*/ 77,
+                /*launcher_tasks*/ 1,
+                /*child_tasks*/ 1,
+                /*hierarchical_tasks*/ 3,
+            )
+            .is_err()
+        );
     }
 
     #[test]
     fn running_manager_binding_requires_the_same_live_main_invocation() {
         let binding = binding();
         let snapshot = parse_unit_snapshot(&properties()).expect("running unit snapshot");
-        assert!(validate_running_observation(&snapshot, &binding, 42).is_ok());
-        assert!(validate_running_observation(&snapshot, &binding, 43).is_err());
+        assert!(validate_running_observation(&snapshot, &binding, /*launcher_pid*/ 42).is_ok());
+        assert!(validate_running_observation(&snapshot, &binding, /*launcher_pid*/ 43).is_err());
 
         let replacement = parse_unit_snapshot(&properties().replace(
             "InvocationID=00000000000040008000000000000001",
             "InvocationID=00000000000040008000000000000002",
         ))
         .expect("well-formed replacement invocation");
-        assert!(validate_running_observation(&replacement, &binding, 42).is_err());
+        assert!(
+            validate_running_observation(&replacement, &binding, /*launcher_pid*/ 42).is_err()
+        );
 
         let stop_post =
             parse_unit_snapshot(&properties().replace("SubState=running", "SubState=stop-post"))
                 .expect("well-formed stop-post snapshot");
-        assert!(validate_running_observation(&stop_post, &binding, 42).is_err());
+        assert!(validate_running_observation(&stop_post, &binding, /*launcher_pid*/ 42).is_err());
     }
 
     #[test]
@@ -771,16 +817,56 @@ mod tests {
             .replace("ControlPID=0", "ControlPID=77")
             .replace("SubState=running", "SubState=stop-post");
         let snapshot = parse_unit_snapshot(&stop).expect("stop observer snapshot");
-        assert!(validate_stop_observation(&snapshot, &binding, 77, 1).is_ok());
-        assert!(validate_stop_observation(&snapshot, &binding, 78, 1).is_err());
-        assert!(validate_stop_observation(&snapshot, &binding, 77, 2).is_err());
+        assert!(
+            validate_stop_observation(
+                &snapshot,
+                &binding,
+                /*observer_pid*/ 77,
+                /*hierarchical_tasks*/ 1,
+            )
+            .is_ok()
+        );
+        assert!(
+            validate_stop_observation(
+                &snapshot,
+                &binding,
+                /*observer_pid*/ 78,
+                /*hierarchical_tasks*/ 1,
+            )
+            .is_err()
+        );
+        assert!(
+            validate_stop_observation(
+                &snapshot,
+                &binding,
+                /*observer_pid*/ 77,
+                /*hierarchical_tasks*/ 2,
+            )
+            .is_err()
+        );
 
         let live_main = parse_unit_snapshot(&stop.replace("MainPID=0", "MainPID=42"))
             .expect("live-main snapshot");
-        assert!(validate_stop_observation(&live_main, &binding, 77, 1).is_err());
+        assert!(
+            validate_stop_observation(
+                &live_main,
+                &binding,
+                /*observer_pid*/ 77,
+                /*hierarchical_tasks*/ 1,
+            )
+            .is_err()
+        );
         let wrong_state =
             parse_unit_snapshot(&stop.replace("SubState=stop-post", "SubState=running"))
                 .expect("wrong-state snapshot");
-        assert!(validate_stop_observation(&wrong_state, &binding, 77, 1).is_err());
+        assert!(
+            validate_stop_observation(
+                &wrong_state,
+                &binding,
+                /*observer_pid*/ 77,
+                /*hierarchical_tasks*/ 1,
+            )
+            .is_err()
+        );
     }
 }
