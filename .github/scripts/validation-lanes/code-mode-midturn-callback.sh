@@ -14,4 +14,7 @@ test -f "$RUSTY_V8_SRC_BINDING_PATH"
 cd codex-rs
 export CARGO_TARGET_DIR="${CARGO_TARGET_DIR:-$PWD/target}"
 export RUST_MIN_STACK=8388608
-cargo test --locked -p codex-app-server --test all suite::v2::sleep::exact_turn_steer_wakes_sleep_with_untrusted_context -- --exact --test-threads=1
+cargo build --locked -p codex-code-mode-host --bin codex-code-mode-host
+export CARGO_BIN_EXE_codex_code_mode_host="$CARGO_TARGET_DIR/debug/codex-code-mode-host"
+test -x "$CARGO_BIN_EXE_codex_code_mode_host"
+cargo test --locked -p codex-core --test code_mode_compaction_callback -- --test-threads=1

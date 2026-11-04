@@ -97,9 +97,15 @@ async fn code_mode_nested_callback_progresses_during_mid_turn_compaction(
     let server = responses::start_mock_server().await;
     let marker_dir = tempfile::tempdir()?;
     let marker = marker_dir.path().join("compaction-started");
-    let wait_command = format!("while [ ! -e '{}' ]; do sleep 0.05; done", marker.display());
+    // Model the listener's renewable lease with a shorter deadline. Clear any
+    // input sent before compaction starts, then require three separate terminal
+    // writes while the foreground request remains held.
+    let wait_command = format!(
+        r#"python3 -u -c 'import os,select,sys,termios,time; exec("while not os.path.exists(sys.argv[1]): time.sleep(0.05)\ntermios.tcflush(0, termios.TCIFLUSH)\nfor _ in range(3):\n if not select.select([0], [], [], 4)[0]: sys.exit(2)\n if not os.read(0, 1024): sys.exit(3)\nprint(\"heartbeats-received\", flush=True)")' '{}'"#,
+        marker.display()
+    );
     let script = format!(
-        "const gate = await tools.exec_command({{cmd: {}, yield_time_ms: 1000}}); if (!gate.session_id) throw Error('gate session missing: ' + JSON.stringify(gate)); text('gate-ready'); yield_control(); await tools.write_stdin({{session_id: gate.session_id, chars: '', yield_time_ms: 30000}}); await tools.test_sync_tool({{}}); notify('w18854-notify-after-gate'); await new Promise(resolve => setTimeout(resolve, 60000));",
+        "let gate = await tools.exec_command({{cmd: {}, tty: true, yield_time_ms: 1000}}); if (!gate.session_id) throw Error('gate session missing: ' + JSON.stringify(gate)); text('gate-ready'); yield_control(); let output = ''; while (gate.session_id) {{ gate = await tools.write_stdin({{session_id: gate.session_id, chars: '\\n', yield_time_ms: 1000}}); output += gate.output; }} if (gate.exit_code !== 0 || !output.includes('heartbeats-received')) throw Error('heartbeat process failed: ' + JSON.stringify(gate)); await tools.test_sync_tool({{}}); notify('w18854-notify-after-gate'); await new Promise(resolve => setTimeout(resolve, 60000));",
         serde_json::to_string(&wait_command)?
     );
     responses::mount_sse_once(
@@ -261,7 +267,7 @@ async fn code_mode_nested_callback_progresses_during_mid_turn_compaction(
         anyhow::ensure!(output.contains("gate-ready"), "gate setup failed: {output}");
         compaction_held.store(true, Ordering::Release);
         fs::write(&marker, "continue")?;
-        match tokio::time::timeout(Duration::from_secs(5), &mut callback_rx).await {
+        match tokio::time::timeout(Duration::from_secs(10), &mut callback_rx).await {
             Ok(callback) => callback.context("nested callback observer closed")?,
             Err(_) => {
                 tokio::time::timeout(Duration::from_secs(30), &mut callback_rx)
