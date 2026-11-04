@@ -827,7 +827,10 @@ mod tests {
                 .expect("wrong-state snapshot");
         assert!(
             validate_stop_observation(
-                &wrong_state, &binding, /*observer_pid*/ 77, /*hierarchical_tasks*/ 1,
+                &wrong_state,
+                &binding,
+                /*observer_pid*/ 77,
+                /*hierarchical_tasks*/ 1,
             )
             .is_err()
         );
