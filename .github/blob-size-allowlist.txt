@@ -2,6 +2,8 @@
 # Keep this list short and limited to intentional large checked-in assets.
 
 .github/codex-cli-splash.png
+# Maintained planner test suite; workflow contract coverage is split incrementally.
+.github/scripts/test_ci_planners.py
 MODULE.bazel.lock
 codex-rs/app-server-protocol/schema/json/codex_app_server_protocol.schemas.json
 codex-rs/app-server-protocol/schema/json/codex_app_server_protocol.v2.schemas.json
