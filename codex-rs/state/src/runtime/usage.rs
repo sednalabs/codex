@@ -54,6 +54,7 @@ struct TokenUsageTotals {
 
 #[derive(Debug, sqlx::FromRow)]
 struct StoredProviderUsage {
+    provider_call_id: String,
     input_tokens_uncached: Option<i64>,
     input_tokens_cached: Option<i64>,
     input_tokens_cache_write: Option<i64>,
@@ -234,6 +235,24 @@ ON CONFLICT(thread_id) DO UPDATE SET
         .execute(pool.as_ref())
         .await
         ?;
+        // Reconnect and resume must retain the last recorded provider response.
+        // TokenCount alone no longer generates provider rows, and a stale response
+        // redelivery must not displace the persisted latest completion.
+        let last_recorded = sqlx::query_as::<_, StoredProviderUsage>(
+            r#"SELECT provider_call_id, input_tokens_uncached, input_tokens_cached,
+                      input_tokens_cache_write, output_tokens, total_tokens
+               FROM usage_provider_calls
+               WHERE thread_id = ?
+               ORDER BY completed_at DESC, started_at DESC, rowid DESC
+               LIMIT 1"#,
+        )
+        .bind(thread_id.to_string())
+        .fetch_optional(pool.as_ref())
+        .await?;
+        let last_provider_call_id = last_recorded
+            .as_ref()
+            .map(|stored| stored.provider_call_id.clone());
+        let last_provider_usage = last_recorded.and_then(StoredProviderUsage::into_totals);
         Ok(Self {
             pool,
             thread_id,
@@ -244,8 +263,8 @@ ON CONFLICT(thread_id) DO UPDATE SET
             turn_snapshots: HashMap::new(),
             spawn_requests: HashMap::new(),
             tool_calls: HashMap::new(),
-            last_provider_call_id: None,
-            last_provider_usage: None,
+            last_provider_call_id,
+            last_provider_usage,
         })
     }
 
@@ -600,7 +619,7 @@ ON CONFLICT(thread_id) DO UPDATE SET
                     // The persisted row may already have measured usage from
                     // an earlier delivery of this response.
                     let stored = sqlx::query_as::<_, StoredProviderUsage>(
-                        "SELECT input_tokens_uncached, input_tokens_cached, input_tokens_cache_write, output_tokens, total_tokens FROM usage_provider_calls WHERE provider_call_id = ?",
+                        "SELECT provider_call_id, input_tokens_uncached, input_tokens_cached, input_tokens_cache_write, output_tokens, total_tokens FROM usage_provider_calls WHERE provider_call_id = ?",
                     )
                     .bind(&provider_call_id)
                     .fetch_one(self.pool.as_ref())
@@ -1861,6 +1880,38 @@ INSERT INTO usage_provider_calls (
                 .latest_usage_provider_display_model(thread_id)
                 .await?,
             Some("newer-model".into()),
+        );
+        // A resumed logger must recover the real latest response from disk
+        // rather than adopting an older duplicate as its newest call.
+        drop(logger);
+        let mut resumed = UsageLogger::try_new(
+            runtime.clone(),
+            thread_id,
+            SessionSource::Cli,
+            /*forked_from_id*/ None,
+            /*agent_nickname*/ None,
+            /*agent_role*/ None,
+        )
+        .await?;
+        assert_eq!(
+            resumed.last_provider_call_id.as_deref(),
+            Some(new_id.as_str())
+        );
+        assert_eq!(
+            resumed
+                .last_provider_usage
+                .as_ref()
+                .map(|usage| usage.uncached_input_tokens),
+            Some(18),
+        );
+        resumed
+            .record_event(&raw_response_completed_event(
+                "", "resp-older", /*token_usage*/ None,
+            ))
+            .await;
+        assert_eq!(
+            resumed.last_provider_call_id.as_deref(),
+            Some(new_id.as_str())
         );
         Ok(())
     }
