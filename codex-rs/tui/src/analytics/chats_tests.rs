@@ -43,7 +43,7 @@ async fn incomplete_chat_batches_retain_available_estimates_without_inventing_ze
 }
 
 #[tokio::test]
-async fn bounded_repairing_chat_listing_keeps_estimate_budget_and_marks_partial_ranking() {
+async fn bounded_indexed_chat_listing_keeps_older_cursor_when_estimates_stall() {
     use codex_app_server_client::RemoteAppServerClient;
     use codex_app_server_client::RemoteAppServerConnectArgs;
     use codex_app_server_client::RemoteAppServerEndpoint;
@@ -135,6 +135,10 @@ async fn bounded_repairing_chat_listing_keeps_estimate_budget_and_marks_partial_
             assert!(ids.len() <= 100);
             if ids.iter().any(|id| id == "chat-135") {
                 return ResponseTemplate::new(/*s*/ 503)
+                    .set_delay(
+                        CHAT_ESTIMATE_BUDGET
+                            + std::time::Duration::from_secs(/*secs*/ 7),
+                    )
                     .set_body_json(json!({"detail": "Thread usage is temporarily unavailable."}));
             }
             let threads = ids.iter().map(|id| json!({
@@ -142,7 +146,7 @@ async fn bounded_repairing_chat_listing_keeps_estimate_budget_and_marks_partial_
                 "estimated_usage_credits_micros": id.as_str().unwrap().strip_prefix("chat-").unwrap().parse::<i64>().unwrap(),
             })).collect::<Vec<_>>();
             ResponseTemplate::new(/*s*/ 200).set_body_json(json!({"threads": threads}))
-        }).expect(/*r*/ 2..=16).mount(&server).await;
+        }).expect(/*r*/ 1).mount(&server).await;
     let handle = AppServerRequestHandle::Remote(remote.request_handle());
     let live = Arc::new(live);
     let chats = read(handle.clone(), Arc::clone(&live), /*cursor*/ None)
@@ -152,14 +156,19 @@ async fn bounded_repairing_chat_listing_keeps_estimate_budget_and_marks_partial_
     assert!(chats.rows.is_empty());
     assert!(chats.truncated);
     let next_cursor = chats.next_cursor.clone().unwrap();
-    let older_chats = read(handle, live, Some(next_cursor.clone()))
-        .await
-        .unwrap()
-        .unwrap();
+    let older_chats = tokio::time::timeout(
+        CHAT_ESTIMATE_BUDGET + std::time::Duration::from_secs(/*secs*/ 2),
+        read(handle, live, Some(next_cursor.clone())),
+    )
+    .await
+    .expect("slow estimates must not block older-root navigation")
+    .unwrap()
+    .unwrap();
     assert_eq!(older_chats.rows.len(), 100);
     assert_eq!(older_chats.rows.first().unwrap().title, "Chat 199");
     assert_eq!(older_chats.rows.last().unwrap().title, "Chat 135");
-    assert!(older_chats.rows.last().unwrap().usage.is_none());
+    assert!(older_chats.rows.iter().all(|chat| chat.usage.is_none()));
+    assert_eq!(older_chats.rows.first().unwrap().display_title(), "Chat usage unavailable");
     assert!(older_chats.truncated);
     assert!(older_chats.next_cursor.is_none());
     assert_eq!(

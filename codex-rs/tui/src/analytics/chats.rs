@@ -44,6 +44,7 @@ pub(super) struct RootThreads {
 }
 
 pub(super) const MAX_RECENT_ROOT_THREADS: usize = 100;
+const CHAT_ESTIMATE_BUDGET: std::time::Duration = std::time::Duration::from_secs(/*secs*/ 3);
 
 pub(super) async fn read(
     handle: AppServerRequestHandle,
@@ -77,8 +78,9 @@ pub(super) async fn read(
         .iter()
         .map(|thread| thread.id.as_str())
         .collect::<Vec<_>>();
-    // Keep estimate time separate from local history discovery.
-    let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(/*secs*/ 25);
+    // Estimates are optional; do not hold chat navigation behind a slow provider response.
+    // Rows without estimates remain explicitly unavailable, and the root cursor is preserved.
+    let deadline = tokio::time::Instant::now() + CHAT_ESTIMATE_BUDGET;
     let mut data = Vec::new();
     for pair in ids.chunks(/*chunk_size*/ 200) {
         let midpoint = pair.len().min(/*other*/ 100);
