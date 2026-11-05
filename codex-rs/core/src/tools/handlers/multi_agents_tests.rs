@@ -4816,15 +4816,18 @@ fn multi_agent_v2_wait_agent_accepts_target_and_timeout_arguments() {
                 .is_err(),
             "queue-only mail must not wake an exact-target wait"
         );
+        let mut actionable = InterAgentCommunication::new(
+            worker_path,
+            AgentPath::root(),
+            Vec::new(),
+            "triggered wake".to_string(),
+            /*trigger_turn*/ true,
+        );
+        actionable.intent =
+            Some(codex_protocol::protocol::AgentMessageIntent::ActionRequired);
         session
             .input_queue
-            .enqueue_mailbox_communication(InterAgentCommunication::new(
-                worker_path,
-                AgentPath::root(),
-                Vec::new(),
-                "triggered wake".to_string(),
-                /*trigger_turn*/ true,
-            ))
+            .enqueue_mailbox_communication(actionable)
             .await;
 
         let output = wait_task
