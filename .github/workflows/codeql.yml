@@ -338,9 +338,9 @@ jobs:
               )
               scope_ignores=()
               ;;
+            # Add packages introduced after the established partitions without
+            # changing the CodeQL configuration identities already on main.
             codex-rs-rest-e)
-              # Add packages introduced after the established partitions without
-              # changing the CodeQL configuration identities already on main.
               scope_paths=(
                 codex-rs/agent-mailbox codex-rs/agent-roles codex-rs/attachment-store
                 codex-rs/code-mode-runtime codex-rs/diagnostics codex-rs/history
