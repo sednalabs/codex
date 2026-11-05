@@ -66,6 +66,7 @@ use tracing::warn;
 use crate::elicitation_client_service::ElicitationClientService;
 use crate::http_client_adapter::StreamableHttpClientAdapter;
 use crate::http_client_adapter::StreamableHttpClientAdapterError;
+use crate::http_client_adapter::is_bearer_invalid_token_challenge;
 use crate::in_process_transport::InProcessTransportFactory;
 use crate::oauth::OAuthPersistor;
 use crate::oauth::ResolvedOAuthCredentialStore;
@@ -76,6 +77,7 @@ use crate::oauth_http_client::OAuthHttpClientAdapter;
 use crate::oauth_metadata::discover_metadata;
 use crate::protocol_mode::McpProtocolMode;
 use crate::request_cancellation_guard::RequestCancellationGuard;
+use crate::single_attempt_oauth_client::SingleAttemptOAuthClient;
 use crate::stdio_server_launcher::StdioServerCommand;
 use crate::stdio_server_launcher::StdioServerLauncher;
 use crate::stdio_server_launcher::StdioServerProcessHandle;
@@ -106,7 +108,8 @@ enum PendingTransport {
         transport: StreamableHttpClientTransport<StreamableHttpClientAdapter>,
     },
     StreamableHttpWithOAuth {
-        transport: StreamableHttpClientTransport<AuthClient<StreamableHttpClientAdapter>>,
+        transport:
+            StreamableHttpClientTransport<SingleAttemptOAuthClient<StreamableHttpClientAdapter>>,
         oauth_persistor: OAuthPersistor,
     },
 }
@@ -252,6 +255,13 @@ enum ClientOperationError {
         source: rmcp::service::ServiceError,
     },
     #[error(
+        "code=mcp_oauth_invalid_token_refreshed_no_replay; auth=refreshed; outcome=unknown; retry=read_only_only. The server returned an invalid-token denial and this request was not replayed. Do not repeat a mutation; submit a new request only when the operation is independently known to be read-only."
+    )]
+    OAuthTokenRefreshed {
+        #[source]
+        source: rmcp::service::ServiceError,
+    },
+    #[error(
         "MCP session expired during tools/call; this invocation was not retried and its result is unknown. The expired session was retired if it was still current. Make a separate independent call to continue; it will initialize a fresh session if needed. Do not repeat this call unless its operation is independently known to be read-only."
     )]
     ExpiredSessionUncertain {
@@ -272,6 +282,7 @@ pub fn is_ops_holder_conflict_error(error: &(dyn std::error::Error + 'static)) -
     let service_error = match error {
         ClientOperationError::Service(error)
         | ClientOperationError::UncertainService { source: error }
+        | ClientOperationError::OAuthTokenRefreshed { source: error }
         | ClientOperationError::ExpiredSessionUncertain { source: error } => error,
         _ => return false,
     };
@@ -746,10 +757,15 @@ impl RmcpClient {
     ) -> Result<ListToolsResult> {
         self.refresh_oauth_if_needed().await?;
         let result = self
-            .run_service_operation("tools/list", timeout, move |service| {
-                let params = params.clone();
-                async move { service.list_tools(params).await }.boxed()
-            })
+            .run_service_operation(
+                "tools/list",
+                timeout,
+                /*retry_read_only_after_invalid_token*/ true,
+                move |service| {
+                    let params = params.clone();
+                    async move { service.list_tools(params).await }.boxed()
+                },
+            )
             .await?;
         self.persist_oauth_tokens().await;
         Ok(result)
@@ -763,10 +779,15 @@ impl RmcpClient {
     ) -> Result<ListToolsWithConnectorIdResult> {
         self.refresh_oauth_if_needed().await?;
         let result = self
-            .run_service_operation("tools/list", timeout, move |service| {
-                let params = params.clone();
-                async move { service.list_tools(params).await }.boxed()
-            })
+            .run_service_operation(
+                "tools/list",
+                timeout,
+                /*retry_read_only_after_invalid_token*/ true,
+                move |service| {
+                    let params = params.clone();
+                    async move { service.list_tools(params).await }.boxed()
+                },
+            )
             .await?;
         let tools = result
             .tools
@@ -854,10 +875,15 @@ impl RmcpClient {
     ) -> Result<ListResourcesResult> {
         self.refresh_oauth_if_needed().await?;
         let result = self
-            .run_service_operation("resources/list", timeout, move |service| {
-                let params = params.clone();
-                async move { service.list_resources(params).await }.boxed()
-            })
+            .run_service_operation(
+                "resources/list",
+                timeout,
+                /*retry_read_only_after_invalid_token*/ true,
+                move |service| {
+                    let params = params.clone();
+                    async move { service.list_resources(params).await }.boxed()
+                },
+            )
             .await?;
         self.persist_oauth_tokens().await;
         Ok(result)
@@ -870,10 +896,15 @@ impl RmcpClient {
     ) -> Result<ListResourceTemplatesResult> {
         self.refresh_oauth_if_needed().await?;
         let result = self
-            .run_service_operation("resources/templates/list", timeout, move |service| {
-                let params = params.clone();
-                async move { service.list_resource_templates(params).await }.boxed()
-            })
+            .run_service_operation(
+                "resources/templates/list",
+                timeout,
+                /*retry_read_only_after_invalid_token*/ true,
+                move |service| {
+                    let params = params.clone();
+                    async move { service.list_resource_templates(params).await }.boxed()
+                },
+            )
             .await?;
         self.persist_oauth_tokens().await;
         Ok(result)
@@ -886,10 +917,15 @@ impl RmcpClient {
     ) -> Result<ReadResourceResult> {
         self.refresh_oauth_if_needed().await?;
         let result = self
-            .run_service_operation("resources/read", timeout, move |service| {
-                let params = params.clone();
-                async move { service.read_resource(params).await }.boxed()
-            })
+            .run_service_operation(
+                "resources/read",
+                timeout,
+                /*retry_read_only_after_invalid_token*/ true,
+                move |service| {
+                    let params = params.clone();
+                    async move { service.read_resource(params).await }.boxed()
+                },
+            )
             .await?;
         self.persist_oauth_tokens().await;
         Ok(result)
@@ -924,35 +960,40 @@ impl RmcpClient {
         let mut rmcp_params = CallToolRequestParams::new(name);
         rmcp_params.arguments = arguments;
         let result = self
-            .run_service_operation("tools/call", timeout, move |service| {
-                let rmcp_params = rmcp_params.clone();
-                let meta = meta.clone();
-                async move {
-                    let mut options = rmcp::service::PeerRequestOptions::no_options();
-                    options.meta = meta;
-                    let request = service
-                        .peer()
-                        .send_request_with_option(
-                            ClientRequest::CallToolRequest(rmcp::model::CallToolRequest::new(
-                                rmcp_params,
-                            )),
-                            options,
-                        )
-                        .await?;
-                    let guard =
-                        RequestCancellationGuard::new(request.peer.clone(), request.id.clone());
-                    // The guard covers caller/task drops and active timeout
-                    // drops; rmcp retains its normal response cleanup path.
-                    let result = request.await_response().await;
-                    guard.disarm();
-                    let result = result?;
-                    match result {
-                        ServerResult::CallToolResult(result) => Ok(result),
-                        _ => Err(rmcp::service::ServiceError::UnexpectedResponse),
+            .run_service_operation(
+                "tools/call",
+                timeout,
+                /*retry_read_only_after_invalid_token*/ false,
+                move |service| {
+                    let rmcp_params = rmcp_params.clone();
+                    let meta = meta.clone();
+                    async move {
+                        let mut options = rmcp::service::PeerRequestOptions::no_options();
+                        options.meta = meta;
+                        let request = service
+                            .peer()
+                            .send_request_with_option(
+                                ClientRequest::CallToolRequest(rmcp::model::CallToolRequest::new(
+                                    rmcp_params,
+                                )),
+                                options,
+                            )
+                            .await?;
+                        let guard =
+                            RequestCancellationGuard::new(request.peer.clone(), request.id.clone());
+                        // The guard covers caller/task drops and active timeout
+                        // drops; rmcp retains its normal response cleanup path.
+                        let result = request.await_response().await;
+                        guard.disarm();
+                        let result = result?;
+                        match result {
+                            ServerResult::CallToolResult(result) => Ok(result),
+                            _ => Err(rmcp::service::ServiceError::UnexpectedResponse),
+                        }
                     }
-                }
-                .boxed()
-            })
+                    .boxed()
+                },
+            )
             .await?;
         self.persist_oauth_tokens().await;
         Ok(result)
@@ -967,6 +1008,7 @@ impl RmcpClient {
         self.run_service_operation(
             "notifications/custom",
             /*timeout*/ None,
+            /*retry_read_only_after_invalid_token*/ false,
             move |service| {
                 let params = params.clone();
                 async move {
@@ -995,17 +1037,22 @@ impl RmcpClient {
     ) -> Result<ServerResult> {
         self.refresh_oauth_if_needed().await?;
         let response = self
-            .run_service_operation("requests/custom", /*timeout*/ None, move |service| {
-                let params = params.clone();
-                async move {
-                    service
-                        .send_request(ClientRequest::CustomRequest(CustomRequest::new(
-                            method, params,
-                        )))
-                        .await
-                }
-                .boxed()
-            })
+            .run_service_operation(
+                "requests/custom",
+                /*timeout*/ None,
+                /*retry_read_only_after_invalid_token*/ false,
+                move |service| {
+                    let params = params.clone();
+                    async move {
+                        service
+                            .send_request(ClientRequest::CustomRequest(CustomRequest::new(
+                                method, params,
+                            )))
+                            .await
+                    }
+                    .boxed()
+                },
+            )
             .await?;
         self.persist_oauth_tokens().await;
         Ok(response)
@@ -1320,6 +1367,7 @@ impl RmcpClient {
         &self,
         label: &str,
         timeout: Option<Duration>,
+        retry_read_only_after_invalid_token: bool,
         operation: F,
     ) -> Result<T>
     where
@@ -1346,7 +1394,7 @@ impl RmcpClient {
 
         if result
             .as_ref()
-            .is_err_and(Self::is_unauthorized_operation_error)
+            .is_err_and(Self::is_confirmed_invalid_token_operation_error)
             && let Some(oauth_persistor) = oauth_persistor
         {
             let refresh_started_at = Instant::now();
@@ -1355,15 +1403,26 @@ impl RmcpClient {
                 .await;
             extend_operation_deadline(&mut deadline, refresh_started_at.elapsed());
             refresh_result?;
-            let remaining = remaining_operation_timeout(label, timeout, deadline)?;
-            result = Self::run_service_operation_with_transient_retries(
-                Arc::clone(&service),
-                label,
-                remaining,
-                self.elicitation_pause_state.clone(),
-                &operation,
-            )
-            .await;
+            if retry_read_only_after_invalid_token {
+                let remaining = remaining_operation_timeout(label, timeout, deadline)?;
+                result = Self::run_service_operation_with_transient_retries(
+                    Arc::clone(&service),
+                    label,
+                    remaining,
+                    self.elicitation_pause_state.clone(),
+                    &operation,
+                )
+                .await;
+            } else {
+                return result
+                    .map_err(|error| match error {
+                        ClientOperationError::Service(source) => {
+                            ClientOperationError::OAuthTokenRefreshed { source }
+                        }
+                        error => error,
+                    })
+                    .map_err(Into::into);
+            }
         }
 
         if result.as_ref().is_err_and(Self::is_session_expired_404) {
@@ -1494,7 +1553,9 @@ impl RmcpClient {
         label: &str,
         error: rmcp::service::ServiceError,
     ) -> ClientOperationError {
-        if label == "tools/call" && matches!(&error, rmcp::service::ServiceError::TransportSend(_))
+        if label == "tools/call"
+            && matches!(&error, rmcp::service::ServiceError::TransportSend(_))
+            && !Self::is_pre_execution_auth_failure(&error)
         {
             ClientOperationError::UncertainService { source: error }
         } else {
@@ -1522,6 +1583,7 @@ impl RmcpClient {
         let service_error = match error {
             ClientOperationError::Service(source)
             | ClientOperationError::UncertainService { source }
+            | ClientOperationError::OAuthTokenRefreshed { source }
             | ClientOperationError::ExpiredSessionUncertain { source } => source,
             ClientOperationError::Timeout { .. } => return false,
         };
@@ -1542,13 +1604,16 @@ impl RmcpClient {
             })
     }
 
-    fn is_unauthorized_operation_error(error: &ClientOperationError) -> bool {
-        let service_error = match error {
-            ClientOperationError::Service(source)
-            | ClientOperationError::UncertainService { source }
-            | ClientOperationError::ExpiredSessionUncertain { source } => source,
-            ClientOperationError::Timeout { .. } => return false,
+    fn is_confirmed_invalid_token_operation_error(error: &ClientOperationError) -> bool {
+        let ClientOperationError::Service(service_error) = error else {
+            return false;
         };
+        Self::is_confirmed_invalid_token_service_error(service_error)
+    }
+
+    fn is_confirmed_invalid_token_service_error(
+        service_error: &rmcp::service::ServiceError,
+    ) -> bool {
         let rmcp::service::ServiceError::TransportSend(error) = service_error else {
             return false;
         };
@@ -1556,7 +1621,29 @@ impl RmcpClient {
         error
             .error
             .downcast_ref::<StreamableHttpError<StreamableHttpClientAdapterError>>()
-            .is_some_and(Self::is_unauthorized_streamable_http_error)
+            .is_some_and(|error| match error {
+                StreamableHttpError::AuthRequired(challenge) => {
+                    is_bearer_invalid_token_challenge(&challenge.www_authenticate_header)
+                }
+                _ => false,
+            })
+    }
+
+    fn is_pre_execution_auth_failure(service_error: &rmcp::service::ServiceError) -> bool {
+        let rmcp::service::ServiceError::TransportSend(error) = service_error else {
+            return false;
+        };
+
+        error
+            .error
+            .downcast_ref::<StreamableHttpError<StreamableHttpClientAdapterError>>()
+            .is_some_and(|error| match error {
+                StreamableHttpError::Auth(AuthError::AuthorizationRequired) => true,
+                StreamableHttpError::AuthRequired(challenge) => {
+                    is_bearer_invalid_token_challenge(&challenge.www_authenticate_header)
+                }
+                _ => false,
+            })
     }
 
     async fn reinitialize_expired_service(&self) -> Result<()> {
@@ -1630,7 +1717,7 @@ async fn create_oauth_transport_and_runtime(
     default_headers: HeaderMap,
     http_client: Arc<dyn HttpClient>,
 ) -> Result<(
-    StreamableHttpClientTransport<AuthClient<StreamableHttpClientAdapter>>,
+    StreamableHttpClientTransport<SingleAttemptOAuthClient<StreamableHttpClientAdapter>>,
     OAuthPersistor,
 )> {
     let oauth_http_client = Arc::new(OAuthHttpClientAdapter::new(
@@ -1653,7 +1740,7 @@ async fn create_oauth_transport_and_runtime(
     let auth_manager = auth_client.auth_manager.clone();
 
     let transport = StreamableHttpClientTransport::with_client(
-        auth_client,
+        SingleAttemptOAuthClient::new(auth_client),
         StreamableHttpClientTransportConfig::with_uri(url.to_string()),
     );
 
@@ -1685,6 +1772,7 @@ mod tests {
     use rmcp::model::JsonObject;
     use rmcp::transport::DynamicTransportError;
     use rmcp::transport::streamable_http_client::AuthRequiredError;
+    use rmcp::transport::streamable_http_client::InsufficientScopeError;
     use tokio::time;
 
     use super::*;
@@ -1934,22 +2022,108 @@ mod tests {
     }
 
     #[test]
-    fn oauth_authorization_required_refreshes_oauth() {
+    fn locally_synthesized_authorization_required_does_not_trigger_refresh() {
         let error =
             transport_send_error(StreamableHttpError::Auth(AuthError::AuthorizationRequired));
 
-        assert!(RmcpClient::is_unauthorized_operation_error(&error));
+        assert!(!RmcpClient::is_confirmed_invalid_token_operation_error(
+            &error
+        ));
         assert!(!RmcpClient::is_session_expired_404(&error));
+        let ClientOperationError::Service(source) = error else {
+            unreachable!();
+        };
+        assert!(matches!(
+            RmcpClient::classify_operation_error("tools/call", source),
+            ClientOperationError::Service(_)
+        ));
     }
 
     #[test]
-    fn streamable_http_auth_required_refreshes_oauth() {
+    fn generic_http_auth_challenge_does_not_trigger_refresh() {
         let error = transport_send_error(StreamableHttpError::AuthRequired(
             AuthRequiredError::new("Bearer resource_metadata=\"https://example.test\"".to_string()),
         ));
 
-        assert!(RmcpClient::is_unauthorized_operation_error(&error));
+        assert!(!RmcpClient::is_confirmed_invalid_token_operation_error(
+            &error
+        ));
         assert!(!RmcpClient::is_session_expired_404(&error));
+    }
+
+    #[test]
+    fn bare_http_unauthorized_status_is_not_a_confirmed_token_denial() {
+        let error = transport_send_error(StreamableHttpError::Client(
+            StreamableHttpClientAdapterError::HttpStatus {
+                status: 401,
+                body: String::new(),
+                retry_after: None,
+                diagnostics: Default::default(),
+            },
+        ));
+
+        assert!(!RmcpClient::is_confirmed_invalid_token_operation_error(
+            &error
+        ));
+        let ClientOperationError::Service(source) = error else {
+            unreachable!();
+        };
+        assert!(matches!(
+            RmcpClient::classify_operation_error("tools/call", source),
+            ClientOperationError::UncertainService { .. }
+        ));
+    }
+
+    #[test]
+    fn confirmed_bearer_invalid_token_denial_is_recoverable() {
+        let error =
+            transport_send_error(StreamableHttpError::AuthRequired(AuthRequiredError::new(
+                r#"Basic realm="example", Bearer error="invalid_token""#.to_string(),
+            )));
+
+        assert!(RmcpClient::is_confirmed_invalid_token_operation_error(
+            &error
+        ));
+        assert!(matches!(
+            RmcpClient::classify_operation_error(
+                "tools/call",
+                match error {
+                    ClientOperationError::Service(error) => error,
+                    _ => unreachable!(),
+                }
+            ),
+            ClientOperationError::Service(_)
+        ));
+    }
+
+    #[test]
+    fn insufficient_scope_does_not_trigger_token_refresh() {
+        let error = transport_send_error(StreamableHttpError::InsufficientScope(
+            InsufficientScopeError::new(
+                r#"Bearer error="insufficient_scope""#.to_string(),
+                Some("ops:write".to_string()),
+            ),
+        ));
+
+        assert!(!RmcpClient::is_confirmed_invalid_token_operation_error(
+            &error
+        ));
+    }
+
+    #[test]
+    fn uncertain_tool_call_auth_error_is_never_replayed_or_refreshed() {
+        let ClientOperationError::Service(source) =
+            transport_send_error(StreamableHttpError::AuthRequired(AuthRequiredError::new(
+                r#"Bearer error="invalid_token""#.to_string(),
+            )))
+        else {
+            unreachable!();
+        };
+        let error = ClientOperationError::UncertainService { source };
+
+        assert!(!RmcpClient::is_confirmed_invalid_token_operation_error(
+            &error
+        ));
     }
 
     #[test]

@@ -130,9 +130,10 @@ fn protected_model_provider_is_checked_before_auth_resolution() {
     // The fixed launcher config selects the built-in `openai` provider without
     // setting `openai_base_url`; config loading preserves this raw `None`, while
     // ChatGPT-token auth resolves it to the pinned default Codex endpoint.
-    let generated_default = codex_model_provider_info::built_in_model_providers(None)
-        .remove("openai")
-        .expect("built-in provider");
+    let generated_default =
+        codex_model_provider_info::built_in_model_providers(/*openai_base_url*/ None)
+            .remove("openai")
+            .expect("built-in provider");
     assert!(super::validate_protected_model_provider_info(&generated_default, recipient).is_ok());
     assert!(
         super::validate_protected_model_provider_info(

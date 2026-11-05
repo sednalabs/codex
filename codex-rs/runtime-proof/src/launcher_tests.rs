@@ -629,7 +629,7 @@ fn mcp_model_selection_is_policy_versioned_and_scoped() {
         "v3 requires an explicit model"
     );
 
-    let legacy_config = render_codex_config("https://mcp.example/", None);
+    let legacy_config = render_codex_config("https://mcp.example/", /*model*/ None);
     assert!(
         !legacy_config
             .lines()

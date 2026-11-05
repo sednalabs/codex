@@ -225,8 +225,8 @@ fn thread_error_event_bounds_only_structured_http_status_codes() {
         };
         let event = ThreadErrorEvent::new(
             "private provider message".to_string(),
-            None,
-            None,
+            /*thread_id*/ None,
+            /*turn_id*/ None,
             Some(&error_info),
         );
         assert_eq!(event.http_status_code, expected);

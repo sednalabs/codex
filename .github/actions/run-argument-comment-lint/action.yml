@@ -22,6 +22,23 @@ runs:
         sudo DEBIAN_FRONTEND=noninteractive apt-get update
         sudo DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends pkg-config libcap-dev
 
+    # The checked-in release DotSlash package still bundles cargo-dylint 5.0.0,
+    # which resolves Clippy's removed `master` branch. Keep its lint library,
+    # but use the fixed driver for this CI invocation.
+    - name: Install compatible cargo-dylint
+      shell: bash
+      run: |
+        set -euo pipefail
+        install_root="$RUNNER_TEMP/argument-comment-lint-cargo-dylint"
+        cargo install --locked cargo-dylint --version 6.3.2 --root "$install_root"
+        cargo_dylint="$install_root/bin/cargo-dylint"
+        if [[ -f "${cargo_dylint}.exe" ]]; then
+          cargo_dylint="${cargo_dylint}.exe"
+        fi
+        test -f "$cargo_dylint"
+        echo "$install_root/bin" >> "$GITHUB_PATH"
+        echo "CODEX_ARGUMENT_COMMENT_LINT_USE_SYSTEM_CARGO_DYLINT=1" >> "$GITHUB_ENV"
+
     - name: Run prebuilt argument comment lint on codex-rs
       shell: bash
       run: |
