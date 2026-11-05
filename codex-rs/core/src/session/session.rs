@@ -1794,7 +1794,7 @@ impl Session {
                 Err(err) => (ThreadTraceContext::disabled(), Some(err)),
             };
             let usage_logger = if let Some(state_db) = state_db_ctx.as_ref() {
-                match codex_state::UsageLogger::try_new(
+                match codex_state::UsageLogger::try_new_response_projection(
                     state_db,
                     thread_id,
                     &session_configuration.session_source,
@@ -1804,7 +1804,7 @@ impl Session {
                 )
                 .await
                 {
-                    Ok(logger) => logger,
+                    Ok(logger) => logger.map(tokio::sync::Mutex::new),
                     Err(err) => {
                         warn!("local usage logger unavailable; response rollouts remain durable: {err}");
                         None

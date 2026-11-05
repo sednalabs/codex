@@ -10,7 +10,7 @@ async fn failed_optional_usage_projection_does_not_fail_response_recording() {
     let (mut session, turn_context, _events) = make_session_and_context_with_rx().await;
     let source = SessionSource::Cli;
     let thread_source = ThreadSource::User;
-    let usage_logger = codex_state::UsageLogger::try_new(
+    let usage_logger = codex_state::UsageLogger::try_new_response_projection(
         &state_db,
         session.thread_id(),
         &source,
@@ -30,7 +30,7 @@ async fn failed_optional_usage_projection_does_not_fail_response_recording() {
     Arc::get_mut(&mut session)
         .expect("test session should have a single owner")
         .services
-        .usage_logger = Some(usage_logger);
+        .usage_logger = Some(tokio::sync::Mutex::new(usage_logger));
 
     let usage = TokenUsage {
         input_tokens: 12,

@@ -2661,6 +2661,9 @@ impl Session {
             id: turn_context.sub_id.clone(),
             msg,
         };
+        if let Some(usage_logger) = &self.services.usage_logger {
+            usage_logger.lock().await.record_event(&event).await;
+        }
         // Private reviewers have no app-server listener; publicly resumed Guardian threads do.
         if matches!(
             &turn_context.session_source,
@@ -5795,12 +5798,13 @@ impl Session {
         };
         self.persist_rollout_items(&[RolloutItem::TokenUsageRecord(record.clone())])
             .await;
-        if let Some(usage_logger) = &self.services.usage_logger
-            && let Err(err) = usage_logger.record_response(&record, status).await
-        {
-            warn!(
-                "failed to project response usage to local ledger; rollout record remains durable: {err}"
-            );
+        if let Some(usage_logger) = &self.services.usage_logger {
+            let mut usage_logger = usage_logger.lock().await;
+            if let Err(err) = usage_logger.record_response(&record, status).await {
+                warn!(
+                    "failed to project response usage to local ledger; rollout record remains durable: {err}"
+                );
+            }
         }
     }
 
@@ -5961,7 +5965,49 @@ impl Session {
             let state = self.state.lock().await;
             state.token_info_and_rate_limits()
         };
-        let event = EventMsg::TokenCount(TokenCountEvent { info, rate_limits });
+        let requested_service_tier = turn_context.config.service_tier.clone();
+        let actual_service_tier = turn_context
+            .model_info
+            .service_tier_for_request(requested_service_tier.clone())
+            .unwrap_or_else(|| SERVICE_TIER_DEFAULT_REQUEST_VALUE.to_string());
+        let auth_mode = self.services.auth_manager.auth_mode();
+        let account_plan = rate_limits
+            .as_ref()
+            .and_then(|snapshot| snapshot.plan_type)
+            .or_else(|| {
+                self.services
+                    .auth_manager
+                    .auth_cached()
+                    .and_then(|auth| auth.account_plan_type())
+            })
+            .and_then(|plan| serde_json::to_value(plan).ok())
+            .and_then(|value| value.as_str().map(str::to_owned));
+        let billing_surface = match auth_mode {
+            Some(mode) if mode.has_chatgpt_account() => "chatgpt_credits",
+            Some(mode) if !mode.uses_codex_backend() => "api_tokens",
+            Some(_) => "codex_backend_unknown",
+            None => "unknown",
+        };
+        let fast_mode_requested = turn_context.config.features.enabled(Feature::FastMode)
+            && requested_service_tier
+                .as_deref()
+                .and_then(ServiceTier::from_request_value)
+                == Some(ServiceTier::Fast);
+        let fast_mode_used = billing_surface == "chatgpt_credits"
+            && actual_service_tier == ServiceTier::Fast.request_value();
+        let event = EventMsg::TokenCount(TokenCountEvent {
+            info,
+            rate_limits,
+            provider: Some(turn_context.config.model_provider_id.clone()),
+            model_used: Some(turn_context.model_info.slug.clone()),
+            requested_service_tier,
+            actual_service_tier: Some(actual_service_tier),
+            actual_service_tier_source: Some("runtime_contract".to_string()),
+            fast_mode_requested: Some(fast_mode_requested),
+            fast_mode_used: Some(fast_mode_used),
+            billing_surface: Some(billing_surface.to_string()),
+            account_plan,
+        });
         self.send_event(turn_context, event).await;
     }
 

@@ -33,6 +33,7 @@ mod request_cancellation;
 mod request_input;
 mod rmcp_client;
 mod service_error;
+mod single_attempt_oauth_client;
 mod startup_error;
 mod stdio_server_launcher;
 mod tool_list_changes;

@@ -1866,6 +1866,19 @@ class RouteSelectionTests(unittest.TestCase):
         self.assertIn("agent-workflow-sanity.sh", observer_run)
         self.assertIn("workflow-security-targeted.sh", observer_run)
 
+        test_matrix = (
+            ((jobs.get("test") or {}).get("strategy") or {}).get("matrix") or {}
+        ).get("include") or []
+        self.assertEqual(
+            {(entry.get("os"), entry.get("target")) for entry in test_matrix},
+            {
+                ("macos-15", "aarch64-apple-darwin"),
+                ("macos-15-intel", "x86_64-apple-darwin"),
+                ("ubuntu-24.04", "x86_64-unknown-linux-gnu"),
+                ("ubuntu-24.04", "x86_64-unknown-linux-musl"),
+            },
+        )
+
         expected_job_conditions = {
             "test": "${{ needs.plan.outputs.run_bazel == 'true' }}",
             "test-windows-shard": "${{ github.repository != 'sednalabs/codex' && needs.plan.outputs.run_bazel == 'true' }}",
@@ -1878,12 +1891,31 @@ class RouteSelectionTests(unittest.TestCase):
                 self.assertEqual(job.get("needs"), "plan")
                 self.assertEqual(job.get("if"), expected_condition)
 
+        windows_shard = jobs.get("test-windows-shard") or {}
+        self.assertEqual(windows_shard.get("needs"), "plan")
+        self.assertEqual(
+            windows_shard.get("if"),
+            "${{ github.repository != 'sednalabs/codex' && needs.plan.outputs.run_bazel == 'true' }}",
+        )
         windows_gate = jobs.get("test-windows") or {}
         self.assertEqual(windows_gate.get("needs"), ["plan", "test-windows-shard"])
         self.assertEqual(
             windows_gate.get("if"),
             "${{ always() && needs.plan.outputs.run_bazel == 'true' }}",
         )
+        self.assertEqual(windows_gate.get("runs-on"), "ubuntu-24.04")
+        self.assertEqual(
+            windows_gate.get("name"),
+            "${{ github.repository == 'sednalabs/codex' && 'Windows Bazel CI deferred (unqualified)' || 'Bazel test on windows-latest for x86_64-pc-windows-gnullvm' }}",
+        )
+        deferred_report = next(
+            step
+            for step in windows_gate.get("steps") or []
+            if step.get("name") == "Report Windows CI deferral for this fork"
+        )
+        self.assertEqual(deferred_report.get("if"), "github.repository == 'sednalabs/codex'")
+        self.assertIn("deferred and unqualified", deferred_report.get("run") or "")
+
         results_job = jobs.get("results") or {}
         self.assertEqual(results_job.get("name"), "Bazel required gate")
         self.assertEqual(
@@ -1935,41 +1967,74 @@ class RouteSelectionTests(unittest.TestCase):
         heredoc_start = "python3 - <<'PY'\n"
         self.assertIn(heredoc_start, results_run)
         gate_script = results_run.split(heredoc_start, 1)[1].rsplit("\nPY", 1)[0]
-        for mode, docs_result, normal_result, windows_shard_result, windows_deferred, focused in [
-            ("docs_only", "success", "skipped", "skipped", "false", "false"),
-            ("observer_only", "skipped", "skipped", "skipped", "false", "false"),
-            ("full", "skipped", "success", "success", "false", "false"),
-            ("full", "skipped", "success", "skipped", "true", "false"),
-            ("full", "skipped", "success", "skipped", "true", "true"),
+        for repository, windows_deferred in [
+            ("sednalabs/codex", "true"),
+            ("openai/codex", "false"),
         ]:
-            with self.subTest(mode=mode):
-                needs = {
-                    "plan": {"result": "success", "outputs": {"mode": mode}},
-                    "docs-only": {"result": docs_result},
-                    "observer-only": {"result": "success" if mode == "observer_only" else "skipped"},
-                    "test": {"result": normal_result},
-                    "test-windows-shard": {"result": windows_shard_result},
-                    "test-windows": {"result": normal_result},
-                    "clippy": {
-                        "result": "skipped" if focused == "true" else normal_result
-                    },
-                    "verify-release-build": {
-                        "result": "skipped" if focused == "true" else normal_result
-                    },
-                }
-                proc = subprocess.run(
-                    ["python3", "-c", gate_script],
-                    check=False,
-                    capture_output=True,
-                    text=True,
-                    env={
-                        **os.environ,
-                        "NEEDS_JSON": json.dumps(needs),
-                        "WINDOWS_DEFERRED": windows_deferred,
-                        "FOCUSED_TESTS": focused,
-                    },
+            for mode, docs_result, normal_result in [
+                ("docs_only", "success", "skipped"),
+                ("observer_only", "skipped", "skipped"),
+                ("full", "skipped", "success"),
+            ]:
+                focused_options = (
+                    ["false", "true"] if mode == "full" else ["false"]
                 )
-                self.assertEqual(proc.returncode, 0, proc.stderr)
+                for focused in focused_options:
+                    with self.subTest(repository=repository, mode=mode, focused=focused):
+                        windows_shard_result = (
+                            "skipped"
+                            if mode != "full" or windows_deferred == "true"
+                            else "success"
+                        )
+                        needs = {
+                            "plan": {"result": "success", "outputs": {"mode": mode}},
+                            "docs-only": {"result": docs_result},
+                            "observer-only": {"result": "success" if mode == "observer_only" else "skipped"},
+                            "test": {"result": normal_result},
+                            "test-windows-shard": {"result": windows_shard_result},
+                            "test-windows": {"result": normal_result},
+                            "clippy": {
+                                "result": "skipped" if focused == "true" else normal_result
+                            },
+                            "verify-release-build": {
+                                "result": "skipped" if focused == "true" else normal_result
+                            },
+                        }
+                        test_env = {
+                            **os.environ,
+                            "GITHUB_REPOSITORY": repository,
+                            "NEEDS_JSON": json.dumps(needs),
+                            "WINDOWS_DEFERRED": windows_deferred,
+                            "FOCUSED_TESTS": focused,
+                        }
+                        proc = subprocess.run(
+                            ["python3", "-c", gate_script],
+                            check=False,
+                            capture_output=True,
+                            text=True,
+                            env=test_env,
+                        )
+                        self.assertEqual(proc.returncode, 0, proc.stderr)
+
+                        if mode == "full":
+                            wrong_windows_result = (
+                                "success" if windows_shard_result == "skipped" else "skipped"
+                            )
+                            wrong_needs = {
+                                **needs,
+                                "test-windows-shard": {"result": wrong_windows_result},
+                            }
+                            wrong_proc = subprocess.run(
+                                ["python3", "-c", gate_script],
+                                check=False,
+                                capture_output=True,
+                                text=True,
+                                env={
+                                    **test_env,
+                                    "NEEDS_JSON": json.dumps(wrong_needs),
+                                },
+                            )
+                            self.assertNotEqual(wrong_proc.returncode, 0)
 
     def test_bazel_cache_writes_are_limited_to_trusted_post_merge_pushes(self) -> None:
         setup_action = load_workflow_payload(REPO_ROOT / ".github/actions/setup-bazel-ci/action.yml")

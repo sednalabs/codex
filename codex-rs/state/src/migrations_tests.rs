@@ -4,7 +4,9 @@ use sqlx::Connection;
 use sqlx::Row;
 use sqlx::migrate::Migration;
 use sqlx::migrate::Migrator;
+use std::collections::BTreeSet;
 use std::borrow::Cow;
+use sqlx::sqlite::SqlitePoolOptions;
 
 use super::STATE_MIGRATOR;
 use super::T10_USAGE_MIGRATION_HISTORY;
@@ -14,6 +16,23 @@ use super::runtime_usage_migrator;
 use super::runtime_usage_migrator_for_history;
 use crate::PINNED_THREAD_SECTION_ID;
 use crate::PINNED_THREAD_SECTION_NAME;
+use super::USAGE_MIGRATOR;
+use super::repair_state_migration_version_collisions;
+
+const PRE_RECENCY_MIGRATION_VERSION: i64 = 42;
+const LEGACY_RECENCY_MIGRATION_VERSION: i64 = 38;
+const CURRENT_RECENCY_MIGRATION_VERSION: i64 = 43;
+const LEGACY_VISIBLE_SORT_INDEXES_MIGRATION_VERSION: i64 = 40;
+const CURRENT_VISIBLE_SORT_INDEXES_MIGRATION_VERSION: i64 = 44;
+const LEGACY_REMOTE_CONTROL_ENABLED_MIGRATION_VERSION: i64 = 41;
+const CURRENT_REMOTE_CONTROL_ENABLED_MIGRATION_VERSION: i64 = 46;
+const PRE_CONFIGURED_IDENTITY_PROVENANCE_MIGRATION_VERSION: i64 = 44;
+const LEGACY_EXTERNAL_AGENT_CONFIG_IMPORTS_MIGRATION_VERSION: i64 = 42;
+const CURRENT_EXTERNAL_AGENT_CONFIG_IMPORTS_MIGRATION_VERSION: i64 = 47;
+const CURRENT_PINNED_THREADS_MIGRATION_VERSION: i64 = 48;
+const LEGACY_EXTERNAL_AGENT_CONFIG_IMPORTS_PROVIDER_ID_MIGRATION_VERSION: i64 = 44;
+const CURRENT_EXTERNAL_AGENT_CONFIG_IMPORTS_PROVIDER_ID_MIGRATION_VERSION: i64 = 49;
+const DEPLOYED_ORIGIN_MAIN_MIGRATION_VERSION: i64 = 45;
 
 const CUSTOM_THREAD_SECTION_ID: &str = "01984de2-8f74-7c91-a3b2-5c5e937cf317";
 
@@ -171,6 +190,199 @@ async fn usage_migrator_preserves_known_t10_history_without_rewriting_rows() {
             .expect("historical checksum should remain present");
     assert_eq!(persisted_checksum, checksum);
     pool.close().await;
+}
+
+fn origin_main_migrator() -> Migrator {
+    let remote_control_enabled_migration = STATE_MIGRATOR
+        .migrations
+        .iter()
+        .find(|migration| migration.version == CURRENT_REMOTE_CONTROL_ENABLED_MIGRATION_VERSION)
+        .expect("remote control enabled migration should exist");
+    let external_imports_migration = STATE_MIGRATOR
+        .migrations
+        .iter()
+        .find(|migration| {
+            migration.version == CURRENT_EXTERNAL_AGENT_CONFIG_IMPORTS_MIGRATION_VERSION
+        })
+        .expect("external agent config imports migration should exist");
+    let mut migrations = STATE_MIGRATOR
+        .migrations
+        .iter()
+        .filter(|migration| migration.version < LEGACY_REMOTE_CONTROL_ENABLED_MIGRATION_VERSION)
+        .cloned()
+        .collect::<Vec<_>>();
+    migrations.push(Migration::new(
+        LEGACY_REMOTE_CONTROL_ENABLED_MIGRATION_VERSION,
+        remote_control_enabled_migration.description.clone(),
+        remote_control_enabled_migration.migration_type,
+        remote_control_enabled_migration.sql.clone(),
+        remote_control_enabled_migration.no_tx,
+    ));
+    migrations.push(Migration::new(
+        LEGACY_EXTERNAL_AGENT_CONFIG_IMPORTS_MIGRATION_VERSION,
+        external_imports_migration.description.clone(),
+        external_imports_migration.migration_type,
+        external_imports_migration.sql.clone(),
+        external_imports_migration.no_tx,
+    ));
+    migrations.extend(
+        STATE_MIGRATOR
+            .migrations
+            .iter()
+            .filter(|migration| {
+                migration.version > LEGACY_EXTERNAL_AGENT_CONFIG_IMPORTS_MIGRATION_VERSION
+                    && migration.version <= DEPLOYED_ORIGIN_MAIN_MIGRATION_VERSION
+            })
+            .cloned(),
+    );
+    Migrator::with_migrations(migrations)
+}
+
+fn usage_migrator_through(version: i64) -> Migrator {
+    Migrator {
+        migrations: Cow::Owned(
+            USAGE_MIGRATOR
+                .migrations
+                .iter()
+                .filter(|migration| migration.version <= version)
+                .cloned()
+                .collect(),
+        ),
+        ignore_missing: USAGE_MIGRATOR.ignore_missing,
+        locking: USAGE_MIGRATOR.locking,
+        table_name: USAGE_MIGRATOR.table_name.clone(),
+        create_schemas: USAGE_MIGRATOR.create_schemas.clone(),
+        no_tx: USAGE_MIGRATOR.no_tx,
+    }
+}
+
+async fn pool_with_t10_usage_history(versions: &[i64]) -> sqlx::SqlitePool {
+    let pool = SqlitePoolOptions::new()
+        .max_connections(1)
+        .connect("sqlite::memory:")
+        .await
+        .expect("in-memory usage database should open");
+    sqlx::query(
+        "CREATE TABLE _sqlx_migrations (version BIGINT PRIMARY KEY, description TEXT NOT NULL, success BOOLEAN NOT NULL, checksum BLOB NOT NULL)",
+    )
+    .execute(&pool)
+    .await
+    .expect("migration history table should be created");
+
+    for version in versions {
+        let (_, description, checksum) = T10_USAGE_MIGRATION_HISTORY
+            .iter()
+            .find(|(known_version, _, _)| known_version == version)
+            .expect("requested version should exist in the T10 history");
+        let checksum = checksum
+            .as_bytes()
+            .chunks_exact(2)
+            .map(|pair| {
+                let high = super::hex_nibble(pair[0]).expect("checksum hex should be valid");
+                let low = super::hex_nibble(pair[1]).expect("checksum hex should be valid");
+                (high << 4) | low
+            })
+            .collect::<Vec<_>>();
+        sqlx::query(
+            "INSERT INTO _sqlx_migrations (version, description, success, checksum) VALUES (?, ?, ?, ?)",
+        )
+        .bind(version)
+        .bind(description)
+        .bind(true)
+        .bind(checksum)
+        .execute(&pool)
+        .await
+        .expect("T10 migration history row should be inserted");
+    }
+
+    pool
+}
+
+fn upstream_external_agent_import_provider_migrator() -> Migrator {
+    let external_imports_migration = STATE_MIGRATOR
+        .migrations
+        .iter()
+        .find(|migration| {
+            migration.version == CURRENT_EXTERNAL_AGENT_CONFIG_IMPORTS_MIGRATION_VERSION
+        })
+        .expect("external agent config imports migration should exist");
+    let provider_id_migration = STATE_MIGRATOR
+        .migrations
+        .iter()
+        .find(|migration| {
+            migration.version == CURRENT_EXTERNAL_AGENT_CONFIG_IMPORTS_PROVIDER_ID_MIGRATION_VERSION
+        })
+        .expect("provider-id migration should exist");
+    let mut migrations = STATE_MIGRATOR
+        .migrations
+        .iter()
+        .filter(|migration| {
+            migration.version < LEGACY_EXTERNAL_AGENT_CONFIG_IMPORTS_MIGRATION_VERSION
+        })
+        .cloned()
+        .collect::<Vec<_>>();
+    migrations.push(Migration::new(
+        LEGACY_EXTERNAL_AGENT_CONFIG_IMPORTS_MIGRATION_VERSION,
+        external_imports_migration.description.clone(),
+        external_imports_migration.migration_type,
+        external_imports_migration.sql.clone(),
+        external_imports_migration.no_tx,
+    ));
+    migrations.extend(
+        STATE_MIGRATOR
+            .migrations
+            .iter()
+            .filter(|migration| {
+                migration.version > LEGACY_EXTERNAL_AGENT_CONFIG_IMPORTS_MIGRATION_VERSION
+                    && migration.version
+                        < LEGACY_EXTERNAL_AGENT_CONFIG_IMPORTS_PROVIDER_ID_MIGRATION_VERSION
+            })
+            .cloned(),
+    );
+    migrations.push(Migration::new(
+        LEGACY_EXTERNAL_AGENT_CONFIG_IMPORTS_PROVIDER_ID_MIGRATION_VERSION,
+        provider_id_migration.description.clone(),
+        provider_id_migration.migration_type,
+        provider_id_migration.sql.clone(),
+        provider_id_migration.no_tx,
+    ));
+    Migrator::with_migrations(migrations)
+}
+
+async fn insert_old_binary_thread(pool: &sqlx::SqlitePool, id: &str, rollout_path: &str) {
+    sqlx::query(
+        r#"
+INSERT INTO threads (
+    id,
+    rollout_path,
+    created_at,
+    updated_at,
+    created_at_ms,
+    updated_at_ms,
+    source,
+    model_provider,
+    cwd,
+    title,
+    sandbox_policy,
+    approval_mode
+) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        "#,
+    )
+    .bind(id)
+    .bind(rollout_path)
+    .bind(1_700_000_000_i64)
+    .bind(1_700_000_100_i64)
+    .bind(1_700_000_000_123_i64)
+    .bind(1_700_000_100_456_i64)
+    .bind("cli")
+    .bind("openai")
+    .bind("/tmp")
+    .bind("")
+    .bind("read-only")
+    .bind("on-request")
+    .execute(pool)
+    .await
+    .expect("old-binary-shaped thread should insert");
 }
 
 #[tokio::test]
@@ -1312,4 +1524,54 @@ async fn writable_pool_reads_do_not_wait_for_an_existing_writer() {
             (expected_mode, vec![7; 5])
         );
     }
+}
+
+#[tokio::test]
+async fn exact_t10_september_30_rate_history_skips_the_equivalent_source_migration() {
+    let t10_versions = T10_USAGE_MIGRATION_HISTORY
+        .iter()
+        .map(|(version, _, _)| *version)
+        .collect::<Vec<_>>();
+    let pool = pool_with_t10_usage_history(&t10_versions).await;
+
+    let migrator = runtime_usage_migrator_for_history(&pool, &USAGE_MIGRATOR)
+        .await
+        .expect("exact T10 rate history should be accepted");
+
+    assert!(
+        USAGE_MIGRATOR
+            .iter()
+            .find(|migration| migration.version == 23)
+            .is_some_and(|migration| !migration.no_tx),
+        "the new rate migration should keep SQLx's transactional execution"
+    );
+    assert!(
+        migrator.iter().all(|migration| migration.version != 23),
+        "an exact T10 v17 rate interval must not be inserted a second time"
+    );
+    pool.close().await;
+}
+
+#[tokio::test]
+async fn partial_or_corrupt_t10_rate_history_fails_closed() {
+    let partial_pool = pool_with_t10_usage_history(&[17]).await;
+    let partial_result = runtime_usage_migrator_for_history(&partial_pool, &USAGE_MIGRATOR).await;
+    assert!(
+        partial_result.is_err(),
+        "a T10 v17 row without its required chain must not be accepted"
+    );
+    partial_pool.close().await;
+
+    let corrupt_pool = pool_with_t10_usage_history(&[1, 5, 15, 16, 17, 18, 19]).await;
+    sqlx::query("UPDATE _sqlx_migrations SET checksum = ? WHERE version = 17")
+        .bind(vec![0_u8; 48])
+        .execute(&corrupt_pool)
+        .await
+        .expect("test should corrupt the T10 v17 checksum");
+    let corrupt_result = runtime_usage_migrator_for_history(&corrupt_pool, &USAGE_MIGRATOR).await;
+    assert!(
+        corrupt_result.is_err(),
+        "a T10 v17 row with a different checksum must not be accepted"
+    );
+    corrupt_pool.close().await;
 }
