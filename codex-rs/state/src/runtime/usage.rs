@@ -490,7 +490,7 @@ ON CONFLICT(thread_id) DO UPDATE SET
             status,
         ) = match response.token_usage.as_ref() {
             Some(usage) => (
-                Some((usage.input_tokens - usage.cached_input_tokens).max(0)),
+                Some(usage.input_tokens.saturating_sub(usage.cached_input_tokens)),
                 Some(usage.cached_input_tokens),
                 Some(usage.cache_write_input_tokens),
                 Some(usage.output_tokens),
