@@ -19,6 +19,7 @@ STRICT_LINTS = [
 ]
 NOISE_LINT = "unknown_lints"
 TOOLCHAIN_CHANNEL = "nightly-2025-09-18"
+USE_SYSTEM_CARGO_DYLINT_ENV = "CODEX_ARGUMENT_COMMENT_LINT_USE_SYSTEM_CARGO_DYLINT"
 
 _TARGET_SELECTION_ARGS = {
     "--all-targets",
@@ -178,13 +179,15 @@ def ensure_source_prerequisites(env: MutableMapping[str, str]) -> None:
         "cargo-dylint",
         "argument-comment-lint source wrapper requires cargo-dylint and dylint-link.\n"
         "Install them with:\n"
-        "  cargo install --locked cargo-dylint dylint-link",
+        "  rustup toolchain install stable --profile minimal\n"
+        "  cargo +stable install --locked cargo-dylint dylint-link",
     )
     require_command(
         "dylint-link",
         "argument-comment-lint source wrapper requires cargo-dylint and dylint-link.\n"
         "Install them with:\n"
-        "  cargo install --locked cargo-dylint dylint-link",
+        "  rustup toolchain install stable --profile minimal\n"
+        "  cargo +stable install --locked cargo-dylint dylint-link",
     )
     require_command(
         "rustup",
@@ -249,6 +252,17 @@ def find_packaged_cargo_dylint(package_entrypoint: Path) -> Path:
     if not cargo_dylint.is_file():
         die(f"bundled cargo-dylint executable not found under {bin_dir}")
     return cargo_dylint
+
+
+def resolve_prebuilt_cargo_dylint(
+    package_entrypoint: Path, env: MutableMapping[str, str]
+) -> Path:
+    if env.get(USE_SYSTEM_CARGO_DYLINT_ENV) == "1":
+        executable = "cargo-dylint.exe" if os.name == "nt" else "cargo-dylint"
+        if shutil.which(executable, path=env.get("PATH", "")) is None:
+            die(f"System {executable} not found in PATH.")
+        return Path(executable)
+    return find_packaged_cargo_dylint(package_entrypoint)
 
 
 def normalize_packaged_library(package_entrypoint: Path) -> Path:

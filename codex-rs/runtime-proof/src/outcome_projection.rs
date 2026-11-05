@@ -100,6 +100,7 @@ struct Projector<'a, W: Write> {
     principal: Uuid,
     primary_thread: Option<String>,
     pending: BTreeMap<String, PendingCall>,
+    child_failure_emitted: bool,
     writer: &'a mut W,
 }
 
@@ -110,6 +111,7 @@ impl<'a, W: Write> Projector<'a, W> {
             principal,
             primary_thread: None,
             pending: BTreeMap::new(),
+            child_failure_emitted: false,
             writer,
         }
     }
@@ -122,8 +124,63 @@ impl<'a, W: Write> Projector<'a, W> {
             Some("thread.started") => self.accept_thread_start(&event),
             Some("item.started") => self.accept_item_start(&event),
             Some("item.completed") => self.accept_item_completion(&event),
+            Some("error") => self.accept_child_error(&event),
+            Some("turn.failed") => self.accept_turn_failure(&event),
             _ => {}
         }
+    }
+
+    fn accept_child_error(&mut self, event: &Value) {
+        let stage = match self.primary_thread.as_deref() {
+            Some(_) if self.is_primary_event(event) => "turn",
+            Some(_) => return,
+            None if event.get("thread_id").is_none_or(Value::is_null) => "startup",
+            None => return,
+        };
+        let error_code =
+            allowlisted_codex_error_code(event.get("codex_error_code").and_then(Value::as_str));
+        let http_status_code = bounded_http_status_code(error_code, event.get("http_status_code"));
+        self.emit_child_failure(stage, error_code, http_status_code);
+    }
+
+    fn accept_turn_failure(&mut self, event: &Value) {
+        if !self.is_primary_event(event) {
+            return;
+        }
+        let error = event.get("error");
+        let error_code = allowlisted_codex_error_code(
+            error
+                .and_then(|error| error.get("codex_error_code"))
+                .and_then(Value::as_str),
+        );
+        let http_status_code = bounded_http_status_code(
+            error_code,
+            error.and_then(|error| error.get("http_status_code")),
+        );
+        self.emit_child_failure("turn", error_code, http_status_code);
+    }
+
+    fn emit_child_failure(
+        &mut self,
+        stage: &'static str,
+        error_code: Option<&'static str>,
+        http_status_code: Option<u16>,
+    ) {
+        if self.child_failure_emitted {
+            return;
+        }
+        self.child_failure_emitted = true;
+        let mut record = serde_json::json!({
+            "event": "runtime_proof_child_failure",
+            "stage": stage,
+        });
+        if let Some(error_code) = error_code {
+            record["codex_error_code"] = serde_json::json!(error_code);
+        }
+        if let Some(http_status_code) = http_status_code {
+            record["http_status_code"] = serde_json::json!(http_status_code);
+        }
+        self.emit_record(&record);
     }
 
     fn accept_thread_start(&mut self, event: &Value) {
@@ -515,6 +572,44 @@ impl<'a, W: Write> Projector<'a, W> {
         let _ = self.writer.write_all(b"\n");
         let _ = self.writer.flush();
     }
+}
+
+fn allowlisted_codex_error_code(value: Option<&str>) -> Option<&'static str> {
+    Some(match value? {
+        "context_window_exceeded" => "context_window_exceeded",
+        "session_budget_exceeded" => "session_budget_exceeded",
+        "usage_limit_exceeded" => "usage_limit_exceeded",
+        "server_overloaded" => "server_overloaded",
+        "cyber_policy" => "cyber_policy",
+        "http_connection_failed" => "http_connection_failed",
+        "response_stream_connection_failed" => "response_stream_connection_failed",
+        "internal_server_error" => "internal_server_error",
+        "unauthorized" => "unauthorized",
+        "bad_request" => "bad_request",
+        "sandbox_error" => "sandbox_error",
+        "response_stream_disconnected" => "response_stream_disconnected",
+        "response_too_many_failed_attempts" => "response_too_many_failed_attempts",
+        "active_turn_not_steerable" => "active_turn_not_steerable",
+        "thread_rollback_failed" => "thread_rollback_failed",
+        "other" => "other",
+        _ => return None,
+    })
+}
+
+fn bounded_http_status_code(error_code: Option<&str>, value: Option<&Value>) -> Option<u16> {
+    if !matches!(
+        error_code,
+        Some(
+            "http_connection_failed"
+                | "response_stream_connection_failed"
+                | "response_stream_disconnected"
+                | "response_too_many_failed_attempts"
+        )
+    ) {
+        return None;
+    }
+    let status: u16 = value?.as_u64()?.try_into().ok()?;
+    (100..=599).contains(&status).then_some(status)
 }
 
 fn canonical_uuid(value: &str) -> Option<String> {

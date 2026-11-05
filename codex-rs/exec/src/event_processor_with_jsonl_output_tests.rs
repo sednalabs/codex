@@ -1,4 +1,5 @@
 use super::*;
+use codex_app_server_protocol::CodexErrorInfo;
 use pretty_assertions::assert_eq;
 use serde_json::json;
 use tempfile::tempdir;
@@ -140,4 +141,159 @@ fn mcp_tool_call_result_preserves_meta_in_jsonl_event() {
         json!({"raw_messages": [{"ref_id": "turn0search0"}]})
     );
     assert!(serialized["item"]["result"].get("meta").is_none());
+}
+
+#[test]
+fn thread_error_event_maps_only_allowlisted_codex_error_codes() {
+    let cases = [
+        (
+            CodexErrorInfo::ContextWindowExceeded,
+            "context_window_exceeded",
+        ),
+        (
+            CodexErrorInfo::SessionBudgetExceeded,
+            "session_budget_exceeded",
+        ),
+        (CodexErrorInfo::UsageLimitExceeded, "usage_limit_exceeded"),
+        (CodexErrorInfo::ServerOverloaded, "server_overloaded"),
+        (CodexErrorInfo::CyberPolicy, "cyber_policy"),
+        (
+            CodexErrorInfo::HttpConnectionFailed {
+                http_status_code: None,
+            },
+            "http_connection_failed",
+        ),
+        (
+            CodexErrorInfo::ResponseStreamConnectionFailed {
+                http_status_code: None,
+            },
+            "response_stream_connection_failed",
+        ),
+        (CodexErrorInfo::InternalServerError, "internal_server_error"),
+        (CodexErrorInfo::Unauthorized, "unauthorized"),
+        (CodexErrorInfo::BadRequest, "bad_request"),
+        (CodexErrorInfo::SandboxError, "sandbox_error"),
+        (
+            CodexErrorInfo::ResponseStreamDisconnected {
+                http_status_code: None,
+            },
+            "response_stream_disconnected",
+        ),
+        (
+            CodexErrorInfo::ResponseTooManyFailedAttempts {
+                http_status_code: None,
+            },
+            "response_too_many_failed_attempts",
+        ),
+        (
+            CodexErrorInfo::ActiveTurnNotSteerable {
+                turn_kind: codex_app_server_protocol::NonSteerableTurnKind::Review,
+            },
+            "active_turn_not_steerable",
+        ),
+        (
+            CodexErrorInfo::ThreadRollbackFailed,
+            "thread_rollback_failed",
+        ),
+        (CodexErrorInfo::Other, "other"),
+    ];
+
+    for (error_info, expected_code) in cases {
+        let event = ThreadErrorEvent::new(
+            "private provider message and token sentinel".to_string(),
+            Some("thread-1".to_string()),
+            Some("turn-1".to_string()),
+            Some(&error_info),
+        );
+        let serialized = serde_json::to_value(event).expect("serialize error event");
+        assert_eq!(serialized["codex_error_code"], expected_code);
+        assert!(serialized.get("http_status_code").is_none());
+    }
+}
+
+#[test]
+fn thread_error_event_bounds_only_structured_http_status_codes() {
+    for (status, expected) in [
+        (Some(99), None),
+        (Some(100), Some(100)),
+        (Some(599), Some(599)),
+        (Some(600), None),
+        (None, None),
+    ] {
+        let error_info = CodexErrorInfo::HttpConnectionFailed {
+            http_status_code: status,
+        };
+        let event = ThreadErrorEvent::new(
+            "private provider message".to_string(),
+            /*thread_id*/ None,
+            /*turn_id*/ None,
+            Some(&error_info),
+        );
+        assert_eq!(event.http_status_code, expected);
+    }
+}
+
+#[test]
+fn streamed_error_jsonl_adds_typed_code_and_bounded_status_fields() {
+    let mut processor = EventProcessorWithJsonOutput::new(/*last_message_path*/ None);
+    let collected = processor.collect_thread_events(ServerNotification::Error(
+        codex_app_server_protocol::ErrorNotification {
+            error: codex_app_server_protocol::TurnError {
+                message: "provider response body private-sentinel".to_string(),
+                codex_error_info: Some(CodexErrorInfo::ResponseStreamDisconnected {
+                    http_status_code: Some(503),
+                }),
+                additional_details: Some("arbitrary private details".to_string()),
+            },
+            will_retry: false,
+            thread_id: "thread-1".to_string(),
+            turn_id: "turn-1".to_string(),
+        },
+    ));
+
+    assert_eq!(collected.events.len(), 1);
+    let serialized = serde_json::to_value(&collected.events[0]).expect("serialize error event");
+    assert_eq!(
+        serialized["codex_error_code"],
+        "response_stream_disconnected"
+    );
+    assert_eq!(serialized["http_status_code"], 503);
+    assert!(serialized.get("response_body").is_none());
+    assert!(serialized.get("additional_details").is_none());
+}
+
+#[test]
+fn failed_turn_jsonl_carries_typed_error_code_and_omits_unbounded_status() {
+    let mut processor = EventProcessorWithJsonOutput::new(/*last_message_path*/ None);
+    let collected = processor.collect_thread_events(ServerNotification::TurnCompleted(
+        codex_app_server_protocol::TurnCompletedNotification {
+            final_model: None,
+            model_snapshot: None,
+            thread_id: "thread-1".to_string(),
+            turn: codex_app_server_protocol::Turn {
+                id: "turn-1".to_string(),
+                items_view: codex_app_server_protocol::TurnItemsView::Full,
+                items: Vec::new(),
+                status: TurnStatus::Failed,
+                error: Some(codex_app_server_protocol::TurnError {
+                    message: "provider error private-sentinel".to_string(),
+                    codex_error_info: Some(CodexErrorInfo::HttpConnectionFailed {
+                        http_status_code: Some(700),
+                    }),
+                    additional_details: Some("private details".to_string()),
+                }),
+                started_at: None,
+                completed_at: Some(0),
+                duration_ms: None,
+            },
+        },
+    ));
+
+    assert_eq!(collected.events.len(), 1);
+    let serialized = serde_json::to_value(&collected.events[0]).expect("serialize turn failure");
+    assert_eq!(
+        serialized["error"]["codex_error_code"],
+        "http_connection_failed"
+    );
+    assert!(serialized["error"].get("http_status_code").is_none());
 }

@@ -7,6 +7,170 @@ use std::process::Command;
 use std::time::Duration;
 use std::time::Instant;
 
+#[repr(C)]
+struct TestCapHeader {
+    version: u32,
+    pid: i32,
+}
+
+#[repr(C)]
+#[derive(Clone, Copy, Default)]
+struct TestCapData {
+    effective: u32,
+    permitted: u32,
+    inheritable: u32,
+}
+
+fn prepare_test_capability_state(mode: &str) {
+    assert_eq!(unsafe { libc::getuid() }, 0);
+    assert_eq!(unsafe { libc::getegid() }, 981);
+    assert_eq!(
+        unsafe { libc::prctl(libc::PR_GET_NO_NEW_PRIVS, 0, 0, 0, 0) },
+        1
+    );
+    let mut header = TestCapHeader {
+        version: 0x2008_0522,
+        pid: 0,
+    };
+    let mut caps = [TestCapData::default(); 2];
+    assert_eq!(
+        unsafe { libc::syscall(libc::SYS_capget, &mut header, caps.as_mut_ptr()) },
+        0
+    );
+    for (name, number) in [("setuid", 7_u32), ("setgid", 6_u32)] {
+        let mask = 1_u32 << number;
+        let ambient = unsafe {
+            libc::prctl(
+                libc::PR_CAP_AMBIENT,
+                libc::PR_CAP_AMBIENT_IS_SET,
+                number,
+                0,
+                0,
+            )
+        };
+        let bounding = unsafe { libc::prctl(libc::PR_CAPBSET_READ, number, 0, 0, 0) };
+        assert!(ambient >= 0 && bounding >= 0);
+        println!(
+            "fixture_cap_{name}=effective:{} permitted:{} inheritable:{} ambient:{} bounding:{}",
+            (caps[0].effective & mask != 0) as u8,
+            (caps[0].permitted & mask != 0) as u8,
+            (caps[0].inheritable & mask != 0) as u8,
+            ambient,
+            bounding
+        );
+    }
+    let setuid = 1_u32 << 7;
+    assert_ne!(
+        caps[0].effective & (1_u32 << 6),
+        0,
+        "fixture requires effective SETGID"
+    );
+    match mode {
+        "observe" => return,
+        "effective_missing" => {
+            assert_ne!(
+                caps[0].permitted & setuid,
+                0,
+                "fixture requires permitted SETUID"
+            );
+            caps[0].effective &= !setuid;
+        }
+        "permitted_missing" => {
+            caps[0].effective &= !setuid;
+            caps[0].permitted &= !setuid;
+            caps[0].inheritable &= !setuid;
+        }
+        _ => panic!("unknown synthetic capability mode"),
+    }
+    assert_eq!(
+        unsafe { libc::syscall(libc::SYS_capset, &mut header, caps.as_ptr()) },
+        0
+    );
+    let mut after = [TestCapData::default(); 2];
+    assert_eq!(
+        unsafe { libc::syscall(libc::SYS_capget, &mut header, after.as_mut_ptr()) },
+        0
+    );
+    assert_eq!(after[0].effective & setuid, 0);
+    assert_eq!(
+        after[0].permitted & setuid != 0,
+        mode == "effective_missing"
+    );
+    println!(
+        "fixture_cap_mode={mode} effective_setuid:0 permitted_setuid:{}",
+        (after[0].permitted & setuid != 0) as u8
+    );
+}
+
+/// Run only on an isolated root-capable Linux test runner with a compiled ELF fixture.
+#[test]
+#[ignore]
+fn verified_executable_survives_privilege_drop() {
+    assert_eq!(unsafe { libc::geteuid() }, 0, "root test runner required");
+    let base = PathBuf::from("/tmp").join(format!("codex-verified-exec-{}", Uuid::new_v4()));
+    fs::create_dir(&base).expect("create private fixture directory");
+    fs::set_permissions(&base, fs::Permissions::from_mode(0o700)).unwrap();
+    let path = base.join("child");
+    fs::copy("/usr/bin/true", &path).expect("copy fixed ELF fixture");
+    fs::set_permissions(&path, fs::Permissions::from_mode(0o755)).unwrap();
+    let digest = sha256_file(&File::open(&path).unwrap()).unwrap();
+    let verified = open_verified_executable(&path, &digest).expect("verify fixture inode");
+    fs::rename(&path, base.join("original")).unwrap();
+    fs::copy("/usr/bin/false", &path).unwrap();
+    fs::set_permissions(&path, fs::Permissions::from_mode(0o755)).unwrap();
+
+    let (_bootstrap_parent, bootstrap_child) = seqpacket_pair().unwrap();
+    let (_auth_parent, auth_child) = seqpacket_pair().unwrap();
+    let bootstrap = duplicate_high(bootstrap_child.as_raw_fd()).unwrap();
+    let auth = duplicate_high(auth_child.as_raw_fd()).unwrap();
+    let executable = duplicate_high(verified.file.as_raw_fd()).unwrap();
+    let null = File::open("/dev/null").unwrap();
+    let sentinel_fd = unsafe { libc::fcntl(null.as_raw_fd(), libc::F_DUPFD, 90) };
+    assert!(sentinel_fd >= 90);
+    let _sentinel = unsafe { File::from_raw_fd(sentinel_fd) };
+    let mut policy = fixed_policy(&[7; RUNTIME_SEED_BYTES]);
+    let LauncherTarget::Mcp(target) = &mut policy.target else {
+        unreachable!()
+    };
+    target.runtime_uid = 992;
+    target.runtime_gid = 981;
+    let run = RunDirectory {
+        codex_home: PathBuf::from("/"),
+        child_home: PathBuf::from("/"),
+        working_directory: PathBuf::from("/"),
+        config_sha256: String::new(),
+    };
+    let mode = std::env::var("CODEX_VERIFIED_CAP_MODE").expect("fixture capability mode");
+    let expected = std::env::var("CODEX_VERIFIED_EXPECT").expect("fixture expected result");
+    prepare_test_capability_state(&mode);
+    let result = spawn_verified_child(&executable, &bootstrap, &auth, &run, target);
+    match result {
+        Ok(child) => {
+            let output = child.wait_with_output().expect("wait for ELF fixture");
+            fs::remove_dir_all(&base).unwrap();
+            println!("fixture_spawn=success");
+            assert!(expected == "success" || expected == "observe");
+            assert_eq!(
+                output.status.code(),
+                Some(0),
+                "ELF fixture isolation checks"
+            );
+            assert!(output.stdout.is_empty());
+        }
+        Err(error) => {
+            let errno = error.chain().find_map(|cause| {
+                cause
+                    .downcast_ref::<std::io::Error>()
+                    .and_then(std::io::Error::raw_os_error)
+            });
+            fs::remove_dir_all(&base).unwrap();
+            println!("fixture_spawn_errno={errno:?}");
+            assert!(expected == "errno1" || expected == "observe");
+            assert_eq!(errno, Some(libc::EPERM));
+        }
+    }
+}
+
 #[test]
 fn api_bearer_provisioning_accepts_only_the_fixed_browser_modes() {
     let browser = vec![std::ffi::OsString::from("provision-api-bearer")];
@@ -75,6 +239,64 @@ fn mcp_failure_stage_exposes_only_a_closed_phase() {
         safe_mcp_failure_stage(&anyhow::anyhow!("MCP launcher failure stage: oauth")),
         None
     );
+}
+
+#[test]
+fn mcp_failure_details_and_errno_are_closed_and_numeric() {
+    let cases = [
+        (
+            McpFailureDetail::ExecutableVerify,
+            "executable_verify",
+            false,
+        ),
+        (
+            McpFailureDetail::BootstrapFdDuplicate,
+            "bootstrap_fd_duplicate",
+            true,
+        ),
+        (McpFailureDetail::AuthFdDuplicate, "auth_fd_duplicate", true),
+        (
+            McpFailureDetail::ExecutableFdDuplicate,
+            "executable_fd_duplicate",
+            true,
+        ),
+        (McpFailureDetail::ChildSpawn, "child_spawn", false),
+        (McpFailureDetail::ChildStdout, "child_stdout", false),
+        (McpFailureDetail::OutputReader, "output_reader", false),
+    ];
+    for (detail, expected, runtime_setup) in cases {
+        let stage = if runtime_setup {
+            McpFailureStage::RuntimeSetup
+        } else {
+            McpFailureStage::ChildStart
+        };
+        let error = anyhow::Error::new(std::io::Error::from_raw_os_error(libc::EACCES))
+            .context("private failure text")
+            .context(detail)
+            .context(stage);
+        assert_eq!(safe_mcp_failure_detail(&error), Some(expected));
+        assert_eq!(safe_mcp_failure_errno(&error), Some(libc::EACCES));
+        assert_eq!(
+            safe_mcp_failure_stage(&error),
+            Some(if runtime_setup {
+                "runtime_setup"
+            } else {
+                "child_start"
+            })
+        );
+    }
+    let unlabeled = anyhow::Error::new(std::io::Error::from_raw_os_error(libc::EACCES))
+        .context(McpFailureStage::ChildStart);
+    assert_eq!(safe_mcp_failure_detail(&unlabeled), None);
+    assert_eq!(safe_mcp_failure_errno(&unlabeled), None);
+    let unknown = anyhow::anyhow!("private failure text")
+        .context(McpFailureDetail::ExecutableVerify)
+        .context(McpFailureStage::ChildStart);
+    assert_eq!(safe_mcp_failure_errno(&unknown), None);
+    let out_of_range = anyhow::Error::new(std::io::Error::from_raw_os_error(i32::MAX))
+        .context(McpFailureDetail::ChildSpawn)
+        .context(McpFailureStage::ChildStart);
+    assert_eq!(safe_mcp_failure_errno(&out_of_range), None);
 }
 
 #[test]
@@ -226,7 +448,7 @@ fn fixed_policy(seed: &[u8; RUNTIME_SEED_BYTES]) -> LauncherPolicy {
         issuer_kid: "issuer-v1".to_string(),
         issuer_public_key: URL_SAFE_NO_PAD.encode(issuer.verifying_key().as_bytes()),
         execution_lease_seconds: 60,
-        target: LauncherTarget::Mcp(McpLaunchConfig {
+        target: LauncherTarget::Mcp(Box::new(McpLaunchConfig {
             codex_dev_path: PathBuf::from("/"),
             codex_dev_sha256: "a".repeat(64),
             runtime_uid: 65534,
@@ -238,10 +460,11 @@ fn fixed_policy(seed: &[u8; RUNTIME_SEED_BYTES]) -> LauncherPolicy {
                 expected_issuer: "https://issuer.example/".to_string(),
                 client_id: "codex-work-claim".to_string(),
                 audience: "https://mcp.example/".to_string(),
-                requested_scope: "ops:write".to_string(),
+                requested_scope: "ops:read ops:write".to_string(),
             },
+            model: None,
             task_prompt: "Claim the fixed Work item after checking its current state.".to_string(),
-        }),
+        })),
     }
 }
 
@@ -344,7 +567,11 @@ fn token_deadline_preserves_fractional_time_from_the_policy_clock_pair() {
 
 #[test]
 fn generated_claim_profile_matches_the_protected_runtime_admission() {
-    let config = render_codex_config("https://mcp.example/");
+    let config = render_codex_config("https://mcp.example/", Some("gpt-6-luna"));
+    assert_eq!(
+        config.lines().find(|line| line.starts_with("model = ")),
+        Some("model = \"gpt-6-luna\"")
+    );
     crate::auth::validate_raw_config(config.as_bytes(), MCP_SERVER, "https://mcp.example/")
         .expect("launcher profile is admitted by the child runtime");
 
@@ -356,6 +583,57 @@ fn generated_claim_profile_matches_the_protected_runtime_admission() {
             "https://mcp.example/",
         )
         .is_err()
+    );
+}
+
+#[test]
+fn mcp_model_selection_is_policy_versioned_and_scoped() {
+    let seed = [29_u8; RUNTIME_SEED_BYTES];
+    let mut policy = fixed_policy(&seed);
+    assert!(
+        validate_policy(&policy).is_ok(),
+        "v2 retains dynamic selection"
+    );
+
+    {
+        let LauncherTarget::Mcp(target) = &mut policy.target else {
+            unreachable!("the fixed policy helper creates an MCP target");
+        };
+        target.model = Some("gpt-6-luna".to_string());
+    }
+    assert!(
+        validate_policy(&policy).is_err(),
+        "v2 does not accept a model pin"
+    );
+
+    policy.version = 3;
+    assert!(
+        validate_policy(&policy).is_ok(),
+        "v3 accepts the task-scoped model"
+    );
+    {
+        let LauncherTarget::Mcp(target) = &mut policy.target else {
+            unreachable!("the fixed policy helper creates an MCP target");
+        };
+        target.model = Some("invalid model".to_string());
+    }
+    assert!(
+        validate_policy(&policy).is_err(),
+        "model names must be bounded identifiers"
+    );
+    if let LauncherTarget::Mcp(target) = &mut policy.target {
+        target.model = None;
+    }
+    assert!(
+        validate_policy(&policy).is_err(),
+        "v3 requires an explicit model"
+    );
+
+    let legacy_config = render_codex_config("https://mcp.example/", /*model*/ None);
+    assert!(
+        !legacy_config
+            .lines()
+            .any(|line| line.starts_with("model = "))
     );
 }
 
@@ -697,4 +975,32 @@ fn fixed_http_policy_accepts_only_the_canonical_work_and_api_precondition() {
             "fixed API policy must reject caller-selected {field}"
         );
     }
+}
+
+#[test]
+fn output_projection_timeout_has_distinct_launcher_exit_status() {
+    let child_failure = result_after_projection_drain(Ok(1), /*projection_drained*/ true)
+        .expect("a drained projection preserves the child failure status");
+    assert_eq!(child_failure, 1);
+
+    let timeout = result_after_projection_drain(Ok(1), /*projection_drained*/ false)
+        .expect("a projection timeout has a launcher diagnostic status");
+    assert_eq!(timeout, OUTPUT_PROJECTION_TIMEOUT_EXIT_CODE);
+    assert_ne!(timeout, child_failure);
+
+    let supervision_error = result_after_projection_drain(
+        Err(anyhow::anyhow!("synthetic supervision error")),
+        /*projection_drained*/ true,
+    );
+    assert!(supervision_error.is_err());
+
+    let timeout_after_supervision_error = result_after_projection_drain(
+        Err(anyhow::anyhow!("synthetic supervision error")),
+        /*projection_drained*/ false,
+    )
+    .expect("a projection timeout remains distinguishable without stderr logging");
+    assert_eq!(
+        timeout_after_supervision_error,
+        OUTPUT_PROJECTION_TIMEOUT_EXIT_CODE
+    );
 }

@@ -172,6 +172,27 @@ fn server_overloaded_maps_to_protocol() {
 }
 
 #[test]
+fn unexpected_status_maps_to_protocol_with_structured_status_only() {
+    let err = CodexErr::UnexpectedStatus(UnexpectedResponseError {
+        status: StatusCode::BAD_GATEWAY,
+        body: "private provider response body".to_string(),
+        user_message: None,
+        url: None,
+        cf_ray: None,
+        request_id: None,
+        identity_authorization_error: None,
+        identity_error_code: None,
+    });
+
+    assert_eq!(
+        err.to_codex_protocol_error(),
+        CodexErrorInfo::HttpConnectionFailed {
+            http_status_code: Some(StatusCode::BAD_GATEWAY.as_u16()),
+        }
+    );
+}
+
+#[test]
 fn sandbox_denied_uses_aggregated_output_when_stderr_empty() {
     let output = ExecToolCallOutput {
         exit_code: 77,
