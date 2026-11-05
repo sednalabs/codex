@@ -145,6 +145,12 @@ fn write_stdin_tool_matches_expected_spec() {
 
     let properties = BTreeMap::from([
         (
+            "return_on_output".to_string(),
+            JsonSchema::boolean(Some(
+                "When true, return when output is available, the process exits, or the wait expires. Cannot be combined with wait_until_terminal.".to_string(),
+            )),
+        ),
+        (
             "session_id".to_string(),
             JsonSchema::number(Some(
                 "Identifier of the running unified exec session.".to_string(),

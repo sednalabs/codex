@@ -8,6 +8,7 @@ use anyhow::Result;
 use codex_protocol::ThreadId;
 use codex_protocol::protocol::Event;
 use codex_protocol::protocol::EventMsg;
+use codex_protocol::protocol::RawResponseCompletedEvent;
 use codex_protocol::protocol::SessionSource;
 use codex_protocol::protocol::SubAgentSource;
 use codex_protocol::protocol::ThreadSource;
@@ -635,15 +636,31 @@ async fn record_completed_response(
     output_tokens: i64,
     total_tokens: i64,
 ) {
+    let token_event = token_count_event(
+        turn_id,
+        uncached_input_tokens,
+        cached_input_tokens,
+        output_tokens,
+        total_tokens,
+    );
+    let token_usage = TokenUsage {
+        input_tokens: uncached_input_tokens + cached_input_tokens,
+        cached_input_tokens,
+        cache_write_input_tokens: 0,
+        output_tokens,
+        reasoning_output_tokens: 0,
+        total_tokens,
+    };
     logger
-        .record_event(&token_count_event(
-            turn_id,
-            uncached_input_tokens,
-            cached_input_tokens,
-            output_tokens,
-            total_tokens,
-        ))
+        .record_event(&Event {
+            id: turn_id.to_string(),
+            msg: EventMsg::RawResponseCompleted(RawResponseCompletedEvent {
+                response_id: format!("response-{turn_id}"),
+                token_usage: Some(token_usage),
+            }),
+        })
         .await;
+    logger.record_event(&token_event).await;
     logger
         .record_event(&Event {
             id: turn_id.to_string(),

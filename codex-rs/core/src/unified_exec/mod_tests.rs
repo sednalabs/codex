@@ -158,7 +158,7 @@ async fn exec_command_with_tty(
         cancellation_token,
     } = process.output_handles();
     let deadline = started_at + Duration::from_millis(yield_time_ms);
-    let collected_output = UnifiedExecProcessManager::collect_output_until_deadline(
+    let (collected_output, _) = UnifiedExecProcessManager::collect_output_until_deadline(
         &output_buffer,
         &output_notify,
         &output_closed,
@@ -166,6 +166,7 @@ async fn exec_command_with_tty(
         &cancellation_token,
         Some(session.subscribe_elicitation_pause_state()),
         deadline,
+        /*return_on_output*/ false,
     )
     .await;
     let wall_time = Instant::now().saturating_duration_since(started_at);
@@ -323,6 +324,7 @@ async fn write_stdin(
             input,
             yield_time_ms,
             empty_input_min_yield_time_ms: MIN_EMPTY_YIELD_TIME_MS,
+            return_on_output: false,
             max_output_tokens: None,
             truncation_policy: TruncationPolicy::Tokens(10_000),
             interaction_event: None,
@@ -355,6 +357,55 @@ fn head_tail_buffer_default_preserves_prefix_and_suffix() {
     let rendered = buffer.to_bytes();
     assert_eq!(rendered.first(), Some(&b'a'));
     assert!(rendered.ends_with(b"bc"));
+}
+
+#[cfg(unix)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn write_stdin_returns_on_output_and_retains_later_exit_output() -> anyhow::Result<()> {
+    skip_if_sandbox!(Ok(()));
+    let (session, turn) = test_session_and_turn().await;
+    let child = exec_command(
+        &session,
+        &turn,
+        "stty -echo; read -r first; printf FIRST; read -r second; printf TAIL",
+        /*yield_time_ms*/ 250,
+        /*workdir*/ None,
+    )
+    .await?;
+    let process_id = child.process_id.expect("waiting child");
+    let started = Instant::now();
+    let first = session
+        .services
+        .unified_exec_manager
+        .write_stdin(WriteStdinRequest {
+            process_id,
+            input: "\n",
+            yield_time_ms: 5_000,
+            empty_input_min_yield_time_ms: MIN_EMPTY_YIELD_TIME_MS,
+            return_on_output: true,
+            max_output_tokens: None,
+            truncation_policy: TruncationPolicy::Tokens(10_000),
+            interaction_event: None,
+        })
+        .await?;
+    assert!(started.elapsed() < Duration::from_secs(4));
+    assert!(
+        first
+            .truncated_output(DEFAULT_MAX_OUTPUT_TOKENS)
+            .contains("FIRST")
+    );
+    assert_eq!(first.process_id, Some(process_id));
+    assert_eq!(first.exit_code, None);
+
+    let final_output = write_stdin(&session, process_id, "\n", /*yield_time_ms*/ 2_500).await?;
+    assert!(
+        final_output
+            .truncated_output(DEFAULT_MAX_OUTPUT_TOKENS)
+            .contains("TAIL")
+    );
+    assert_eq!(final_output.process_id, None);
+    assert_eq!(final_output.exit_code, Some(0));
+    Ok(())
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -824,8 +875,10 @@ async fn unified_exec_uses_remote_exec_server_when_configured() -> anyhow::Resul
         &cancellation_token,
         /*pause_state*/ None,
         Instant::now() + Duration::from_millis(2_500),
+        /*return_on_output*/ false,
     )
     .await
+    .0
     .to_bytes_with_omission_marker();
 
     assert!(String::from_utf8_lossy(&collected).contains("remote-unified-exec"));

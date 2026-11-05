@@ -127,6 +127,12 @@ pub(crate) fn create_exec_command_tool_with_environment_id(
 pub fn create_write_stdin_tool() -> ToolSpec {
     let mut properties = BTreeMap::from([
         (
+            "return_on_output".to_string(),
+            JsonSchema::boolean(Some(
+                "When true, return when output is available, the process exits, or the wait expires. Cannot be combined with wait_until_terminal.".to_string(),
+            )),
+        ),
+        (
             "session_id".to_string(),
             JsonSchema::number(Some(
                 "Identifier of the running unified exec session.".to_string(),

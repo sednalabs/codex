@@ -95,6 +95,7 @@
         "codex-rs/state/src/runtime.rs",
         "codex-rs/state/src/runtime/extension_storage.rs",
         "codex-rs/state/src/runtime/usage.rs",
+        "codex-rs/state/src/runtime/usage_reporting_tests.rs",
         "codex-rs/state/src/sqlite.rs",
         "codex-rs/state/usage_migrations/0001_usage_tables.sql"
       ],
@@ -152,7 +153,7 @@
         "codex-rs/tui/src/chatwidget/status_surfaces.rs",
         "codex-rs/tui/src/session_resume.rs"
       ],
-      "behavior": "Sessions record per-thread usage, provider, tool, spawn, final provider model identity, distinct prompt-cache write tokens, provider-facing service tier, ChatGPT Fast-mode evidence, and versioned Codex credit estimates through the usage-ledger extension storage namespace.",
+      "behavior": "Sessions record one provider-call row per completed raw response identity, plus per-thread tool, spawn, model, prompt-cache, service-tier, Fast-mode, quota, lineage, and versioned Codex-credit evidence through the usage-ledger extension storage namespace.",
       "upstream_equivalent": false,
       "introduced_in": {
         "carry_commit": null,
@@ -165,13 +166,16 @@
         "credit_views_select_standard_fast_and_half_open_rates",
         "credit_views_preserve_uncertainty_and_partial_totals",
         "credit_views_cover_current_aliases_boundaries_and_rollups",
+        "usage_logger_upserts_response_identity_and_ignores_status_reemissions",
+        "usage_logger_preserves_missing_response_usage_as_unknown",
+        "bounded_usage_report_cli_qualifies_real_writer_and_hosted_scale",
         "usage_logger_records_provider_final_model_identity",
         "status_surfaces_prefer_turn_completed_provider_model_identity",
         "rollout_resume_state_prefers_latest_turn_context",
         "configured_resume_cwd_skips_prompt"
       ],
       "owner": "downstream",
-      "notes": "Extends the ledger with event-level auditing data and lets completed thread displays prefer provider-confirmed model identity before falling back to configured session metadata. Provider-facing priority is recorded separately from the ChatGPT Fast credit regime so API Priority is not mispriced as Codex credits. Versioned rate and policy tables fail closed for unknown or legacy coverage, retain provenance, and keep cache-write tokens diagnostic rather than double-counting them. The 2026-07-30 rate revision preserves historical half-open intervals and updates GPT-5.6 Luna/Terra Standard/Fast rows; migration 0013 records the 2026-09-05 STANDARD/default observation, closes the prior Sol interval, and adds GPT-5.6 Sol at 100 / 10 / 500, including the provider's gpt-5.6 alias. It also retains explicit GPT-Image-2 image/text cards as unselectable until modality evidence is available. Downstream model and reasoning-effort recovery in session_resume composes with upstream tui.resume_cwd; future syncs must preserve both behaviors.",
+      "notes": "RawResponseCompleted is the provider-call boundary: its exact response_id, scoped by thread, supplies a stable provider_call_id and is upserted on redelivery. TokenCount snapshots enrich that completed row and record quota observations, but cannot create a call; repeated rate-limit or context-estimate events therefore do not double-count usage. Missing exact usage stays NULL with provider_usage_missing, and no migration rewrites historical rows. Completed thread displays still prefer provider-confirmed model identity before configured session metadata. Provider-facing priority is recorded separately from the ChatGPT Fast credit regime so API Priority is not mispriced as Codex credits. Versioned rate and policy tables fail closed for unknown or legacy coverage, retain provenance, and keep cache-write tokens diagnostic rather than double-counting them. The 2026-07-30 rate revision preserves historical half-open intervals and updates GPT-5.6 Luna/Terra Standard/Fast rows; migration 0013 records the 2026-09-05 STANDARD/default observation, closes the prior Sol interval, and adds GPT-5.6 Sol at 100 / 10 / 500, including the provider's gpt-5.6 alias. It also retains explicit GPT-Image-2 image/text cards as unselectable until modality evidence is available. Downstream model and reasoning-effort recovery in session_resume composes with upstream tui.resume_cwd; future syncs must preserve both behaviors.",
       "upstreamability_tier": "downstream-adapter",
       "boundary_type": "extension-owned-state",
       "hotspot_files": [

@@ -119,6 +119,7 @@ pub(crate) struct WriteStdinRequest<'a> {
     pub input: &'a str,
     pub yield_time_ms: u64,
     pub empty_input_min_yield_time_ms: u64,
+    pub return_on_output: bool,
     pub max_output_tokens: Option<usize>,
     pub truncation_policy: TruncationPolicy,
     pub interaction_event: Option<WriteStdinInteractionEvent<'a>>,
