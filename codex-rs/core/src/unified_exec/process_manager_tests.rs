@@ -284,10 +284,11 @@ async fn first_output_wait_returns_for_live_process_and_times_out_without_output
         Instant::now() + Duration::from_secs(5),
         /*return_on_output*/ true,
     );
-    let ((collected, early), ()) =
-        tokio::time::timeout(Duration::from_secs(2), async { tokio::join!(collect, produce) })
-            .await
-            .expect("output should wake before the deadline");
+    let ((collected, early), ()) = tokio::time::timeout(Duration::from_secs(2), async {
+        tokio::join!(collect, produce)
+    })
+    .await
+    .expect("output should wake before the deadline");
     assert!(early);
     assert_eq!(collected.to_bytes(), b"ready".to_vec());
 }

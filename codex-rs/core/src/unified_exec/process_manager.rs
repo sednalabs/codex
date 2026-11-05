@@ -591,7 +591,10 @@ impl UnifiedExecProcessManager {
         }
         let process_id = request.process_id;
         let (response_process_id, exit_code) = if process_started_alive {
-            match self.refresh_process_state(process_id, /*retain_exited*/ false).await {
+            match self
+                .refresh_process_state(process_id, /*retain_exited*/ false)
+                .await
+            {
                 ProcessStatus::Alive {
                     exit_code,
                     process_id,
@@ -830,7 +833,8 @@ impl UnifiedExecProcessManager {
         let status = if let Some(status) = status_after_write {
             status
         } else {
-            self.refresh_process_state(process_id, returned_on_output).await
+            self.refresh_process_state(process_id, returned_on_output)
+                .await
         };
         let (process_id, exit_code, event_call_id) = match status {
             ProcessStatus::Alive {
