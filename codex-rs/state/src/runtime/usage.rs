@@ -415,7 +415,7 @@ ON CONFLICT(thread_id) DO UPDATE SET
             sqlx::query(
                 r#"UPDATE usage_provider_calls SET
                     provider = COALESCE(?, provider),
-                    requested_model = COALESCE(requested_model, ?),
+                    requested_model = COALESCE(?, requested_model),
                     actual_model_used = COALESCE(?, actual_model_used),
                     requested_service_tier = COALESCE(?, requested_service_tier),
                     actual_service_tier = COALESCE(?, actual_service_tier),
