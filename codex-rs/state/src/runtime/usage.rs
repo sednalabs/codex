@@ -490,7 +490,12 @@ ON CONFLICT(thread_id) DO UPDATE SET
             status,
         ) = match response.token_usage.as_ref() {
             Some(usage) => (
-                Some(usage.input_tokens.saturating_sub(usage.cached_input_tokens).max(0)),
+                Some(
+                    usage
+                        .input_tokens
+                        .saturating_sub(usage.cached_input_tokens)
+                        .max(0),
+                ),
                 Some(usage.cached_input_tokens),
                 Some(usage.cache_write_input_tokens),
                 Some(usage.output_tokens),
@@ -1684,9 +1689,9 @@ INSERT INTO usage_provider_calls (
         Ok(())
     }
 
-
     #[tokio::test]
-    async fn usage_logger_token_snapshot_is_not_a_call_and_clamps_inconsistent_cache() -> Result<()> {
+    async fn usage_logger_token_snapshot_is_not_a_call_and_clamps_inconsistent_cache() -> Result<()>
+    {
         let (runtime, _tmp_dir) = init_runtime().await?;
         let thread_id = ThreadId::new();
         let mut logger = UsageLogger::try_new(
@@ -1705,12 +1710,11 @@ INSERT INTO usage_provider_calls (
             ))
             .await;
         let pool_arc = runtime.usage_pool();
-        let call_count: i64 = sqlx::query_scalar(
-            "SELECT COUNT(*) FROM usage_provider_calls WHERE thread_id = ?",
-        )
-        .bind(thread_id.to_string())
-        .fetch_one(pool_arc.as_ref())
-        .await?;
+        let call_count: i64 =
+            sqlx::query_scalar("SELECT COUNT(*) FROM usage_provider_calls WHERE thread_id = ?")
+                .bind(thread_id.to_string())
+                .fetch_one(pool_arc.as_ref())
+                .await?;
         assert_eq!(call_count, 0);
 
         logger
@@ -1738,7 +1742,8 @@ INSERT INTO usage_provider_calls (
     }
 
     #[tokio::test]
-    async fn usage_logger_redelivery_preserves_measurement_turn_and_completion_order() -> Result<()> {
+    async fn usage_logger_redelivery_preserves_measurement_turn_and_completion_order() -> Result<()>
+    {
         let (runtime, _tmp_dir) = init_runtime().await?;
         let thread_id = ThreadId::new();
         let mut logger = UsageLogger::try_new(
@@ -1765,7 +1770,9 @@ INSERT INTO usage_provider_calls (
         );
         logger
             .record_event(&raw_response_completed_event(
-                "turn-older", "resp-older", Some(usage.clone()),
+                "turn-older",
+                "resp-older",
+                Some(usage.clone()),
             ))
             .await;
         logger.update_turn_snapshot(
@@ -1775,7 +1782,9 @@ INSERT INTO usage_provider_calls (
         );
         logger
             .record_event(&raw_response_completed_event(
-                "turn-newer", "resp-newer", Some(usage),
+                "turn-newer",
+                "resp-newer",
+                Some(usage),
             ))
             .await;
 
@@ -1799,7 +1808,9 @@ INSERT INTO usage_provider_calls (
         // response ahead of the actually newer call.
         logger
             .record_event(&raw_response_completed_event(
-                "", "resp-older", /*token_usage*/ None,
+                "",
+                "resp-older",
+                /*token_usage*/ None,
             ))
             .await;
         let row: (Option<String>, Option<i64>, Option<i64>, String, String) = sqlx::query_as(
@@ -1826,7 +1837,9 @@ INSERT INTO usage_provider_calls (
             Some(6),
         );
         assert_eq!(
-            runtime.latest_usage_provider_display_model(thread_id).await?,
+            runtime
+                .latest_usage_provider_display_model(thread_id)
+                .await?,
             Some("newer-model".into()),
         );
         Ok(())
@@ -1863,7 +1876,13 @@ INSERT INTO usage_provider_calls (
             Some("requested-provider".into()),
         );
 
-        record_completed_response(&mut logger, turn_id, "resp-usage-1", /*include_rate_limit*/ true).await;
+        record_completed_response(
+            &mut logger,
+            turn_id,
+            "resp-usage-1",
+            /*include_rate_limit*/ true,
+        )
+        .await;
 
         let pool_arc = runtime.usage_pool();
         let pool: &SqlitePool = pool_arc.as_ref();
@@ -3436,7 +3455,13 @@ INSERT INTO usage_codex_credit_rates (
             Some("requested-model".to_string()),
             Some("requested-provider".to_string()),
         );
-        record_completed_response(&mut logger, turn_id, "resp-identity-1", /*include_rate_limit*/ false).await;
+        record_completed_response(
+            &mut logger,
+            turn_id,
+            "resp-identity-1",
+            /*include_rate_limit*/ false,
+        )
+        .await;
         logger
             .record_event(&Event {
                 id: turn_id.to_string(),
@@ -3586,7 +3611,13 @@ WHERE thread_id = ?
             /*agent_role*/ None,
         )
         .await?;
-        record_completed_response(&mut root_logger, "turn-root", "resp-root", /*include_rate_limit*/ true).await;
+        record_completed_response(
+            &mut root_logger,
+            "turn-root",
+            "resp-root",
+            /*include_rate_limit*/ true,
+        )
+        .await;
 
         let child_thread_id = ThreadId::new();
         let _child_logger = UsageLogger::try_new_with_thread_source(
@@ -3668,7 +3699,13 @@ WHERE thread_id = ?
             Some("requested-model".to_string()),
             Some("requested-provider".to_string()),
         );
-        record_completed_response(&mut logger, turn_id, "resp-clear", /*include_rate_limit*/ false).await;
+        record_completed_response(
+            &mut logger,
+            turn_id,
+            "resp-clear",
+            /*include_rate_limit*/ false,
+        )
+        .await;
         logger
             .record_event(&Event {
                 id: turn_id.to_string(),
@@ -3854,7 +3891,13 @@ WHERE tool_call_id = ?
         .await?;
 
         let turn_id = "turn-spawn";
-        record_completed_response(&mut logger, turn_id, "resp-spawn", /*include_rate_limit*/ false).await;
+        record_completed_response(
+            &mut logger,
+            turn_id,
+            "resp-spawn",
+            /*include_rate_limit*/ false,
+        )
+        .await;
 
         let spawn_call = "spawn-call";
         let spawn_child = ThreadId::new();
@@ -4211,7 +4254,13 @@ WHERE child_thread_id = ?
         )
         .await?;
         let child_turn_id = "turn-child-token";
-        record_completed_response(&mut child_logger, child_turn_id, "resp-child", /*include_rate_limit*/ false).await;
+        record_completed_response(
+            &mut child_logger,
+            child_turn_id,
+            "resp-child",
+            /*include_rate_limit*/ false,
+        )
+        .await;
 
         let pool_arc = runtime.usage_pool();
         let pool: &SqlitePool = pool_arc.as_ref();
