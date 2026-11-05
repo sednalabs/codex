@@ -546,9 +546,9 @@ ON CONFLICT(thread_id) DO UPDATE SET
             ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             ON CONFLICT(provider_call_id) DO UPDATE SET
                 turn_id = COALESCE(usage_provider_calls.turn_id, excluded.turn_id),
-                spawn_request_id = COALESCE(excluded.spawn_request_id, usage_provider_calls.spawn_request_id),
-                provider = COALESCE(excluded.provider, usage_provider_calls.provider),
-                requested_model = COALESCE(excluded.requested_model, usage_provider_calls.requested_model),
+                spawn_request_id = COALESCE(usage_provider_calls.spawn_request_id, excluded.spawn_request_id),
+                provider = COALESCE(usage_provider_calls.provider, excluded.provider),
+                requested_model = COALESCE(usage_provider_calls.requested_model, excluded.requested_model),
                 -- Preserve the first observed completion time on redelivery.
                 input_tokens_uncached = COALESCE(excluded.input_tokens_uncached, usage_provider_calls.input_tokens_uncached),
                 input_tokens_cached = COALESCE(excluded.input_tokens_cached, usage_provider_calls.input_tokens_cached),
@@ -1628,6 +1628,19 @@ INSERT INTO usage_provider_calls (
                 assert_eq!(row.get::<Option<i64>, _>(field), Some(expected), "{field}");
             }
         }
+
+        // Metadata already enriched by TokenCount must not regress to the
+        // requested provider/model from a duplicate raw completion.
+        let identity: (Option<String>, Option<String>) = sqlx::query_as(
+            "SELECT provider, requested_model FROM usage_provider_calls WHERE provider_call_id = ?",
+        )
+        .bind(format!("response:{thread_id}:resp-repeat"))
+        .fetch_one(pool_arc.as_ref())
+        .await?;
+        assert_eq!(
+            identity,
+            (Some("test-provider".into()), Some("requested-model".into())),
+        );
 
         Ok(())
     }
