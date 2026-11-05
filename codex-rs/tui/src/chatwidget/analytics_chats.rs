@@ -2,8 +2,8 @@
 
 use super::*;
 use crate::analytics_chats::AccountChats;
-use crate::analytics_chats::ConsumerChats;
 use crate::analytics_chats::Chats;
+use crate::analytics_chats::ConsumerChats;
 use crate::analytics_chats::LocalUsage;
 use crate::chatwidget::usage::ANALYTICS_CHATS_VIEW_ID;
 
@@ -106,7 +106,10 @@ impl ChatWidget {
             items,
             ..Default::default()
         };
-        if self.bottom_pane.replace_selection_view_if_present(ANALYTICS_CHATS_VIEW_ID, params) {
+        if self
+            .bottom_pane
+            .replace_selection_view_if_present(ANALYTICS_CHATS_VIEW_ID, params)
+        {
             self.request_redraw();
         }
     }
@@ -118,32 +121,57 @@ fn workspace_rows(page: Chats) -> (Vec<SelectionItem>, Option<String>, String) {
         let title = chat.display_title().to_string();
         let local_usage = chat.local_usage;
         if let Some(usage) = chat.usage {
-            let mut estimated = format!("Estimated credits: {}", format_micros(usage.estimated_usage_credits_micros));
+            let mut estimated = format!(
+                "Estimated credits: {}",
+                format_micros(usage.estimated_usage_credits_micros)
+            );
             if let Some(usd) = usage.estimated_usage_usd_micros {
                 estimated.push_str(&format!(" · Estimated USD: {}", format_micros(usd)));
             }
-            items.push(SelectionItem { name: title, description: Some(estimated), ..Default::default() });
+            items.push(SelectionItem {
+                name: title,
+                description: Some(estimated),
+                ..Default::default()
+            });
             for group in usage.groups {
                 let model = group.model.as_deref().unwrap_or("Model not reported");
-                let effort = group.reasoning_effort.as_deref().unwrap_or("effort not reported");
+                let effort = group
+                    .reasoning_effort
+                    .as_deref()
+                    .unwrap_or("effort not reported");
                 let speed = group.speed.as_deref().unwrap_or("speed not reported");
                 items.push(SelectionItem {
                     name: format!("  {model} · {effort} · {speed}"),
-                    description: Some(format!("Estimated credits: {}", format_micros(group.estimated_usage_credits_micros))),
+                    description: Some(format!(
+                        "Estimated credits: {}",
+                        format_micros(group.estimated_usage_credits_micros)
+                    )),
                     ..Default::default()
                 });
             }
         } else {
-            items.push(SelectionItem { name: title, description: Some("Estimate unavailable".to_string()), ..Default::default() });
+            items.push(SelectionItem {
+                name: title,
+                description: Some("Estimate unavailable".to_string()),
+                ..Default::default()
+            });
         }
         append_local_usage(&mut items, local_usage);
     }
     if items.is_empty() {
-        items.push(SelectionItem { name: "No chats in this page".to_string(), is_disabled: true, ..Default::default() });
+        items.push(SelectionItem {
+            name: "No chats in this page".to_string(),
+            is_disabled: true,
+            ..Default::default()
+        });
     }
     let subtitle = match (page.partial_history, page.partial_estimates) {
-        (true, true) => "30 days; incomplete index; page-only ranking; some estimates unavailable; local estimates may overcount.",
-        (true, false) => "30 days; index may be incomplete; page-only ranking; local estimates may overcount.",
+        (true, true) => {
+            "30 days; incomplete index; page-only ranking; some estimates unavailable; local estimates may overcount."
+        }
+        (true, false) => {
+            "30 days; index may be incomplete; page-only ranking; local estimates may overcount."
+        }
         (false, true) => "Some estimates unavailable; local estimates may overcount.",
         (false, false) => "Page-local ranking. Local estimates may overcount.",
     };
@@ -155,40 +183,79 @@ fn consumer_rows(page: ConsumerChats) -> (Vec<SelectionItem>, Option<String>, St
     for chat in page.rows {
         let title = chat.display_title().to_string();
         let local_usage = chat.local_usage;
-        if let Some(usage) = chat.usage.filter(|usage| {
-            usage.data_status != codex_backend_client::TaskUsageStatus::Unavailable
-        }) {
+        if let Some(usage) = chat
+            .usage
+            .filter(|usage| usage.data_status != codex_backend_client::TaskUsageStatus::Unavailable)
+        {
             let amounts = &usage.amounts;
-            let weekly = amounts.weekly_limit_percent.map_or_else(|| "unavailable".into(), |value| format!("{value:.1}%"));
-            let five_hour = amounts.five_hour_limit_percent.map_or_else(|| "unavailable".into(), |value| format!("{value:.1}%"));
-            let balance = amounts.balance_usage_credits.as_ref().map_or("unavailable", |value| value.as_str());
+            let weekly = amounts
+                .weekly_limit_percent
+                .map_or_else(|| "unavailable".into(), |value| format!("{value:.1}%"));
+            let five_hour = amounts
+                .five_hour_limit_percent
+                .map_or_else(|| "unavailable".into(), |value| format!("{value:.1}%"));
+            let balance = amounts
+                .balance_usage_credits
+                .as_ref()
+                .map_or("unavailable", |value| value.as_str());
             items.push(SelectionItem {
                 name: title,
-                description: Some(format!("Weekly: {weekly} · 5-hour: {five_hour} · Balance credits: {balance}{}", if usage.data_status == codex_backend_client::TaskUsageStatus::Partial { " · partial" } else { "" })),
+                description: Some(format!(
+                    "Weekly: {weekly} · 5-hour: {five_hour} · Balance credits: {balance}{}",
+                    if usage.data_status == codex_backend_client::TaskUsageStatus::Partial {
+                        " · partial"
+                    } else {
+                        ""
+                    }
+                )),
                 ..Default::default()
             });
             for group in usage.groups {
                 let model = group.model.as_deref().unwrap_or("Model not reported");
-                let weekly = group.amounts.weekly_limit_percent.map_or_else(|| "unavailable".into(), |value| format!("{value:.1}%"));
-                let five_hour = group.amounts.five_hour_limit_percent.map_or_else(|| "unavailable".into(), |value| format!("{value:.1}%"));
-                let balance = group.amounts.balance_usage_credits.as_ref().map_or("unavailable", |value| value.as_str());
+                let weekly = group
+                    .amounts
+                    .weekly_limit_percent
+                    .map_or_else(|| "unavailable".into(), |value| format!("{value:.1}%"));
+                let five_hour = group
+                    .amounts
+                    .five_hour_limit_percent
+                    .map_or_else(|| "unavailable".into(), |value| format!("{value:.1}%"));
+                let balance = group
+                    .amounts
+                    .balance_usage_credits
+                    .as_ref()
+                    .map_or("unavailable", |value| value.as_str());
                 items.push(SelectionItem {
                     name: format!("  {model}"),
-                    description: Some(format!("Weekly: {weekly} · 5-hour: {five_hour} · Balance credits: {balance}")),
+                    description: Some(format!(
+                        "Weekly: {weekly} · 5-hour: {five_hour} · Balance credits: {balance}"
+                    )),
                     ..Default::default()
                 });
             }
         } else {
-            items.push(SelectionItem { name: title, description: Some("Usage unavailable".to_string()), ..Default::default() });
+            items.push(SelectionItem {
+                name: title,
+                description: Some("Usage unavailable".to_string()),
+                ..Default::default()
+            });
         }
         append_local_usage(&mut items, local_usage);
     }
     if items.is_empty() {
-        items.push(SelectionItem { name: "No chats in this page".to_string(), is_disabled: true, ..Default::default() });
+        items.push(SelectionItem {
+            name: "No chats in this page".to_string(),
+            is_disabled: true,
+            ..Default::default()
+        });
     }
     let subtitle = match (page.partial_history, page.partial_usage) {
-        (true, true) => "Last 30 days; indexed history may be incomplete; some task usage unavailable; local estimates may overcount.",
-        (true, false) => "Last 30 days; indexed history may be incomplete; local estimates may overcount.",
+        (true, true) => {
+            "Last 30 days; indexed history may be incomplete; some task usage unavailable; local estimates may overcount."
+        }
+        (true, false) => {
+            "Last 30 days; indexed history may be incomplete; local estimates may overcount."
+        }
         (false, true) => "Some task usage unavailable. Local estimates may overcount.",
         (false, false) => "Local estimates may overcount.",
     };
@@ -205,12 +272,17 @@ fn append_local_usage(items: &mut Vec<SelectionItem>, usage: Option<LocalUsage>)
         return;
     };
     for thread in usage.threads {
-        let credits = thread.estimated_credits.filter(|value| value.is_finite())
+        let credits = thread
+            .estimated_credits
+            .filter(|value| value.is_finite())
             .map_or_else(|| "unavailable".to_string(), |value| format!("{value:.6}"));
         let model = thread.models.as_deref().unwrap_or("model unavailable");
         items.push(SelectionItem {
             name: format!("  Local {} · {model}", thread.kind),
-            description: Some(format!("Estimated credits: {credits}{}", if thread.partial { " · partial" } else { "" })),
+            description: Some(format!(
+                "Estimated credits: {credits}{}",
+                if thread.partial { " · partial" } else { "" }
+            )),
             ..Default::default()
         });
     }
@@ -227,5 +299,9 @@ fn format_micros(value: i64) -> String {
     let value = i128::from(value);
     let sign = if value < 0 { "-" } else { "" };
     let magnitude = value.abs();
-    format!("{sign}{}.{:06}", magnitude / 1_000_000, magnitude % 1_000_000)
+    format!(
+        "{sign}{}.{:06}",
+        magnitude / 1_000_000,
+        magnitude % 1_000_000
+    )
 }

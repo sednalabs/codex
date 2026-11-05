@@ -148,7 +148,10 @@ async fn usage_command_disables_reset_after_cached_zero_snapshot() {
     );
     chat.handle_key_event(KeyEvent::new(KeyCode::Down, KeyModifiers::NONE));
     chat.handle_key_event(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
-    assert_matches!(rx.try_recv(), Ok(AppEvent::OpenAnalyticsChats { cursor: None, .. }));
+    assert_matches!(
+        rx.try_recv(),
+        Ok(AppEvent::OpenAnalyticsChats { cursor: None, .. })
+    );
 }
 
 #[tokio::test]
@@ -207,7 +210,10 @@ async fn usage_menu_refresh_failure_preserves_disabled_known_zero() {
     assert!(render_bottom_popup(&chat, /*width*/ 80).contains("No usage limit resets available."));
     chat.handle_key_event(KeyEvent::new(KeyCode::Down, KeyModifiers::NONE));
     chat.handle_key_event(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
-    assert_matches!(rx.try_recv(), Ok(AppEvent::OpenAnalyticsChats { cursor: None, .. }));
+    assert_matches!(
+        rx.try_recv(),
+        Ok(AppEvent::OpenAnalyticsChats { cursor: None, .. })
+    );
 }
 
 #[tokio::test]
@@ -1168,10 +1174,8 @@ async fn analytics_chats_account_update_discards_pending_result() {
     set_chatgpt_auth(&mut chat);
     let request_id = chat.show_analytics_chats_loading();
     chat.update_account_state(
-        /*status_account_display*/ None,
-        /*plan_type*/ None,
-        /*has_chatgpt_account*/ true,
-        /*has_codex_backend_auth*/ true,
+        /*status_account_display*/ None, /*plan_type*/ None,
+        /*has_chatgpt_account*/ true, /*has_codex_backend_auth*/ true,
     );
     chat.finish_analytics_chats(
         request_id,

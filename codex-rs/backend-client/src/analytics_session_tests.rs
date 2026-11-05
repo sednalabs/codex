@@ -37,13 +37,13 @@ impl ExternalAuth for ExternalCredentials {
             self.refreshes.fetch_add(/*val*/ 1, Ordering::SeqCst);
             match self.outcome {
                 RefreshOutcome::Accepted => Ok(self.auth.clone()),
-                RefreshOutcome::Rejected => Err(RefreshTokenError::Permanent(
-                    RefreshTokenFailedError::new(
+                RefreshOutcome::Rejected => {
+                    Err(RefreshTokenError::Permanent(RefreshTokenFailedError::new(
                         RefreshTokenFailedReason::Other,
                         "refresh rejected".to_string(),
-                    ),
-                )
-                .into()),
+                    ))
+                    .into())
+                }
             }
         })
     }
@@ -77,10 +77,7 @@ async fn analytics_client_does_not_follow_redirects() {
         source.uri(),
         HttpClientFactory::new(OutboundProxyPolicy::ReqwestDefault),
     );
-    let error = client
-        .get_accounts_check()
-        .await
-        .unwrap_err();
+    let error = client.get_accounts_check().await.unwrap_err();
     assert_eq!(error.status().map(|status| status.as_u16()), Some(302));
     source.verify().await;
     target.verify().await;
@@ -159,8 +156,7 @@ async fn account_change_during_request_discards_result() {
             plan_type: None,
         },
     };
-    let second =
-        CodexAuth::from_external_chatgpt_tokens(token, "account-b", Some("plus")).unwrap();
+    let second = CodexAuth::from_external_chatgpt_tokens(token, "account-b", Some("plus")).unwrap();
     let result = session
         .request(|_| {
             let manager = Arc::clone(&manager);

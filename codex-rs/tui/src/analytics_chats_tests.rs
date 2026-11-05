@@ -127,10 +127,17 @@ async fn indexed_root_listing_keeps_cursor_after_empty_filtered_page() {
         while let Some(Ok(Message::Text(text))) = socket.next().await {
             let request: serde_json::Value = serde_json::from_str(&text).unwrap();
             let result = match request["method"].as_str() {
-                Some("initialize") => json!({"userAgent": "analytics-test", "codexHome": "/unused", "platformFamily": "unix", "platformOs": "linux"}),
+                Some("initialize") => {
+                    json!({"userAgent": "analytics-test", "codexHome": "/unused", "platformFamily": "unix", "platformOs": "linux"})
+                }
                 Some("thread/list") => {
                     let params = &request["params"];
-                    pages.push(json!([params["cursor"], params["limit"], params["useStateDbOnly"], params["sortKey"]]));
+                    pages.push(json!([
+                        params["cursor"],
+                        params["limit"],
+                        params["useStateDbOnly"],
+                        params["sortKey"]
+                    ]));
                     let old = chrono::Utc::now().timestamp() - 31 * 24 * 60 * 60;
                     let data = if pages.len() == 1 {
                         vec![json!({
@@ -138,22 +145,41 @@ async fn indexed_root_listing_keeps_cursor_after_empty_filtered_page() {
                             "modelProvider": "openai", "createdAt": old, "updatedAt": old,
                             "status": {"type": "idle"}, "cwd": std::env::temp_dir(), "cliVersion": "test", "source": "cli", "turns": []
                         })]
-                    } else { Vec::new() };
+                    } else {
+                        Vec::new()
+                    };
                     json!({"data": data, "nextCursor": if pages.len() == 1 { Some("next") } else { None }, "backwardsCursor": null})
                 }
                 _ => continue,
             };
-            socket.send(Message::Text(json!({"jsonrpc": "2.0", "id": request["id"], "result": result}).to_string().into())).await.unwrap();
-            if pages.len() == 2 { break; }
+            socket
+                .send(Message::Text(
+                    json!({"jsonrpc": "2.0", "id": request["id"], "result": result})
+                        .to_string()
+                        .into(),
+                ))
+                .await
+                .unwrap();
+            if pages.len() == 2 {
+                break;
+            }
         }
         pages
     });
     let remote = RemoteAppServerClient::connect(RemoteAppServerConnectArgs {
-        endpoint: RemoteAppServerEndpoint::WebSocket { websocket_url, auth_token: None },
-        client_name: "analytics-test".into(), client_version: "test".into(),
-        experimental_api: false, mcp_server_openai_form_elicitation: false,
-        opt_out_notification_methods: Vec::new(), channel_capacity: 16,
-    }).await.unwrap();
+        endpoint: RemoteAppServerEndpoint::WebSocket {
+            websocket_url,
+            auth_token: None,
+        },
+        client_name: "analytics-test".into(),
+        client_version: "test".into(),
+        experimental_api: false,
+        mcp_server_openai_form_elicitation: false,
+        opt_out_notification_methods: Vec::new(),
+        channel_capacity: 16,
+    })
+    .await
+    .unwrap();
     let handle = AppServerRequestHandle::Remote(remote.request_handle());
     let (first, cursor) = roots(&handle, None).await.unwrap();
     assert!(first.is_empty());
@@ -161,7 +187,13 @@ async fn indexed_root_listing_keeps_cursor_after_empty_filtered_page() {
     let (second, next) = roots(&handle, cursor).await.unwrap();
     assert!(second.is_empty());
     assert_eq!(next, None);
-    assert_eq!(rpc.await.unwrap(), vec![json!([null, 100, true, "created_at"]), json!(["next", 100, true, "created_at"])]);
+    assert_eq!(
+        rpc.await.unwrap(),
+        vec![
+            json!([null, 100, true, "created_at"]),
+            json!(["next", 100, true, "created_at"])
+        ]
+    );
 }
 
 #[tokio::test]
@@ -179,7 +211,8 @@ async fn stalled_estimate_returns_partial_page_and_preserves_cursor() {
         .and(path("/backend-api/wham/usage/thread_usage/query"))
         .respond_with(ResponseTemplate::new(/*s*/ 503).set_delay(Duration::from_secs(/*secs*/ 8)))
         .expect(/*r*/ 1)
-        .mount(&server).await;
+        .mount(&server)
+        .await;
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let websocket_url = format!("ws://{}", listener.local_addr().unwrap());
     let rpc = tokio::spawn(async move {
@@ -188,7 +221,9 @@ async fn stalled_estimate_returns_partial_page_and_preserves_cursor() {
         while let Some(Ok(Message::Text(text))) = socket.next().await {
             let request: serde_json::Value = serde_json::from_str(&text).unwrap();
             let result = match request["method"].as_str() {
-                Some("initialize") => json!({"userAgent": "analytics-test", "codexHome": "/unused", "platformFamily": "unix", "platformOs": "linux"}),
+                Some("initialize") => {
+                    json!({"userAgent": "analytics-test", "codexHome": "/unused", "platformFamily": "unix", "platformOs": "linux"})
+                }
                 Some("thread/list") => json!({"data": [{
                     "id": "chat-1", "sessionId": "chat-1", "name": "Private title", "preview": "", "ephemeral": false,
                     "modelProvider": "openai", "createdAt": chrono::Utc::now().timestamp(), "updatedAt": chrono::Utc::now().timestamp(),
@@ -196,19 +231,41 @@ async fn stalled_estimate_returns_partial_page_and_preserves_cursor() {
                 }], "nextCursor": "older", "backwardsCursor": null}),
                 _ => continue,
             };
-            socket.send(Message::Text(json!({"jsonrpc": "2.0", "id": request["id"], "result": result}).to_string().into())).await.unwrap();
-            if request["method"] == "thread/list" { break; }
+            socket
+                .send(Message::Text(
+                    json!({"jsonrpc": "2.0", "id": request["id"], "result": result})
+                        .to_string()
+                        .into(),
+                ))
+                .await
+                .unwrap();
+            if request["method"] == "thread/list" {
+                break;
+            }
         }
     });
     let remote = RemoteAppServerClient::connect(RemoteAppServerConnectArgs {
-        endpoint: RemoteAppServerEndpoint::WebSocket { websocket_url, auth_token: None },
-        client_name: "analytics-test".into(), client_version: "test".into(),
-        experimental_api: false, mcp_server_openai_form_elicitation: false,
-        opt_out_notification_methods: Vec::new(), channel_capacity: 16,
-    }).await.unwrap();
+        endpoint: RemoteAppServerEndpoint::WebSocket {
+            websocket_url,
+            auth_token: None,
+        },
+        client_name: "analytics-test".into(),
+        client_version: "test".into(),
+        experimental_api: false,
+        mcp_server_openai_form_elicitation: false,
+        opt_out_notification_methods: Vec::new(),
+        channel_capacity: 16,
+    })
+    .await
+    .unwrap();
     let handle = AppServerRequestHandle::Remote(remote.request_handle());
-    let page = tokio::time::timeout(Duration::from_secs(/*secs*/ 5), read(&handle, &session, None))
-        .await.expect("optional estimates must not block navigation").unwrap();
+    let page = tokio::time::timeout(
+        Duration::from_secs(/*secs*/ 5),
+        read(&handle, &session, None),
+    )
+    .await
+    .expect("optional estimates must not block navigation")
+    .unwrap();
     assert!(page.partial_history);
     assert!(page.partial_estimates);
     assert_eq!(page.next_cursor.as_deref(), Some("older"));
@@ -236,7 +293,9 @@ async fn descendant_lookup_rejects_unacknowledged_or_bounded_results() {
         while let Some(Ok(Message::Text(text))) = socket.next().await {
             let request: serde_json::Value = serde_json::from_str(&text).unwrap();
             let result = match request["method"].as_str() {
-                Some("initialize") => json!({"userAgent": "analytics-test", "codexHome": "/unused", "platformFamily": "unix", "platformOs": "linux"}),
+                Some("initialize") => {
+                    json!({"userAgent": "analytics-test", "codexHome": "/unused", "platformFamily": "unix", "platformOs": "linux"})
+                }
                 Some("thread/list") => {
                     lists += 1;
                     if lists == 1 {
@@ -247,24 +306,47 @@ async fn descendant_lookup_rejects_unacknowledged_or_bounded_results() {
                 }
                 _ => continue,
             };
-            socket.send(Message::Text(json!({"jsonrpc": "2.0", "id": request["id"], "result": result}).to_string().into())).await.unwrap();
-            if lists == 2 { break; }
+            socket
+                .send(Message::Text(
+                    json!({"jsonrpc": "2.0", "id": request["id"], "result": result})
+                        .to_string()
+                        .into(),
+                ))
+                .await
+                .unwrap();
+            if lists == 2 {
+                break;
+            }
         }
     });
     let remote = RemoteAppServerClient::connect(RemoteAppServerConnectArgs {
-        endpoint: RemoteAppServerEndpoint::WebSocket { websocket_url, auth_token: None },
-        client_name: "analytics-test".into(), client_version: "test".into(),
-        experimental_api: true, mcp_server_openai_form_elicitation: false,
-        opt_out_notification_methods: Vec::new(), channel_capacity: 16,
-    }).await.unwrap();
+        endpoint: RemoteAppServerEndpoint::WebSocket {
+            websocket_url,
+            auth_token: None,
+        },
+        client_name: "analytics-test".into(),
+        client_version: "test".into(),
+        experimental_api: true,
+        mcp_server_openai_form_elicitation: false,
+        opt_out_notification_methods: Vec::new(),
+        channel_capacity: 16,
+    })
+    .await
+    .unwrap();
     let root = serde_json::from_value(json!({
         "id": "root", "sessionId": "root", "preview": "", "ephemeral": false,
         "modelProvider": "openai", "createdAt": 1, "updatedAt": 1,
         "status": {"type": "idle"}, "cwd": std::env::temp_dir(), "cliVersion": "test", "source": "cli", "turns": []
     })).unwrap();
     let handle = AppServerRequestHandle::Remote(remote.request_handle());
-    assert_eq!(descendants(&handle, &root).await.unwrap_err(), "Task descendant coverage is unavailable.");
-    assert_eq!(descendants(&handle, &root).await.unwrap_err(), "Task descendant coverage is unavailable.");
+    assert_eq!(
+        descendants(&handle, &root).await.unwrap_err(),
+        "Task descendant coverage is unavailable."
+    );
+    assert_eq!(
+        descendants(&handle, &root).await.unwrap_err(),
+        "Task descendant coverage is unavailable."
+    );
     rpc.await.unwrap();
 }
 
@@ -301,33 +383,56 @@ async fn consumer_usage_includes_verified_descendants_and_labels_index_partial()
         while let Some(Ok(Message::Text(text))) = socket.next().await {
             let request: serde_json::Value = serde_json::from_str(&text).unwrap();
             let result = match request["method"].as_str() {
-                Some("initialize") => json!({"userAgent": "analytics-test", "codexHome": "/unused", "platformFamily": "unix", "platformOs": "linux"}),
+                Some("initialize") => {
+                    json!({"userAgent": "analytics-test", "codexHome": "/unused", "platformFamily": "unix", "platformOs": "linux"})
+                }
                 Some("thread/list") => {
                     lists += 1;
                     let params = &request["params"];
                     let descendant = params["ancestorThreadId"].as_str().is_some();
                     let archived = params["archived"].as_bool().unwrap();
                     let id = if descendant { "child" } else { "root" };
-                    let data = if descendant && archived { Vec::new() } else { vec![json!({
-                        "id": id, "sessionId": "root", "name": id, "preview": "", "ephemeral": false,
-                        "parentThreadId": if descendant { Some("root") } else { None },
-                        "modelProvider": "openai", "createdAt": chrono::Utc::now().timestamp(), "updatedAt": chrono::Utc::now().timestamp(),
-                        "status": {"type": "idle"}, "cwd": std::env::temp_dir(), "cliVersion": "test", "source": "cli", "turns": []
-                    })] };
+                    let data = if descendant && archived {
+                        Vec::new()
+                    } else {
+                        vec![json!({
+                            "id": id, "sessionId": "root", "name": id, "preview": "", "ephemeral": false,
+                            "parentThreadId": if descendant { Some("root") } else { None },
+                            "modelProvider": "openai", "createdAt": chrono::Utc::now().timestamp(), "updatedAt": chrono::Utc::now().timestamp(),
+                            "status": {"type": "idle"}, "cwd": std::env::temp_dir(), "cliVersion": "test", "source": "cli", "turns": []
+                        })]
+                    };
                     json!({"data": data, "nextCursor": null, "backwardsCursor": null, "ancestorFilterApplied": if descendant { Some(true) } else { None }, "relationLimitReached": false})
                 }
                 _ => continue,
             };
-            socket.send(Message::Text(json!({"jsonrpc": "2.0", "id": request["id"], "result": result}).to_string().into())).await.unwrap();
-            if lists == 3 { break; }
+            socket
+                .send(Message::Text(
+                    json!({"jsonrpc": "2.0", "id": request["id"], "result": result})
+                        .to_string()
+                        .into(),
+                ))
+                .await
+                .unwrap();
+            if lists == 3 {
+                break;
+            }
         }
     });
     let remote = RemoteAppServerClient::connect(RemoteAppServerConnectArgs {
-        endpoint: RemoteAppServerEndpoint::WebSocket { websocket_url, auth_token: None },
-        client_name: "analytics-test".into(), client_version: "test".into(),
-        experimental_api: true, mcp_server_openai_form_elicitation: false,
-        opt_out_notification_methods: Vec::new(), channel_capacity: 16,
-    }).await.unwrap();
+        endpoint: RemoteAppServerEndpoint::WebSocket {
+            websocket_url,
+            auth_token: None,
+        },
+        client_name: "analytics-test".into(),
+        client_version: "test".into(),
+        experimental_api: true,
+        mcp_server_openai_form_elicitation: false,
+        opt_out_notification_methods: Vec::new(),
+        channel_capacity: 16,
+    })
+    .await
+    .unwrap();
     let handle = AppServerRequestHandle::Remote(remote.request_handle());
     let result = read_consumer(&handle, &session, None).await.unwrap();
     assert!(result.partial_history);

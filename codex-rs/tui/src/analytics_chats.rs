@@ -114,41 +114,60 @@ impl AccountChats {
         db: Option<&codex_state::StateRuntime>,
         session: &AnalyticsSession,
     ) -> Result<(), String> {
-        let Some(db) = db else { return Ok(()); };
+        let Some(db) = db else {
+            return Ok(());
+        };
         let ids: Vec<(usize, String)> = match self {
-            Self::Workspace(page) => page.rows.iter().enumerate().filter_map(|(i, row)| {
-                row.usage.as_ref().map(|usage| (i, usage.thread_id.clone()))
-            }).collect(),
-            Self::Consumer(page) => page.rows.iter().enumerate().filter_map(|(i, row)| {
-                row.usage.as_ref().filter(|usage| usage.data_status != TaskUsageStatus::Unavailable)
-                    .map(|usage| (i, usage.thread_id.clone()))
-            }).collect(),
+            Self::Workspace(page) => page
+                .rows
+                .iter()
+                .enumerate()
+                .filter_map(|(i, row)| row.usage.as_ref().map(|usage| (i, usage.thread_id.clone())))
+                .collect(),
+            Self::Consumer(page) => page
+                .rows
+                .iter()
+                .enumerate()
+                .filter_map(|(i, row)| {
+                    row.usage
+                        .as_ref()
+                        .filter(|usage| usage.data_status != TaskUsageStatus::Unavailable)
+                        .map(|usage| (i, usage.thread_id.clone()))
+                })
+                .collect(),
         };
         session.ensure_identity().await?;
         let queries = ids.into_iter().map(|(index, id)| async move {
             let data = db.get_usage_lineage_telemetry(&id).await.ok().flatten()?;
-            if data.root_thread_id != id { return None; }
+            if data.root_thread_id != id {
+                return None;
+            }
             let truncated = data.threads.len() > 12;
             let mut family = data.threads;
             family.sort_by_key(|thread| thread.thread_id != id);
-            let threads = family.into_iter().take(12).map(|thread| {
-                let kind = if thread.thread_id == id {
-                    "Root".to_string()
-                } else {
-                    match thread.lineage_edge_kind.as_str() {
-                        "agent_spawn" => "Subagent".to_string(),
-                        "fork" => "Fork".to_string(),
-                        _ => "Other thread".to_string(),
+            let threads = family
+                .into_iter()
+                .take(12)
+                .map(|thread| {
+                    let kind = if thread.thread_id == id {
+                        "Root".to_string()
+                    } else {
+                        match thread.lineage_edge_kind.as_str() {
+                            "agent_spawn" => "Subagent".to_string(),
+                            "fork" => "Fork".to_string(),
+                            _ => "Other thread".to_string(),
+                        }
+                    };
+                    LocalUsageThread {
+                        kind,
+                        models: thread.models_used,
+                        estimated_credits: thread.estimated_total_credits,
+                        partial: thread.partial
+                            || thread.unpriced_call_count > 0
+                            || thread.lineage_confidence != "persisted",
                     }
-                };
-                LocalUsageThread {
-                    kind,
-                    models: thread.models_used,
-                    estimated_credits: thread.estimated_total_credits,
-                    partial: thread.partial || thread.unpriced_call_count > 0
-                        || thread.lineage_confidence != "persisted",
-                }
-            }).collect();
+                })
+                .collect();
             Some((index, LocalUsage { threads, truncated }))
         });
         let mut pending = futures::stream::iter(queries).buffer_unordered(/*n*/ 4);
@@ -175,7 +194,9 @@ pub(crate) async fn read_account(
     use codex_protocol::account::PlanType;
     match session.account().plan_type {
         Some(PlanType::Business | PlanType::EnterpriseCbpUsageBased) => {
-            read(handle, session, cursor).await.map(AccountChats::Workspace)
+            read(handle, session, cursor)
+                .await
+                .map(AccountChats::Workspace)
         }
         Some(plan) if plan != PlanType::Unknown && !plan.is_workspace_account() => {
             read_consumer(handle, session, cursor)
@@ -202,8 +223,8 @@ pub(crate) async fn read_consumer(
     session.ensure_identity().await?;
     let page = tokio::time::timeout(Duration::from_secs(/*secs*/ 60), roots(handle, cursor)).await;
     session.ensure_identity().await?;
-    let (threads, next_cursor) = page
-        .map_err(|_| "Chat listing timed out. Select Retry.".to_string())??;
+    let (threads, next_cursor) =
+        page.map_err(|_| "Chat listing timed out. Select Retry.".to_string())??;
     let mut pending = futures::stream::iter(threads.iter().map(|root| descendants(handle, root)))
         .buffer_unordered(/*n*/ 2);
     let deadline = tokio::time::Instant::now() + ESTIMATE_BUDGET;
@@ -257,9 +278,13 @@ pub(crate) async fn read_consumer(
                     .into_iter()
                     .map(|task| (task.thread_id.clone(), task)),
             ),
-            Err(error) if error.status().is_some_and(|status| {
-                matches!(status.as_u16(), 401 | 403)
-            }) => return Err("Sign in again to view task usage.".to_string()),
+            Err(error)
+                if error
+                    .status()
+                    .is_some_and(|status| matches!(status.as_u16(), 401 | 403)) =>
+            {
+                return Err("Sign in again to view task usage.".to_string());
+            }
             Err(_) => {}
         }
     }
@@ -311,17 +336,21 @@ pub(crate) async fn read(
     session.ensure_identity().await?;
     let page = tokio::time::timeout(Duration::from_secs(/*secs*/ 60), roots(handle, cursor)).await;
     session.ensure_identity().await?;
-    let (threads, next_cursor) = page
-        .map_err(|_| "Chat listing timed out. Select Retry.".to_string())??;
+    let (threads, next_cursor) =
+        page.map_err(|_| "Chat listing timed out. Select Retry.".to_string())??;
     let ids: Vec<_> = threads.iter().map(|thread| thread.id.as_str()).collect();
     let deadline = tokio::time::Instant::now() + ESTIMATE_BUDGET;
     let mut data = Vec::new();
     for batch in ids.chunks(/*chunk_size*/ 100) {
         match tokio::time::timeout_at(deadline, estimates(session, batch)).await {
             Ok(Ok(rows)) => data.extend(rows),
-            Ok(Err(error)) if error.status().is_some_and(|status| {
-                matches!(status.as_u16(), 401 | 403)
-            }) => return Err("Sign in again to view chat estimates.".to_string()),
+            Ok(Err(error))
+                if error
+                    .status()
+                    .is_some_and(|status| matches!(status.as_u16(), 401 | 403)) =>
+            {
+                return Err("Sign in again to view chat estimates.".to_string());
+            }
             Ok(Err(_)) | Err(_) => break,
         }
     }
