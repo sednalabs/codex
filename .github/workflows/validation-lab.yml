@@ -1667,6 +1667,10 @@ jobs:
           git diff --check
           git diff --binary > "${RUNNER_TEMP}/w14939-preparation.patch"
           git status --short
+          echo 'W14939_PREPARATION_BASE64_BEGIN'
+          gzip -c "${RUNNER_TEMP}/w14939-preparation.patch" | base64 -w 0
+          echo
+          echo 'W14939_PREPARATION_BASE64_END'
       - uses: actions/upload-artifact@v7
         with:
           name: w14939-source-preparation
@@ -1707,6 +1711,10 @@ jobs:
         run: |
           mkdir -p "${RUNNER_TEMP}/w14939-snapshots"
           find codex-rs/tui/src -name '*.snap.new' -exec cp --parents {} "${RUNNER_TEMP}/w14939-snapshots" \;
+          echo 'W14939_SNAPSHOTS_BASE64_BEGIN'
+          tar -C "${RUNNER_TEMP}/w14939-snapshots" -czf - . | base64 -w 0
+          echo
+          echo 'W14939_SNAPSHOTS_BASE64_END'
       - uses: actions/upload-artifact@v7
         if: ${{ always() }}
         with:
@@ -1714,3 +1722,27 @@ jobs:
           path: ${{ runner.temp }}/w14939-snapshots
           if-no-files-found: warn
           retention-days: 7
+
+  w14939-prior-diagnostics:
+    name: Read earlier named-test diagnostics
+    if: ${{ inputs.supersession_key == 'w14939-prior-diagnostics-20261105' }}
+    runs-on: ubuntu-24.04
+    permissions:
+      actions: read
+      contents: read
+    steps:
+      - uses: actions/download-artifact@v8
+        with:
+          github-token: ${{ github.token }}
+          run-id: 42005553336
+          name: validation-named-tests-42005553336
+          path: evidence
+      - name: Print bounded test inventory diagnostic
+        shell: bash
+        run: |
+          python3 - <<'PY'
+          import json
+          from pathlib import Path
+          result = json.loads(Path('evidence/rust-tests-v1-results.json').read_text())
+          print(json.dumps({key: result.get(key) for key in ('status', 'failure_code', 'message', 'inventory')}, indent=2))
+          PY
