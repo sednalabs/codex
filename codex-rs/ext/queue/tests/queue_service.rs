@@ -34,6 +34,7 @@ use codex_protocol::models::ImageReference;
 use codex_protocol::models::ResponseItem;
 use codex_protocol::protocol::Event;
 use codex_protocol::protocol::EventMsg;
+use codex_protocol::protocol::Op;
 use codex_protocol::user_input::MAX_USER_INPUT_TEXT_CHARS;
 use codex_protocol::user_input::UserInput;
 use codex_queue_extension::QueueServiceError;
@@ -512,6 +513,71 @@ async fn interrupted_turns_pause_queued_messages_but_failed_turns_drain_them() -
             .last()
             .map(String::as_str)
     );
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn stale_completed_idle_does_not_drain_after_interrupt_but_explicit_start_can()
+-> anyhow::Result<()> {
+    let (_release, response_gate) = oneshot::channel();
+    let (server, _completions) = start_streaming_sse_server(vec![
+        vec![
+            StreamingSseChunk {
+                gate: None,
+                body: responses::sse(vec![responses::ev_response_created("resp-active")]),
+            },
+            StreamingSseChunk {
+                gate: Some(response_gate),
+                body: responses::sse(vec![responses::ev_completed("resp-active")]),
+            },
+        ],
+        vec![StreamingSseChunk {
+            gate: None,
+            body: responses::sse_completed("explicit-queue-start"),
+        }],
+    ])
+    .await;
+    let test = test_codex().build_with_streaming_server(&server).await?;
+    let thread_id = test.session_configured.thread_id;
+    let service = QueuedItemService::new(
+        loaded_thread_queue(&test)?,
+        Arc::downgrade(&test.thread_manager),
+        Arc::new(NoopExtensionEventSink),
+    );
+    test.codex
+        .start_or_steer_turn(TurnInputRequest::user_input(vec![UserInput::Text {
+            text: "active turn".to_string(),
+            text_elements: Vec::new(),
+        }]))
+        .await?;
+    tokio::time::timeout(
+        Duration::from_secs(5),
+        server.wait_for_request_count(/*count*/ 1),
+    )
+    .await?;
+    let queued = service
+        .enqueue(thread_id, user_input("keep this queued"))
+        .await?;
+    test.codex.submit(Op::Interrupt).await?;
+    wait_for_event_match(test.codex.as_ref(), |event| {
+        matches!(event, EventMsg::TurnAborted(_)).then_some(())
+    })
+    .await;
+
+    // An earlier idle notification may reach the queue after this interrupt.
+    emit_idle_with_cause(&service, thread_id, ThreadIdleCause::Completed).await;
+    assert_eq!(vec![queued.clone()], service.list(thread_id).await?);
+
+    // An explicit start is an operator action and must still work.
+    let started = service
+        .start(test.codex.as_ref(), Some(queued.id), /*trace*/ None)
+        .await?;
+    assert!(matches!(started, StartIfIdleSubmission::Started { .. }));
+    assert!(service.list(thread_id).await?.is_empty());
+    wait_for_event_match(test.codex.as_ref(), |event| {
+        matches!(event, EventMsg::TurnComplete(_)).then_some(())
+    })
+    .await;
     Ok(())
 }
 
