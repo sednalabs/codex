@@ -540,7 +540,7 @@ ON CONFLICT(thread_id) DO UPDATE SET
 
         self.last_provider_call_id = Some(provider_call_id);
         self.last_provider_usage = response.token_usage.as_ref().map(|usage| TokenUsageTotals {
-            uncached_input_tokens: (usage.input_tokens - usage.cached_input_tokens).max(0),
+            uncached_input_tokens: usage.input_tokens.saturating_sub(usage.cached_input_tokens),
             cached_input_tokens: usage.cached_input_tokens,
             cache_write_input_tokens: usage.cache_write_input_tokens,
             output_tokens: usage.output_tokens,
