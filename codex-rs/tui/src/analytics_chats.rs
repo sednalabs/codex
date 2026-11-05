@@ -466,7 +466,7 @@ async fn descendants(
                 .await
                 .map_err(|_| "Task descendants are unavailable.".to_string())?;
             if page.ancestor_filter_applied != Some(true)
-                || page.relation_limit_reached != Some(false)
+                || page.relation_limit_reached == Some(true)
             {
                 return Err("Task descendant coverage is unavailable.".to_string());
             }

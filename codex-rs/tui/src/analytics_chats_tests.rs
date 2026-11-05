@@ -384,10 +384,8 @@ async fn descendant_lookup_rejects_unacknowledged_or_bounded_results() {
                     lists += 1;
                     if lists == 1 {
                         json!({"data": [], "nextCursor": null, "backwardsCursor": null})
-                    } else if lists == 2 {
-                        json!({"data": [], "nextCursor": null, "backwardsCursor": null, "ancestorFilterApplied": true, "relationLimitReached": true})
                     } else {
-                        json!({"data": [], "nextCursor": null, "backwardsCursor": null, "ancestorFilterApplied": true})
+                        json!({"data": [], "nextCursor": null, "backwardsCursor": null, "ancestorFilterApplied": true, "relationLimitReached": true})
                     }
                 }
                 _ => continue,
@@ -400,7 +398,7 @@ async fn descendant_lookup_rejects_unacknowledged_or_bounded_results() {
                 ))
                 .await
                 .unwrap();
-            if lists == 3 {
+            if lists == 2 {
                 break;
             }
         }
@@ -425,10 +423,6 @@ async fn descendant_lookup_rejects_unacknowledged_or_bounded_results() {
         "status": {"type": "idle"}, "cwd": std::env::temp_dir(), "cliVersion": "test", "source": "cli", "turns": []
     })).unwrap();
     let handle = AppServerRequestHandle::Remote(remote.request_handle());
-    assert_eq!(
-        descendants(&handle, &root).await.unwrap_err(),
-        "Task descendant coverage is unavailable."
-    );
     assert_eq!(
         descendants(&handle, &root).await.unwrap_err(),
         "Task descendant coverage is unavailable."
@@ -492,7 +486,7 @@ async fn consumer_usage_includes_verified_descendants_and_labels_index_partial()
                             "status": {"type": "idle"}, "cwd": std::env::temp_dir(), "cliVersion": "test", "source": "cli", "turns": []
                         })]
                     };
-                    json!({"data": data, "nextCursor": null, "backwardsCursor": null, "ancestorFilterApplied": if descendant { Some(true) } else { None }, "relationLimitReached": false})
+                    json!({"data": data, "nextCursor": null, "backwardsCursor": null, "ancestorFilterApplied": if descendant { Some(true) } else { None }})
                 }
                 _ => continue,
             };
