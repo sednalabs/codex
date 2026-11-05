@@ -4823,8 +4823,7 @@ fn multi_agent_v2_wait_agent_accepts_target_and_timeout_arguments() {
             "triggered wake".to_string(),
             /*trigger_turn*/ true,
         );
-        actionable.intent =
-            Some(codex_protocol::protocol::AgentMessageIntent::ActionRequired);
+        actionable.intent = Some(codex_protocol::protocol::AgentMessageIntent::ActionRequired);
         session
             .input_queue
             .enqueue_mailbox_communication(actionable)
