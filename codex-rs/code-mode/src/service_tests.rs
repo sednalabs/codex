@@ -301,6 +301,86 @@ async fn stored_values_are_shared_between_cells_but_not_sessions() {
 }
 
 #[tokio::test]
+async fn long_lived_store_can_overwrite_later_completed_cell() {
+    for writes_in_listener in [true, false] {
+        let delegate = Arc::new(ReleasableToolDelegate::default());
+        let service = InProcessCodeModeSession::with_delegate(delegate.clone());
+        let init = execute(
+            &service,
+            ExecuteRequest {
+                source: r#"store("cursor", "old");"#.to_string(),
+                yield_time_ms: None,
+                ..execute_request("")
+            },
+        )
+        .await;
+        assert!(matches!(init, RuntimeResponse::Result { error_text: None, .. }));
+
+        let source = if writes_in_listener {
+            r#"store("cursor", "old"); await tools.echo({});"#
+        } else {
+            r#"await tools.echo({});"#
+        };
+        let pending = service
+            .execute_to_pending(ExecuteRequest {
+                enabled_tools: vec![echo_tool()],
+                source: source.to_string(),
+                ..execute_request("")
+            })
+            .await
+            .unwrap();
+        let ExecuteToPendingOutcome::Pending { cell_id, .. } = pending else {
+            panic!("listener should remain pending");
+        };
+        wait_until_tool_started(&delegate).await;
+
+        let ack = execute(
+            &service,
+            ExecuteRequest {
+                source: r#"store("cursor", "new");"#.to_string(),
+                yield_time_ms: None,
+                ..execute_request("")
+            },
+        )
+        .await;
+        assert!(matches!(ack, RuntimeResponse::Result { error_text: None, .. }));
+        let before = execute(
+            &service,
+            ExecuteRequest {
+                source: r#"text(load("cursor"));"#.to_string(),
+                yield_time_ms: None,
+                ..execute_request("")
+            },
+        )
+        .await;
+        assert!(matches!(before, RuntimeResponse::Result { content_items, error_text: None, .. }
+            if content_items == vec![FunctionCallOutputContentItem::InputText { text: "new".to_string() }]));
+
+        delegate.release_tool();
+        let done = service
+            .wait(WaitRequest {
+                cell_id,
+                yield_time_ms: 10_000,
+            })
+            .await
+            .unwrap();
+        assert!(matches!(done, WaitOutcome::LiveCell(RuntimeResponse::Result { error_text: None, .. })));
+        let after = execute(
+            &service,
+            ExecuteRequest {
+                source: r#"text(load("cursor"));"#.to_string(),
+                yield_time_ms: None,
+                ..execute_request("")
+            },
+        )
+        .await;
+        let expected = if writes_in_listener { "old" } else { "new" };
+        assert!(matches!(after, RuntimeResponse::Result { content_items, error_text: None, .. }
+            if content_items == vec![FunctionCallOutputContentItem::InputText { text: expected.to_string() }]));
+    }
+}
+
+#[tokio::test]
 async fn shutdown_interrupts_cpu_bound_cells() {
     let service = InProcessCodeModeSession::new();
 
