@@ -1,4 +1,3 @@
-use crate::startup;
 use crate::wire;
 use anyhow::Context;
 use anyhow::Result;
@@ -8,8 +7,6 @@ use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 use ed25519_dalek::Signer;
 use ed25519_dalek::SigningKey;
 use serde_json::Value;
-use std::sync::Mutex;
-use std::sync::OnceLock;
 use std::time::SystemTime;
 use std::time::UNIX_EPOCH;
 use uuid::Uuid;
@@ -23,100 +20,52 @@ struct RuntimeProofSigner {
     seed: Zeroizing<[u8; 32]>,
 }
 
-#[derive(Default)]
-enum SignerState {
-    #[default]
-    Uninitialized,
-    Unconfigured,
-    Ready(Box<RuntimeProofSigner>),
-}
+/// Launcher-owned proof authority. This value never crosses the child IPC
+/// boundary; the launcher uses it to sign a single validated MCP request.
+pub(crate) struct LauncherProofAuthority(RuntimeProofSigner);
 
-static SIGNER: OnceLock<Mutex<SignerState>> = OnceLock::new();
-
-fn signer_state() -> &'static Mutex<SignerState> {
-    SIGNER.get_or_init(|| Mutex::new(SignerState::Uninitialized))
-}
-
-pub(crate) fn install_bootstrap(certificate: String, seed: Zeroizing<[u8; 32]>) -> Result<()> {
-    let artifact_sha256 = startup::current_artifact_sha256()?;
-    let (header, claims) = wire::parse_certificate(&certificate)?;
-    validate_certificate(&header, &claims, &seed, &artifact_sha256, unix_seconds()?)?;
-    let mut state = signer_state()
-        .lock()
-        .map_err(|_| anyhow::anyhow!("runtime proof signer state is unavailable"))?;
-    if !matches!(&*state, SignerState::Uninitialized) {
-        bail!("runtime proof startup was already initialized");
+impl LauncherProofAuthority {
+    pub(crate) fn new(
+        certificate: String,
+        seed: Zeroizing<[u8; 32]>,
+        artifact_sha256: &str,
+    ) -> Result<Self> {
+        let (header, claims) = wire::parse_certificate(&certificate)?;
+        validate_certificate(&header, &claims, &seed, artifact_sha256, unix_seconds()?)?;
+        Ok(Self(RuntimeProofSigner {
+            certificate,
+            claims,
+            seed,
+        }))
     }
-    *state = SignerState::Ready(Box::new(RuntimeProofSigner {
-        certificate,
-        claims,
-        seed,
-    }));
-    Ok(())
-}
 
-pub(crate) fn install_unconfigured() -> Result<()> {
-    let mut state = signer_state()
-        .lock()
-        .map_err(|_| anyhow::anyhow!("runtime proof signer state is unavailable"))?;
-    if !matches!(&*state, SignerState::Uninitialized) {
-        bail!("runtime proof startup was already initialized");
+    pub(crate) fn sign(
+        &self,
+        execution_nonce: &ExecutionNonce,
+        provider_thread_id: &str,
+        tool: &str,
+        parameters: &Value,
+    ) -> Result<Value> {
+        self.0
+            .create_protected_mcp_proof(execution_nonce, provider_thread_id, tool, parameters)?
+            .context("launcher proof authority rejected the MCP operation")
     }
-    *state = SignerState::Unconfigured;
-    Ok(())
-}
 
-pub(crate) fn erase_signer_authority() -> Result<()> {
-    let mut state = signer_state()
-        .lock()
-        .map_err(|_| anyhow::anyhow!("runtime proof signer state is unavailable"))?;
-    *state = SignerState::Unconfigured;
-    Ok(())
-}
-
-pub(crate) fn certificate_for_auth() -> Result<(wire::CertificateClaims, String)> {
-    let state = signer_state()
-        .lock()
-        .map_err(|_| anyhow::anyhow!("runtime proof signer state is unavailable"))?;
-    let SignerState::Ready(signer) = &*state else {
-        bail!("protected runtime proof certificate is unavailable");
-    };
-    Ok((
-        signer.claims.clone(),
-        wire::certificate_digest(signer.certificate.as_bytes()),
-    ))
-}
-
-pub fn sign_protected_mcp_proof(
-    execution_nonce: &ExecutionNonce,
-    provider_thread_id: &str,
-    server: &str,
-    transport_url: Option<&str>,
-    tool: &str,
-    parameters: &Value,
-) -> Result<Option<Value>> {
-    let mut state = signer_state()
-        .lock()
-        .map_err(|_| anyhow::anyhow!("runtime proof signer state is unavailable"))?;
-    let SignerState::Ready(signer) = &*state else {
-        return Ok(None);
-    };
-    if !signer.matches_target(server, transport_url, tool)? {
-        return Ok(None);
+    pub(crate) fn work_item_ref(&self) -> &str {
+        &self.0.claims.work_item_ref
     }
-    erase_on_protection_failure(&mut state, startup::verify_runtime_protection())?;
-    let certificate_expired = match &*state {
-        SignerState::Ready(signer) => unix_seconds()? >= signer.claims.exp,
-        SignerState::Uninitialized | SignerState::Unconfigured => false,
-    };
-    if certificate_expired {
-        *state = SignerState::Unconfigured;
-        bail!("runtime proof certificate expired; signer authority erased");
+
+    pub(crate) fn project_id(&self) -> u64 {
+        self.0.claims.project_id
     }
-    let SignerState::Ready(signer) = &*state else {
-        bail!("runtime proof signer authority was erased");
-    };
-    signer.create_protected_mcp_proof(execution_nonce, provider_thread_id, tool, parameters)
+
+    pub(crate) fn recipient(&self) -> &str {
+        &self.0.claims.recipient
+    }
+
+    pub(crate) fn certificate(&self) -> &str {
+        &self.0.certificate
+    }
 }
 
 impl RuntimeProofSigner {
@@ -133,30 +82,6 @@ impl RuntimeProofSigner {
             "work_item_claim",
             parameters,
         )
-    }
-
-    fn matches_target(
-        &self,
-        server: &str,
-        transport_url: Option<&str>,
-        tool: &str,
-    ) -> Result<bool> {
-        let server_matches = Some(server) == self.claims.mcp_server.as_deref();
-        let recipient_matches = transport_url == Some(self.claims.recipient.as_str());
-        let selected_tool =
-            self.claims.operations.as_ref().is_some_and(|operations| {
-                operations.iter().any(|operation| operation.tool == tool)
-            });
-        if !server_matches && !recipient_matches {
-            return Ok(false);
-        }
-        if !server_matches || !recipient_matches {
-            if selected_tool {
-                bail!("protected claim MCP server does not match its pinned recipient");
-            }
-            return Ok(false);
-        }
-        Ok(selected_tool)
     }
 
     fn create_protected_mcp_proof(
@@ -264,14 +189,6 @@ fn validate_work_execution_precondition(parameters: &Value) -> Result<()> {
         Uuid::parse_str(request_id).context("protected operation request id is not a UUID")?;
     if request_uuid.to_string() != request_id {
         bail!("protected operation request id is not canonical");
-    }
-    Ok(())
-}
-
-fn erase_on_protection_failure(state: &mut SignerState, protection: Result<()>) -> Result<()> {
-    if let Err(error) = protection {
-        *state = SignerState::Unconfigured;
-        bail!("runtime proof protection changed; signer authority erased: {error}");
     }
     Ok(())
 }

@@ -1315,22 +1315,16 @@ async fn make_rmcp_client(
                 }
             }
             let http_client = if protected_target {
-                runtime_context.local_http_client()
-            } else {
-                resolved_environment.as_ref().map_or_else(
-                    || runtime_context.local_http_client(),
-                    |environment| environment.get_http_client(),
-                )
-            };
-            let http_client = maybe_with_openai_docs_source_attribution(&url, http_client);
-            let http_client = if protected_target {
                 Arc::new(crate::protected_http_client::ProtectedMcpHttpClient::new(
-                    http_client,
                     server_name,
                     &url,
                 )) as Arc<dyn HttpClient>
             } else {
-                http_client
+                let http_client = resolved_environment.as_ref().map_or_else(
+                    || runtime_context.local_http_client(),
+                    |environment| environment.get_http_client(),
+                );
+                maybe_with_openai_docs_source_attribution(&url, http_client)
             };
             if protected_target {
                 RmcpClient::new_protected_streamable_http_client_with_protocol_mode(

@@ -125,16 +125,6 @@ fn certificate_validation_binds_key_artifact_and_fixed_execution_lease() {
     );
 }
 
-#[test]
-fn protection_drift_erases_the_process_signing_capability() {
-    let mut state = SignerState::Ready(Box::new(signer()));
-    assert!(
-        erase_on_protection_failure(&mut state, Err(anyhow::anyhow!("protection changed")),)
-            .is_err()
-    );
-    assert!(matches!(state, SignerState::Unconfigured));
-}
-
 fn parameters(note: &str) -> Value {
     serde_json::json!({
         "work_item_ref": "example-work-item",
@@ -273,39 +263,6 @@ fn refuses_foreign_scope_incomplete_precondition_and_expired_certificate() {
         expired
             .create_claim_proof(&Uuid::new_v4(), "thread", &parameters("claim"))
             .is_err()
-    );
-}
-
-#[test]
-fn selected_claim_rejects_a_mismatched_server_or_recipient() {
-    let signer = signer();
-    assert!(
-        signer
-            .matches_target("ops", Some("https://ops.example/mcp"), "work_item_claim",)
-            .unwrap()
-    );
-    assert!(
-        signer
-            .matches_target(
-                "ops",
-                Some("https://foreign.example/mcp"),
-                "work_item_claim",
-            )
-            .is_err()
-    );
-    assert!(
-        signer
-            .matches_target(
-                "foreign",
-                Some("https://ops.example/mcp"),
-                "work_item_claim",
-            )
-            .is_err()
-    );
-    assert!(
-        !signer
-            .matches_target("unrelated", Some("https://other.example/mcp"), "some_tool")
-            .unwrap()
     );
 }
 

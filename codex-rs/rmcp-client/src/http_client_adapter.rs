@@ -36,7 +36,9 @@ use rmcp::model::ClientJsonRpcMessage;
 use rmcp::model::ClientNotification;
 use rmcp::model::ConstString;
 use rmcp::model::JsonRpcMessage;
+use rmcp::model::RequestId;
 use rmcp::model::ServerJsonRpcMessage;
+use rmcp::model::ServerResult;
 use rmcp::transport::streamable_http_client::AuthRequiredError;
 use rmcp::transport::streamable_http_client::InsufficientScopeError;
 use rmcp::transport::streamable_http_client::StreamableHttpClient;
@@ -55,6 +57,26 @@ use self::www_authenticate::insufficient_scope_challenge;
 
 pub(super) fn is_bearer_invalid_token_challenge(header: &str) -> bool {
     www_authenticate::is_bearer_invalid_token_challenge(header)
+}
+
+pub(super) fn is_successful_tools_call_json_response(
+    response_body: &[u8],
+    expected_request_id: &serde_json::Value,
+) -> bool {
+    let Ok(expected_request_id) = serde_json::from_value::<RequestId>(expected_request_id.clone())
+    else {
+        return false;
+    };
+    let Ok(JsonRpcMessage::Response(response)) =
+        serde_json::from_slice::<ServerJsonRpcMessage>(response_body)
+    else {
+        return false;
+    };
+    response.id == expected_request_id
+        && matches!(
+            response.result,
+            ServerResult::CallToolResult(result) if result.is_error != Some(true)
+        )
 }
 
 const EVENT_STREAM_MIME_TYPE: &str = "text/event-stream";

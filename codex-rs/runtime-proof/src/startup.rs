@@ -1,75 +1,46 @@
 use anyhow::Context;
 use anyhow::Result;
 use anyhow::bail;
+#[cfg(test)]
 use std::fs::File;
+#[cfg(test)]
 use std::io::Read;
-use zeroize::Zeroizing;
 
-const DESCRIPTOR_ENV: &str = "OPS_RUNTIME_BOOTSTRAP_FD";
 const AUTH_DESCRIPTOR_ENV: &str = "OPS_RUNTIME_AUTH_FD";
-const MAX_FRAME_BYTES: usize = 20 * 1024;
-const SEED_BYTES: usize = 32;
-const BOOTSTRAP_ACK: &[u8; 4] = b"ACK1";
+const BROKER_DESCRIPTOR_ENV: &str = "OPS_RUNTIME_BROKER_FD";
 
 pub fn initialize_from_environment() -> Result<()> {
-    let Some(descriptor) = std::env::var_os(DESCRIPTOR_ENV) else {
-        if std::env::var_os(AUTH_DESCRIPTOR_ENV).is_some() {
-            bail!("runtime auth descriptor cannot be used without runtime proof bootstrap");
-        }
-        return crate::signer::install_unconfigured();
-    };
-    let descriptor = parse_descriptor_index(&descriptor)?;
-    if descriptor == 4 {
-        bail!("runtime proof descriptor cannot alias the reserved auth descriptor");
+    let auth_configured = std::env::var_os(AUTH_DESCRIPTOR_ENV).is_some();
+    let broker_configured = std::env::var_os(BROKER_DESCRIPTOR_ENV).is_some();
+    if !auth_configured && !broker_configured {
+        return Ok(());
     }
-    // This is the synchronous first CLI entry; no threads or async runtime exist yet.
-    unsafe { std::env::remove_var(DESCRIPTOR_ENV) };
+    if !auth_configured || !broker_configured {
+        bail!("protected runtime auth and broker descriptors must be configured together");
+    }
     #[cfg(target_os = "linux")]
     {
-        // Take ownership before any fallible checks so every refusal closes the FD.
-        let bootstrap_file = unsafe { File::from_raw_fd(descriptor) };
-        verify_bootstrap_socket(&bootstrap_file)?;
         verify_inherited_protection()?;
         set_non_dumpable()?;
         verify_runtime_protection()?;
-        let (certificate, seed) = read_bootstrap_frame(&bootstrap_file)?;
-        verify_runtime_protection()?;
-        crate::signer::install_bootstrap(certificate, seed)?;
-        let (claims, certificate_sha256) = crate::signer::certificate_for_auth()?;
-        if let Err(error) = crate::auth::initialize_from_environment(&claims, &certificate_sha256) {
-            crate::signer::erase_signer_authority()?;
-            return Err(error).context("initialize protected runtime authentication");
-        }
-        if let Err(error) = verify_runtime_protection() {
+        let auth_socket = match crate::auth::initialize_from_environment() {
+            Ok(socket) => socket,
+            Err(error) => return Err(error).context("initialize protected runtime authentication"),
+        };
+        if let Err(error) = crate::mcp_broker::install_child_socket_from_environment()
+            .and_then(|()| verify_runtime_protection())
+            .and_then(|()| crate::auth::send_auth_ack(&auth_socket))
+        {
             crate::auth::erase_auth_authority()?;
-            crate::signer::erase_signer_authority()?;
             return Err(error);
         }
-        complete_bootstrap_ack(&bootstrap_file)?;
         Ok(())
     }
     #[cfg(not(target_os = "linux"))]
     {
-        let _ = descriptor;
         bail!("protected runtime proof requires Linux")
     }
 }
-
-fn parse_descriptor_index(descriptor: &std::ffi::OsStr) -> Result<i32> {
-    descriptor
-        .to_str()
-        .filter(|value| !value.is_empty() && value.bytes().all(|byte| byte.is_ascii_digit()))
-        .context("runtime proof descriptor index is invalid")?
-        .parse::<i32>()
-        .context("runtime proof descriptor index is out of range")
-        .and_then(|descriptor| {
-            if descriptor < 3 {
-                bail!("runtime proof descriptor must be a non-standard descriptor");
-            }
-            Ok(descriptor)
-        })
-}
-
 pub(crate) fn verify_runtime_protection() -> Result<()> {
     #[cfg(target_os = "linux")]
     {
@@ -203,149 +174,8 @@ fn set_non_dumpable() -> Result<()> {
     bail!("protected runtime proof requires Linux")
 }
 
-#[cfg(target_os = "linux")]
-fn verify_bootstrap_socket(file: &File) -> Result<()> {
-    use std::os::fd::AsRawFd;
-    let descriptor = file.as_raw_fd();
-    if descriptor < 3 {
-        bail!("runtime proof descriptor must be an inherited non-standard descriptor");
-    }
-    verify_sequenced_packet_socket(descriptor)?;
-    let mut peer: libc::ucred = unsafe { std::mem::zeroed() };
-    let mut peer_size = std::mem::size_of_val(&peer) as libc::socklen_t;
-    if unsafe {
-        libc::getsockopt(
-            descriptor,
-            libc::SOL_SOCKET,
-            libc::SO_PEERCRED,
-            (&mut peer as *mut libc::ucred).cast(),
-            &mut peer_size,
-        )
-    } != 0
-        || peer_size as usize != std::mem::size_of_val(&peer)
-    {
-        bail!("cannot verify runtime proof bootstrap peer credentials");
-    }
-    verify_root_peer_credentials(&peer)
-}
-
-#[cfg(target_os = "linux")]
-fn verify_sequenced_packet_socket(descriptor: std::os::fd::RawFd) -> Result<()> {
-    let mut socket_type: libc::c_int = 0;
-    let mut socket_type_size = std::mem::size_of_val(&socket_type) as libc::socklen_t;
-    if unsafe {
-        libc::getsockopt(
-            descriptor,
-            libc::SOL_SOCKET,
-            libc::SO_TYPE,
-            (&mut socket_type as *mut libc::c_int).cast(),
-            &mut socket_type_size,
-        )
-    } != 0
-        || socket_type_size as usize != std::mem::size_of_val(&socket_type)
-        || socket_type != libc::SOCK_SEQPACKET
-    {
-        bail!("runtime proof descriptor must be a connected sequenced-packet socket");
-    }
-    Ok(())
-}
-
-#[cfg(target_os = "linux")]
-fn verify_root_peer_credentials(peer: &libc::ucred) -> Result<()> {
-    if peer.pid <= 0 || peer.uid != 0 {
-        bail!("runtime proof bootstrap peer must be the root launcher");
-    }
-    Ok(())
-}
-
-#[cfg(target_os = "linux")]
-fn read_bootstrap_frame(file: &File) -> Result<(String, Zeroizing<[u8; SEED_BYTES]>)> {
-    use std::os::fd::AsRawFd;
-    let mut frame_buffer = Zeroizing::new([0_u8; MAX_FRAME_BYTES + 1]);
-    let mut vector = libc::iovec {
-        iov_base: frame_buffer.as_mut_ptr().cast(),
-        iov_len: frame_buffer.len(),
-    };
-    let mut message: libc::msghdr = unsafe { std::mem::zeroed() };
-    message.msg_iov = &mut vector;
-    message.msg_iovlen = 1;
-    let received = unsafe { libc::recvmsg(file.as_raw_fd(), &mut message, libc::MSG_CMSG_CLOEXEC) };
-    if received < 0 {
-        return Err(std::io::Error::last_os_error())
-            .context("cannot receive runtime proof bootstrap frame");
-    }
-    if message.msg_flags & (libc::MSG_TRUNC | libc::MSG_CTRUNC) != 0 {
-        bail!("runtime proof bootstrap packet was truncated");
-    }
-    let frame_len = received as usize;
-    if !(4 + SEED_BYTES..=MAX_FRAME_BYTES).contains(&frame_len) {
-        bail!("runtime proof bootstrap frame has an invalid size");
-    }
-    let frame = &frame_buffer[..frame_len];
-    let certificate_len = u32::from_be_bytes(frame[..4].try_into()?) as usize;
-    if certificate_len == 0
-        || certificate_len > crate::wire::MAX_CERTIFICATE_BYTES
-        || frame.len() != 4 + certificate_len + SEED_BYTES
-    {
-        bail!("runtime proof bootstrap frame has an invalid length");
-    }
-    let certificate = std::str::from_utf8(&frame[4..4 + certificate_len])?.to_string();
-    let mut seed = Zeroizing::new([0u8; SEED_BYTES]);
-    seed.copy_from_slice(&frame[4 + certificate_len..]);
-    Ok((certificate, seed))
-}
-
-#[cfg(target_os = "linux")]
-fn send_bootstrap_ack(file: &File) -> Result<()> {
-    use std::os::fd::AsRawFd;
-    let sent = unsafe {
-        libc::send(
-            file.as_raw_fd(),
-            BOOTSTRAP_ACK.as_ptr().cast(),
-            BOOTSTRAP_ACK.len(),
-            libc::MSG_NOSIGNAL,
-        )
-    };
-    if sent < 0 {
-        return Err(std::io::Error::last_os_error()).context("cannot send runtime proof ACK1");
-    }
-    if sent != BOOTSTRAP_ACK.len() as isize {
-        bail!("runtime proof ACK1 packet was not sent completely");
-    }
-    Ok(())
-}
-
-#[cfg(target_os = "linux")]
-fn complete_bootstrap_ack(file: &File) -> Result<()> {
-    if let Err(error) = send_bootstrap_ack(file) {
-        crate::auth::erase_auth_authority()?;
-        crate::signer::erase_signer_authority()?;
-        return Err(error).context("cannot acknowledge protected runtime bootstrap");
-    }
-    Ok(())
-}
-
-#[cfg(not(target_os = "linux"))]
-fn verify_bootstrap_socket(_file: &File) -> Result<()> {
-    bail!("protected runtime proof requires Linux")
-}
-
-#[cfg(not(target_os = "linux"))]
-fn read_bootstrap_frame(_file: &File) -> Result<(String, Zeroizing<[u8; SEED_BYTES]>)> {
-    bail!("protected runtime proof requires Linux")
-}
-
-#[cfg(not(target_os = "linux"))]
-fn send_bootstrap_ack(_file: &File) -> Result<()> {
-    bail!("protected runtime proof requires Linux")
-}
-
-#[cfg(not(target_os = "linux"))]
-fn complete_bootstrap_ack(_file: &File) -> Result<()> {
-    bail!("protected runtime proof requires Linux")
-}
-
-pub(crate) fn current_artifact_sha256() -> Result<String> {
+#[cfg(test)]
+fn current_artifact_sha256() -> Result<String> {
     let executable = std::env::current_exe().context("cannot locate runtime executable")?;
     let mut file = File::open(executable).context("cannot open runtime executable")?;
     let mut hash = sha2::Sha256::new();
@@ -368,8 +198,17 @@ pub(crate) fn current_artifact_sha256() -> Result<String> {
 }
 
 #[cfg(test)]
-#[path = "startup_tests.rs"]
-mod tests;
+mod tests {
+    use super::*;
 
-#[cfg(target_os = "linux")]
-use std::os::fd::FromRawFd;
+    #[test]
+    fn current_artifact_digest_is_lowercase_sha256() {
+        let digest = current_artifact_sha256().expect("current artifact digest");
+        assert_eq!(digest.len(), 64);
+        assert!(
+            digest
+                .bytes()
+                .all(|byte| byte.is_ascii_hexdigit() && !byte.is_ascii_uppercase())
+        );
+    }
+}

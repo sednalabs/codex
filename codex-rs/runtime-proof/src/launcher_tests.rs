@@ -7,6 +7,10 @@ use std::process::Command;
 use std::time::Duration;
 use std::time::Instant;
 
+fn claim_service_unit() -> String {
+    include_str!("../systemd/codex-runtime-proof-claim.service").to_string()
+}
+
 #[repr(C)]
 struct TestCapHeader {
     version: u32,
@@ -119,9 +123,9 @@ fn verified_executable_survives_privilege_drop() {
     fs::copy("/usr/bin/false", &path).unwrap();
     fs::set_permissions(&path, fs::Permissions::from_mode(0o755)).unwrap();
 
-    let (_bootstrap_parent, bootstrap_child) = seqpacket_pair().unwrap();
+    let (_broker_parent, broker_child) = crate::mcp_broker::seqpacket_pair().unwrap();
     let (_auth_parent, auth_child) = seqpacket_pair().unwrap();
-    let bootstrap = duplicate_high(bootstrap_child.as_raw_fd()).unwrap();
+    let broker = duplicate_high(broker_child.as_raw_fd()).unwrap();
     let auth = duplicate_high(auth_child.as_raw_fd()).unwrap();
     let executable = duplicate_high(verified.file.as_raw_fd()).unwrap();
     let null = File::open("/dev/null").unwrap();
@@ -143,7 +147,7 @@ fn verified_executable_survives_privilege_drop() {
     let mode = std::env::var("CODEX_VERIFIED_CAP_MODE").expect("fixture capability mode");
     let expected = std::env::var("CODEX_VERIFIED_EXPECT").expect("fixture expected result");
     prepare_test_capability_state(&mode);
-    let result = spawn_verified_child(&executable, &bootstrap, &auth, &run, target);
+    let result = spawn_verified_child(&executable, &auth, &broker, &run, target);
     match result {
         Ok(child) => {
             let output = child.wait_with_output().expect("wait for ELF fixture");
@@ -250,8 +254,8 @@ fn mcp_failure_details_and_errno_are_closed_and_numeric() {
             false,
         ),
         (
-            McpFailureDetail::BootstrapFdDuplicate,
-            "bootstrap_fd_duplicate",
+            McpFailureDetail::BrokerFdDuplicate,
+            "mcp_broker_fd_duplicate",
             true,
         ),
         (McpFailureDetail::AuthFdDuplicate, "auth_fd_duplicate", true),
@@ -464,8 +468,165 @@ fn fixed_policy(seed: &[u8; RUNTIME_SEED_BYTES]) -> LauncherPolicy {
             },
             model: None,
             task_prompt: "Claim the fixed Work item after checking its current state.".to_string(),
+            lifecycle: None,
         })),
     }
+}
+
+#[test]
+fn lifecycle_policy_is_opt_in_and_closed() {
+    let mut value = serde_json::json!({
+        "codex_dev_path": "/bin/example",
+        "codex_dev_sha256": "a".repeat(64),
+        "runtime_uid": 1001,
+        "runtime_gid": 1001,
+        "working_directory": "/",
+        "mcp_recipient": "https://example.invalid",
+        "mcp_oauth": {
+            "token_endpoint": "https://example.invalid/token",
+            "expected_issuer": "https://example.invalid",
+            "client_id": "test",
+            "audience": "test",
+            "requested_scope": "ops:write"
+        },
+        "task_prompt": "test"
+    });
+    let original: McpLaunchConfig =
+        serde_json::from_value(value.clone()).expect("ordinary MCP profile");
+    assert!(original.lifecycle.is_none());
+    value["lifecycle"] = serde_json::json!({"observer_sha256": "b".repeat(64)});
+    assert!(serde_json::from_value::<McpLaunchConfig>(value.clone()).is_err());
+    value["lifecycle"] = serde_json::json!({
+        "observer_sha256": "b".repeat(64),
+        "manager_sha256": "c".repeat(64)
+    });
+    let enabled: McpLaunchConfig =
+        serde_json::from_value(value.clone()).expect("lifecycle profile");
+    assert!(enabled.lifecycle.is_some());
+    value["lifecycle"]["manager_sha256"] = serde_json::json!("C".repeat(64));
+    let invalid_digest: McpLaunchConfig = serde_json::from_value(value.clone())
+        .expect("lifecycle digest remains a closed string field");
+    let mut policy = fixed_policy(&[7_u8; RUNTIME_SEED_BYTES]);
+    if let LauncherTarget::Mcp(target) = &mut policy.target {
+        target.lifecycle = Some(enabled.lifecycle.expect("lifecycle policy"));
+    }
+    assert!(validate_policy(&policy).is_ok());
+    if let LauncherTarget::Mcp(target) = &mut policy.target {
+        target.lifecycle = Some(invalid_digest.lifecycle.expect("lifecycle config"));
+    }
+    assert!(validate_policy(&policy).is_err());
+    value["lifecycle"]["unexpected"] = serde_json::json!(true);
+    assert!(serde_json::from_value::<McpLaunchConfig>(value).is_err());
+}
+
+#[test]
+fn systemd_unit_keeps_the_fixed_epoch_observer_contract() {
+    let service_unit = claim_service_unit();
+    for directive in [
+        "ExecStart=/usr/libexec/codex/codex-runtime-proof-launcher",
+        "ExecStopPost=/usr/libexec/codex/codex-runtime-proof-launcher lifecycle-stop",
+        "TimeoutStopSec=30s",
+        "KillMode=control-group",
+        "SendSIGKILL=yes",
+        "Delegate=no",
+        "TasksAccounting=yes",
+        "StateDirectory=codex-runtime-proof-lifecycle",
+        "StateDirectoryMode=0700",
+        "ProtectControlGroups=yes",
+    ] {
+        assert!(service_unit.lines().any(|line| line == directive));
+    }
+    assert_eq!(
+        service_unit
+            .lines()
+            .filter(|line| line.starts_with("ExecStopPost="))
+            .count(),
+        1
+    );
+    assert!(
+        !service_unit
+            .lines()
+            .any(|line| line.starts_with("ExecStop="))
+    );
+}
+
+#[test]
+fn systemd_analyze_accepts_the_fixed_claim_unit() {
+    let service_unit = claim_service_unit();
+    // Validate all unit syntax and directives while mapping only host-specific
+    // executable/group identities to the standard Linux runner equivalents.
+    // Separate assertions above pin those fixed production values exactly.
+    let validation_unit = service_unit
+        .replace(
+            "User=root\nGroup=codex-runtime-proof\n",
+            "User=root\nGroup=root\n",
+        )
+        .replace(
+            "ExecStart=/usr/libexec/codex/codex-runtime-proof-launcher",
+            "ExecStart=/usr/bin/true",
+        )
+        .replace(
+            "ExecStopPost=/usr/libexec/codex/codex-runtime-proof-launcher lifecycle-stop",
+            "ExecStopPost=/usr/bin/true lifecycle-stop",
+        );
+    let unit_file = tempfile::Builder::new()
+        .suffix(".service")
+        .tempfile()
+        .expect("create temporary systemd unit");
+    std::fs::write(unit_file.path(), validation_unit).expect("write temporary systemd unit");
+    let output = match Command::new("systemd-analyze")
+        .arg("verify")
+        .arg(unit_file.path())
+        .output()
+    {
+        Ok(output) => output,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+            eprintln!("systemd-analyze is unavailable; skipping systemd unit verification");
+            return;
+        }
+        Err(error) => panic!("failed to run systemd-analyze: {error}"),
+    };
+    assert!(
+        output.status.success(),
+        "fixed runtime-proof systemd unit did not validate: {}{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+}
+
+#[test]
+fn lifecycle_child_is_stopped_until_the_authority_packets_are_ready() {
+    struct KillOnDrop(Child);
+
+    impl Drop for KillOnDrop {
+        fn drop(&mut self) {
+            let _ = self.0.kill();
+            let _ = self.0.wait();
+        }
+    }
+
+    let mut child = KillOnDrop(
+        Command::new("/usr/bin/sleep")
+            .arg("30")
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .spawn()
+            .expect("spawn fixed sleep fixture"),
+    );
+    hold_child_before_authority(&child.0).expect("hold measured child");
+    let status = std::fs::read_to_string(format!("/proc/{}/status", child.0.id()))
+        .expect("read held child status");
+    assert_eq!(
+        status
+            .lines()
+            .find_map(|line| line.strip_prefix("State:"))
+            .and_then(|value| value.split_whitespace().next()),
+        Some("T")
+    );
+    resume_child_after_authority(&child.0).expect("resume measured child");
+    child.0.kill().expect("stop sleep fixture");
+    child.0.wait().expect("reap sleep fixture");
 }
 
 #[test]
@@ -673,17 +834,10 @@ fn issued_certificate_matches_the_existing_compact_jws_contract() {
 }
 
 #[test]
-fn bootstrap_packet_contains_only_the_length_prefixed_certificate_and_ephemeral_seed() {
-    let certificate = "fixed-certificate";
-    let seed = [9_u8; RUNTIME_SEED_BYTES];
-    let packet = make_bootstrap_packet(certificate, &seed).expect("bounded bootstrap packet");
-    let bytes = packet.as_slice();
-    assert_eq!(
-        u32::from_be_bytes(bytes[..4].try_into().expect("certificate length")) as usize,
-        certificate.len()
-    );
-    assert_eq!(&bytes[4..4 + certificate.len()], certificate.as_bytes());
-    assert_eq!(&bytes[4 + certificate.len()..], &seed);
+fn process_start_time_binds_the_current_process_instance() {
+    let (state, start_time) = process_start_time(std::process::id()).expect("current process stat");
+    assert!(!matches!(state, 'Z' | 'X'));
+    assert!(start_time > 0);
 }
 
 #[test]

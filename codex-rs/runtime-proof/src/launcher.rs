@@ -3,9 +3,12 @@
 //! The launcher accepts no command-line input. Its only policy is a root-owned
 //! file at [`POLICY_PATH`], and its only credentials are fixed systemd
 //! `LoadCredential` basenames. It starts the measured `codex-dev` ELF with the
-//! existing runtime-proof bootstrap descriptors, then opens any credential
+//! fixed child control descriptors, then opens any credential
 //! input only after `/proc/<pid>/exe` is bound to the already verified file
 //! object.
+
+mod lifecycle;
+mod mcp_broker;
 
 use crate::api_claim;
 use crate::auth::AuthFrame;
@@ -45,6 +48,9 @@ use std::process::Child;
 use std::process::Command;
 use std::process::ExitStatus;
 use std::process::Stdio;
+use std::sync::Arc;
+use std::sync::atomic::AtomicBool;
+use std::sync::atomic::Ordering;
 use std::thread;
 use std::time::Duration;
 use std::time::Instant;
@@ -64,8 +70,8 @@ const RUNTIME_DIRECTORY: &str = "/run/codex-runtime-proof";
 const PROVIDER_RECIPIENT: &str = "https://chatgpt.com/backend-api/codex";
 const MCP_SERVER: &str = "ops";
 const MCP_MUTATION_TOOLS: [&str; 2] = ["work_item_claim", "work_item_release"];
-const BOOTSTRAP_FD: RawFd = 3;
 const AUTH_FD: RawFd = 4;
+const MCP_BROKER_FD: RawFd = 5;
 const CHILD_SOURCE_FD_MIN: RawFd = 32;
 const RUNTIME_SEED_BYTES: usize = 32;
 const MAX_POLICY_BYTES: usize = 32 * 1024;
@@ -116,6 +122,15 @@ struct McpLaunchConfig {
     #[serde(default)]
     model: Option<String>,
     task_prompt: String,
+    #[serde(default)]
+    lifecycle: Option<LifecycleConfig>,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct LifecycleConfig {
+    observer_sha256: String,
+    manager_sha256: String,
 }
 
 #[derive(Deserialize)]
@@ -133,6 +148,16 @@ struct VerifiedExecutable {
     digest: String,
 }
 
+#[derive(Clone)]
+struct ChildIdentity {
+    pid: u32,
+    start_time_ticks: u64,
+    executable_device: u64,
+    executable_inode: u64,
+    runtime_uid: u32,
+    runtime_gid: u32,
+}
+
 struct RunDirectory {
     codex_home: PathBuf,
     child_home: PathBuf,
@@ -145,6 +170,8 @@ struct McpSupervisionContext<'a> {
     run_directory: &'a RunDirectory,
     policy: &'a LauncherPolicy,
     target: &'a McpLaunchConfig,
+    lifecycle_manager: Option<&'a lifecycle::ManagerBinding>,
+    policy_sha256: &'a str,
 }
 
 /// Starts the fixed root-owned task and returns the child exit code.
@@ -161,12 +188,56 @@ pub fn run() -> Result<i32> {
 
     let credential_directory = credential_directory().context(McpFailureStage::CredentialSetup)?;
     match &policy.target {
-        LauncherTarget::Mcp(target) => run_mcp(&policy, target, &credential_directory),
+        LauncherTarget::Mcp(target) => run_mcp(
+            &policy,
+            target,
+            &credential_directory,
+            &wire::certificate_digest(&policy_bytes),
+        ),
         LauncherTarget::Http(target) => {
             crate::api_bearer_provisioner::cleanup_loaded_bearer_source(&credential_directory)?;
             run_http_claim(&policy, target, &credential_directory)
         }
     }
+}
+
+/// Reports only independently observed teardown for the fixed systemd invocation.
+pub fn lifecycle_stop() -> Result<i32> {
+    require_root_launcher()?;
+    let policy_bytes = read_root_file(Path::new(POLICY_PATH), MAX_POLICY_BYTES)?;
+    let policy: LauncherPolicy = serde_json::from_slice(&policy_bytes)?;
+    let LauncherTarget::Mcp(target) = &policy.target else {
+        return Ok(0);
+    };
+    let Some(config) = &target.lifecycle else {
+        return Ok(0);
+    };
+    validate_policy(&policy)?;
+    open_verified_self_executable(&config.observer_sha256)?;
+    let _lock = lifecycle::lock_cohort()?;
+    let invocation = lifecycle::manager_invocation()?;
+    let Some(mut context) = lifecycle::load_context(invocation)? else {
+        return Ok(0);
+    };
+    lifecycle::require_manager_stop(&context.manager_binding)?;
+    let credentials = credential_directory()?;
+    let policy_sha256 = wire::certificate_digest(&policy_bytes);
+    let inputs = lifecycle::Inputs {
+        policy: &policy,
+        target,
+        credentials: &credentials,
+        policy_sha256: &policy_sha256,
+        observer_sha256: &config.observer_sha256,
+    };
+    lifecycle::finish(
+        &mut context,
+        inputs,
+        lifecycle::Source::Systemd,
+        lifecycle::Cause::Unobserved,
+        /*exit_code*/ None,
+        /*signal*/ None,
+    )?;
+    Ok(0)
 }
 
 /// Provisions the fixed API bearer before a claim policy is activated.
@@ -266,7 +337,7 @@ impl std::error::Error for McpFailureStage {}
 #[derive(Debug)]
 enum McpFailureDetail {
     ExecutableVerify,
-    BootstrapFdDuplicate,
+    BrokerFdDuplicate,
     AuthFdDuplicate,
     ExecutableFdDuplicate,
     ChildSpawn,
@@ -278,7 +349,7 @@ impl McpFailureDetail {
     fn as_str(&self) -> &'static str {
         match self {
             Self::ExecutableVerify => "executable_verify",
-            Self::BootstrapFdDuplicate => "bootstrap_fd_duplicate",
+            Self::BrokerFdDuplicate => "mcp_broker_fd_duplicate",
             Self::AuthFdDuplicate => "auth_fd_duplicate",
             Self::ExecutableFdDuplicate => "executable_fd_duplicate",
             Self::ChildSpawn => "child_spawn",
@@ -503,7 +574,18 @@ fn run_mcp(
     policy: &LauncherPolicy,
     target: &McpLaunchConfig,
     credential_directory: &Path,
+    policy_sha256: &str,
 ) -> Result<i32> {
+    let lifecycle_manager = if let Some(config) = &target.lifecycle {
+        open_verified_self_executable(&config.observer_sha256)?;
+        let binding = {
+            let _lifecycle_lock = lifecycle::lock_cohort()?;
+            lifecycle::capture_manager_binding(&config.manager_sha256)?
+        };
+        Some(binding)
+    } else {
+        None
+    };
     let runtime_directory =
         validate_runtime_directory(target.runtime_gid).context(McpFailureStage::RuntimeSetup)?;
     let working_directory = validate_working_directory(
@@ -518,14 +600,14 @@ fn run_mcp(
     let run_directory = create_run_directory(&runtime_directory, target, working_directory)
         .context(McpFailureStage::RuntimeSetup)?;
 
-    let (bootstrap_parent, bootstrap_child) =
-        seqpacket_pair().context(McpFailureStage::RuntimeSetup)?;
     let (auth_parent, auth_child) = seqpacket_pair().context(McpFailureStage::RuntimeSetup)?;
-    let bootstrap_source = duplicate_high(bootstrap_child.as_raw_fd())
-        .context(McpFailureDetail::BootstrapFdDuplicate)
-        .context(McpFailureStage::RuntimeSetup)?;
+    let (broker_parent, broker_child) =
+        crate::mcp_broker::seqpacket_pair().context(McpFailureStage::RuntimeSetup)?;
     let auth_source = duplicate_high(auth_child.as_raw_fd())
         .context(McpFailureDetail::AuthFdDuplicate)
+        .context(McpFailureStage::RuntimeSetup)?;
+    let broker_source = duplicate_high(broker_child.as_raw_fd())
+        .context(McpFailureDetail::BrokerFdDuplicate)
         .context(McpFailureStage::RuntimeSetup)?;
     let executable_source = duplicate_high(executable.file.as_raw_fd())
         .context(McpFailureDetail::ExecutableFdDuplicate)
@@ -533,8 +615,8 @@ fn run_mcp(
 
     let mut child = spawn_verified_child(
         &executable_source,
-        &bootstrap_source,
         &auth_source,
+        &broker_source,
         &run_directory,
         target,
     )
@@ -572,23 +654,25 @@ fn run_mcp(
                 .context(McpFailureStage::ChildStart);
         }
     };
-    drop(bootstrap_child);
     drop(auth_child);
+    drop(broker_child);
     drop(executable_source);
-    drop(bootstrap_source);
     drop(auth_source);
+    drop(broker_source);
 
     let context = McpSupervisionContext {
         credential_directory,
         run_directory: &run_directory,
         policy,
         target,
+        lifecycle_manager: lifecycle_manager.as_ref(),
+        policy_sha256,
     };
     let result = supervise_child(
         &mut child,
         &executable,
-        &bootstrap_parent,
         &auth_parent,
+        &broker_parent,
         &context,
     );
     if result.is_err() {
@@ -758,6 +842,10 @@ fn validate_policy(policy: &LauncherPolicy) -> Result<()> {
     }
     match &policy.target {
         LauncherTarget::Mcp(target) => {
+            if let Some(lifecycle) = &target.lifecycle {
+                validate_sha256(&lifecycle.observer_sha256)?;
+                validate_sha256(&lifecycle.manager_sha256)?;
+            }
             let model_selection_is_valid = match (policy.version, target.model.as_deref()) {
                 (2, None) => true,
                 (3, Some(model)) => valid_model_id(model),
@@ -1106,15 +1194,15 @@ fn clear_child_capabilities() -> std::io::Result<()> {
 
 fn spawn_verified_child(
     executable_source: &File,
-    bootstrap_source: &File,
     auth_source: &File,
+    broker_source: &File,
     run_directory: &RunDirectory,
     target: &McpLaunchConfig,
 ) -> Result<Child> {
     let parent_pid = unsafe { libc::getpid() };
     let executable_source = executable_source.as_raw_fd();
-    let bootstrap_source = bootstrap_source.as_raw_fd();
     let auth_source = auth_source.as_raw_fd();
+    let broker_source = broker_source.as_raw_fd();
     let mut command = Command::new(format!("/proc/self/fd/{executable_source}"));
     command
         .arg0("codex-dev")
@@ -1145,8 +1233,8 @@ fn spawn_verified_child(
         .env("XDG_DATA_HOME", run_directory.child_home.join("data"))
         .env("XDG_STATE_HOME", run_directory.child_home.join("state"))
         .env("XDG_RUNTIME_DIR", run_directory.child_home.join("runtime"))
-        .env("OPS_RUNTIME_BOOTSTRAP_FD", BOOTSTRAP_FD.to_string())
         .env("OPS_RUNTIME_AUTH_FD", AUTH_FD.to_string())
+        .env("OPS_RUNTIME_BROKER_FD", MCP_BROKER_FD.to_string())
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::null());
@@ -1163,21 +1251,20 @@ fn spawn_verified_child(
             {
                 return Err(std::io::Error::last_os_error());
             }
-            if libc::dup2(bootstrap_source, BOOTSTRAP_FD) < 0
-                || libc::dup2(auth_source, AUTH_FD) < 0
+            if libc::dup2(auth_source, AUTH_FD) < 0 || libc::dup2(broker_source, MCP_BROKER_FD) < 0
             {
                 return Err(std::io::Error::last_os_error());
             }
             if libc::syscall(
                 libc::SYS_close_range,
-                5_u32,
+                6_u32,
                 u32::MAX,
                 libc::CLOSE_RANGE_CLOEXEC,
             ) < 0
             {
                 return Err(std::io::Error::last_os_error());
             }
-            for descriptor in [BOOTSTRAP_FD, AUTH_FD] {
+            for descriptor in [AUTH_FD, MCP_BROKER_FD] {
                 if libc::fcntl(descriptor, libc::F_SETFD, 0) < 0 {
                     return Err(std::io::Error::last_os_error());
                 }
@@ -1201,11 +1288,49 @@ fn spawn_verified_child(
     command.spawn().context("start fixed codex-dev task")
 }
 
+/// Keep the measured child unable to fork or consume authority before the
+/// matching lifecycle start receipt and final manager check.
+fn hold_child_before_authority(child: &Child) -> Result<()> {
+    let pid = libc::pid_t::try_from(child.id())?;
+    if unsafe { libc::kill(pid, libc::SIGSTOP) } != 0 {
+        return Err(std::io::Error::last_os_error()).context("hold measured task before authority");
+    }
+    let deadline = Instant::now() + Duration::from_secs(2);
+    loop {
+        let mut status = 0;
+        let result = unsafe { libc::waitpid(pid, &mut status, libc::WUNTRACED | libc::WNOHANG) };
+        if result == pid {
+            if libc::WIFSTOPPED(status) && libc::WSTOPSIG(status) == libc::SIGSTOP {
+                return Ok(());
+            }
+            bail!("measured task exited before it could be held");
+        }
+        if result < 0 {
+            let error = std::io::Error::last_os_error();
+            if error.raw_os_error() != Some(libc::EINTR) {
+                return Err(error).context("wait for measured task hold");
+            }
+        } else if Instant::now() >= deadline {
+            bail!("measured task did not reach the pre-authority hold");
+        }
+        thread::sleep(Duration::from_millis(1));
+    }
+}
+
+fn resume_child_after_authority(child: &Child) -> Result<()> {
+    let pid = libc::pid_t::try_from(child.id())?;
+    if unsafe { libc::kill(pid, libc::SIGCONT) } != 0 {
+        return Err(std::io::Error::last_os_error())
+            .context("resume measured task after authority");
+    }
+    Ok(())
+}
+
 fn supervise_child(
     child: &mut Child,
     executable: &VerifiedExecutable,
-    bootstrap_socket: &File,
     auth_socket: &File,
+    broker_socket: &File,
     context: &McpSupervisionContext<'_>,
 ) -> Result<i32> {
     let McpSupervisionContext {
@@ -1213,9 +1338,18 @@ fn supervise_child(
         run_directory,
         policy,
         target,
+        lifecycle_manager,
+        policy_sha256,
     } = context;
     verify_child_image_and_identity(child, executable, target)
         .context(McpFailureStage::ChildStart)?;
+    if lifecycle_manager.is_some() {
+        hold_child_before_authority(child).context(McpFailureStage::ChildStart)?;
+        verify_child_image_and_identity(child, executable, target)
+            .context(McpFailureStage::ChildStart)?;
+    }
+    let child_identity =
+        capture_child_identity(child, executable, target).context(McpFailureStage::ChildStart)?;
 
     let issuer_seed =
         read_issuer_seed(credential_directory, policy).context(McpFailureStage::CredentialSetup)?;
@@ -1277,16 +1411,34 @@ fn supervise_child(
     };
     let certificate =
         issue_certificate(&claims, &issuer_seed, policy).context(McpFailureStage::Signer)?;
-    drop(issuer_seed);
-    let certificate_sha256 = wire::certificate_digest(certificate.as_bytes());
     validate_live_credentials(&provider, &mcp_access_token.bearer, expires_at)
         .context(McpFailureStage::CredentialSetup)?;
+    let mut lifecycle_context = if let Some(config) = &target.lifecycle {
+        let manager_binding = lifecycle_manager
+            .ok_or_else(|| anyhow!("fixed lifecycle manager binding is missing"))?;
+        let inputs = lifecycle::Inputs {
+            policy,
+            target,
+            credentials: credential_directory,
+            policy_sha256,
+            observer_sha256: &config.observer_sha256,
+        };
+        Some(lifecycle::start(
+            inputs,
+            manager_binding,
+            child.id(),
+            &certificate,
+            &claims,
+            &issuer_seed,
+        )?)
+    } else {
+        None
+    };
+    drop(issuer_seed);
 
     let auth_packet = {
         let auth_frame = AuthFrame {
-            version: 1,
-            certificate_sha256,
-            runtime_incarnation: claims.runtime_incarnation,
+            version: 2,
             principal: policy.principal,
             project_id: policy.project_id,
             codex_home: run_directory.codex_home.to_string_lossy().into_owned(),
@@ -1296,7 +1448,6 @@ fn supervise_child(
             provider_recipient: PROVIDER_RECIPIENT.to_string(),
             expires_at,
             provider,
-            mcp_bearer: mcp_access_token.bearer,
         };
         Zeroizing::new(
             serde_json::to_vec(&auth_frame)
@@ -1311,15 +1462,23 @@ fn supervise_child(
         .context(McpFailureStage::Bootstrap);
     }
 
-    let bootstrap_packet =
-        make_bootstrap_packet(&certificate, &runtime_seed).context(McpFailureStage::Signer)?;
-    send_packet(bootstrap_socket, &bootstrap_packet).context(McpFailureStage::Bootstrap)?;
-    drop(bootstrap_packet);
-    drop(runtime_seed);
+    let proof_authority =
+        crate::signer::LauncherProofAuthority::new(certificate, runtime_seed, &executable.digest)
+            .context(McpFailureStage::Signer)?;
+    if let Some(context) = &lifecycle_context {
+        lifecycle::require_manager_start(&context.manager_binding, child.id(), policy_sha256)?;
+        if Instant::now() >= task_deadline {
+            bail!("protected runtime expired before authority release");
+        }
+    }
+
     send_packet(auth_socket, &auth_packet).context(McpFailureStage::Bootstrap)?;
     drop(auth_packet);
+    if lifecycle_context.is_some() {
+        resume_child_after_authority(child).context(McpFailureStage::Bootstrap)?;
+    }
     let ack_timeout = ACK_TIMEOUT.min(task_deadline.saturating_duration_since(Instant::now()));
-    receive_ack(bootstrap_socket, ack_timeout).context(McpFailureStage::Bootstrap)?;
+    receive_ack(auth_socket, ack_timeout).context(McpFailureStage::Bootstrap)?;
     if Instant::now() >= task_deadline {
         return Err(anyhow!(
             "protected runtime expired before task execution started"
@@ -1334,8 +1493,116 @@ fn supervise_child(
         return Err(anyhow!("fixed codex-dev task has no prompt input"))
             .context(McpFailureStage::ChildPrompt);
     }
-    let status = wait_for_child(child, task_deadline).context(McpFailureStage::ChildExit)?;
-    Ok(exit_code(status))
+
+    let child_identity_for_live = child_identity.clone();
+    let child_is_live: Arc<dyn Fn() -> bool + Send + Sync> =
+        Arc::new(move || child_identity_is_live(&child_identity_for_live));
+    let child_identity_for_boundary = child_identity.clone();
+    let manager_binding = lifecycle_context
+        .as_ref()
+        .map(|context| context.manager_binding.clone());
+    let policy_digest = policy_sha256.to_string();
+    let verify_boundary: Arc<dyn Fn() -> Result<()> + Send + Sync> = Arc::new(move || {
+        verify_child_identity(&child_identity_for_boundary)?;
+        lifecycle::require_current_policy(&policy_digest)?;
+        if let Some(binding) = &manager_binding {
+            lifecycle::require_manager_running(
+                binding,
+                child_identity_for_boundary.pid,
+                &policy_digest,
+            )?;
+        }
+        Ok(())
+    });
+    if let Some(context) = &lifecycle_context {
+        lifecycle::require_manager_running(
+            &context.manager_binding,
+            child_identity.pid,
+            policy_sha256,
+        )?;
+    }
+    let broker_context = crate::launcher::mcp_broker::Context::new(
+        target.mcp_recipient.clone(),
+        policy.work_item_ref.clone(),
+        policy.project_id,
+        mcp_access_token.bearer,
+        proof_authority,
+        task_deadline,
+        lifecycle_context
+            .as_ref()
+            .map(|context| context.manager_binding.invocation_id()),
+    )
+    .context(McpFailureStage::RuntimeSetup)?;
+    let broker_active = Arc::new(AtomicBool::new(true));
+    let worker_active = Arc::clone(&broker_active);
+    let worker_live = Arc::clone(&child_is_live);
+    let worker_boundary = Arc::clone(&verify_boundary);
+    let worker_socket = broker_socket
+        .try_clone()
+        .context("duplicate protected MCP broker channel")
+        .context(McpFailureStage::RuntimeSetup)?;
+    let expected_peer = crate::mcp_broker::PeerIdentity {
+        pid: libc::pid_t::try_from(child_identity.pid)?,
+        uid: libc::uid_t::try_from(child_identity.runtime_uid)?,
+    };
+    let broker_worker = thread::Builder::new()
+        .name("runtime-proof-mcp-broker".to_string())
+        .spawn(move || {
+            crate::launcher::mcp_broker::run_worker(
+                worker_socket,
+                expected_peer,
+                broker_context,
+                worker_active,
+                worker_live,
+                worker_boundary,
+            )
+        })
+        .context("start protected MCP authority broker")
+        .context(McpFailureStage::RuntimeSetup)?;
+    let outcome_result = wait_for_child(child, task_deadline, target.lifecycle.is_some());
+    broker_active.store(false, Ordering::Release);
+    let shutdown_result = crate::mcp_broker::shutdown(broker_socket);
+    let broker_result = match broker_worker.join() {
+        Ok(result) => result,
+        Err(_) => Err(anyhow!("protected MCP authority broker panicked")),
+    };
+    let outcome = outcome_result.context(McpFailureStage::ChildExit)?;
+    if let (Some(context), Some(config)) = (&mut lifecycle_context, &target.lifecycle) {
+        use std::os::unix::process::ExitStatusExt as _;
+        let (cause, code, signal) = match &outcome {
+            ChildWait::Exited(status) if status.code().is_some() => {
+                (lifecycle::Cause::Exited, status.code(), None)
+            }
+            ChildWait::Exited(status) if status.signal().is_some() => {
+                (lifecycle::Cause::Signalled, None, status.signal())
+            }
+            ChildWait::Exited(_) => (lifecycle::Cause::Unobserved, None, None),
+            ChildWait::TimedOut => (lifecycle::Cause::Timeout, None, None),
+        };
+        let inputs = lifecycle::Inputs {
+            policy,
+            target,
+            credentials: credential_directory,
+            policy_sha256,
+            observer_sha256: &config.observer_sha256,
+        };
+        let _end_result = lifecycle::finish(
+            context,
+            inputs,
+            lifecycle::Source::Launcher,
+            cause,
+            code,
+            signal,
+        );
+        // An unresolved end is not evidence of a terminal epoch. The stop
+        // hook and fixed lease retain recovery without changing child status.
+    }
+    shutdown_result?;
+    broker_result.context("protected MCP authority broker failed")?;
+    match outcome {
+        ChildWait::Exited(status) => Ok(exit_code(status)),
+        ChildWait::TimedOut => Ok(1),
+    }
 }
 
 fn effective_expiry(now: i64, policy_expires_at: i64, token_expires_at: i64) -> Result<(i64, u32)> {
@@ -1371,12 +1638,70 @@ fn verify_child_image_and_identity(
     executable: &VerifiedExecutable,
     target: &McpLaunchConfig,
 ) -> Result<()> {
-    let proc_executable = PathBuf::from(format!("/proc/{}/exe", child.id()));
+    verify_process_image_and_identity(
+        child.id(),
+        executable.device,
+        executable.inode,
+        target.runtime_uid,
+        target.runtime_gid,
+        /*expected_start_time*/ None,
+    )
+}
+
+fn capture_child_identity(
+    child: &Child,
+    executable: &VerifiedExecutable,
+    target: &McpLaunchConfig,
+) -> Result<ChildIdentity> {
+    verify_child_image_and_identity(child, executable, target)?;
+    let start_time_ticks = process_start_time(child.id())?.1;
+    Ok(ChildIdentity {
+        pid: child.id(),
+        start_time_ticks,
+        executable_device: executable.device,
+        executable_inode: executable.inode,
+        runtime_uid: target.runtime_uid,
+        runtime_gid: target.runtime_gid,
+    })
+}
+
+fn verify_child_identity(identity: &ChildIdentity) -> Result<()> {
+    verify_process_image_and_identity(
+        identity.pid,
+        identity.executable_device,
+        identity.executable_inode,
+        identity.runtime_uid,
+        identity.runtime_gid,
+        Some(identity.start_time_ticks),
+    )
+}
+
+fn child_identity_is_live(identity: &ChildIdentity) -> bool {
+    process_start_time(identity.pid).is_ok_and(|(state, start_time)| {
+        !matches!(state, 'Z' | 'X') && start_time == identity.start_time_ticks
+    })
+}
+
+fn verify_process_image_and_identity(
+    pid: u32,
+    executable_device: u64,
+    executable_inode: u64,
+    runtime_uid: u32,
+    runtime_gid: u32,
+    expected_start_time: Option<u64>,
+) -> Result<()> {
+    let (initial_state, initial_start_time) = process_start_time(pid)?;
+    if matches!(initial_state, 'Z' | 'X')
+        || expected_start_time.is_some_and(|expected| expected != initial_start_time)
+    {
+        bail!("started process identity changed during its invocation");
+    }
+    let proc_executable = PathBuf::from(format!("/proc/{pid}/exe"));
     let metadata = fs::metadata(proc_executable)?;
-    if metadata.dev() != executable.device || metadata.ino() != executable.inode {
+    if metadata.dev() != executable_device || metadata.ino() != executable_inode {
         bail!("started process differs from the measured codex-dev image");
     }
-    let status = fs::read_to_string(format!("/proc/{}/status", child.id()))?;
+    let status = fs::read_to_string(format!("/proc/{pid}/status"))?;
     let mut uid = None;
     let mut gid = None;
     let mut groups = None;
@@ -1395,8 +1720,8 @@ fn verify_child_image_and_identity(
             no_new_privileges = Some(value.trim() == "1");
         }
     }
-    let expected_uid = [target.runtime_uid; 4];
-    let expected_gid = [target.runtime_gid; 4];
+    let expected_uid = [runtime_uid; 4];
+    let expected_gid = [runtime_gid; 4];
     if uid != Some(expected_uid)
         || gid != Some(expected_gid)
         || groups != Some(0)
@@ -1405,7 +1730,34 @@ fn verify_child_image_and_identity(
     {
         bail!("started codex-dev process has an unexpected execution identity");
     }
+    let (final_state, final_start_time) = process_start_time(pid)?;
+    if matches!(final_state, 'Z' | 'X') || final_start_time != initial_start_time {
+        bail!("started process identity changed during verification");
+    }
     Ok(())
+}
+
+fn process_start_time(pid: u32) -> Result<(char, u64)> {
+    let contents = fs::read_to_string(format!("/proc/{pid}/stat"))?;
+    if contents.len() > 8192 {
+        bail!("process identity record exceeds its size limit");
+    }
+    let command_end = contents
+        .rfind(')')
+        .context("process identity record has no command delimiter")?;
+    let fields = contents[command_end + 1..]
+        .split_whitespace()
+        .collect::<Vec<_>>();
+    let state = fields
+        .first()
+        .and_then(|value| value.chars().next())
+        .context("process identity record has no state")?;
+    let start_time_ticks = fields
+        .get(19)
+        .context("process identity record has no start time")?
+        .parse::<u64>()
+        .context("process start time is invalid")?;
+    Ok((state, start_time_ticks))
 }
 
 fn parse_identity_fields(value: &str) -> Result<[u32; 4]> {
@@ -1472,12 +1824,7 @@ fn validate_live_credentials(
     {
         bail!("fixed provider-auth credential is outside the protected live contract");
     }
-    crate::provider_auth::validate_provider_credential(
-        provider,
-        PROVIDER_RECIPIENT,
-        &mcp_bearer.0,
-        issued_until,
-    )?;
+    crate::provider_auth::validate_provider_credential(provider, PROVIDER_RECIPIENT, issued_until)?;
     crate::provider_auth::ensure_protected_cloud_config_ineligible(provider.plan_type.as_deref())?;
     Ok(())
 }
@@ -1505,21 +1852,6 @@ fn issue_certificate(
         bail!("issued runtime certificate exceeds its size limit");
     }
     Ok(certificate)
-}
-
-fn make_bootstrap_packet(
-    certificate: &str,
-    seed: &[u8; RUNTIME_SEED_BYTES],
-) -> Result<Zeroizing<Vec<u8>>> {
-    if certificate.is_empty() || certificate.len() > wire::MAX_CERTIFICATE_BYTES {
-        bail!("runtime certificate size is invalid");
-    }
-    let certificate_len = u32::try_from(certificate.len())?;
-    let mut packet = Zeroizing::new(Vec::with_capacity(4 + certificate.len() + seed.len()));
-    packet.extend_from_slice(&certificate_len.to_be_bytes());
-    packet.extend_from_slice(certificate.as_bytes());
-    packet.extend_from_slice(seed);
-    Ok(packet)
 }
 
 fn read_credential(
@@ -1769,9 +2101,18 @@ fn write_prompt_until<W: std::io::Write + AsRawFd>(
     Ok(())
 }
 
-fn wait_for_child(child: &mut Child, deadline: Instant) -> Result<ExitStatus> {
+enum ChildWait {
+    Exited(ExitStatus),
+    TimedOut,
+}
+
+fn wait_for_child(
+    child: &mut Child,
+    deadline: Instant,
+    observe_timeout: bool,
+) -> Result<ChildWait> {
     loop {
-        if Instant::now() >= deadline {
+        if !observe_timeout && Instant::now() >= deadline {
             bail!("fixed task exceeded its certificate execution lease");
         }
         let pid = child.id() as libc::pid_t;
@@ -1789,9 +2130,19 @@ fn wait_for_child(child: &mut Child, deadline: Instant) -> Result<ExitStatus> {
             if error.kind() != std::io::ErrorKind::Interrupted {
                 return Err(error).context("observe fixed task termination");
             }
+            continue;
         } else if unsafe { info.si_pid() } == pid {
             terminate_child_group_before_reap(pid);
-            return child.wait().context("reap fixed task");
+            return child
+                .wait()
+                .map(ChildWait::Exited)
+                .context("reap fixed task");
+        }
+        if observe_timeout && Instant::now() >= deadline {
+            terminate_child_group_before_reap(pid);
+            let _ = child.kill();
+            child.wait().context("reap timed-out fixed task")?;
+            return Ok(ChildWait::TimedOut);
         }
         std::thread::sleep(Duration::from_millis(100));
     }
