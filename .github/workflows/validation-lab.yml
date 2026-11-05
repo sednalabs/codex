@@ -1636,3 +1636,40 @@ jobs:
               if signal:
                   print(f"- First blocker signal: `{signal}`")
           PY
+
+  w14939-source-preparation:
+    name: Prepare bounded Analytics formatting and Bazel lock
+    if: ${{ inputs.supersession_key == 'w14939-source-prep-20261105' }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ inputs.target_sha }}
+          fetch-depth: 1
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@e081816240890017053eacbb1bdf337761dc5582
+        with:
+          components: rustfmt
+          targets: x86_64-unknown-linux-gnu
+      - uses: ./.github/actions/setup-bazel-ci
+        with:
+          target: x86_64-unknown-linux-gnu
+      - name: Generate formatting and Bazel lock patch
+        shell: bash
+        env:
+          TARGET_SHA: ${{ inputs.target_sha }}
+        run: |
+          set -euo pipefail
+          [[ "$(git rev-parse HEAD)" == "${TARGET_SHA}" ]]
+          (cd codex-rs && cargo fmt --all -- --config imports_granularity=Item)
+          just bazel-lock-update
+          git diff --check
+          git diff --binary > "${RUNNER_TEMP}/w14939-preparation.patch"
+          git status --short
+      - uses: actions/upload-artifact@v7
+        with:
+          name: w14939-source-preparation
+          path: ${{ runner.temp }}/w14939-preparation.patch
+          if-no-files-found: error
+          retention-days: 7
