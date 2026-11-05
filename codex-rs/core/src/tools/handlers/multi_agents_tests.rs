@@ -5651,15 +5651,17 @@ async fn multi_agent_v2_wait_agent_returns_for_already_queued_mail() {
         .agent_path
         .expect("worker path");
 
+    let mut actionable_mail = InterAgentCommunication::new(
+        worker_path.clone(),
+        AgentPath::root(),
+        Vec::new(),
+        "already queued".to_string(),
+        /*trigger_turn*/ true,
+    );
+    actionable_mail.intent = Some(codex_protocol::protocol::AgentMessageIntent::ActionRequired);
     session
         .input_queue
-        .enqueue_mailbox_communication(InterAgentCommunication::new(
-            worker_path.clone(),
-            AgentPath::root(),
-            Vec::new(),
-            "already queued".to_string(),
-            /*trigger_turn*/ true,
-        ))
+        .enqueue_mailbox_communication(actionable_mail)
         .await;
 
     let output = timeout(
