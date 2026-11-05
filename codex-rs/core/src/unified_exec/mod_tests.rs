@@ -397,7 +397,7 @@ async fn write_stdin_returns_on_output_and_retains_later_exit_output() -> anyhow
     assert_eq!(first.process_id, Some(process_id));
     assert_eq!(first.exit_code, None);
 
-    let final_output = write_stdin(&session, process_id, "\n", 2_500).await?;
+    let final_output = write_stdin(&session, process_id, "\n", /*yield_time_ms*/ 2_500).await?;
     assert!(
         final_output
             .truncated_output(DEFAULT_MAX_OUTPUT_TOKENS)
