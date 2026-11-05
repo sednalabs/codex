@@ -447,6 +447,8 @@ class UsageTreeTests(unittest.TestCase):
                     "--continue-until-complete",
                     "--max-resume-passes",
                     "2",
+                    "--max-rows-per-source-per-pass",
+                    "4096",
                 ]
             )
 
@@ -455,12 +457,40 @@ class UsageTreeTests(unittest.TestCase):
         self.assertEqual(
             collect.call_args.kwargs["checkpoint_path"], "private-checkpoint.sqlite"
         )
+        self.assertEqual(
+            [
+                call.kwargs["max_rows_per_source_per_pass"]
+                for call in collect.call_args_list
+            ],
+            [4096, 4096],
+        )
         result = json.loads(output.getvalue())
         self.assertEqual(result["continuation"]["status"], "complete")
         self.assertEqual(result["continuation"]["resumePassesCompleted"], 2)
         self.assertEqual(result["continuation"]["resumePassLimit"], 2)
         self.assertIn("pass 1/2", progress.getvalue())
         self.assertIn("pass 2/2", progress.getvalue())
+
+    def test_cli_requires_checkpoint_for_soft_per_source_pass_budget(self):
+        with (
+            contextlib.redirect_stderr(io.StringIO()),
+            self.assertRaises(SystemExit) as error,
+        ):
+            main(
+                [
+                    "--thread-id",
+                    "root",
+                    "--database",
+                    "primary.sqlite",
+                    "--also-database",
+                    "comparison.sqlite",
+                    "--aggregate-recorded",
+                    "--max-rows-per-source-per-pass",
+                    "4096",
+                ]
+            )
+
+        self.assertEqual(error.exception.code, 2)
 
     def test_root_child_totals_deduplicate_and_preserve_nulls_and_missing_rates(self):
         api = SyntheticAppServer()
@@ -1116,13 +1146,21 @@ class UsageTreeTests(unittest.TestCase):
             result = None
             progress_rows = []
             per_run_rows = []
+            identity_before = None
+            checkpoint_uri = checkpoint.resolve().as_uri() + "?mode=ro"
             with patch("codex_usage_tree.MAX_DATABASE_UNION_CALLS_PER_RUN", 25_000):
-                for invocation in range(8):
+                for invocation in range(24):
+                    run_budget = (
+                        {"max_rows_per_source_per_pass": 4_096}
+                        if invocation > 0
+                        else {}
+                    )
                     result = collect_database_union(
                         "root",
                         [str(primary), str(comparison)],
                         load_rates(None),
                         checkpoint_path=str(checkpoint),
+                        **run_budget,
                     )
                     progress_rows.append(
                         result["crossLedgerDeduplication"]["rowsScannedBySource"]
@@ -1133,6 +1171,51 @@ class UsageTreeTests(unittest.TestCase):
                             for source in result["sources"]
                         ]
                     )
+                    if invocation == 0:
+                        self.assertEqual(result["continuation"]["status"], "resumable")
+                        self.assertTrue(
+                            all(
+                                source["rowScan"]["reason"] == "per_run_row_limit"
+                                for source in result["sources"]
+                            )
+                        )
+                        with contextlib.closing(
+                            sqlite3.connect(checkpoint_uri, uri=True)
+                        ) as connection:
+                            connection.execute("PRAGMA query_only = ON")
+                            identity_before = connection.execute(
+                                "SELECT value FROM checkpoint_meta "
+                                "WHERE key = 'identity'"
+                            ).fetchone()[0]
+                        self.assertEqual(
+                            json.loads(identity_before)["bounds"]["rowsPerRun"],
+                            25_000,
+                        )
+                        self.assertEqual(per_run_rows[-1], [25_000, 25_000])
+                    elif invocation == 1:
+                        self.assertEqual(result["continuation"]["status"], "resumable")
+                        self.assertTrue(
+                            all(
+                                source["rowScan"]["reason"] == "per_run_row_limit"
+                                for source in result["sources"]
+                            )
+                        )
+                        self.assertNotIn(
+                            "checkpointResetReason", result["continuation"]
+                        )
+                        with contextlib.closing(
+                            sqlite3.connect(checkpoint_uri, uri=True)
+                        ) as connection:
+                            connection.execute("PRAGMA query_only = ON")
+                            identity_after = connection.execute(
+                                "SELECT value FROM checkpoint_meta "
+                                "WHERE key = 'identity'"
+                            ).fetchone()[0]
+                        self.assertEqual(identity_after, identity_before)
+                    else:
+                        self.assertTrue(
+                            all(count <= 4_096 for count in per_run_rows[-1])
+                        )
                     if invocation == 0:
                         # These production-style model metadata updates must not
                         # change the dedup key; the new call is above each frozen
@@ -1205,6 +1288,9 @@ class UsageTreeTests(unittest.TestCase):
             )
             self.assertTrue(
                 all(rows[0] <= 25_000 and rows[1] <= 25_000 for rows in per_run_rows)
+            )
+            self.assertTrue(
+                all(rows[0] <= 4_096 and rows[1] <= 4_096 for rows in per_run_rows[1:])
             )
             self.assertEqual(
                 result["crossLedgerDeduplication"]["rowsScannedBySource"],

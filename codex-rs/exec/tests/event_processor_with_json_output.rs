@@ -1927,6 +1927,8 @@ fn turn_failure_prefers_structured_error_message() {
         CollectedThreadEvents {
             events: vec![ThreadEvent::Error(ThreadErrorEvent {
                 message: "backend failed (request id abc)".to_string(),
+                codex_error_code: None,
+                http_status_code: None,
                 thread_id: Some("thread-1".to_string()),
                 turn_id: Some("turn-1".to_string()),
             })],
@@ -1959,6 +1961,8 @@ fn turn_failure_prefers_structured_error_message() {
                 turn_id: "turn-1".to_string(),
                 error: ThreadErrorEvent {
                     message: "backend failed (request id abc)".to_string(),
+                    codex_error_code: None,
+                    http_status_code: None,
                     thread_id: Some("thread-1".to_string()),
                     turn_id: Some("turn-1".to_string()),
                 },

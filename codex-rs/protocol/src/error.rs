@@ -459,9 +459,11 @@ impl CodexErr {
             CodexErrorDetails::RetryLimit(_) => CodexErrorInfo::ResponseTooManyFailedAttempts {
                 http_status_code: self.http_status_code_value(),
             },
-            CodexErrorDetails::ConnectionFailed(_) => CodexErrorInfo::HttpConnectionFailed {
-                http_status_code: self.http_status_code_value(),
-            },
+            CodexErrorDetails::ConnectionFailed(_) | CodexErrorDetails::UnexpectedStatus(_) => {
+                CodexErrorInfo::HttpConnectionFailed {
+                    http_status_code: self.http_status_code_value(),
+                }
+            }
             CodexErrorDetails::ResponseStreamFailed(_) => {
                 CodexErrorInfo::ResponseStreamConnectionFailed {
                     http_status_code: self.http_status_code_value(),

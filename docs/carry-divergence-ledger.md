@@ -3245,6 +3245,14 @@ bundles during upstream sync merely because they once shared this carry entry.
   authorize a tool-call replay. The client reuses its existing serialized OAuth
   transaction and does not add credentials, login flows, or a parallel session
   store.
+- RMCP's `AuthClient` transport implementation also retries requests after a
+  401, below Codex's operation-level retry policy. Codex wraps the same auth
+  manager with `SingleAttemptOAuthClient`, which obtains the current token and
+  delegates each transport operation once. The original denial then reaches
+  Codex, where only the fixed read-only protocol methods can be retried. The
+  hosted `invalid_token_refresh_never_replays_tool_calls` integration regression
+  checks both one `tools/call` attempt after refresh and a successful single
+  retry for `tools/list`.
 - During future syncs, do not "simplify" the OAuth helpers by dropping either
   the secrets-backed keyring path or the downstream resolved-store reread/save
   discipline unless an upstream replacement covers those behaviors and the
@@ -3255,6 +3263,7 @@ bundles during upstream sync merely because they once shared this carry entry.
   - `codex-rs/rmcp-client/src/oauth/store_lock.rs`
   - `codex-rs/rmcp-client/tests/streamable_http_oauth_startup.rs`
   - `codex-rs/rmcp-client/src/rmcp_client.rs`
+  - `codex-rs/rmcp-client/src/single_attempt_oauth_client.rs`
   - `codex-rs/rmcp-client/src/startup_error.rs`
   - `codex-rs/codex-mcp/src/connection_manager.rs`
   - `codex-rs/codex-mcp/src/binding.rs`
@@ -3847,6 +3856,13 @@ completion is lost; the logged canonical request UUID supports the same-actor
 MCP receipt read, where a missing receipt remains unresolved. Only the exact
 Ops active-holder discriminator is presented as `holder_conflict`; other
 failures remain closed as rejected or unresolved.
+
+Child failures use the existing sanitized journal event. The exec JSON boundary
+maps the typed `CodexErrorInfo` enum to a fixed code set and carries an HTTP
+status only from status-bearing variants and only within 100–599. The launcher
+revalidates that code set and status bound before projection. It does not
+forward message text, additional details, provider response bodies, tokens, or
+other child fields; substring-based failure classification is not used.
 
 The hosted external-unload residency case remains the exact core reproducer,
 with `session_end_flushes_transcript_and_ignores_control_output` and

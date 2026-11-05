@@ -80,6 +80,7 @@ const MAX_MCP_CLIENT_SECRET_BYTES: usize = 4096;
 const MAX_EXECUTABLE_BYTES: u64 = 2 * 1024 * 1024 * 1024;
 const ACK_TIMEOUT: Duration = Duration::from_secs(60);
 const OUTPUT_DRAIN_GRACE: Duration = Duration::from_millis(100);
+const OUTPUT_PROJECTION_TIMEOUT_EXIT_CODE: i32 = 125;
 const READINESS_PACKET: &[u8; 4] = b"ACK1";
 
 /// Root-owned policy for one fixed Work-task execution.
@@ -118,6 +119,8 @@ struct McpLaunchConfig {
     working_directory: PathBuf,
     mcp_recipient: String,
     mcp_oauth: McpOAuthPolicy,
+    #[serde(default)]
+    model: Option<String>,
     task_prompt: String,
     #[serde(default)]
     lifecycle: Option<LifecycleConfig>,
@@ -331,6 +334,39 @@ impl std::fmt::Display for McpFailureStage {
 
 impl std::error::Error for McpFailureStage {}
 
+#[derive(Debug)]
+enum McpFailureDetail {
+    ExecutableVerify,
+    BrokerFdDuplicate,
+    AuthFdDuplicate,
+    ExecutableFdDuplicate,
+    ChildSpawn,
+    ChildStdout,
+    OutputReader,
+}
+
+impl McpFailureDetail {
+    fn as_str(&self) -> &'static str {
+        match self {
+            Self::ExecutableVerify => "executable_verify",
+            Self::BrokerFdDuplicate => "mcp_broker_fd_duplicate",
+            Self::AuthFdDuplicate => "auth_fd_duplicate",
+            Self::ExecutableFdDuplicate => "executable_fd_duplicate",
+            Self::ChildSpawn => "child_spawn",
+            Self::ChildStdout => "child_stdout",
+            Self::OutputReader => "output_reader",
+        }
+    }
+}
+
+impl std::fmt::Display for McpFailureDetail {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str(self.as_str())
+    }
+}
+
+impl std::error::Error for McpFailureDetail {}
+
 impl ProvisioningStage {
     fn as_str(self) -> &'static str {
         match self {
@@ -431,6 +467,24 @@ pub fn safe_mcp_failure_stage(error: &anyhow::Error) -> Option<&'static str> {
     error
         .downcast_ref::<McpFailureStage>()
         .map(McpFailureStage::as_str)
+}
+
+/// Returns only a closed substage label for selected native launcher failures.
+pub fn safe_mcp_failure_detail(error: &anyhow::Error) -> Option<&'static str> {
+    error
+        .downcast_ref::<McpFailureDetail>()
+        .map(McpFailureDetail::as_str)
+}
+
+/// Returns only a bounded numeric OS error for a labelled launcher failure.
+pub fn safe_mcp_failure_errno(error: &anyhow::Error) -> Option<i32> {
+    safe_mcp_failure_detail(error)?;
+    error.chain().find_map(|cause| {
+        cause
+            .downcast_ref::<std::io::Error>()
+            .and_then(std::io::Error::raw_os_error)
+            .filter(|errno| (1..=4095).contains(errno))
+    })
 }
 
 fn provision_api_bearer_with_mode(mode: ApiBearerProvisioningMode) -> Result<i32> {
@@ -541,6 +595,7 @@ fn run_mcp(
     )
     .context(McpFailureStage::RuntimeSetup)?;
     let executable = open_verified_executable(&target.codex_dev_path, &target.codex_dev_sha256)
+        .context(McpFailureDetail::ExecutableVerify)
         .context(McpFailureStage::ChildStart)?;
     let run_directory = create_run_directory(&runtime_directory, target, working_directory)
         .context(McpFailureStage::RuntimeSetup)?;
@@ -548,12 +603,15 @@ fn run_mcp(
     let (auth_parent, auth_child) = seqpacket_pair().context(McpFailureStage::RuntimeSetup)?;
     let (broker_parent, broker_child) =
         crate::mcp_broker::seqpacket_pair().context(McpFailureStage::RuntimeSetup)?;
-    let auth_source =
-        duplicate_high(auth_child.as_raw_fd()).context(McpFailureStage::RuntimeSetup)?;
-    let broker_source =
-        duplicate_high(broker_child.as_raw_fd()).context(McpFailureStage::RuntimeSetup)?;
-    let executable_source =
-        duplicate_high(executable.file.as_raw_fd()).context(McpFailureStage::RuntimeSetup)?;
+    let auth_source = duplicate_high(auth_child.as_raw_fd())
+        .context(McpFailureDetail::AuthFdDuplicate)
+        .context(McpFailureStage::RuntimeSetup)?;
+    let broker_source = duplicate_high(broker_child.as_raw_fd())
+        .context(McpFailureDetail::BrokerFdDuplicate)
+        .context(McpFailureStage::RuntimeSetup)?;
+    let executable_source = duplicate_high(executable.file.as_raw_fd())
+        .context(McpFailureDetail::ExecutableFdDuplicate)
+        .context(McpFailureStage::RuntimeSetup)?;
 
     let mut child = spawn_verified_child(
         &executable_source,
@@ -562,11 +620,13 @@ fn run_mcp(
         &run_directory,
         target,
     )
+    .context(McpFailureDetail::ChildSpawn)
     .context(McpFailureStage::ChildStart)?;
     let stdout = child
         .stdout
         .take()
         .context("fixed codex-dev task has no JSON event stream")
+        .context(McpFailureDetail::ChildStdout)
         .context(McpFailureStage::ChildStart)?;
     let (output_finished_tx, output_finished_rx) = std::sync::mpsc::sync_channel(1);
     let work_item_ref = policy.work_item_ref.clone();
@@ -590,6 +650,7 @@ fn run_mcp(
             terminate_child_group(&mut child);
             return Err(error)
                 .context("start fixed task outcome projection")
+                .context(McpFailureDetail::OutputReader)
                 .context(McpFailureStage::ChildStart);
         }
     };
@@ -617,19 +678,26 @@ fn run_mcp(
     if result.is_err() {
         terminate_child_group(&mut child);
     }
-    if output_finished_rx.recv_timeout(OUTPUT_DRAIN_GRACE).is_ok() {
+    let projection_drained = output_finished_rx.recv_timeout(OUTPUT_DRAIN_GRACE).is_ok();
+    if projection_drained {
         let _ = output_reader.join();
     } else {
         // A blocked journal write or inherited stdout descriptor cannot delay
         // child teardown or the launcher's normal return past this grace. Do
-        // not return the supervision error here: the binary's error reporter
-        // takes stderr's global lock, which the detached projector may hold.
-        // Exit nonzero without a diagnostic; the missing projection remains
-        // unknown to the caller.
+        // not report this through stderr: the detached projector may hold the
+        // global lock or be blocked writing to the journal. Return a distinct
+        // nonzero status rather than conflating this path with a child exit 1.
         drop(output_reader);
-        return Ok(1);
     }
-    result
+    result_after_projection_drain(result, projection_drained)
+}
+
+fn result_after_projection_drain(result: Result<i32>, projection_drained: bool) -> Result<i32> {
+    if projection_drained {
+        result
+    } else {
+        Ok(OUTPUT_PROJECTION_TIMEOUT_EXIT_CODE)
+    }
 }
 
 fn run_http_claim(
@@ -760,7 +828,7 @@ fn require_root_launcher() -> Result<()> {
 }
 
 fn validate_policy(policy: &LauncherPolicy) -> Result<()> {
-    if policy.version != 2
+    if !matches!(policy.version, 2 | 3)
         || policy.principal.is_nil()
         || policy.project_id == 0
         || policy.project_id > ((1_u64 << 53) - 1)
@@ -777,6 +845,14 @@ fn validate_policy(policy: &LauncherPolicy) -> Result<()> {
             if let Some(lifecycle) = &target.lifecycle {
                 validate_sha256(&lifecycle.observer_sha256)?;
                 validate_sha256(&lifecycle.manager_sha256)?;
+            }
+            let model_selection_is_valid = match (policy.version, target.model.as_deref()) {
+                (2, None) => true,
+                (3, Some(model)) => valid_model_id(model),
+                _ => false,
+            };
+            if !model_selection_is_valid {
+                bail!("fixed MCP model selection does not match launcher policy version");
             }
             if target.runtime_uid == 0
                 || target.runtime_gid == 0
@@ -806,6 +882,9 @@ fn validate_policy(policy: &LauncherPolicy) -> Result<()> {
             target.mcp_oauth.validate()?;
         }
         LauncherTarget::Http(target) => {
+            if policy.version != 2 {
+                bail!("fixed HTTP claim policy version is not supported");
+            }
             validate_sha256(&target.launcher_sha256)?;
             api_claim::validate_precondition(
                 &policy.work_item_ref,
@@ -833,6 +912,14 @@ fn validate_policy(policy: &LauncherPolicy) -> Result<()> {
         bail!("fixed issuer public key has an invalid size");
     }
     Ok(())
+}
+
+fn valid_model_id(model: &str) -> bool {
+    !model.is_empty()
+        && model.len() <= 128
+        && model
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_' | b'.'))
 }
 
 fn credential_directory() -> Result<PathBuf> {
@@ -965,7 +1052,7 @@ fn prepare_run_directory(
     let codex_home = path.join("codex-home");
     fs::create_dir(&codex_home)?;
 
-    let config = render_codex_config(&target.mcp_recipient);
+    let config = render_codex_config(&target.mcp_recipient, target.model.as_deref());
     let config_path = codex_home.join("config.toml");
     write_owned_file(
         &config_path,
@@ -1024,10 +1111,85 @@ fn prepare_run_directory(
     })
 }
 
-fn render_codex_config(mcp_recipient: &str) -> String {
+fn render_codex_config(mcp_recipient: &str, model: Option<&str>) -> String {
+    let model_line = model
+        .map(|model| format!("model = {model:?}\n"))
+        .unwrap_or_default();
     format!(
-        "model_provider = \"openai\"\ncli_auth_credentials_store = \"ephemeral\"\napproval_policy = \"never\"\n\n[mcp_servers.ops]\nurl = {mcp_recipient:?}\nrequired = true\nenabled_tools = [\"work_item_claim\", \"work_item_current_work\", \"work_item_execution_receipt_read\", \"work_item_release\"]\n\n[mcp_servers.ops.tools.work_item_claim]\napproval_mode = \"approve\"\n\n[mcp_servers.ops.tools.work_item_current_work]\napproval_mode = \"approve\"\n\n[mcp_servers.ops.tools.work_item_execution_receipt_read]\napproval_mode = \"approve\"\n\n[mcp_servers.ops.tools.work_item_release]\napproval_mode = \"approve\"\n"
+        "{model_line}model_provider = \"openai\"\ncli_auth_credentials_store = \"ephemeral\"\napproval_policy = \"never\"\n\n[mcp_servers.ops]\nurl = {mcp_recipient:?}\nrequired = true\nenabled_tools = [\"work_item_claim\", \"work_item_current_work\", \"work_item_execution_receipt_read\", \"work_item_release\"]\n\n[mcp_servers.ops.tools.work_item_claim]\napproval_mode = \"approve\"\n\n[mcp_servers.ops.tools.work_item_current_work]\napproval_mode = \"approve\"\n\n[mcp_servers.ops.tools.work_item_execution_receipt_read]\napproval_mode = \"approve\"\n\n[mcp_servers.ops.tools.work_item_release]\napproval_mode = \"approve\"\n"
     )
+}
+
+#[repr(C)]
+struct ChildCapabilityHeader {
+    version: u32,
+    pid: i32,
+}
+
+#[repr(C)]
+#[derive(Clone, Copy, Default)]
+struct ChildCapabilityData {
+    effective: u32,
+    permitted: u32,
+    inheritable: u32,
+}
+
+// Called only in the post-fork child: no allocation or external code.
+fn prepare_child_setuid_capability() -> std::io::Result<()> {
+    let mut header = ChildCapabilityHeader {
+        version: 0x2008_0522,
+        pid: 0,
+    };
+    let mut data = [ChildCapabilityData::default(); 2];
+    if unsafe { libc::syscall(libc::SYS_capget, &mut header, data.as_mut_ptr()) } != 0 {
+        return Err(std::io::Error::last_os_error());
+    }
+    const SETUID: u32 = 1 << 7;
+    if data[0].permitted & SETUID == 0 {
+        return Err(std::io::Error::from_raw_os_error(libc::EPERM));
+    }
+    if data[0].effective & SETUID == 0 {
+        data[0].effective |= SETUID;
+        if unsafe { libc::syscall(libc::SYS_capset, &mut header, data.as_ptr()) } != 0 {
+            return Err(std::io::Error::last_os_error());
+        }
+    }
+    if unsafe {
+        libc::prctl(
+            libc::PR_CAP_AMBIENT,
+            libc::PR_CAP_AMBIENT_CLEAR_ALL,
+            0,
+            0,
+            0,
+        )
+    } != 0
+    {
+        return Err(std::io::Error::last_os_error());
+    }
+    Ok(())
+}
+
+// Drop inherited as well as effective/permitted capabilities before exec.
+fn clear_child_capabilities() -> std::io::Result<()> {
+    let mut header = ChildCapabilityHeader {
+        version: 0x2008_0522,
+        pid: 0,
+    };
+    let empty = [ChildCapabilityData::default(); 2];
+    if unsafe { libc::syscall(libc::SYS_capset, &mut header, empty.as_ptr()) } != 0 {
+        return Err(std::io::Error::last_os_error());
+    }
+    let mut actual = [ChildCapabilityData::default(); 2];
+    if unsafe { libc::syscall(libc::SYS_capget, &mut header, actual.as_mut_ptr()) } != 0 {
+        return Err(std::io::Error::last_os_error());
+    }
+    if actual
+        .iter()
+        .any(|set| set.effective != 0 || set.permitted != 0 || set.inheritable != 0)
+    {
+        return Err(std::io::Error::from_raw_os_error(libc::EPERM));
+    }
+    Ok(())
 }
 
 fn spawn_verified_child(
@@ -1107,10 +1269,15 @@ fn spawn_verified_child(
                     return Err(std::io::Error::last_os_error());
                 }
             }
+            prepare_child_setuid_capability()?;
             if libc::setgroups(0, std::ptr::null()) != 0
                 || libc::setresgid(runtime_gid, runtime_gid, runtime_gid) != 0
                 || libc::setresuid(runtime_uid, runtime_uid, runtime_uid) != 0
-                || libc::prctl(libc::PR_SET_NO_NEW_PRIVS, 1, 0, 0, 0) != 0
+            {
+                return Err(std::io::Error::last_os_error());
+            }
+            clear_child_capabilities()?;
+            if libc::prctl(libc::PR_SET_NO_NEW_PRIVS, 1, 0, 0, 0) != 0
                 || libc::prctl(libc::PR_SET_DUMPABLE, 0, 0, 0, 0) != 0
             {
                 return Err(std::io::Error::last_os_error());
