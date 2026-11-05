@@ -504,17 +504,19 @@ impl EventProcessorWithJsonOutput {
                 warning.status
             }
             ServerNotification::Error(notification) => {
+                let codex_error_info = notification.error.codex_error_info;
                 let message = match notification.error.additional_details {
                     Some(details) if !details.is_empty() => {
                         format!("{} ({details})", notification.error.message)
                     }
                     _ => notification.error.message,
                 };
-                let error = ThreadErrorEvent {
+                let error = ThreadErrorEvent::new(
                     message,
-                    thread_id: Some(notification.thread_id.clone()),
-                    turn_id: Some(notification.turn_id.clone()),
-                };
+                    Some(notification.thread_id.clone()),
+                    Some(notification.turn_id.clone()),
+                    codex_error_info.as_ref(),
+                );
                 self.last_critical_error = Some(error.clone());
                 events.push(ThreadEvent::Error(error));
                 CodexStatus::Running
@@ -632,21 +634,29 @@ impl EventProcessorWithJsonOutput {
                         let error = notification
                             .turn
                             .error
-                            .map(|error| ThreadErrorEvent {
-                                message: match error.additional_details {
+                            .map(|error| {
+                                let codex_error_info = error.codex_error_info;
+                                let message = match error.additional_details {
                                     Some(details) if !details.is_empty() => {
                                         format!("{} ({details})", error.message)
                                     }
                                     _ => error.message,
-                                },
-                                thread_id: Some(notification.thread_id.clone()),
-                                turn_id: Some(notification.turn.id.clone()),
+                                };
+                                ThreadErrorEvent::new(
+                                    message,
+                                    Some(notification.thread_id.clone()),
+                                    Some(notification.turn.id.clone()),
+                                    codex_error_info.as_ref(),
+                                )
                             })
                             .or_else(|| self.last_critical_error.clone())
-                            .unwrap_or_else(|| ThreadErrorEvent {
-                                message: "turn failed".to_string(),
-                                thread_id: Some(notification.thread_id.clone()),
-                                turn_id: Some(notification.turn.id.clone()),
+                            .unwrap_or_else(|| {
+                                ThreadErrorEvent::new(
+                                    "turn failed".to_string(),
+                                    Some(notification.thread_id.clone()),
+                                    Some(notification.turn.id.clone()),
+                                    /*error_info*/ None,
+                                )
                             });
                         events.push(ThreadEvent::TurnFailed(TurnFailedEvent {
                             thread_id: notification.thread_id.clone(),

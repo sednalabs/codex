@@ -20,6 +20,9 @@ LoadCredential=provider-auth.json
 LoadCredential=ops-mcp-client-secret
 LoadCredential=ops-api-bearer
 CapabilityBoundingSet=CAP_CHOWN CAP_KILL CAP_SETGID CAP_SETUID CAP_SYS_PTRACE
+# The root launcher needs SETUID to enter the fixed runtime identity; it
+# clears ambient and all process capability sets in the child before exec.
+AmbientCapabilities=CAP_SETUID
 NoNewPrivileges=yes
 ProtectSystem=strict
 ProtectHome=tmpfs
