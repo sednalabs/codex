@@ -106,7 +106,7 @@ Fast lanes used by `core-test-smoke` locally and by the remote smoke matrix:
 - `core-carry-ui-smoke` isolates `codex-tui` replayed-queue and selected-agent
   footer regressions, so downstream interactive behavior still fails during the
   PR smoke pass without obscuring core-only timing.
-- `core-ledger-smoke` now includes the `usage.sqlite` cleanup, turn-reset, and
+- `core-ledger-smoke` now includes historical usage-file preservation, turn-reset, and
   restart-lineage regressions, so downstream accounting behavior
   fails during the same smoke pass.
 - `core-runtime-surface-smoke` isolates the fragile codex-core runtime seams in

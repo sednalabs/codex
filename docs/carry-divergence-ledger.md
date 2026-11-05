@@ -1547,6 +1547,8 @@ bundles during upstream sync merely because they once shared this carry entry.
   the account identity, redirect, timeout and existing-ledger boundaries.
 
 - Downstream keeps usage-ledger ownership in this repo.
+- Runtime startup preserves older usage database files and their SQLite
+  sidecars; opening the current ledger does not merge or delete those files.
 - Billing-turn canonicalization and historical AUD reporting remain downstream
   requirements, and the canonical local ledger implementation lives in
   `usage.sqlite` rather than an external sibling repository.

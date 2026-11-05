@@ -125,7 +125,7 @@
         "codex-rs/state/src/sqlite.rs",
         "codex-rs/state/usage_migrations/0001_usage_tables.sql"
       ],
-      "behavior": "Downstream keeps local billing-turn and provider/token ledger ownership in an extension-owned storage namespace.",
+      "behavior": "Downstream keeps local billing-turn and provider/token ledger ownership in an extension-owned storage namespace and preserves older usage database files and sidecars.",
       "upstream_equivalent": false,
       "introduced_in": {
         "carry_commit": null,
@@ -134,7 +134,7 @@
       "guardrail_lane": "core-ledger-smoke",
       "tests": [
         "extension_storage_migrations_use_namespace_versions",
-        "init_removes_legacy_logs_and_usage_db_files",
+        "init_removes_legacy_logs_but_preserves_usage_databases",
         "usage_logger_* focused table-contract tests"
       ],
       "owner": "downstream",
