@@ -1906,7 +1906,9 @@ INSERT INTO usage_provider_calls (
         );
         resumed
             .record_event(&raw_response_completed_event(
-                "", "resp-older", /*token_usage*/ None,
+                "",
+                "resp-older",
+                /*token_usage*/ None,
             ))
             .await;
         assert_eq!(
