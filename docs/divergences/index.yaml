@@ -18,7 +18,7 @@
       ],
       "behavior": "Add bounded account-verified recent Chats usage to /usage, retaining upstream-shaped consumer task and workspace estimated usage and a read-only local root/subagent lineage detail. Label estimates, unavailable data, potentially incomplete history and local overcount risk; never create a second writer or treat a missing row as zero.",
       "upstream_equivalent": false,
-      "introduced_in": {"carry_commit": null, "upstream_commit": "ab3b40c"},
+      "introduced_in": {"carry_commit": null, "upstream_commit": "842fae26c9"},
       "guardrail_lane": "validation-lab named codex-backend-client and codex-tui analytics tests",
       "tests": ["analytics_chats_displays_partial_page_and_preserves_pagination_snapshot", "analytics_chats_account_update_discards_pending_result", "local_lineage_distinguishes_root_subagent_and_unknown_credit_coverage", "unavailable_batches_keep_available_rows_and_do_not_invent_zeroes"],
       "owner": "downstream",

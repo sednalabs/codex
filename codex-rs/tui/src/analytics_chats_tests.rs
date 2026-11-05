@@ -65,6 +65,62 @@ async fn session_for_plan(
 }
 
 #[tokio::test]
+async fn local_lineage_is_attached_only_to_account_verified_chats() {
+    use codex_protocol::ThreadId;
+    use codex_protocol::protocol::SessionSource;
+    use codex_protocol::protocol::SubAgentSource;
+    use codex_state::UsageLogger;
+    use codex_utils_absolute_path::AbsolutePathBuf;
+
+    let server = MockServer::start().await;
+    let (_auth_home, session) = session(&server).await;
+    let db_home = tempfile::tempdir().unwrap();
+    let db = codex_state::StateRuntime::init(
+        codex_state::SqliteConfig::new_for_testing(
+            AbsolutePathBuf::from_absolute_path(db_home.path()).unwrap(),
+        ),
+        "test-provider".to_string(),
+    )
+    .await
+    .unwrap();
+    let root = ThreadId::new();
+    let child = ThreadId::new();
+    let other = ThreadId::new();
+    let _root = UsageLogger::try_new(db.clone(), root, SessionSource::Cli, None, None, None)
+        .await.unwrap();
+    let _child = UsageLogger::try_new(
+        db.clone(), child,
+        SessionSource::SubAgent(SubAgentSource::ThreadSpawn {
+            parent_thread_id: root, depth: 1, agent_path: None,
+            agent_nickname: None, agent_role: None,
+        }), None, None, None,
+    ).await.unwrap();
+    let _other = UsageLogger::try_new(db.clone(), other, SessionSource::Cli, None, None, None)
+        .await.unwrap();
+    let mut page = AccountChats::Workspace(Chats {
+        rows: vec![
+            Chat {
+                title: "verified".to_string(),
+                usage: Some(ThreadUsage {
+                    thread_id: root.to_string(), estimated_usage_credits_micros: 1,
+                    estimated_usage_usd_micros: None, native_usage_usd_micros: None,
+                    groups: Vec::new(),
+                }),
+                local_usage: None,
+            },
+            Chat { title: "unverified".to_string(), usage: None, local_usage: None },
+        ],
+        next_cursor: None, partial_history: true, partial_estimates: true,
+    });
+    page.attach_local_usage(Some(&db), &session).await.unwrap();
+    let AccountChats::Workspace(page) = page else { panic!("workspace page") };
+    let local = page.rows[0].local_usage.as_ref().unwrap();
+    assert_eq!(local.threads.iter().map(|thread| thread.kind.as_str()).collect::<Vec<_>>(), vec!["Root", "Subagent"]);
+    assert!(page.rows[1].local_usage.is_none());
+    assert_eq!(page.rows[1].display_title(), "Chat usage unavailable");
+}
+
+#[tokio::test]
 async fn unavailable_batches_keep_available_rows_and_do_not_invent_zeroes() {
     let server = MockServer::start().await;
     let (_home, session) = session(&server).await;
@@ -300,8 +356,10 @@ async fn descendant_lookup_rejects_unacknowledged_or_bounded_results() {
                     lists += 1;
                     if lists == 1 {
                         json!({"data": [], "nextCursor": null, "backwardsCursor": null})
-                    } else {
+                    } else if lists == 2 {
                         json!({"data": [], "nextCursor": null, "backwardsCursor": null, "ancestorFilterApplied": true, "relationLimitReached": true})
+                    } else {
+                        json!({"data": [], "nextCursor": null, "backwardsCursor": null, "ancestorFilterApplied": true})
                     }
                 }
                 _ => continue,
@@ -314,7 +372,7 @@ async fn descendant_lookup_rejects_unacknowledged_or_bounded_results() {
                 ))
                 .await
                 .unwrap();
-            if lists == 2 {
+            if lists == 3 {
                 break;
             }
         }
@@ -339,6 +397,10 @@ async fn descendant_lookup_rejects_unacknowledged_or_bounded_results() {
         "status": {"type": "idle"}, "cwd": std::env::temp_dir(), "cliVersion": "test", "source": "cli", "turns": []
     })).unwrap();
     let handle = AppServerRequestHandle::Remote(remote.request_handle());
+    assert_eq!(
+        descendants(&handle, &root).await.unwrap_err(),
+        "Task descendant coverage is unavailable."
+    );
     assert_eq!(
         descendants(&handle, &root).await.unwrap_err(),
         "Task descendant coverage is unavailable."
