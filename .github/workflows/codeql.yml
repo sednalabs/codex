@@ -325,7 +325,7 @@ jobs:
               scope_paths=(
                 codex-rs/agent-graph-store codex-rs/ansi-escape codex-rs/aws-auth codex-rs/cli
                 codex-rs/cloud-tasks-mock-client codex-rs/codex-api codex-rs/codex-home codex-rs/connectors
-                codex-rs/ext codex-rs/file-search codex-rs/install-context codex-rs/mcp-server
+                codex-rs/ext codex-rs/file-search codex-rs/install-context
                 codex-rs/model-provider-info codex-rs/plugin codex-rs/response-debug-context codex-rs/rollout-trace
                 codex-rs/state codex-rs/thread-store codex-rs/vendor
                 codex-rs/cloud-client codex-rs/core-plugin-common codex-rs/exec-server-cli

@@ -10,8 +10,8 @@
 | RAM                         | 4-GB minimum (8-GB recommended)                                 |
 
 The standalone release installer serializes its own activations before it
-mutates package links. This is not a security boundary against a same-UID
-process that concurrently replaces directories.
+mutates package links. This is not a security boundary against a
+same-UID process that concurrently replaces directories.
 
 ### DotSlash
 

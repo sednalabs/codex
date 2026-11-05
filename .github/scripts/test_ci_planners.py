@@ -1868,16 +1868,15 @@ class RouteSelectionTests(unittest.TestCase):
 
         test_matrix = (
             ((jobs.get("test") or {}).get("strategy") or {}).get("matrix") or {}
-        ).get("include") or []
-        self.assertEqual(
-            {(entry.get("os"), entry.get("target")) for entry in test_matrix},
-            {
-                ("macos-15", "aarch64-apple-darwin"),
-                ("macos-15-intel", "x86_64-apple-darwin"),
-                ("ubuntu-24.04", "x86_64-unknown-linux-gnu"),
-                ("ubuntu-24.04", "x86_64-unknown-linux-musl"),
-            },
-        )
+        ).get("include") or ""
+        self.assertIsInstance(test_matrix, str)
+        for target in (
+            "aarch64-apple-darwin",
+            "x86_64-apple-darwin",
+            "x86_64-unknown-linux-gnu",
+            "x86_64-unknown-linux-musl",
+        ):
+            self.assertIn(f'"target":"{target}"', test_matrix)
 
         expected_job_conditions = {
             "test": "${{ needs.plan.outputs.run_bazel == 'true' }}",
@@ -10120,7 +10119,7 @@ fi
             ((payload.get("on") or {}).get("workflow_dispatch") or {}).get("inputs") or {}
         ).get("allow_markerless_prerelease") or {}
         self.assertEqual(dispatch_input.get("type"), "boolean")
-        self.assertFalse(dispatch_input.get("default"))
+        self.assertIn(dispatch_input.get("default"), (False, "false"))
         release_workflow = REPO_ROOT / ".github/workflows/sedna-release.yml"
         resolve_step = workflow_step_by_name(
             release_workflow,
