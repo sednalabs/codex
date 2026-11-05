@@ -87,35 +87,63 @@ async fn local_lineage_is_attached_only_to_account_verified_chats() {
     let child = ThreadId::new();
     let other = ThreadId::new();
     let _root = UsageLogger::try_new(db.clone(), root, SessionSource::Cli, None, None, None)
-        .await.unwrap();
+        .await
+        .unwrap();
     let _child = UsageLogger::try_new(
-        db.clone(), child,
+        db.clone(),
+        child,
         SessionSource::SubAgent(SubAgentSource::ThreadSpawn {
-            parent_thread_id: root, depth: 1, agent_path: None,
-            agent_nickname: None, agent_role: None,
-        }), None, None, None,
-    ).await.unwrap();
+            parent_thread_id: root,
+            depth: 1,
+            agent_path: None,
+            agent_nickname: None,
+            agent_role: None,
+        }),
+        None,
+        None,
+        None,
+    )
+    .await
+    .unwrap();
     let _other = UsageLogger::try_new(db.clone(), other, SessionSource::Cli, None, None, None)
-        .await.unwrap();
+        .await
+        .unwrap();
     let mut page = AccountChats::Workspace(Chats {
         rows: vec![
             Chat {
                 title: "verified".to_string(),
                 usage: Some(ThreadUsage {
-                    thread_id: root.to_string(), estimated_usage_credits_micros: 1,
-                    estimated_usage_usd_micros: None, native_usage_usd_micros: None,
+                    thread_id: root.to_string(),
+                    estimated_usage_credits_micros: 1,
+                    estimated_usage_usd_micros: None,
+                    native_usage_usd_micros: None,
                     groups: Vec::new(),
                 }),
                 local_usage: None,
             },
-            Chat { title: "unverified".to_string(), usage: None, local_usage: None },
+            Chat {
+                title: "unverified".to_string(),
+                usage: None,
+                local_usage: None,
+            },
         ],
-        next_cursor: None, partial_history: true, partial_estimates: true,
+        next_cursor: None,
+        partial_history: true,
+        partial_estimates: true,
     });
     page.attach_local_usage(Some(&db), &session).await.unwrap();
-    let AccountChats::Workspace(page) = page else { panic!("workspace page") };
+    let AccountChats::Workspace(page) = page else {
+        panic!("workspace page")
+    };
     let local = page.rows[0].local_usage.as_ref().unwrap();
-    assert_eq!(local.threads.iter().map(|thread| thread.kind.as_str()).collect::<Vec<_>>(), vec!["Root", "Subagent"]);
+    assert_eq!(
+        local
+            .threads
+            .iter()
+            .map(|thread| thread.kind.as_str())
+            .collect::<Vec<_>>(),
+        vec!["Root", "Subagent"]
+    );
     assert!(page.rows[1].local_usage.is_none());
     assert_eq!(page.rows[1].display_title(), "Chat usage unavailable");
 }
