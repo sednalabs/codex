@@ -52,6 +52,27 @@ struct TokenUsageTotals {
     total_tokens: i64,
 }
 
+#[derive(Debug, sqlx::FromRow)]
+struct StoredProviderUsage {
+    input_tokens_uncached: Option<i64>,
+    input_tokens_cached: Option<i64>,
+    input_tokens_cache_write: Option<i64>,
+    output_tokens: Option<i64>,
+    total_tokens: Option<i64>,
+}
+
+impl StoredProviderUsage {
+    fn into_totals(self) -> Option<TokenUsageTotals> {
+        Some(TokenUsageTotals {
+            uncached_input_tokens: self.input_tokens_uncached?,
+            cached_input_tokens: self.input_tokens_cached?,
+            cache_write_input_tokens: self.input_tokens_cache_write?,
+            output_tokens: self.output_tokens?,
+            total_tokens: self.total_tokens?,
+        })
+    }
+}
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct UsageThreadRecord {
     pub root_thread_id: Option<String>,
@@ -368,10 +389,12 @@ ON CONFLICT(thread_id) DO UPDATE SET
         turn_id: Option<&str>,
     ) -> anyhow::Result<()> {
         let turn_snapshot = turn_id.and_then(|id| self.turn_snapshots.get(id)).cloned();
+        // A model_used snapshot is not evidence of which model was requested.
+        // In particular, late TokenCount events must not overwrite a completed
+        // response's requested identity after its turn snapshot is cleared.
         let requested_model = turn_snapshot
             .as_ref()
             .and_then(|snapshot| snapshot.requested_model.clone())
-            .or_else(|| token_count.model_used.clone())
             .map(|value| value.to_ascii_lowercase());
         let provider = token_count
             .provider
@@ -480,6 +503,15 @@ ON CONFLICT(thread_id) DO UPDATE SET
         // Scope the provider response identity to its thread while keeping it
         // deterministic across repeated delivery and logger restarts.
         let provider_call_id = format!("response:{}:{}", self.thread_id, response.response_id);
+        // A previously recorded older response can be replayed after a newer
+        // one. Refresh its durable row, but do not make it the in-memory last
+        // call used by turn completion, token metadata or fork snapshots.
+        let already_recorded: bool = sqlx::query_scalar(
+            "SELECT EXISTS(SELECT 1 FROM usage_provider_calls WHERE provider_call_id = ?)",
+        )
+        .bind(&provider_call_id)
+        .fetch_one(self.pool.as_ref())
+        .await?;
         let now = Utc::now().to_rfc3339();
         let (
             uncached_input_tokens,
@@ -548,51 +580,35 @@ ON CONFLICT(thread_id) DO UPDATE SET
         .execute(self.pool.as_ref())
         .await?;
 
-        self.last_provider_call_id = Some(provider_call_id.clone());
-        self.last_provider_usage = match response.token_usage.as_ref() {
-            Some(usage) => Some(TokenUsageTotals {
-                uncached_input_tokens: usage
-                    .input_tokens
-                    .saturating_sub(usage.cached_input_tokens)
-                    .max(0),
-                cached_input_tokens: usage.cached_input_tokens,
-                cache_write_input_tokens: usage.cache_write_input_tokens,
-                output_tokens: usage.output_tokens,
-                total_tokens: usage.total_tokens,
-            }),
-            None => {
-                // Preserve the in-memory fork anchor when an unmetered
-                // redelivery follows an earlier metered delivery.
-                let stored: (
-                    Option<i64>,
-                    Option<i64>,
-                    Option<i64>,
-                    Option<i64>,
-                    Option<i64>,
-                ) = sqlx::query_as(
-                    "SELECT input_tokens_uncached, input_tokens_cached, input_tokens_cache_write, output_tokens, total_tokens FROM usage_provider_calls WHERE provider_call_id = ?",
-                )
-                .bind(&provider_call_id)
-                .fetch_one(self.pool.as_ref())
-                .await?;
-                match stored {
-                    (
-                        Some(uncached_input_tokens),
-                        Some(cached_input_tokens),
-                        Some(cache_write_input_tokens),
-                        Some(output_tokens),
-                        Some(total_tokens),
-                    ) => Some(TokenUsageTotals {
-                        uncached_input_tokens,
-                        cached_input_tokens,
-                        cache_write_input_tokens,
-                        output_tokens,
-                        total_tokens,
-                    }),
-                    _ => None,
+        if !already_recorded
+            || self.last_provider_call_id.is_none()
+            || self.last_provider_call_id.as_deref() == Some(provider_call_id.as_str())
+        {
+            self.last_provider_call_id = Some(provider_call_id.clone());
+            self.last_provider_usage = match response.token_usage.as_ref() {
+                Some(usage) => Some(TokenUsageTotals {
+                    uncached_input_tokens: usage
+                        .input_tokens
+                        .saturating_sub(usage.cached_input_tokens)
+                        .max(0),
+                    cached_input_tokens: usage.cached_input_tokens,
+                    cache_write_input_tokens: usage.cache_write_input_tokens,
+                    output_tokens: usage.output_tokens,
+                    total_tokens: usage.total_tokens,
+                }),
+                None => {
+                    // The persisted row may already have measured usage from
+                    // an earlier delivery of this response.
+                    let stored = sqlx::query_as::<_, StoredProviderUsage>(
+                        "SELECT input_tokens_uncached, input_tokens_cached, input_tokens_cache_write, output_tokens, total_tokens FROM usage_provider_calls WHERE provider_call_id = ?",
+                    )
+                    .bind(&provider_call_id)
+                    .fetch_one(self.pool.as_ref())
+                    .await?;
+                    stored.into_totals()
                 }
-            }
-        };
+            };
+        }
         Ok(())
     }
 
@@ -1586,44 +1602,32 @@ INSERT INTO usage_provider_calls (
         logger.record_event(&status_event).await;
 
         let pool_arc = runtime.usage_pool();
-        let rows: Vec<(
-            String,
-            Option<i64>,
-            Option<i64>,
-            Option<i64>,
-            Option<i64>,
-            Option<i64>,
-        )> = sqlx::query_as(
+        let rows = sqlx::query(
             r#"SELECT provider_call_id, input_tokens_uncached, input_tokens_cached,
-                          input_tokens_cache_write, output_tokens, total_tokens
-                   FROM usage_provider_calls
-                   WHERE thread_id = ?
-                   ORDER BY provider_call_id"#,
+                      input_tokens_cache_write, output_tokens, total_tokens
+               FROM usage_provider_calls
+               WHERE thread_id = ?
+               ORDER BY provider_call_id"#,
         )
         .bind(thread_id.to_string())
         .fetch_all(pool_arc.as_ref())
         .await?;
-        assert_eq!(
-            rows,
-            vec![
-                (
-                    format!("response:{thread_id}:resp-distinct"),
-                    Some(6),
-                    Some(4),
-                    Some(2),
-                    Some(3),
-                    Some(15),
-                ),
-                (
-                    format!("response:{thread_id}:resp-repeat"),
-                    Some(6),
-                    Some(4),
-                    Some(2),
-                    Some(3),
-                    Some(15),
-                ),
-            ]
-        );
+        assert_eq!(rows.len(), 2);
+        for (row, response_id) in rows.iter().zip(["resp-distinct", "resp-repeat"]) {
+            assert_eq!(
+                row.get::<String, _>("provider_call_id"),
+                format!("response:{thread_id}:{response_id}"),
+            );
+            for (field, expected) in [
+                ("input_tokens_uncached", 6),
+                ("input_tokens_cached", 4),
+                ("input_tokens_cache_write", 2),
+                ("output_tokens", 3),
+                ("total_tokens", 15),
+            ] {
+                assert_eq!(row.get::<Option<i64>, _>(field), Some(expected), "{field}");
+            }
+        }
 
         Ok(())
     }
@@ -1658,33 +1662,25 @@ INSERT INTO usage_provider_calls (
             .await;
 
         let pool_arc = runtime.usage_pool();
-        let row: (
-            Option<i64>,
-            Option<i64>,
-            Option<i64>,
-            Option<i64>,
-            Option<i64>,
-            String,
-        ) = sqlx::query_as(
+        let row = sqlx::query(
             r#"SELECT input_tokens_uncached, input_tokens_cached,
-                          input_tokens_cache_write, output_tokens, total_tokens, status
-                   FROM usage_provider_calls
-                   WHERE thread_id = ?"#,
+                      input_tokens_cache_write, output_tokens, total_tokens, status
+               FROM usage_provider_calls
+               WHERE thread_id = ?"#,
         )
         .bind(thread_id.to_string())
         .fetch_one(pool_arc.as_ref())
         .await?;
-        assert_eq!(
-            row,
-            (
-                None,
-                None,
-                None,
-                None,
-                None,
-                "provider_usage_missing".into()
-            )
-        );
+        for field in [
+            "input_tokens_uncached",
+            "input_tokens_cached",
+            "input_tokens_cache_write",
+            "output_tokens",
+            "total_tokens",
+        ] {
+            assert_eq!(row.get::<Option<i64>, _>(field), None, "{field}");
+        }
+        assert_eq!(row.get::<String, _>("status"), "provider_usage_missing");
 
         Ok(())
     }
@@ -1772,7 +1768,7 @@ INSERT INTO usage_provider_calls (
             .record_event(&raw_response_completed_event(
                 "turn-older",
                 "resp-older",
-                Some(usage.clone()),
+                Some(usage),
             ))
             .await;
         logger.update_turn_snapshot(
@@ -1784,7 +1780,14 @@ INSERT INTO usage_provider_calls (
             .record_event(&raw_response_completed_event(
                 "turn-newer",
                 "resp-newer",
-                Some(usage),
+                Some(TokenUsage {
+                    input_tokens: 20,
+                    cached_input_tokens: 2,
+                    cache_write_input_tokens: 1,
+                    output_tokens: 3,
+                    reasoning_output_tokens: 0,
+                    total_tokens: 23,
+                }),
             ))
             .await;
 
@@ -1829,12 +1832,13 @@ INSERT INTO usage_provider_calls (
                 "2020-01-01T00:00:00Z".into(),
             )
         );
+        assert_eq!(logger.last_provider_call_id.as_deref(), Some(new_id.as_str()));
         assert_eq!(
             logger
                 .last_provider_usage
                 .as_ref()
                 .map(|usage| usage.uncached_input_tokens),
-            Some(6),
+            Some(18),
         );
         assert_eq!(
             runtime
