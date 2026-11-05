@@ -4,7 +4,7 @@ assertion_line: 1158
 expression: "render_bottom_popup(&chat, 80)"
 ---
   Analytics Chats
-  30d index may be incomplete; page rank; local estimates may overcount.
+  30d index partial; page rank; local may be partial or overcount.
 
 › 1. Example chat                              Estimated credits: 1.250000
        Local root/subagent detail unavailable

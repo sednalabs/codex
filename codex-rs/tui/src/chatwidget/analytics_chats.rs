@@ -167,11 +167,11 @@ fn workspace_rows(page: Chats) -> (Vec<SelectionItem>, Option<String>, String) {
     }
     let subtitle = match (page.partial_history, page.partial_estimates) {
         (true, true) => {
-            "30d index may be partial; page rank; missing estimates; local may overcount."
+            "30d partial; page rank; estimates missing; local may be partial or overcount."
         }
-        (true, false) => "30d index may be incomplete; page rank; local estimates may overcount.",
-        (false, true) => "Some estimates unavailable; local estimates may overcount.",
-        (false, false) => "Page-local ranking. Local estimates may overcount.",
+        (true, false) => "30d index partial; page rank; local may be partial or overcount.",
+        (false, true) => "Estimates unavailable; local may be partial or overcount.",
+        (false, false) => "Page rank; local may be partial or overcount.",
     };
     (items, page.next_cursor, subtitle.to_string())
 }
@@ -248,10 +248,10 @@ fn consumer_rows(page: ConsumerChats) -> (Vec<SelectionItem>, Option<String>, St
         });
     }
     let subtitle = match (page.partial_history, page.partial_usage) {
-        (true, true) => "30d index may be partial; missing usage; local estimates may overcount.",
-        (true, false) => "30d index may be incomplete; local estimates may overcount.",
-        (false, true) => "Some task usage unavailable. Local estimates may overcount.",
-        (false, false) => "Local estimates may overcount.",
+        (true, true) => "30d index partial; usage missing; local may be partial or overcount.",
+        (true, false) => "30d index partial; local may be partial or overcount.",
+        (false, true) => "Some task usage unavailable; local may be partial or overcount.",
+        (false, false) => "Local usage may be partial or overcount.",
     };
     (items, page.next_cursor, subtitle.to_string())
 }
