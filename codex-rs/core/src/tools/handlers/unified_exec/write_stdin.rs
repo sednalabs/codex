@@ -33,6 +33,8 @@ struct WriteStdinArgs {
     yield_time_ms: u64,
     #[serde(default)]
     max_output_tokens: Option<usize>,
+    #[serde(default)]
+    return_on_output: bool,
     #[serde(flatten)]
     terminal_wait: TerminalWaitArgs,
 }
@@ -80,6 +82,11 @@ impl WriteStdinHandler {
         };
 
         let args: WriteStdinArgs = parse_arguments(&arguments)?;
+        if args.return_on_output && args.terminal_wait.wait_until_terminal {
+            return Err(FunctionCallError::RespondToModel(
+                "return_on_output cannot be combined with wait_until_terminal".to_string(),
+            ));
+        }
         let truncation_policy = turn.model_info.truncation_policy.into();
         let max_output_tokens = Some(effective_max_output_tokens(
             args.max_output_tokens,
@@ -108,6 +115,7 @@ impl WriteStdinHandler {
                 input: &args.chars,
                 yield_time_ms: args.yield_time_ms,
                 empty_input_min_yield_time_ms: MIN_YIELD_TIME_MS,
+                return_on_output: args.return_on_output,
                 max_output_tokens,
                 truncation_policy,
                 interaction_event: Some(WriteStdinInteractionEvent {

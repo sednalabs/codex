@@ -249,6 +249,50 @@ fn initial_exec_yield_time_has_no_platform_floor() {
 }
 
 #[tokio::test]
+async fn first_output_wait_returns_for_live_process_and_times_out_without_output() {
+    let output = Arc::new(tokio::sync::Mutex::new(HeadTailBuffer::default()));
+    let notify = Arc::new(Notify::new());
+    let closed = Arc::new(AtomicBool::new(false));
+    let closed_notify = Arc::new(Notify::new());
+    let cancel = CancellationToken::new();
+    let (empty, early) = UnifiedExecProcessManager::collect_output_until_deadline(
+        &output,
+        &notify,
+        &closed,
+        &closed_notify,
+        &cancel,
+        /*pause_state*/ None,
+        Instant::now() + Duration::from_millis(50),
+        /*return_on_output*/ true,
+    )
+    .await;
+    assert!(!early);
+    assert_eq!(empty.total_bytes(), 0);
+
+    let produce = async {
+        tokio::time::sleep(Duration::from_millis(25)).await;
+        output.lock().await.push_chunk(b"ready".to_vec());
+        notify.notify_one();
+    };
+    let collect = UnifiedExecProcessManager::collect_output_until_deadline(
+        &output,
+        &notify,
+        &closed,
+        &closed_notify,
+        &cancel,
+        /*pause_state*/ None,
+        Instant::now() + Duration::from_secs(5),
+        /*return_on_output*/ true,
+    );
+    let ((collected, early), ()) =
+        tokio::time::timeout(Duration::from_secs(2), async { tokio::join!(collect, produce) })
+            .await
+            .expect("output should wake before the deadline");
+    assert!(early);
+    assert_eq!(collected.to_bytes(), b"ready".to_vec());
+}
+
+#[tokio::test]
 async fn output_collection_stays_bounded_across_repeated_drains() {
     let output_buffer = Arc::new(tokio::sync::Mutex::new(HeadTailBuffer::default()));
     let output_notify = Arc::new(Notify::new());
@@ -264,6 +308,7 @@ async fn output_collection_stays_bounded_across_repeated_drains() {
         &cancellation_token,
         /*pause_state*/ None,
         Instant::now() + Duration::from_secs(5),
+        /*return_on_output*/ false,
     );
     let produce = async {
         for byte in [b'a', b'b', b'c'] {
@@ -289,7 +334,8 @@ async fn output_collection_stays_bounded_across_repeated_drains() {
         output_notify.notify_waiters();
     };
 
-    let (collected, ()) = tokio::join!(collect, produce);
+    let ((collected, returned_on_output), ()) = tokio::join!(collect, produce);
+    assert!(!returned_on_output);
     let mut expected = HeadTailBuffer::default();
     for byte in [b'a', b'b', b'c'] {
         expected.push_chunk(vec![
@@ -321,7 +367,7 @@ async fn output_collection_preserves_omissions_from_drained_buffer() {
     let cancellation_token = CancellationToken::new();
     cancellation_token.cancel();
 
-    let collected = UnifiedExecProcessManager::collect_output_until_deadline(
+    let (collected, returned_on_output) = UnifiedExecProcessManager::collect_output_until_deadline(
         &output_buffer,
         &output_notify,
         &output_closed,
@@ -329,9 +375,11 @@ async fn output_collection_preserves_omissions_from_drained_buffer() {
         &cancellation_token,
         /*pause_state*/ None,
         Instant::now() + Duration::from_secs(1),
+        /*return_on_output*/ false,
     )
     .await;
 
+    assert!(!returned_on_output);
     assert_eq!(collected, expected);
 }
 

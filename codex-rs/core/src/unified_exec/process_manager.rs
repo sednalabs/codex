@@ -514,7 +514,7 @@ impl UnifiedExecProcessManager {
             cancellation_token,
         } = process.output_handles();
         let deadline = start + Duration::from_millis(yield_time_ms);
-        let collected_output = Self::collect_output_until_deadline(
+        let (collected_output, _) = Self::collect_output_until_deadline(
             &output_buffer,
             &output_notify,
             &output_closed,
@@ -522,6 +522,7 @@ impl UnifiedExecProcessManager {
             &cancellation_token,
             Some(context.session.subscribe_elicitation_pause_state()),
             deadline,
+            /*return_on_output*/ false,
         )
         .await;
         let wall_time = Instant::now().saturating_duration_since(start);
@@ -590,7 +591,7 @@ impl UnifiedExecProcessManager {
         }
         let process_id = request.process_id;
         let (response_process_id, exit_code) = if process_started_alive {
-            match self.refresh_process_state(process_id).await {
+            match self.refresh_process_state(process_id, /*retain_exited*/ false).await {
                 ProcessStatus::Alive {
                     exit_code,
                     process_id,
@@ -747,7 +748,9 @@ impl UnifiedExecProcessManager {
                         tokio::time::sleep(Duration::from_millis(100)).await;
                     }
                     Err(err) => {
-                        let status = self.refresh_process_state(process_id).await;
+                        let status = self
+                            .refresh_process_state(process_id, /*retain_exited*/ false)
+                            .await;
                         if matches!(status, ProcessStatus::Exited { .. }) {
                             status_after_write = Some(status);
                         } else if matches!(err, UnifiedExecError::ProcessFailed { .. }) {
@@ -777,7 +780,7 @@ impl UnifiedExecProcessManager {
         };
         let start = Instant::now();
         let deadline = start + Duration::from_millis(yield_time_ms);
-        let collected_output = Self::collect_output_until_deadline(
+        let (collected_output, returned_on_output) = Self::collect_output_until_deadline(
             &output_buffer,
             &output_notify,
             &output_closed,
@@ -785,6 +788,7 @@ impl UnifiedExecProcessManager {
             &cancellation_token,
             pause_state,
             deadline,
+            request.return_on_output && status_after_write.is_none(),
         )
         .await;
         let wall_time = Instant::now().saturating_duration_since(start);
@@ -826,7 +830,7 @@ impl UnifiedExecProcessManager {
         let status = if let Some(status) = status_after_write {
             status
         } else {
-            self.refresh_process_state(process_id).await
+            self.refresh_process_state(process_id, returned_on_output).await
         };
         let (process_id, exit_code, event_call_id) = match status {
             ProcessStatus::Alive {
@@ -895,7 +899,7 @@ impl UnifiedExecProcessManager {
         Ok(response)
     }
 
-    async fn refresh_process_state(&self, process_id: i32) -> ProcessStatus {
+    async fn refresh_process_state(&self, process_id: i32, retain_exited: bool) -> ProcessStatus {
         let mut store = self.process_store.lock().await;
         let Some(entry) = store.processes.get_mut(&process_id) else {
             return ProcessStatus::Unknown;
@@ -904,7 +908,7 @@ impl UnifiedExecProcessManager {
         let exit_code = entry.process.exit_code();
         let process_id = entry.process_id;
 
-        if entry.process.has_exited() {
+        if entry.process.has_exited() && !retain_exited {
             let Some(entry) = store.remove(process_id) else {
                 return ProcessStatus::Unknown;
             };
@@ -914,7 +918,9 @@ impl UnifiedExecProcessManager {
             }
         } else {
             ProcessStatus::Alive {
-                exit_code,
+                // After an early output return, a process may have exited before
+                // its remaining output was drained. Keep the handle for a final read.
+                exit_code: if retain_exited { None } else { exit_code },
                 call_id: entry.call_id.clone(),
                 process_id,
             }
@@ -1283,6 +1289,10 @@ impl UnifiedExecProcessManager {
             })
     }
 
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "the collector observes distinct output, closure, cancellation, and wait state"
+    )]
     pub(super) async fn collect_output_until_deadline(
         output_buffer: &OutputBuffer,
         output_notify: &Arc<Notify>,
@@ -1291,7 +1301,8 @@ impl UnifiedExecProcessManager {
         cancellation_token: &CancellationToken,
         mut pause_state: Option<watch::Receiver<bool>>,
         mut deadline: Instant,
-    ) -> HeadTailBuffer {
+        return_on_output: bool,
+    ) -> (HeadTailBuffer, bool) {
         const POST_EXIT_CLOSE_WAIT_CAP: Duration = Duration::from_millis(50);
 
         let mut collected = HeadTailBuffer::default();
@@ -1365,12 +1376,17 @@ impl UnifiedExecProcessManager {
             collected.push_buffer(drained_output);
 
             exit_signal_received |= cancellation_token.is_cancelled();
+            if return_on_output && !exit_signal_received {
+                // Keep the process handle even if exit races this return: the
+                // caller must be able to collect trailing output and exit status.
+                return (collected, true);
+            }
             if Instant::now() >= deadline {
                 break;
             }
         }
 
-        collected
+        (collected, false)
     }
 
     async fn extend_deadlines_while_paused(
