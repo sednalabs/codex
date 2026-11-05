@@ -47,7 +47,6 @@ impl ExternalAuth for ExternalCredentials {
             }
         })
     }
-
 }
 
 #[tokio::test]
@@ -137,4 +136,54 @@ async fn assert_unauthorized_after_recovery(outcome: RefreshOutcome, expected_re
     session.ensure_identity().await.unwrap();
     assert_eq!(credentials.refreshes.load(Ordering::SeqCst), 1);
     server.verify().await;
+}
+
+#[tokio::test]
+async fn account_change_during_request_discards_result() {
+    let token = "e30.eyJleHAiOjQxMDI0NDQ4MDAsImh0dHBzOi8vYXBpLm9wZW5haS5jb20vYXV0aCI6eyJjaGF0Z3B0X3VzZXJfaWQiOiJ1c2VyLWEifX0.test";
+    let auth = CodexAuth::from_external_chatgpt_tokens(token, "account-a", Some("plus")).unwrap();
+    let manager = AuthManager::from_auth_for_testing(auth.clone());
+    let first = Arc::new(ExternalCredentials {
+        auth: auth.clone(),
+        outcome: RefreshOutcome::Accepted,
+        refreshes: AtomicUsize::new(/*v*/ 0),
+    });
+    manager.set_external_auth(first).await.unwrap();
+    let client = Client::new_without_redirects(
+        "http://127.0.0.1:1",
+        HttpClientFactory::new(OutboundProxyPolicy::ReqwestDefault),
+    );
+    let session = AnalyticsSession {
+        client,
+        auth_manager: Arc::clone(&manager),
+        auth,
+        account: AnalyticsAccount {
+            id: "account-a".into(),
+            email: None,
+            plan_type: None,
+        },
+    };
+    let second =
+        CodexAuth::from_external_chatgpt_tokens(token, "account-b", Some("plus")).unwrap();
+    let result = session
+        .request(|_| {
+            let manager = Arc::clone(&manager);
+            let second = second.clone();
+            async move {
+                manager
+                    .set_external_auth(Arc::new(ExternalCredentials {
+                        auth: second,
+                        outcome: RefreshOutcome::Accepted,
+                        refreshes: AtomicUsize::new(/*v*/ 0),
+                    }))
+                    .await
+                    .unwrap();
+                Ok(123)
+            }
+        })
+        .await;
+    assert_eq!(
+        result.unwrap_err().to_string(),
+        "Account changed. Press R to refresh Analytics."
+    );
 }
