@@ -1777,3 +1777,24 @@ jobs:
           export CODEX_JS_REPL_NODE_PATH="$(command -v node)"
           cd codex-rs
           cargo test --locked -p codex-tui --lib analytics_chats::tests:: -- --test-threads=1
+
+  w14939-maintained-lint:
+    name: Run maintained argument comment lint action
+    if: ${{ inputs.supersession_key == 'w14939-maintained-lint-20261105' }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ inputs.target_sha }}
+          fetch-depth: 1
+          persist-credentials: false
+      - name: Verify exact candidate
+        shell: bash
+        env:
+          TARGET_SHA: ${{ inputs.target_sha }}
+        run: test "$(git rev-parse HEAD)" = "${TARGET_SHA}"
+      - name: Run unchanged repository lint action
+        uses: ./.github/actions/run-argument-comment-lint
+        with:
+          target: Linux
