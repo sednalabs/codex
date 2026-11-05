@@ -38,11 +38,11 @@ fn local_lineage_distinguishes_root_subagent_and_unknown_credit_coverage() {
     );
     assert_eq!(
         items[0].description.as_deref(),
-        Some("Estimated credits: 1.250000")
+        Some("Estimated thread credits (may overcount): 1.250000")
     );
     assert_eq!(
         items[1].description.as_deref(),
-        Some("Estimated credits: unavailable · partial")
+        Some("Estimated thread credits (may overcount): unavailable · partial")
     );
 }
 
