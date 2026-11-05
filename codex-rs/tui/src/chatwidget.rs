@@ -349,6 +349,7 @@ use crate::status_indicator_widget::STATUS_DETAILS_DEFAULT_MAX_LINES;
 use crate::status_indicator_widget::StatusDetailsCapitalization;
 use crate::text_formatting::truncate_text;
 use crate::tui::FrameRequester;
+mod analytics_chats;
 mod command_lifecycle;
 mod connectors;
 mod constructor;
@@ -590,6 +591,7 @@ pub(crate) struct ChatWidget {
     rate_limit_reset_picker_request_id: Option<u64>,
     pending_rate_limit_reset_hint_request_id: Option<u64>,
     pending_usage_menu_rate_limit_request_id: Option<u64>,
+    pending_analytics_chats_request_id: Option<u64>,
     pending_rate_limit_reset_hint: Option<PlainHistoryCell>,
     available_rate_limit_reset_credits: Option<i64>,
     next_rate_limit_reset_request_id: u64,

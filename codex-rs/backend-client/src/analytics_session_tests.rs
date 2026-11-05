@@ -184,6 +184,6 @@ async fn account_change_during_request_discards_result() {
         .await;
     assert_eq!(
         result.unwrap_err().to_string(),
-        "Account changed. Press R to refresh Analytics."
+        "Account changed. Select Retry to refresh Analytics."
     );
 }

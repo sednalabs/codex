@@ -90,7 +90,6 @@ use uuid::Uuid;
 pub(crate) use codex_app_server_client::legacy_core;
 
 mod additional_dirs;
-#[expect(dead_code, reason = "Analytics Chats integration is in progress")]
 mod analytics_chats;
 mod android_computer_use_provider;
 mod app;

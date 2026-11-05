@@ -2,6 +2,33 @@
   "version": 1,
   "divergences": [
     {
+      "id": "account-scoped-analytics-chats",
+      "title": "Account-scoped Analytics Chats with local lineage",
+      "status": "live",
+      "category": "usage-ledger",
+      "surface": ["TUI /usage Analytics Chats", "account analytics client"],
+      "files": [
+        "codex-rs/backend-client/src/analytics_session.rs",
+        "codex-rs/backend-client/src/client/task_usage.rs",
+        "codex-rs/backend-client/src/client/thread_usage.rs",
+        "codex-rs/tui/src/analytics_chats.rs",
+        "codex-rs/tui/src/chatwidget/analytics_chats.rs",
+        "codex-rs/tui/src/chatwidget/usage.rs",
+        "codex-rs/tui/src/app/event_dispatch.rs"
+      ],
+      "behavior": "Add bounded account-verified recent Chats usage to /usage, retaining upstream-shaped consumer task and workspace estimated usage and a read-only local root/subagent lineage detail. Label estimates, unavailable data, potentially incomplete history and local overcount risk; never create a second writer or treat a missing row as zero.",
+      "upstream_equivalent": false,
+      "introduced_in": {"carry_commit": null, "upstream_commit": "ab3b40c"},
+      "guardrail_lane": "validation-lab named codex-backend-client and codex-tui analytics tests",
+      "tests": ["analytics_chats_displays_partial_page_and_preserves_pagination_snapshot", "analytics_chats_account_update_discards_pending_result", "local_lineage_distinguishes_root_subagent_and_unknown_credit_coverage", "unavailable_batches_keep_available_rows_and_do_not_invent_zeroes"],
+      "owner": "downstream",
+      "notes": "Reevaluate against upstream Analytics on each sync; retain account identity checks, no-redirect transport, bounded requests, explicit partial history and local ledger protection. The indexed 30-day view does not establish complete history or a global ranking.",
+      "upstreamability_tier": "downstream-adapter",
+      "boundary_type": "operator-workflow",
+      "hotspot_files": ["codex-rs/tui/src/app/event_dispatch.rs", "codex-rs/tui/src/chatwidget/usage.rs"],
+      "extraction_target": "upstream Analytics plus read-only local usage adapter"
+    },
+    {
       "id": "background-terminal-completion-input",
       "title": "Opt-in background terminal completion input",
       "status": "live",

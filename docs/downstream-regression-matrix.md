@@ -12,6 +12,14 @@ that should fail if the behavior regresses. Historical references to
 `carry/main` refer to the pre-cutover name for the maintained downstream
 branch.
 
+## Account-scoped Analytics Chats
+
+Validation-lab named `codex-backend-client` and `codex-tui` analytics tests
+cover account changes, redirect refusal, bounded and partial responses, local
+lineage labels, and the paginated `/usage` view. Snapshot updates need review.
+Historical database compatibility and writer deduplication remain separate
+usage-ledger guardrails; an installed-host acceptance is a separate step.
+
 ## MCP Streamable HTTP cancellation
 
 `codex.rmcp-client-transport` runs the complete client suite, including a dedicated

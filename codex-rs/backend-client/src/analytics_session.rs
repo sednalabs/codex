@@ -67,7 +67,7 @@ impl AnalyticsSession {
             if error.is_unauthorized() {
                 "Sign in again to load Analytics."
             } else {
-                "Couldn't load account plan. Press R to retry Analytics."
+                "Couldn't load account plan. Select Retry."
             }
         })?;
         session.account.plan_type = Some(
@@ -76,7 +76,7 @@ impl AnalyticsSession {
                 .into_iter()
                 .find(|account| account.id == session.account.id)
                 .and_then(|account| account.plan_type)
-                .ok_or("Couldn't load account plan. Press R to retry Analytics.")?,
+                .ok_or("Couldn't load account plan. Select Retry.")?,
         );
         Ok(session)
     }
@@ -93,7 +93,7 @@ impl AnalyticsSession {
             auth.get_account_id() != self.auth.get_account_id()
                 || auth.get_chatgpt_user_id() != self.auth.get_chatgpt_user_id()
         }) {
-            return Err("Account changed. Press R to refresh Analytics.".into());
+            return Err("Account changed. Select Retry to refresh Analytics.".into());
         }
         Ok(())
     }

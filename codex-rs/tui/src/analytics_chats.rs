@@ -27,9 +27,11 @@ mod tests;
 const MAX_ROOTS: u32 = 100;
 const ESTIMATE_BUDGET: Duration = Duration::from_secs(/*secs*/ 3);
 
+#[derive(Debug)]
 pub(crate) struct Chat {
     pub(crate) title: String,
     pub(crate) usage: Option<ThreadUsage>,
+    pub(crate) local_usage: Option<LocalUsage>,
 }
 
 impl Chat {
@@ -43,6 +45,7 @@ impl Chat {
     }
 }
 
+#[derive(Debug)]
 pub(crate) struct Chats {
     /// Ranked only within this indexed page, never a global ranking.
     pub(crate) rows: Vec<Chat>,
@@ -53,9 +56,26 @@ pub(crate) struct Chats {
     pub(crate) partial_estimates: bool,
 }
 
+#[derive(Debug)]
 pub(crate) struct ConsumerChat {
     title: String,
     pub(crate) usage: Option<TaskUsage>,
+    pub(crate) local_usage: Option<LocalUsage>,
+}
+
+/// A partial, read-only view of the existing local usage ledger.
+#[derive(Debug)]
+pub(crate) struct LocalUsage {
+    pub(crate) threads: Vec<LocalUsageThread>,
+    pub(crate) truncated: bool,
+}
+
+#[derive(Debug)]
+pub(crate) struct LocalUsageThread {
+    pub(crate) kind: String,
+    pub(crate) models: Option<String>,
+    pub(crate) estimated_credits: Option<f64>,
+    pub(crate) partial: bool,
 }
 
 impl ConsumerChat {
@@ -72,12 +92,98 @@ impl ConsumerChat {
     }
 }
 
+#[derive(Debug)]
 pub(crate) struct ConsumerChats {
     pub(crate) rows: Vec<ConsumerChat>,
     pub(crate) next_cursor: Option<String>,
     /// Descendants and roots come from a potentially incomplete local index.
     pub(crate) partial_history: bool,
     pub(crate) partial_usage: bool,
+}
+
+#[derive(Debug)]
+pub(crate) enum AccountChats {
+    Workspace(Chats),
+    Consumer(ConsumerChats),
+}
+
+impl AccountChats {
+    /// Only attach local data for IDs verified by the current account's backend.
+    pub(crate) async fn attach_local_usage(
+        &mut self,
+        db: Option<&codex_state::StateRuntime>,
+        session: &AnalyticsSession,
+    ) -> Result<(), String> {
+        let Some(db) = db else { return Ok(()); };
+        let ids: Vec<(usize, String)> = match self {
+            Self::Workspace(page) => page.rows.iter().enumerate().filter_map(|(i, row)| {
+                row.usage.as_ref().map(|usage| (i, usage.thread_id.clone()))
+            }).collect(),
+            Self::Consumer(page) => page.rows.iter().enumerate().filter_map(|(i, row)| {
+                row.usage.as_ref().filter(|usage| usage.data_status != TaskUsageStatus::Unavailable)
+                    .map(|usage| (i, usage.thread_id.clone()))
+            }).collect(),
+        };
+        session.ensure_identity().await?;
+        let queries = ids.into_iter().map(|(index, id)| async move {
+            let data = db.get_usage_lineage_telemetry(&id).await.ok().flatten()?;
+            if data.root_thread_id != id { return None; }
+            let truncated = data.threads.len() > 12;
+            let mut family = data.threads;
+            family.sort_by_key(|thread| thread.thread_id != id);
+            let threads = family.into_iter().take(12).map(|thread| {
+                let kind = if thread.thread_id == id {
+                    "Root".to_string()
+                } else {
+                    match thread.lineage_edge_kind.as_str() {
+                        "agent_spawn" => "Subagent".to_string(),
+                        "fork" => "Fork".to_string(),
+                        _ => "Other thread".to_string(),
+                    }
+                };
+                LocalUsageThread {
+                    kind,
+                    models: thread.models_used,
+                    estimated_credits: thread.estimated_total_credits,
+                    partial: thread.partial || thread.unpriced_call_count > 0
+                        || thread.lineage_confidence != "persisted",
+                }
+            }).collect();
+            Some((index, LocalUsage { threads, truncated }))
+        });
+        let mut pending = futures::stream::iter(queries).buffer_unordered(/*n*/ 4);
+        let deadline = tokio::time::Instant::now() + ESTIMATE_BUDGET;
+        while let Ok(Some(result)) = tokio::time::timeout_at(deadline, pending.next()).await {
+            if let Some((index, usage)) = result {
+                match self {
+                    Self::Workspace(page) => page.rows[index].local_usage = Some(usage),
+                    Self::Consumer(page) => page.rows[index].local_usage = Some(usage),
+                }
+            }
+        }
+        drop(pending);
+        session.ensure_identity().await
+    }
+}
+
+/// Select a supported read-only endpoint from the authenticated server plan.
+pub(crate) async fn read_account(
+    handle: &AppServerRequestHandle,
+    session: &AnalyticsSession,
+    cursor: Option<String>,
+) -> Result<AccountChats, String> {
+    use codex_protocol::account::PlanType;
+    match session.account().plan_type {
+        Some(PlanType::Business | PlanType::EnterpriseCbpUsageBased) => {
+            read(handle, session, cursor).await.map(AccountChats::Workspace)
+        }
+        Some(plan) if plan != PlanType::Unknown && !plan.is_workspace_account() => {
+            read_consumer(handle, session, cursor)
+                .await
+                .map(AccountChats::Consumer)
+        }
+        _ => Err("Chats usage is unavailable for this account plan.".to_string()),
+    }
 }
 
 /// Query consumer task usage only for individually verified descendant groups.
@@ -97,7 +203,7 @@ pub(crate) async fn read_consumer(
     let page = tokio::time::timeout(Duration::from_secs(/*secs*/ 60), roots(handle, cursor)).await;
     session.ensure_identity().await?;
     let (threads, next_cursor) = page
-        .map_err(|_| "Chat listing timed out. Press R to retry.".to_string())??;
+        .map_err(|_| "Chat listing timed out. Select Retry.".to_string())??;
     let mut pending = futures::stream::iter(threads.iter().map(|root| descendants(handle, root)))
         .buffer_unordered(/*n*/ 2);
     let deadline = tokio::time::Instant::now() + ESTIMATE_BUDGET;
@@ -163,6 +269,7 @@ pub(crate) async fn read_consumer(
         .into_iter()
         .map(|thread| ConsumerChat {
             usage: usage.remove(&thread.id),
+            local_usage: None,
             title: thread
                 .name
                 .filter(|name| !name.trim().is_empty())
@@ -205,7 +312,7 @@ pub(crate) async fn read(
     let page = tokio::time::timeout(Duration::from_secs(/*secs*/ 60), roots(handle, cursor)).await;
     session.ensure_identity().await?;
     let (threads, next_cursor) = page
-        .map_err(|_| "Chat listing timed out. Press R to retry.".to_string())??;
+        .map_err(|_| "Chat listing timed out. Select Retry.".to_string())??;
     let ids: Vec<_> = threads.iter().map(|thread| thread.id.as_str()).collect();
     let deadline = tokio::time::Instant::now() + ESTIMATE_BUDGET;
     let mut data = Vec::new();
@@ -227,6 +334,7 @@ pub(crate) async fn read(
         .into_iter()
         .map(|thread| Chat {
             usage: usage.remove(&thread.id),
+            local_usage: None,
             title: thread
                 .name
                 .filter(|name| !name.trim().is_empty())
@@ -265,9 +373,9 @@ async fn roots(
             params: list_params(cursor.clone()),
         })
         .await
-        .map_err(|_| "Chat listing unavailable. Press R to retry.".to_string())?;
+        .map_err(|_| "Chat listing unavailable. Select Retry.".to_string())?;
     if cursor.is_some() && response.next_cursor == cursor {
-        return Err("Chat listing repeated a cursor. Press R to retry.".to_string());
+        return Err("Chat listing repeated a cursor. Select Retry.".to_string());
     }
     let cutoff = chrono::Utc::now().timestamp() - 30 * 24 * 60 * 60;
     let mut threads: Vec<_> = response

@@ -148,7 +148,7 @@ async fn usage_command_disables_reset_after_cached_zero_snapshot() {
     );
     chat.handle_key_event(KeyEvent::new(KeyCode::Down, KeyModifiers::NONE));
     chat.handle_key_event(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
-    assert_matches!(rx.try_recv(), Ok(AppEvent::OpenTokenActivity));
+    assert_matches!(rx.try_recv(), Ok(AppEvent::OpenAnalyticsChats { cursor: None, .. }));
 }
 
 #[tokio::test]
@@ -207,7 +207,7 @@ async fn usage_menu_refresh_failure_preserves_disabled_known_zero() {
     assert!(render_bottom_popup(&chat, /*width*/ 80).contains("No usage limit resets available."));
     chat.handle_key_event(KeyEvent::new(KeyCode::Down, KeyModifiers::NONE));
     chat.handle_key_event(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
-    assert_matches!(rx.try_recv(), Ok(AppEvent::OpenTokenActivity));
+    assert_matches!(rx.try_recv(), Ok(AppEvent::OpenAnalyticsChats { cursor: None, .. }));
 }
 
 #[tokio::test]
@@ -1113,4 +1113,76 @@ fn show_usage_test_overlay(chat: &mut ChatWidget) {
         }],
         ..Default::default()
     });
+}
+
+#[tokio::test]
+async fn analytics_chats_displays_partial_page_and_preserves_pagination_snapshot() {
+    use crate::analytics_chats::AccountChats;
+    use crate::analytics_chats::Chat;
+    use crate::analytics_chats::Chats;
+    use codex_backend_client::ThreadUsage;
+
+    let (mut chat, mut rx, _op_rx) = make_chatwidget_manual(/*model_override*/ None).await;
+    set_chatgpt_auth(&mut chat);
+    let request_id = chat.show_analytics_chats_loading();
+    chat.finish_analytics_chats(
+        request_id,
+        None,
+        Vec::new(),
+        Ok(AccountChats::Workspace(Chats {
+            rows: vec![Chat {
+                title: "Example chat".to_string(),
+                local_usage: None,
+                usage: Some(ThreadUsage {
+                    thread_id: "thread-1".to_string(),
+                    estimated_usage_credits_micros: 1_250_000,
+                    estimated_usage_usd_micros: None,
+                    native_usage_usd_micros: None,
+                    groups: Vec::new(),
+                }),
+            }],
+            next_cursor: Some("older".to_string()),
+            partial_history: true,
+            partial_estimates: false,
+        })),
+    );
+    assert_chatwidget_snapshot!(
+        "analytics_chats_partial_page",
+        render_bottom_popup(&chat, /*width*/ 80)
+    );
+    chat.handle_key_event(KeyEvent::new(KeyCode::Down, KeyModifiers::NONE));
+    chat.handle_key_event(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+    assert_matches!(
+        rx.try_recv(),
+        Ok(AppEvent::OpenAnalyticsChats { cursor: Some(cursor), previous })
+            if cursor == "older" && previous == vec![None]
+    );
+}
+
+#[tokio::test]
+async fn analytics_chats_account_update_discards_pending_result() {
+    use crate::analytics_chats::AccountChats;
+    use crate::analytics_chats::Chats;
+
+    let (mut chat, _rx, _op_rx) = make_chatwidget_manual(/*model_override*/ None).await;
+    set_chatgpt_auth(&mut chat);
+    let request_id = chat.show_analytics_chats_loading();
+    chat.update_account_state(
+        /*status_account_display*/ None,
+        /*plan_type*/ None,
+        /*has_chatgpt_account*/ true,
+        /*has_codex_backend_auth*/ true,
+    );
+    chat.finish_analytics_chats(
+        request_id,
+        None,
+        Vec::new(),
+        Ok(AccountChats::Workspace(Chats {
+            rows: Vec::new(),
+            next_cursor: None,
+            partial_history: true,
+            partial_estimates: false,
+        })),
+    );
+    assert!(chat.bottom_pane.no_modal_or_popup_active());
 }

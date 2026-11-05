@@ -1159,6 +1159,49 @@ impl App {
                 self.chat_widget
                     .add_token_activity_output(crate::chatwidget::TokenActivityView::Daily);
             }
+            AppEvent::OpenAnalyticsChats { cursor, previous } => {
+                let request_id = self.chat_widget.show_analytics_chats_loading();
+                let config = self.config.clone();
+                let handle = app_server.request_handle();
+                let state_db = self.state_db.clone();
+                let tx = self.app_event_tx.clone();
+                tokio::spawn(async move {
+                    let result = match codex_backend_client::AnalyticsSession::from_config(
+                        &config,
+                        config.http_client_factory(),
+                    )
+                    .await
+                    {
+                        Ok(session) => {
+                            match crate::analytics_chats::read_account(&handle, &session, cursor.clone()).await {
+                                Ok(mut page) => page.attach_local_usage(state_db.as_deref(), &session)
+                                    .await.map(|()| page),
+                                Err(error) => Err(error),
+                            }
+                        }
+                        Err(error) => Err(error),
+                    };
+                    tx.send(AppEvent::AnalyticsChatsLoaded {
+                        request_id,
+                        cursor,
+                        previous,
+                        result,
+                    });
+                });
+            }
+            AppEvent::AnalyticsChatsLoaded {
+                request_id,
+                cursor,
+                previous,
+                result,
+            } => {
+                self.chat_widget.finish_analytics_chats(
+                    request_id,
+                    cursor,
+                    previous,
+                    result,
+                );
+            }
             AppEvent::OpenRateLimitResetCredits => {
                 let request_id = self.chat_widget.show_rate_limit_reset_loading_popup();
                 self.refresh_rate_limits(
