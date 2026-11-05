@@ -1133,6 +1133,41 @@ text(JSON.stringify(results));
 
 #[cfg_attr(windows, ignore = "no exec_command on Windows")]
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn code_mode_write_stdin_can_return_on_live_output() -> Result<()> {
+    skip_if_no_network!(Ok(()));
+    let server = responses::start_mock_server().await;
+    let (_test, second_mock) = run_code_mode_turn(
+        &server,
+        "wait for live terminal output",
+        r#"
+const child = await tools.exec_command({
+  cmd: "stty -echo; read -r first; printf FIRST; read -r second; printf TAIL",
+  tty: true, yield_time_ms: 250,
+});
+const start = Date.now();
+const first = await tools.write_stdin({
+  session_id: child.session_id, chars: "\n", yield_time_ms: 5000,
+  return_on_output: true,
+});
+const elapsed = Date.now() - start;
+const last = await tools.write_stdin({
+  session_id: child.session_id, chars: "\n", yield_time_ms: 2500,
+});
+text(JSON.stringify([
+  first.output.includes("FIRST"), first.session_id === child.session_id,
+  elapsed < 4000, last.output.includes("TAIL"), last.exit_code === 0,
+]));
+"#,
+    )
+    .await?;
+    let items = custom_tool_output_items(&second_mock.single_request(), "call-1");
+    let result: Value = serde_json::from_str(text_item(&items, /*index*/ 1))?;
+    assert_eq!(result, serde_json::json!([true, true, true, true, true]));
+    Ok(())
+}
+
+#[cfg_attr(windows, ignore = "no exec_command on Windows")]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn code_mode_write_stdin_calls_run_in_parallel_across_sessions() -> Result<()> {
     skip_if_no_network!(Ok(()));
 
