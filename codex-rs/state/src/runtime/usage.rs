@@ -490,7 +490,7 @@ ON CONFLICT(thread_id) DO UPDATE SET
             status,
         ) = match response.token_usage.as_ref() {
             Some(usage) => (
-                Some(usage.input_tokens.saturating_sub(usage.cached_input_tokens)),
+                Some(usage.input_tokens.saturating_sub(usage.cached_input_tokens).max(0)),
                 Some(usage.cached_input_tokens),
                 Some(usage.cache_write_input_tokens),
                 Some(usage.output_tokens),
@@ -508,17 +508,22 @@ ON CONFLICT(thread_id) DO UPDATE SET
                 total_tokens, status
             ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             ON CONFLICT(provider_call_id) DO UPDATE SET
-                turn_id = excluded.turn_id,
+                turn_id = COALESCE(usage_provider_calls.turn_id, excluded.turn_id),
                 spawn_request_id = COALESCE(excluded.spawn_request_id, usage_provider_calls.spawn_request_id),
                 provider = COALESCE(excluded.provider, usage_provider_calls.provider),
                 requested_model = COALESCE(excluded.requested_model, usage_provider_calls.requested_model),
-                completed_at = excluded.completed_at,
-                input_tokens_uncached = excluded.input_tokens_uncached,
-                input_tokens_cached = excluded.input_tokens_cached,
-                input_tokens_cache_write = excluded.input_tokens_cache_write,
-                output_tokens = excluded.output_tokens,
-                total_tokens = excluded.total_tokens,
-                status = excluded.status
+                -- Preserve the first observed completion time on redelivery.
+                input_tokens_uncached = COALESCE(excluded.input_tokens_uncached, usage_provider_calls.input_tokens_uncached),
+                input_tokens_cached = COALESCE(excluded.input_tokens_cached, usage_provider_calls.input_tokens_cached),
+                input_tokens_cache_write = COALESCE(excluded.input_tokens_cache_write, usage_provider_calls.input_tokens_cache_write),
+                output_tokens = COALESCE(excluded.output_tokens, usage_provider_calls.output_tokens),
+                total_tokens = COALESCE(excluded.total_tokens, usage_provider_calls.total_tokens),
+                status = CASE
+                    WHEN usage_provider_calls.status = 'ok'
+                     AND excluded.status = 'provider_usage_missing'
+                    THEN usage_provider_calls.status
+                    ELSE excluded.status
+                END
             WHERE usage_provider_calls.thread_id = excluded.thread_id"#,
         )
         .bind(&provider_call_id)
@@ -538,14 +543,51 @@ ON CONFLICT(thread_id) DO UPDATE SET
         .execute(self.pool.as_ref())
         .await?;
 
-        self.last_provider_call_id = Some(provider_call_id);
-        self.last_provider_usage = response.token_usage.as_ref().map(|usage| TokenUsageTotals {
-            uncached_input_tokens: usage.input_tokens.saturating_sub(usage.cached_input_tokens),
-            cached_input_tokens: usage.cached_input_tokens,
-            cache_write_input_tokens: usage.cache_write_input_tokens,
-            output_tokens: usage.output_tokens,
-            total_tokens: usage.total_tokens,
-        });
+        self.last_provider_call_id = Some(provider_call_id.clone());
+        self.last_provider_usage = match response.token_usage.as_ref() {
+            Some(usage) => Some(TokenUsageTotals {
+                uncached_input_tokens: usage
+                    .input_tokens
+                    .saturating_sub(usage.cached_input_tokens)
+                    .max(0),
+                cached_input_tokens: usage.cached_input_tokens,
+                cache_write_input_tokens: usage.cache_write_input_tokens,
+                output_tokens: usage.output_tokens,
+                total_tokens: usage.total_tokens,
+            }),
+            None => {
+                // Preserve the in-memory fork anchor when an unmetered
+                // redelivery follows an earlier metered delivery.
+                let stored: (
+                    Option<i64>,
+                    Option<i64>,
+                    Option<i64>,
+                    Option<i64>,
+                    Option<i64>,
+                ) = sqlx::query_as(
+                    "SELECT input_tokens_uncached, input_tokens_cached, input_tokens_cache_write, output_tokens, total_tokens FROM usage_provider_calls WHERE provider_call_id = ?",
+                )
+                .bind(&provider_call_id)
+                .fetch_one(self.pool.as_ref())
+                .await?;
+                match stored {
+                    (
+                        Some(uncached_input_tokens),
+                        Some(cached_input_tokens),
+                        Some(cache_write_input_tokens),
+                        Some(output_tokens),
+                        Some(total_tokens),
+                    ) => Some(TokenUsageTotals {
+                        uncached_input_tokens,
+                        cached_input_tokens,
+                        cache_write_input_tokens,
+                        output_tokens,
+                        total_tokens,
+                    }),
+                    _ => None,
+                }
+            }
+        };
         Ok(())
     }
 
@@ -1599,7 +1641,7 @@ INSERT INTO usage_provider_calls (
             .record_event(&raw_response_completed_event(
                 turn_id,
                 "resp-no-usage",
-                None,
+                /*token_usage*/ None,
             ))
             .await;
         // TokenCount can still contain an older session snapshot, but it cannot
@@ -1642,6 +1684,154 @@ INSERT INTO usage_provider_calls (
         Ok(())
     }
 
+
+    #[tokio::test]
+    async fn usage_logger_token_snapshot_is_not_a_call_and_clamps_inconsistent_cache() -> Result<()> {
+        let (runtime, _tmp_dir) = init_runtime().await?;
+        let thread_id = ThreadId::new();
+        let mut logger = UsageLogger::try_new(
+            runtime.clone(),
+            thread_id,
+            SessionSource::Cli,
+            /*forked_from_id*/ None,
+            /*agent_nickname*/ None,
+            /*agent_role*/ None,
+        )
+        .await?;
+        let turn_id = "turn-cache-overflow";
+        logger
+            .record_event(&token_count_event(
+                turn_id, /*include_rate_limit*/ true,
+            ))
+            .await;
+        let pool_arc = runtime.usage_pool();
+        let call_count: i64 = sqlx::query_scalar(
+            "SELECT COUNT(*) FROM usage_provider_calls WHERE thread_id = ?",
+        )
+        .bind(thread_id.to_string())
+        .fetch_one(pool_arc.as_ref())
+        .await?;
+        assert_eq!(call_count, 0);
+
+        logger
+            .record_event(&raw_response_completed_event(
+                turn_id,
+                "resp-inconsistent-cache",
+                Some(TokenUsage {
+                    input_tokens: 3,
+                    cached_input_tokens: 7,
+                    cache_write_input_tokens: 0,
+                    output_tokens: 1,
+                    reasoning_output_tokens: 0,
+                    total_tokens: 4,
+                }),
+            ))
+            .await;
+        let uncached: Option<i64> = sqlx::query_scalar(
+            "SELECT input_tokens_uncached FROM usage_provider_calls WHERE thread_id = ?",
+        )
+        .bind(thread_id.to_string())
+        .fetch_one(pool_arc.as_ref())
+        .await?;
+        assert_eq!(uncached, Some(0));
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn usage_logger_redelivery_preserves_measurement_turn_and_completion_order() -> Result<()> {
+        let (runtime, _tmp_dir) = init_runtime().await?;
+        let thread_id = ThreadId::new();
+        let mut logger = UsageLogger::try_new(
+            runtime.clone(),
+            thread_id,
+            SessionSource::Cli,
+            /*forked_from_id*/ None,
+            /*agent_nickname*/ None,
+            /*agent_role*/ None,
+        )
+        .await?;
+        let usage = TokenUsage {
+            input_tokens: 10,
+            cached_input_tokens: 4,
+            cache_write_input_tokens: 2,
+            output_tokens: 3,
+            reasoning_output_tokens: 0,
+            total_tokens: 13,
+        };
+        logger.update_turn_snapshot(
+            "turn-older",
+            Some("older-model".into()),
+            Some("provider".into()),
+        );
+        logger
+            .record_event(&raw_response_completed_event(
+                "turn-older", "resp-older", Some(usage.clone()),
+            ))
+            .await;
+        logger.update_turn_snapshot(
+            "turn-newer",
+            Some("newer-model".into()),
+            Some("provider".into()),
+        );
+        logger
+            .record_event(&raw_response_completed_event(
+                "turn-newer", "resp-newer", Some(usage),
+            ))
+            .await;
+
+        let pool_arc = runtime.usage_pool();
+        let old_id = format!("response:{thread_id}:resp-older");
+        let new_id = format!("response:{thread_id}:resp-newer");
+        for (id, completed_at) in [
+            (&old_id, "2020-01-01T00:00:00Z"),
+            (&new_id, "2021-01-01T00:00:00Z"),
+        ] {
+            sqlx::query(
+                "UPDATE usage_provider_calls SET completed_at = ? WHERE provider_call_id = ?",
+            )
+            .bind(completed_at)
+            .bind(id)
+            .execute(pool_arc.as_ref())
+            .await?;
+        }
+
+        // A sparse redelivery must not erase measured usage or move an older
+        // response ahead of the actually newer call.
+        logger
+            .record_event(&raw_response_completed_event(
+                "", "resp-older", /*token_usage*/ None,
+            ))
+            .await;
+        let row: (Option<String>, Option<i64>, Option<i64>, String, String) = sqlx::query_as(
+            "SELECT turn_id, input_tokens_uncached, input_tokens_cached, status, completed_at FROM usage_provider_calls WHERE provider_call_id = ?",
+        )
+        .bind(&old_id)
+        .fetch_one(pool_arc.as_ref())
+        .await?;
+        assert_eq!(
+            row,
+            (
+                Some("turn-older".into()),
+                Some(6),
+                Some(4),
+                "ok".into(),
+                "2020-01-01T00:00:00Z".into(),
+            )
+        );
+        assert_eq!(
+            logger
+                .last_provider_usage
+                .as_ref()
+                .map(|usage| usage.uncached_input_tokens),
+            Some(6),
+        );
+        assert_eq!(
+            runtime.latest_usage_provider_display_model(thread_id).await?,
+            Some("newer-model".into()),
+        );
+        Ok(())
+    }
+
     async fn init_runtime() -> Result<(Arc<StateRuntime>, TempDir)> {
         let tmp_dir = tempdir()?;
         let runtime = StateRuntime::init(
@@ -1673,7 +1863,7 @@ INSERT INTO usage_provider_calls (
             Some("requested-provider".into()),
         );
 
-        record_completed_response(&mut logger, turn_id, "resp-usage-1", true).await;
+        record_completed_response(&mut logger, turn_id, "resp-usage-1", /*include_rate_limit*/ true).await;
 
         let pool_arc = runtime.usage_pool();
         let pool: &SqlitePool = pool_arc.as_ref();
@@ -3246,7 +3436,7 @@ INSERT INTO usage_codex_credit_rates (
             Some("requested-model".to_string()),
             Some("requested-provider".to_string()),
         );
-        record_completed_response(&mut logger, turn_id, "resp-identity-1", false).await;
+        record_completed_response(&mut logger, turn_id, "resp-identity-1", /*include_rate_limit*/ false).await;
         logger
             .record_event(&Event {
                 id: turn_id.to_string(),
@@ -3396,7 +3586,7 @@ WHERE thread_id = ?
             /*agent_role*/ None,
         )
         .await?;
-        record_completed_response(&mut root_logger, "turn-root", "resp-root", true).await;
+        record_completed_response(&mut root_logger, "turn-root", "resp-root", /*include_rate_limit*/ true).await;
 
         let child_thread_id = ThreadId::new();
         let _child_logger = UsageLogger::try_new_with_thread_source(
@@ -3478,7 +3668,7 @@ WHERE thread_id = ?
             Some("requested-model".to_string()),
             Some("requested-provider".to_string()),
         );
-        record_completed_response(&mut logger, turn_id, "resp-clear", false).await;
+        record_completed_response(&mut logger, turn_id, "resp-clear", /*include_rate_limit*/ false).await;
         logger
             .record_event(&Event {
                 id: turn_id.to_string(),
@@ -3664,7 +3854,7 @@ WHERE tool_call_id = ?
         .await?;
 
         let turn_id = "turn-spawn";
-        record_completed_response(&mut logger, turn_id, "resp-spawn", false).await;
+        record_completed_response(&mut logger, turn_id, "resp-spawn", /*include_rate_limit*/ false).await;
 
         let spawn_call = "spawn-call";
         let spawn_child = ThreadId::new();
@@ -3907,7 +4097,7 @@ WHERE spawn_request_id = ?
             &mut parent_logger,
             "turn-direct-fork",
             "resp-direct-fork",
-            false,
+            /*include_rate_limit*/ false,
         )
         .await;
 
@@ -4021,7 +4211,7 @@ WHERE child_thread_id = ?
         )
         .await?;
         let child_turn_id = "turn-child-token";
-        record_completed_response(&mut child_logger, child_turn_id, "resp-child", false).await;
+        record_completed_response(&mut child_logger, child_turn_id, "resp-child", /*include_rate_limit*/ false).await;
 
         let pool_arc = runtime.usage_pool();
         let pool: &SqlitePool = pool_arc.as_ref();
@@ -4060,7 +4250,7 @@ WHERE thread_id = ?
             &mut top_level_logger,
             top_level_turn_id,
             "resp-top-level",
-            false,
+            /*include_rate_limit*/ false,
         )
         .await;
         let top_level_provider_row: ProviderCallRowWithSpawn = sqlx::query_as(
