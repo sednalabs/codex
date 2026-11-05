@@ -1832,7 +1832,10 @@ INSERT INTO usage_provider_calls (
                 "2020-01-01T00:00:00Z".into(),
             )
         );
-        assert_eq!(logger.last_provider_call_id.as_deref(), Some(new_id.as_str()));
+        assert_eq!(
+            logger.last_provider_call_id.as_deref(),
+            Some(new_id.as_str())
+        );
         assert_eq!(
             logger
                 .last_provider_usage
