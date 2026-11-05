@@ -705,6 +705,7 @@ User-visible behavior:
 
 - Downstream builds maintain a local `usage.sqlite` alongside `state.sqlite` and `logs.sqlite` under `CODEX_SQLITE_HOME`.
 - `usage.sqlite` is the authoritative local store for thread lineage, spawn metadata, tool calls, provider-call usage, quota snapshots, and fork snapshots.
+- `RawResponseCompleted` is the provider-call boundary: its exact response ID, scoped by thread, gives each call a stable identity. Repeated delivery updates the same row. Later token-count snapshots can add model, tier, and billing evidence or quota snapshots, but cannot create another provider call. Responses without exact token usage remain explicitly unknown; existing rows are left intact.
 - Billing turns are canonicalized before ingest, and downstream reporting can consume exact local facts directly from `usage.sqlite`.
 - `usage_provider_call_credit_estimates` is the canonical call-level Codex
   credit surface. It retains requested and actual model/tier evidence, Fast

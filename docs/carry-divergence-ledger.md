@@ -1591,6 +1591,13 @@ bundles during upstream sync merely because they once shared this carry entry.
   `usage_fork_snapshots`, capturing per-turn requested model/provider hints,
   tool invocation lifecycles, rate-limit snapshots, and parent/child thread
   relationships for spawn requests.
+- `RawResponseCompleted` is the provider-call boundary. Its exact `response_id`,
+  scoped by thread, supplies a deterministic `provider_call_id`; repeated
+  delivery upserts the same row. `TokenCount` snapshots only enrich that row and
+  record quota observations, so repeated rate-limit and context-estimate events
+  cannot create duplicate provider calls. Missing exact usage remains `NULL`
+  with `provider_usage_missing`, and the change adds no schema migration or
+  rewrite of historical rows.
 - `usage_provider_calls` also stores provider-confirmed `final_model` and
   `model_snapshot` values when turn completion reports them, preserving the
   downstream distinction between requested/configured model, historical
@@ -1642,6 +1649,7 @@ bundles during upstream sync merely because they once shared this carry entry.
   - `codex-rs/state/src/migrations.rs`
   - `codex-rs/state/src/runtime.rs`
   - `codex-rs/state/src/runtime/usage.rs`
+  - `codex-rs/state/src/runtime/usage_reporting_tests.rs`
   - `codex-rs/state/usage_migrations/0001_usage_tables.sql`
   - `codex-rs/state/usage_migrations/0003_usage_provider_call_model_identity.sql`
   - `codex-rs/state/usage_migrations/0004_usage_cache_write_tokens.sql`
