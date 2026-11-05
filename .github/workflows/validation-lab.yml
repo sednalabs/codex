@@ -1746,3 +1746,34 @@ jobs:
           result = json.loads(Path('evidence/rust-tests-v1-results.json').read_text())
           print(json.dumps({key: result.get(key) for key in ('status', 'failure_code', 'message', 'inventory')}, indent=2))
           PY
+
+  w14939-chats-tests:
+    name: Run bounded Analytics Chats tests
+    if: ${{ inputs.supersession_key == 'w14939-chats-tests-20261105' }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
+    env:
+      CARGO_INCREMENTAL: "0"
+      RUST_MIN_STACK: "8388608"
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ inputs.target_sha }}
+          fetch-depth: 1
+          persist-credentials: false
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 22
+      - uses: dtolnay/rust-toolchain@e081816240890017053eacbb1bdf337761dc5582
+        with:
+          targets: x86_64-unknown-linux-gnu
+      - name: Run Chats data and presentation unit tests
+        shell: bash
+        env:
+          TARGET_SHA: ${{ inputs.target_sha }}
+        run: |
+          set -euo pipefail
+          [[ "$(git rev-parse HEAD)" == "${TARGET_SHA}" ]]
+          export CODEX_JS_REPL_NODE_PATH="$(command -v node)"
+          cd codex-rs
+          cargo test --locked -p codex-tui --lib analytics_chats::tests:: -- --test-threads=1
