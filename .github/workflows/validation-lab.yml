@@ -1673,3 +1673,44 @@ jobs:
           path: ${{ runner.temp }}/w14939-preparation.patch
           if-no-files-found: error
           retention-days: 7
+
+  w14939-snapshot-review:
+    name: Generate Analytics snapshot candidates for review
+    if: ${{ inputs.supersession_key == 'w14939-snapshot-review-20261105' }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
+    env:
+      CARGO_INCREMENTAL: "0"
+      RUST_MIN_STACK: "8388608"
+      INSTA_UPDATE: "new"
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ inputs.target_sha }}
+          fetch-depth: 1
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@e081816240890017053eacbb1bdf337761dc5582
+        with:
+          targets: x86_64-unknown-linux-gnu
+      - name: Run usage picker snapshot tests
+        shell: bash
+        env:
+          TARGET_SHA: ${{ inputs.target_sha }}
+        run: |
+          set -euo pipefail
+          [[ "$(git rev-parse HEAD)" == "${TARGET_SHA}" ]]
+          cd codex-rs
+          cargo test --locked -p codex-tui --lib chatwidget::tests::usage:: -- --test-threads=1
+      - name: Gather unaccepted snapshots
+        if: ${{ always() }}
+        shell: bash
+        run: |
+          mkdir -p "${RUNNER_TEMP}/w14939-snapshots"
+          find codex-rs/tui/src -name '*.snap.new' -exec cp --parents {} "${RUNNER_TEMP}/w14939-snapshots" \;
+      - uses: actions/upload-artifact@v7
+        if: ${{ always() }}
+        with:
+          name: w14939-unaccepted-snapshots
+          path: ${{ runner.temp }}/w14939-snapshots
+          if-no-files-found: warn
+          retention-days: 7
