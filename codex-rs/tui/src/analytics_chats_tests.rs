@@ -86,9 +86,10 @@ async fn local_lineage_is_attached_only_to_account_verified_chats() {
     let root = ThreadId::new();
     let child = ThreadId::new();
     let other = ThreadId::new();
-    let _root = UsageLogger::try_new(db.clone(), root, SessionSource::Cli, None, None, None)
-        .await
-        .unwrap();
+    let _root = UsageLogger::try_new(
+        db.clone(), root, SessionSource::Cli,
+        /*forked_from_id*/ None, /*agent_nickname*/ None, /*agent_role*/ None,
+    ).await.unwrap();
     let _child = UsageLogger::try_new(
         db.clone(),
         child,
@@ -99,15 +100,16 @@ async fn local_lineage_is_attached_only_to_account_verified_chats() {
             agent_nickname: None,
             agent_role: None,
         }),
-        None,
-        None,
-        None,
+        /*forked_from_id*/ None,
+        /*agent_nickname*/ None,
+        /*agent_role*/ None,
     )
     .await
     .unwrap();
-    let _other = UsageLogger::try_new(db.clone(), other, SessionSource::Cli, None, None, None)
-        .await
-        .unwrap();
+    let _other = UsageLogger::try_new(
+        db.clone(), other, SessionSource::Cli,
+        /*forked_from_id*/ None, /*agent_nickname*/ None, /*agent_role*/ None,
+    ).await.unwrap();
     let mut page = AccountChats::Workspace(Chats {
         rows: vec![
             Chat {
@@ -265,7 +267,7 @@ async fn indexed_root_listing_keeps_cursor_after_empty_filtered_page() {
     .await
     .unwrap();
     let handle = AppServerRequestHandle::Remote(remote.request_handle());
-    let (first, cursor) = roots(&handle, None).await.unwrap();
+    let (first, cursor) = roots(&handle, /*cursor*/ None).await.unwrap();
     assert!(first.is_empty());
     assert_eq!(cursor.as_deref(), Some("next"));
     let (second, next) = roots(&handle, cursor).await.unwrap();
@@ -345,7 +347,7 @@ async fn stalled_estimate_returns_partial_page_and_preserves_cursor() {
     let handle = AppServerRequestHandle::Remote(remote.request_handle());
     let page = tokio::time::timeout(
         Duration::from_secs(/*secs*/ 5),
-        read(&handle, &session, None),
+        read(&handle, &session, /*cursor*/ None),
     )
     .await
     .expect("optional estimates must not block navigation")
@@ -518,7 +520,7 @@ async fn consumer_usage_includes_verified_descendants_and_labels_index_partial()
     .await
     .unwrap();
     let handle = AppServerRequestHandle::Remote(remote.request_handle());
-    let result = read_consumer(&handle, &session, None).await.unwrap();
+    let result = read_consumer(&handle, &session, /*cursor*/ None).await.unwrap();
     assert!(result.partial_history);
     assert!(!result.partial_usage);
     assert_eq!(result.rows.len(), 1);

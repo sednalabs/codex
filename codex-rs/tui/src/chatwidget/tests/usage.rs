@@ -1133,7 +1133,7 @@ async fn analytics_chats_displays_partial_page_and_preserves_pagination_snapshot
     let request_id = chat.show_analytics_chats_loading();
     chat.finish_analytics_chats(
         request_id,
-        None,
+        /*cursor*/ None,
         Vec::new(),
         Ok(AccountChats::Workspace(Chats {
             rows: vec![Chat {
@@ -1179,7 +1179,7 @@ async fn analytics_chats_account_update_discards_pending_result() {
     );
     chat.finish_analytics_chats(
         request_id,
-        None,
+        /*cursor*/ None,
         Vec::new(),
         Ok(AccountChats::Workspace(Chats {
             rows: Vec::new(),

@@ -48,7 +48,7 @@ fn local_lineage_distinguishes_root_subagent_and_unknown_credit_coverage() {
 
 #[test]
 fn credit_millionths_are_rendered_without_float_rounding() {
-    assert_eq!(format_micros(1_250_000), "1.250000");
-    assert_eq!(format_micros(-1), "-0.000001");
+    assert_eq!(format_micros(/*value*/ 1_250_000), "1.250000");
+    assert_eq!(format_micros(/*value*/ -1), "-0.000001");
     assert_eq!(format_micros(i64::MIN), "-9223372036854.775808");
 }

@@ -147,7 +147,7 @@ impl AccountChats {
             family.sort_by_key(|thread| thread.thread_id != id);
             let threads = family
                 .into_iter()
-                .take(12)
+                .take(/*n*/ 12)
                 .map(|thread| {
                     let kind = if thread.thread_id == id {
                         "Root".to_string()
@@ -467,7 +467,7 @@ async fn descendants(
                         ancestor_thread_id: Some(root.id.clone()),
                         archived: Some(archived),
                         cursor,
-                        ..list_params(None)
+                        ..list_params(/*cursor*/ None)
                     },
                 })
                 .await
