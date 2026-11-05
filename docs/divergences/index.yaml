@@ -1492,12 +1492,12 @@
         "test_gh_merge_queue_shepherd.py",
         "test_gh_pr_watch.py (exact-head decisions, queue cadence for QUEUED/AWAITING_CHECKS and unreadable heads, queue identity changes, and ordinary green backoff)",
         "test_gh_workflow_run_watch.py (unassigned queued-job assignment evidence, timeout, and identity-bound acknowledgement)",
-        "test_gh_dispatch_and_watch.py",
+        "test_gh_dispatch_and_watch.py (actual read-only broker allowlist, current-context host resolution, returned dispatch identity, exact host verification, no ambiguous replay, and separate target proof)",
         "test_inspect_subagent_tail.py",
         "inspect_subagent_tail.py --help"
       ],
       "owner": "downstream",
-      "notes": "The public fork retains only helpers coupled to Codex workflow or session formats. The former public codex-orchestrator and sidecar-review-loop bundles were retired so user policy has one semantic owner. The watcher decision and wake receipts are compact, exact-head, and read-only; preserve fail-closed readiness for BLOCKED, pending checks, and review evidence. Do not copy unrelated private lifecycle behavior into this carry.",
+      "notes": "The public fork retains only helpers coupled to Codex workflow or session formats. The former public codex-orchestrator and sidecar-review-loop bundles were retired so user policy has one semantic owner. The watcher decision and wake receipts are compact, exact-head, and read-only; preserve fail-closed readiness for BLOCKED, pending checks, and review evidence. Dispatch watches only the validated ID returned by that dispatch, not a newest matching run; missing or ambiguous identity must never cause replay or a listing fallback. Keep the workflow host separate from validation-target evidence. Upstream main 49f0c6022596c361fe676a5c4738fb2be34e3a93 has no equivalent helper; retain this operator-only carry until an equivalent exact-dispatch contract exists. Do not copy unrelated private lifecycle behavior into this carry.",
       "upstreamability_tier": "operator-only",
       "boundary_type": "agent-workflow-skill",
       "hotspot_files": [

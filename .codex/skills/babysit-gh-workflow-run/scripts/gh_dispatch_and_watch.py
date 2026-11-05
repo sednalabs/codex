@@ -4,11 +4,13 @@
 import argparse
 import importlib.util
 import json
+import os
+import re
 import subprocess
 import sys
 import time
 from pathlib import Path
-from urllib.parse import quote
+from urllib.parse import quote, urlsplit
 
 
 WATCHER_PYTHON_PATH = Path(__file__).resolve().with_name("gh_workflow_run_watch.py")
@@ -151,10 +153,9 @@ def parse_args():
     parser.add_argument(
         "--stale-head-retries",
         type=int,
-        default=1,
+        default=0,
         help=(
-            "Additional dispatch attempts when a newly created run on the watched ref resolves "
-            "to a head SHA other than --head-sha (default: 1)."
+            "Legacy flag: only 0 is supported; reconcile a mismatched run before another dispatch."
         ),
     )
     parser.add_argument(
@@ -182,30 +183,6 @@ def _emit_error(message):
     return 1
 
 
-def _emit_stale_head_timeout(*, workflow, ref, expected_sha, attempts_used, retries_allowed, stale_runs):
-    latest = stale_runs[-1] if stale_runs else {}
-    payload = {
-        "actions": ["stop_stale_head_dispatch_detected"],
-        "error": (
-            f"Detected newly created run(s) for workflow '{workflow}' on ref '{ref}' with stale "
-            f"head SHA while expecting '{expected_sha}'."
-        ),
-        "stale_head_dispatch": {
-            "workflow": workflow,
-            "ref": ref,
-            "expected_head_sha": expected_sha,
-            "attempts_used": int(attempts_used),
-            "stale_head_retries_allowed": int(retries_allowed),
-            "latest_observed": latest,
-            "observed": stale_runs,
-        },
-        "ts": int(time.time()),
-    }
-    sys.stdout.write(json.dumps(payload, sort_keys=True) + "\n")
-    sys.stdout.flush()
-    return 1
-
-
 def _emit_expected_head_sha_mismatch(*, workflow, ref, expected_sha, observed_sha):
     payload = {
         "actions": ["stop_expected_head_sha_mismatch"],
@@ -226,34 +203,6 @@ def _emit_expected_head_sha_mismatch(*, workflow, ref, expected_sha, observed_sh
     return 1
 
 
-def _emit_dispatch_appearance_timeout(
-    *,
-    workflow,
-    ref,
-    expected_sha,
-    appearance_timeout_seconds,
-    attempts_used,
-):
-    payload = {
-        "actions": ["stop_dispatch_run_not_visible"],
-        "error": (
-            f"Dispatched workflow '{workflow}' on ref '{ref}' but no new run became visible "
-            f"within {int(appearance_timeout_seconds)}s for expected head SHA '{expected_sha}'."
-        ),
-        "dispatch_visibility": {
-            "workflow": workflow,
-            "ref": ref,
-            "expected_head_sha": expected_sha,
-            "appearance_timeout_seconds": int(appearance_timeout_seconds),
-            "attempts_used": int(attempts_used),
-        },
-        "ts": int(time.time()),
-    }
-    sys.stdout.write(json.dumps(payload, sort_keys=True) + "\n")
-    sys.stdout.flush()
-    return 1
-
-
 def _budget_exceeded(start_time, attempts, max_wait_seconds, max_retries):
     if max_wait_seconds and max_wait_seconds > 0 and (time.monotonic() - start_time) >= max_wait_seconds:
         return True
@@ -262,16 +211,10 @@ def _budget_exceeded(start_time, attempts, max_wait_seconds, max_retries):
     return False
 
 
-def _effective_minimum_run_id(baseline_max_run_id, requested_min_run_id):
-    minimum = int(baseline_max_run_id) + 1
-    if requested_min_run_id is None:
-        return minimum
-    return max(minimum, int(requested_min_run_id))
-
-
 def _query_remote_ref_sha(watcher, repo, ref):
-    endpoint = f"/repos/{repo}/git/ref/heads/{quote(ref, safe='')}"
-    payload = watcher.gh_json(["api", endpoint], repo=repo)
+    _, owner_repo = _repo_identity(repo)
+    endpoint = f"/repos/{owner_repo}/git/ref/heads/{quote(ref, safe='')}"
+    payload = _api_json(watcher, repo, endpoint)
     if not isinstance(payload, dict):
         raise RuntimeError(f"Unexpected response when reading remote ref '{ref}'.")
     sha = str(((payload.get("object") or {}).get("sha") or "").strip())
@@ -304,87 +247,6 @@ def _wait_for_ref_to_match_expected(watcher, repo, ref, expected_sha, *, start_t
         time.sleep(max(1, poll_seconds))
 
 
-def _select_newest_matching_run(
-    watcher,
-    repo,
-    workflow,
-    ref,
-    expected_head_sha,
-    minimum_run_id,
-    *,
-    start_time,
-    attempts,
-    max_wait_seconds,
-    max_retries,
-    poll_seconds,
-    dispatch_start_time,
-    appearance_timeout_seconds,
-):
-    if hasattr(watcher, "_GH_AUTH"):
-        total_deadline = start_time + max_wait_seconds if max_wait_seconds else None
-        appearance_deadline = dispatch_start_time + appearance_timeout_seconds if appearance_timeout_seconds else None
-        deadlines = [value for value in (total_deadline, appearance_deadline) if value is not None]
-        watcher._GH_AUTH.deadline = min(deadlines) if deadlines else None
-    while True:
-        runs = watcher.list_workflow_runs(
-            repo,
-            workflow,
-            ref,
-            expected_head_sha=expected_head_sha,
-            minimum_run_id=minimum_run_id,
-        )
-        if runs:
-            return {"kind": "matched", "run": runs[0]}, attempts
-
-        saw_unhydrated_head = False
-        stale_runs = watcher.list_workflow_runs(
-            repo,
-            workflow,
-            ref,
-            minimum_run_id=minimum_run_id,
-        )
-        if stale_runs:
-            newest = stale_runs[0]
-            stale_head_sha = str(newest.get("headSha") or "").strip()
-            if expected_head_sha and stale_head_sha and not _head_sha_matches_prefix(
-                stale_head_sha, expected_head_sha
-            ):
-                return {
-                    "kind": "stale_head",
-                    "run": newest,
-                    "stale_head_sha": stale_head_sha,
-                }, attempts
-            if expected_head_sha and not stale_head_sha:
-                # A just-created run can exist with an unhydrated headSha briefly.
-                # Treat this as visibility warm-up and keep waiting rather than timing out.
-                saw_unhydrated_head = True
-
-        if (
-            appearance_timeout_seconds
-            and appearance_timeout_seconds > 0
-            and not saw_unhydrated_head
-            and (time.monotonic() - dispatch_start_time) >= appearance_timeout_seconds
-        ):
-            return {"kind": "appearance_timed_out", "run": None}, attempts
-
-        if _budget_exceeded(start_time, attempts, max_wait_seconds, max_retries):
-            return {"kind": "timed_out", "run": None}, attempts
-
-        attempts += 1
-        time.sleep(max(1, poll_seconds))
-
-
-def _resolve_local_ref_sha(watcher, ref):
-    if watcher.is_sha_like(ref):
-        return None
-    candidates = (f"refs/heads/{ref}", ref)
-    for candidate in candidates:
-        sha = watcher.command_text(["git", "rev-parse", "--verify", candidate])
-        if sha:
-            return sha.strip()
-    return None
-
-
 def _validate_expected_head_sha_against_remote_branch(watcher, repo, ref, expected_sha):
     if not expected_sha or watcher.is_sha_like(ref):
         return None
@@ -414,9 +276,10 @@ def _parse_dispatch_inputs(raw_inputs):
 
 
 def _is_unexpected_supersession_input_error(err):
-    message = str(err)
+    message = str(err).partition("\nstderr: ")[2]
     return (
-        "Unexpected inputs provided" in message
+        "HTTP 422" in message
+        and "Unexpected inputs provided" in message
         and (
             "supersession_mode" in message
             or "supersession_key" in message
@@ -444,11 +307,154 @@ def _dispatch_workflow(
         return args
 
     try:
-        watcher.gh_text(build_args(include_supersession=True), repo=repo)
+        return watcher.gh_text(build_args(include_supersession=True), repo=repo)
     except Exception as err:
-        if not _is_unexpected_supersession_input_error(err):
+        if (not _is_unexpected_supersession_input_error(err)
+                or any(key in ("supersession_mode", "supersession_key") for key, _ in dispatch_inputs)):
             raise
-        watcher.gh_text(build_args(include_supersession=False), repo=repo)
+        return watcher.gh_text(build_args(include_supersession=False), repo=repo)
+
+
+def _repo_identity(repo):
+    parts = str(repo).split("/")
+    if len(parts) == 2:
+        host, owner, name = os.environ.get("GH_HOST") or "github.com", *parts
+    elif len(parts) == 3:
+        host, owner, name = parts
+    else:
+        raise ValueError("Repository must be [HOST/]OWNER/REPO.")
+    if not re.fullmatch(r"[A-Za-z0-9.-]+", host) or not all(
+        re.fullmatch(r"[A-Za-z0-9_.-]+", item) and item not in (".", "..")
+        for item in (owner, name)
+    ):
+        raise ValueError("Invalid repository identity.")
+    return host.lower(), f"{owner}/{name}"
+
+
+def _resolve_repo_host(watcher, repo, *, current_repo=False):
+    # Cwd autodetection has discarded the remote host. Ask gh for its current
+    # repository without a hostless selector, then cross-check owner/repo.
+    # Explicit selectors retain gh's normal selection semantics.
+    parts = str(repo).split("/")
+    if len(parts) not in (2, 3):
+        raise ValueError("Repository must be [HOST/]OWNER/REPO.")
+    requested_host = parts[0].lower() if len(parts) == 3 else None
+    env_host = (os.environ.get("GH_HOST") or "").strip().lower() or None
+    if requested_host and env_host and requested_host != env_host:
+        raise ValueError("Explicit repository host conflicts with GH_HOST.")
+    # Validate the caller's syntax before asking gh to resolve it.
+    _repo_identity(repo)
+    payload = watcher.gh_json(["repo", "view", "--json", "nameWithOwner,url"],
+                              repo=None if current_repo else repo)
+    if not isinstance(payload, dict):
+        raise ValueError("Repository host could not be established.")
+    name = payload.get("nameWithOwner")
+    url = payload.get("url")
+    if not isinstance(name, str) or not isinstance(url, str):
+        raise ValueError("Repository host could not be established.")
+    parsed = urlsplit(url)
+    host = parsed.hostname or ""
+    labels = host.split(".")
+    if (parsed.scheme != "https" or parsed.netloc.lower() != host.lower()
+            or parsed.query or parsed.fragment or not host
+            or any(not re.fullmatch(r"[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?", label) for label in labels)
+            or parsed.path.rstrip("/").lower() != f"/{name}".lower()
+            or name.lower() != "/".join(parts[-2:]).lower()
+            or (requested_host and requested_host != host.lower())
+            or (env_host and env_host != host.lower())):
+        raise ValueError("Repository host or identity is conflicting or malformed.")
+    qualified = f"{host.lower()}/{name}"
+    _repo_identity(qualified)
+    return qualified
+
+
+def _api_json(watcher, repo, endpoint):
+    host, _ = _repo_identity(repo)
+    return watcher.gh_json(["api", endpoint, "--hostname", host], repo=repo)
+
+
+def _workflow_id(watcher, repo, workflow):
+    _, owner_repo = _repo_identity(repo)
+    if workflow.isdigit() or workflow.endswith((".yml", ".yaml")):
+        payload = _api_json(watcher, repo, f"/repos/{owner_repo}/actions/workflows/{quote(workflow, safe='')}")
+        candidates = [payload]
+    else:
+        candidates = []
+        page = 1
+        total = None
+        while total is None or len(candidates) < total:
+            payload = _api_json(watcher, repo, f"/repos/{owner_repo}/actions/workflows?per_page=100&page={page}")
+            if not isinstance(payload, dict) or type(payload.get("total_count")) is not int or not isinstance(payload.get("workflows"), list):
+                raise ValueError("Incomplete workflow catalog.")
+            if total is not None and total != payload["total_count"]:
+                raise ValueError("Workflow catalog changed during lookup.")
+            total = payload["total_count"]
+            rows = payload["workflows"]
+            if not rows and len(candidates) < total:
+                raise ValueError("Incomplete workflow catalog.")
+            candidates.extend(rows)
+            page += 1
+        if len(candidates) != total:
+            raise ValueError("Incomplete workflow catalog.")
+        candidates = [item for item in candidates if isinstance(item, dict) and (
+            item.get("name") == workflow or Path(str(item.get("path") or "")).stem == workflow
+        )]
+    if len(candidates) != 1 or not isinstance(candidates[0], dict):
+        raise ValueError("Workflow selector is missing or ambiguous.")
+    workflow_id = candidates[0].get("id")
+    if type(workflow_id) is not int or workflow_id <= 0:
+        raise ValueError("Workflow has no valid id.")
+    return workflow_id
+
+
+def _dispatch_run_id(output, repo):
+    host, owner_repo = _repo_identity(repo)
+    value = str(output or "").strip()
+    parsed = urlsplit(value)
+    match = re.fullmatch(r"/([^/]+)/([^/]+)/actions/runs/([1-9][0-9]*)", parsed.path)
+    if (parsed.scheme != "https" or parsed.netloc.lower() != host or parsed.query or parsed.fragment
+            or not match or f"{match.group(1)}/{match.group(2)}".lower() != owner_repo.lower()):
+        raise ValueError("Dispatch response has no trustworthy run identity; do not redispatch.")
+    return int(match.group(3))
+
+
+def _emit_dispatch_receipt(repo, run_id, stage, workflow_id, ref, expected_sha):
+    host, owner_repo = _repo_identity(repo)
+    print(json.dumps({"dispatch_receipt": {"stage": stage, "repo": owner_repo,
+        "run_id": run_id, "run_url": f"https://{host}/{owner_repo}/actions/runs/{run_id}",
+        "expected_workflow_id": workflow_id, "expected_host_ref": ref,
+        "expected_host_sha": expected_sha}}, sort_keys=True), flush=True)
+
+
+def _wait_for_exact_run(watcher, repo, run_id, workflow_id, ref, expected_sha, *,
+                        start_time, attempts, max_wait_seconds, max_retries,
+                        poll_seconds, appearance_timeout_seconds):
+    _, owner_repo = _repo_identity(repo)
+    deadline = time.monotonic() + (appearance_timeout_seconds or max_wait_seconds or 600)
+    if hasattr(watcher, "_GH_AUTH"):
+        watcher._GH_AUTH.deadline = min(deadline, start_time + max_wait_seconds) if max_wait_seconds else deadline
+    while True:
+        try:
+            run = _api_json(watcher, repo, f"/repos/{owner_repo}/actions/runs/{run_id}")
+        except watcher.GhCommandError as err:
+            if not re.search(r"\bHTTP 404\b", str(err)):
+                raise
+            run = None
+        if run is not None:
+            if not isinstance(run, dict) or type(run.get("id")) is not int:
+                raise ValueError("Incomplete exact-run identity.")
+            repository = run.get("repository")
+            if (run["id"] != run_id or not isinstance(repository, dict)
+                    or str(repository.get("full_name") or "").lower() != owner_repo.lower()
+                    or type(run.get("workflow_id")) is not int or run.get("workflow_id") != workflow_id
+                    or run.get("event") != "workflow_dispatch"
+                    or run.get("head_branch") != ref or run.get("head_sha") != expected_sha):
+                raise ValueError("Exact dispatched run identity did not match; do not redispatch.")
+            return run
+        if time.monotonic() >= deadline or _budget_exceeded(start_time, attempts, max_wait_seconds, max_retries):
+            raise ValueError("Exact dispatched run did not become visible; do not redispatch.")
+        attempts += 1
+        time.sleep(max(1, poll_seconds))
 
 
 def _run_watcher(
@@ -461,6 +467,7 @@ def _run_watcher(
     require_terminal_run,
     validation_target_ref=None,
     validation_target_sha=None,
+    host=None,
 ):
     command = [
         str(WATCHER_LAUNCHER_PATH),
@@ -483,7 +490,8 @@ def _run_watcher(
     if validation_target_sha:
         command.extend(["--validation-target-sha", str(validation_target_sha)])
 
-    result = subprocess.run([str(WATCHER_LAUNCHER_PATH), *command[1:]], shell=False, capture_output=True, text=True, check=False)
+    env = dict(os.environ, GH_HOST=host, GH_REPO=f"{host}/{repo}") if host else None
+    result = subprocess.run([str(WATCHER_LAUNCHER_PATH), *command[1:]], shell=False, capture_output=True, text=True, check=False, env=env)
     if result.stdout:
         sys.stdout.write(result.stdout)
         if not result.stdout.endswith("\n"):
@@ -525,10 +533,19 @@ def main():
         return _emit_error("--appearance-timeout-seconds must be >= 0")
     if args.stale_head_retries < 0:
         return _emit_error("--stale-head-retries must be >= 0")
+    if args.stale_head_retries:
+        return _emit_error("--stale-head-retries is no longer supported; reconcile the exact run before another dispatch.")
     if args.min_run_id is not None and args.min_run_id <= 0:
         return _emit_error("--min-run-id must be > 0")
+    if os.environ.get("GITHUB_APP_BROKER_SOCKET"):
+        return _emit_error("The configured GitHub App broker is read-only and does not support workflow dispatch; dispatch not attempted.")
+    for selector in ("GH_WORKFLOW_RUN_WATCH_REPO", "GH_REPO"):
+        if selector in os.environ and not os.environ[selector].strip():
+            return _emit_error(f"{selector} is empty or whitespace; dispatch not attempted.")
 
     watcher = _load_watcher()
+    env_repo = (os.environ.get("GH_WORKFLOW_RUN_WATCH_REPO") or os.environ.get("GH_REPO") or "").strip()
+    explicit_repo = bool(args.repo or env_repo)
     repo = args.repo or watcher.detect_repo()
     if not repo:
         return _emit_error(
@@ -536,9 +553,16 @@ def main():
         )
 
     try:
+        repo = _resolve_repo_host(watcher, repo, current_repo=not explicit_repo)
+    except (ValueError, watcher.GhCommandError):
+        return _emit_error("Unable to resolve an unambiguous repository host; dispatch not attempted.")
+
+    try:
         ref = watcher.detect_ref(args.ref)
     except watcher.GhCommandError as err:
         return _emit_error(err)
+    if watcher.is_sha_like(ref) or ref.startswith("refs/"):
+        return _emit_error("A branch-name dispatch ref is required for exact host verification.")
 
     expected_sha = str(args.head_sha or "").strip()
     expected_sha_from_args = bool(expected_sha)
@@ -596,136 +620,51 @@ def main():
             )
 
     try:
-        baseline_runs = watcher.list_workflow_runs(repo, args.workflow, ref)
-        baseline_max_run_id = max(
-            (int(run.get("databaseId") or 0) for run in baseline_runs),
-            default=0,
+        full_expected_sha = _query_remote_ref_sha(watcher, repo, ref)
+        if (not re.fullmatch(r"[0-9a-fA-F]{40}", full_expected_sha)
+                or not _head_sha_matches_prefix(full_expected_sha, expected_sha)):
+            return _emit_error("Remote branch changed or did not provide a full expected SHA; dispatch not attempted.")
+        selected_workflow_id = _workflow_id(watcher, repo, args.workflow)
+    except (ValueError, watcher.GhCommandError):
+        return _emit_error("Unable to resolve the exact workflow and host identity; dispatch not attempted.")
+
+    try:
+        output = _dispatch_workflow(
+            watcher, repo, str(selected_workflow_id), ref,
+            args.supersession_mode, args.supersession_key, dispatch_inputs,
         )
-        if baseline_max_run_id < 0:
-            baseline_max_run_id = 0
-    except watcher.GhCommandError as err:
-        return _emit_error(err)
+    except watcher.GhCommandError:
+        return _emit_error("Workflow dispatch failed or its outcome is unknown; do not redispatch without reconciliation.")
 
-    max_dispatch_attempts = max(1, int(args.stale_head_retries) + 1)
-    stale_runs = []
-    selected_run = None
-    for dispatch_attempt in range(1, max_dispatch_attempts + 1):
-        dispatch_start_time = time.monotonic()
-        try:
-            _dispatch_workflow(
-                watcher,
-                repo,
-                args.workflow,
-                ref,
-                args.supersession_mode,
-                args.supersession_key,
-                dispatch_inputs,
-            )
-        except watcher.GhCommandError as err:
-            return _emit_error(f"Workflow dispatch failed: {err}")
-
-        min_run_id = _effective_minimum_run_id(baseline_max_run_id, args.min_run_id)
-        selection, attempts = _select_newest_matching_run(
-            watcher,
-            repo,
-            args.workflow,
-            ref,
-            expected_head_sha=expected_sha,
-            minimum_run_id=min_run_id,
-            start_time=start_time,
-            attempts=attempts,
-            max_wait_seconds=args.max_wait_seconds,
-            max_retries=args.max_retries,
-            poll_seconds=args.poll_seconds,
-            dispatch_start_time=dispatch_start_time,
+    try:
+        run_id = _dispatch_run_id(output, repo)
+        _emit_dispatch_receipt(repo, run_id, "provisional", selected_workflow_id, ref, full_expected_sha)
+        if args.min_run_id is not None and run_id < args.min_run_id:
+            raise ValueError("Returned run id is below the requested minimum; do not redispatch.")
+        _wait_for_exact_run(
+            watcher, repo, run_id, selected_workflow_id, ref, full_expected_sha,
+            start_time=start_time, attempts=attempts, max_wait_seconds=args.max_wait_seconds,
+            max_retries=args.max_retries, poll_seconds=args.poll_seconds,
             appearance_timeout_seconds=args.appearance_timeout_seconds,
         )
-        kind = selection.get("kind")
-        selected = selection.get("run")
-        if kind == "matched" and selected:
-            selected_run = selected
-            break
-        if kind == "stale_head" and selected:
-            stale_run_id = int(selected.get("databaseId") or 0)
-            baseline_max_run_id = max(baseline_max_run_id, stale_run_id)
-            stale_runs.append(
-                {
-                    "dispatch_attempt": dispatch_attempt,
-                    "run_id": stale_run_id,
-                    "run_url": str(selected.get("url") or ""),
-                    "run_head_sha": str(selected.get("headSha") or ""),
-                    "expected_head_sha": expected_sha,
-                }
-            )
-            if dispatch_attempt >= max_dispatch_attempts:
-                return _emit_stale_head_timeout(
-                    workflow=args.workflow,
-                    ref=ref,
-                    expected_sha=expected_sha,
-                    attempts_used=dispatch_attempt,
-                    retries_allowed=args.stale_head_retries,
-                    stale_runs=stale_runs,
-                )
-            if not watcher.is_sha_like(ref):
-                ok, attempts = _wait_for_ref_to_match_expected(
-                    watcher,
-                    repo,
-                    ref,
-                    expected_sha,
-                    start_time=start_time,
-                    attempts=attempts,
-                    max_wait_seconds=args.max_wait_seconds,
-                    max_retries=args.max_retries,
-                    poll_seconds=args.poll_seconds,
-                )
-                if not ok:
-                    return _emit_error(
-                        f"Timed out waiting for remote ref '{ref}' to match expected SHA prefix '{expected_sha}'."
-                    )
-            continue
-        if kind == "appearance_timed_out":
-            return _emit_dispatch_appearance_timeout(
-                workflow=args.workflow,
-                ref=ref,
-                expected_sha=expected_sha,
-                appearance_timeout_seconds=args.appearance_timeout_seconds,
-                attempts_used=dispatch_attempt,
-            )
-        if kind == "timed_out":
-            break
+        _emit_dispatch_receipt(repo, run_id, "verified", selected_workflow_id, ref, full_expected_sha)
+    except ValueError as err:
+        return _emit_error(err)
+    except watcher.GhCommandError:
+        return _emit_error("Exact dispatched run could not be verified; do not redispatch.")
 
-    if not selected_run:
-        if stale_runs:
-            return _emit_stale_head_timeout(
-                workflow=args.workflow,
-                ref=ref,
-                expected_sha=expected_sha,
-                attempts_used=max_dispatch_attempts,
-                retries_allowed=args.stale_head_retries,
-                stale_runs=stale_runs,
-            )
-        return _emit_error(
-            f"Timed out waiting for a new matching run for workflow '{args.workflow}', ref '{ref}', "
-            f"head-sha '{expected_sha}' after dispatch."
-        )
-
-    run_id = int(selected_run.get("databaseId") or 0)
-    if run_id <= baseline_max_run_id:
-        return _emit_error(
-            f"Selected run id {run_id} did not advance past baseline {baseline_max_run_id}; "
-            "dispatch race guard triggered."
-        )
-
+    host, owner_repo = _repo_identity(repo)
     return _run_watcher(
         watcher,
         run_id,
-        repo=repo,
+        repo=owner_repo,
         wait_for=args.wait_for,
         poll_seconds=args.poll_seconds,
         appearance_timeout=args.appearance_timeout_seconds,
         require_terminal_run=args.watch_until_terminal,
         validation_target_ref=args.validation_target_ref,
         validation_target_sha=validation_target_sha or None,
+        host=host,
     )
 
 

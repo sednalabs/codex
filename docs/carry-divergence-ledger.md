@@ -3743,6 +3743,19 @@ this carry.
 
 ## Virtual workflow watcher identity carry
 
+The dispatch companion resolves and pins the selected repository host before
+dispatch, using gh current-repository context for cwd autodetection. It refuses
+the read-only broker before dispatch. It binds observation to the returned run
+ID, verifies the repository, workflow, event, host branch and full host SHA,
+and emits provisional and verified identity receipts. It
+does not substitute the newest matching run or replay an ambiguous dispatch.
+Validation-target identity remains independently evidenced. The helper requires
+a branch-name host ref and refuses nonzero legacy stale-head retry settings;
+reconcile an uncertain or mismatched run before any separately authorized
+dispatch. Upstream main `49f0c6022596c361fe676a5c4738fb2be34e3a93` has no
+equivalent helper; retain the downstream carry until an equivalent contract
+and its focused tests exist.
+
 The workflow watcher preserves the maintained queue, exact-head, and failure
 receipt behavior while adding a strict REST fallback for GitHub virtual or
 uncatalogued workflow runs. The fallback validates repository, run, job, and
