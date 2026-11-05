@@ -6,6 +6,12 @@ name: Bazel
 on:
   workflow_call:
   workflow_dispatch:
+    inputs:
+      w14939_focused_tests:
+        description: Run the focused PR 995 Linux regression set
+        required: false
+        type: boolean
+        default: false
 
 permissions:
   contents: read
@@ -161,9 +167,10 @@ jobs:
           .github/scripts/validation-lanes/workflow-security-targeted.sh
 
   test:
-    # PRs use the sharded Windows cross-compiled test jobs below. Post-merge
-    # pushes to main also run the native Windows test job for broader Windows
-    # signal without putting PR latency back on the critical path. When
+    # Supported repositories use the sharded Windows cross-compiled test jobs
+    # below. Windows qualification remains explicitly deferred for sednalabs.
+    # Post-merge pushes to main also run the native Windows test job for broader
+    # Windows signal without putting PR latency back on the critical path. When
     # Code-mode unit tests run on every Bazel target. When authenticated RBE
     # is available, the Windows-cross shards exercise the source-built V8 path.
     # macOS runners keep test actions local; full-tree PR validation can exceed
@@ -174,24 +181,10 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        include:
-          # macOS
-          - os: macos-15
-            target: aarch64-apple-darwin
-          - os: macos-15-intel
-            target: x86_64-apple-darwin
-
-          # Linux
-          - os: ubuntu-24.04
-            target: x86_64-unknown-linux-gnu
-          - os: ubuntu-24.04
-            target: x86_64-unknown-linux-musl
-          # 2026-02-27 Bazel tests have been flaky on arm in CI.
-          # Disable until we can investigate and stabilize them.
-          # - os: ubuntu-24.04-arm
-          #   target: aarch64-unknown-linux-musl
-          # - os: ubuntu-24.04-arm
-          #   target: aarch64-unknown-linux-gnu
+        include: >-
+          ${{ fromJSON(github.event_name == 'workflow_dispatch' && inputs.w14939_focused_tests &&
+            '[{"os":"ubuntu-24.04","target":"x86_64-unknown-linux-gnu"}]' ||
+            '[{"os":"macos-15","target":"aarch64-apple-darwin"},{"os":"macos-15-intel","target":"x86_64-apple-darwin"},{"os":"ubuntu-24.04","target":"x86_64-unknown-linux-gnu"},{"os":"ubuntu-24.04","target":"x86_64-unknown-linux-musl"}]') }}
 
     runs-on: ${{ matrix.os }}
 
@@ -226,9 +219,19 @@ jobs:
         shell: bash
         run: ./scripts/check-module-bazel-lock.sh
 
+      - name: Resolve app-server/exec-server compatibility releases
+        if: runner.os == 'Linux'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          releases="$(python3 .github/scripts/resolve_exec_server_releases.py)"
+          echo "CODEX_COMPAT_RELEASES=$releases" >> "$GITHUB_ENV"
+
       - name: bazel test //...
         env:
           BUILDBUDDY_API_KEY: ${{ secrets.BUILDBUDDY_API_KEY }}
+          W14939_FOCUSED_TESTS: ${{ github.event_name == 'workflow_dispatch' && inputs.w14939_focused_tests }}
         shell: bash
         run: |
           bazel_targets=(
@@ -250,6 +253,61 @@ jobs:
             --test_verbose_timeout_warnings
             --build_metadata=COMMIT_SHA=${GITHUB_SHA}
           )
+          if [[ "${W14939_FOCUSED_TESTS}" == "true" ]]; then
+            focused_status=0
+            run_focused_test() {
+              local target="$1"
+              shift
+              ./.github/scripts/run-bazel-ci.sh \
+                --print-failed-test-logs \
+                --print-failed-action-summary \
+                -- \
+                test \
+                --test_tag_filters=-argument-comment-lint \
+                --test_verbose_timeout_warnings \
+                --test_output=all \
+                --build_metadata="COMMIT_SHA=${GITHUB_SHA}" \
+                "$@" \
+                -- \
+                "${target}"
+            }
+            run_focused_test //codex-rs/rollout:rollout-alternate-group-materialization-test || focused_status=$?
+            run_focused_test //codex-rs/linux-sandbox:linux-sandbox-all-test \
+              --test_arg=--exact \
+              --test_arg=suite::managed_proxy::managed_proxy_mode_routes_through_bridge_and_blocks_direct_egress || focused_status=$?
+            run_focused_test //codex-rs/core:core-unit-tests \
+              --test_arg=--exact \
+              --test_arg=session::tests::isolated_guardian_sessions_skip_agent_mailbox_hooks || focused_status=$?
+            run_focused_test //codex-rs/core:core-all-test \
+              --test_arg=suite::pending_input::input_interrupts_wait_agent_and_is_sent_in_follow_up_request || focused_status=$?
+            run_focused_test //codex-rs/tui:tui-unit-tests \
+              --test_arg=--exact \
+              --test_arg=app::tests::session_lifecycle_requests::startup_defaults_tests::fresh_startup_falls_back_only_for_unsupported_config_read || focused_status=$?
+            for selector in \
+              suite::client::configured_reasoning_summary_is_sent \
+              suite::client::history_dedupes_streamed_and_final_messages_across_turns \
+              suite::client::sends_audio_urls_to_responses \
+              suite::items::plan_mode_strips_plan_from_agent_messages \
+              suite::multi_agent_mode::catalog_proactive_mode_is_ultra_only::ultra_uses_proactive_override \
+              suite::otel::record_responses_sets_span_fields_for_response_events \
+              suite::prompt_caching::prefixes_context_and_instructions_once_and_consistently_across_requests \
+              suite::remote_models::remote_models_long_model_slug_is_sent_with_supported_reasoning::custom \
+              suite::request_compression::request_body_is_zstd_compressed_for_codex_backend_when_enabled \
+              suite::scenarios::frozen_cloud_skills::frozen_cloud_skills_with_named_executor_request_history \
+              suite::scenarios::mcp_ema::enterprise_lifecycle_preserves_history_and_ordinary_tools::policy; do
+              run_focused_test //codex-rs/core:core-all-test \
+                --test_arg=--exact \
+                --test_arg="${selector}" || focused_status=$?
+            done
+            run_focused_test //codex-rs/core:core-unit-tests \
+              --test_arg=multi_agent_v2_interrupted_native_work_settles_before_followup_all_join || focused_status=$?
+            run_focused_test //codex-rs/ext/mcp:mcp-unit-tests || focused_status=$?
+            run_focused_test //codex-rs/memories/write:write-unit-tests || focused_status=$?
+            run_focused_test //codex-rs/app-server:app-server-all-test \
+              --test_arg=--exact \
+              --test_arg=suite::v2::guardian_v2::guardian_v2_propagates_root_user_input_to_worker_reviews::root_answer_survives_parent_compaction || focused_status=$?
+            exit "${focused_status}"
+          fi
           ./.github/scripts/run-bazel-ci.sh \
             "${bazel_wrapper_args[@]}" \
             -- \
@@ -417,7 +475,7 @@ jobs:
 
   clippy:
     needs: plan
-    if: ${{ needs.plan.outputs.run_bazel == 'true' }}
+    if: ${{ needs.plan.outputs.run_bazel == 'true' && (github.event_name != 'workflow_dispatch' || !inputs.w14939_focused_tests) }}
     timeout-minutes: 30
     strategy:
       fail-fast: false
@@ -446,6 +504,15 @@ jobs:
         with:
           target: ${{ matrix.target }}
           cache-scope: bazel-${{ github.job }}
+
+      - name: Resolve app-server/exec-server compatibility releases
+        if: runner.os == 'Linux'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          releases="$(python3 .github/scripts/resolve_exec_server_releases.py)"
+          echo "CODEX_COMPAT_RELEASES=$releases" >> "$GITHUB_ENV"
 
       - name: bazel build --config=clippy lint targets
         env:
@@ -520,7 +587,7 @@ jobs:
 
   verify-release-build:
     needs: plan
-    if: ${{ needs.plan.outputs.run_bazel == 'true' }}
+    if: ${{ needs.plan.outputs.run_bazel == 'true' && (github.event_name != 'workflow_dispatch' || !inputs.w14939_focused_tests) }}
     timeout-minutes: 60
     strategy:
       fail-fast: false
@@ -549,6 +616,15 @@ jobs:
         with:
           target: ${{ matrix.target }}
           cache-scope: bazel-${{ github.job }}
+
+      - name: Resolve app-server/exec-server compatibility releases
+        if: runner.os == 'Linux'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          releases="$(python3 .github/scripts/resolve_exec_server_releases.py)"
+          echo "CODEX_COMPAT_RELEASES=$releases" >> "$GITHUB_ENV"
 
       - name: bazel build verify-release-build targets
         env:
@@ -656,6 +732,8 @@ jobs:
         shell: bash
         env:
           NEEDS_JSON: ${{ toJSON(needs) }}
+          WINDOWS_DEFERRED: ${{ github.repository == 'sednalabs/codex' }}
+          FOCUSED_TESTS: ${{ github.event_name == 'workflow_dispatch' && inputs.w14939_focused_tests }}
         run: |
           python3 - <<'PY'
           import json
@@ -692,19 +770,18 @@ jobs:
           elif mode == "full":
               require("docs-only", "skipped")
               require("observer-only", "skipped")
-              for job in [
-                  "test",
-                  "test-windows",
-                  "clippy",
-                  "verify-release-build",
-              ]:
-                  require(job, "success")
-              windows_shard_result = (
-                  "skipped"
-                  if os.environ.get("GITHUB_REPOSITORY") == "sednalabs/codex"
-                  else "success"
+              require("test", "success")
+              require(
+                  "test-windows-shard",
+                  "skipped" if os.environ.get("WINDOWS_DEFERRED") == "true" else "success",
               )
-              require("test-windows-shard", windows_shard_result)
+              require("test-windows", "success")
+              if os.environ.get("FOCUSED_TESTS") == "true":
+                  require("clippy", "skipped")
+                  require("verify-release-build", "skipped")
+              else:
+                  require("clippy", "success")
+                  require("verify-release-build", "success")
           else:
               print(f"unsupported Bazel CI mode: {mode!r}", file=sys.stderr)
               raise SystemExit(1)

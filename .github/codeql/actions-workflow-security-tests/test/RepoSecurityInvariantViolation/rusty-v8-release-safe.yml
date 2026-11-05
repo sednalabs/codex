@@ -1,0 +1,16 @@
+name: rusty-v8-release
+on:
+  push:
+    tags: ["rusty-v8-v*"]
+jobs:
+  publish-release:
+    if: >-
+      ${{
+        always() &&
+        needs.metadata.result == 'success' &&
+        needs.build.result == 'success' &&
+        (needs.build-windows-source.result == 'success' ||
+          (github.repository == 'sednalabs/codex' && needs.build-windows-source.result == 'skipped'))
+      }}
+    steps:
+      - uses: softprops/action-gh-release@v1

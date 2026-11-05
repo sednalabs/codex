@@ -1,5 +1,6 @@
 {
-  "$defs": {
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "definitions": {
     "AppToolSummary": {
       "description": "EXPERIMENTAL - metadata returned by app/read.",
       "properties": {
@@ -31,8 +32,8 @@
         }
       },
       "required": [
-        "name",
-        "description"
+        "description",
+        "name"
       ],
       "type": "object"
     },
@@ -84,7 +85,7 @@
         },
         "toolSummaries": {
           "items": {
-            "$ref": "#/$defs/AppToolSummary"
+            "$ref": "#/definitions/AppToolSummary"
           },
           "type": [
             "array",
@@ -99,12 +100,11 @@
       "type": "object"
     }
   },
-  "$schema": "https://json-schema.org/draft/2020-12/schema",
   "description": "EXPERIMENTAL - app/read response.",
   "properties": {
     "apps": {
       "items": {
-        "$ref": "#/$defs/ConnectorMetadata"
+        "$ref": "#/definitions/ConnectorMetadata"
       },
       "type": "array"
     },

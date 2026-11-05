@@ -2,10 +2,9 @@
 
 > `status: current` · `authority: informative` · manually curated
 >
-> Current refs, counts, and mirror health are maintained in
-> [`generated/upstream-status.md`](generated/upstream-status.md). This matrix
-> maps carries to guardrails but is not yet generated; update it deliberately
-> when registry entries or test lanes change.
+> Current upstream refs, counts, and mirror health are not recorded in this
+> matrix. It maps carries to guardrails but is not yet generated; update it
+> deliberately when registry entries or test lanes change.
 
 This matrix maps live downstream divergences to the smallest default test lane
 that should fail if the behavior regresses. Historical references to
@@ -113,6 +112,7 @@ Fast lanes used by `core-test-smoke` locally and by the remote smoke matrix:
 Focused targeted lanes for iterative work on the current carry seams:
 
 - `codex.agent-workflow-sanity`
+
   - Runs `test_gh_pr_watch.py` and compiles `gh_pr_watch.py`. The source
     contract covers exact-head decision and wake receipts, BLOCKED-versus-CLEAN
     readiness, pending checks, published/ignored review evidence, and active
@@ -1132,8 +1132,8 @@ for a removed crate path.
   intentionally absent and should not be reintroduced to satisfy stale carry.
 - Prefer the focused `codex.core-*targeted` lanes for seam-local work before
   widening to `core-test-smoke` or `core-test-progressive`.
-- Remote-first validation should follow the ladder in
-  [`docs/validation_workflow.md`](validation_workflow.md):
+- Remote-first validation should follow the profiles in the
+  [validation-lab workflow](../.github/workflows/validation-lab.yml):
   small local checks first, then `validation-lab` `profile=smoke`,
   `targeted`, or `frontier`, and only then broader checkpoint runs when the
   question genuinely spans multiple seams.

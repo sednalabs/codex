@@ -1,7 +1,7 @@
 use std::borrow::Cow;
 use std::collections::HashMap;
 
-use codex_app_server_protocol::ThreadItem;
+use codex_app_server_protocol::ThreadItemPayload;
 use codex_app_server_protocol::UserInput;
 use codex_protocol::ThreadId;
 use codex_protocol::protocol::strip_user_message_prefix;
@@ -74,7 +74,9 @@ pub(in crate::local) async fn search_thread_occurrences(
         &params.search_term,
     )?;
     let matcher = LiteralMatcher::new(params.search_term.as_str());
-    let lineage = store.resolve_rollout_lineage(params.thread_id).await?;
+    let lineage = store
+        .resolve_rollout_lineage_for_history_page(params.thread_id)
+        .await?;
     let cursor_segment = cursor
         .as_ref()
         .map(|cursor| {
@@ -123,7 +125,13 @@ FROM (
       ON turns.thread_id = items.thread_id
      AND turns.turn_id = items.turn_id
     WHERE items.thread_id = ?
-      AND items.item_type = 'userMessage'
+      AND (
+          items.item_type = 'userMessage'
+          OR (
+              items.item_type = 'agentMessage'
+              AND json_extract(items.item_json, '$.phase') = 'partial_answer'
+          )
+      )
       AND items.rollout_ordinal >= ?
       AND items.rollout_ordinal < ?
       AND turns.rollout_ordinal >= ?
@@ -152,12 +160,12 @@ FROM (
 ORDER BY rollout_ordinal ASC
         "#,
         )
-        .bind(segment.thread_id().to_string())
+        .bind(segment.rollout_id().to_string())
         .bind(next_rollout_ordinal)
         .bind(end_rollout_ordinal)
         .bind(segment_start_ordinal)
         .bind(end_rollout_ordinal)
-        .bind(segment.thread_id().to_string())
+        .bind(segment.rollout_id().to_string())
         .bind(next_rollout_ordinal)
         .bind(end_rollout_ordinal)
         .bind(segment_start_ordinal)
@@ -168,12 +176,11 @@ ORDER BY rollout_ordinal ASC
         let mut matching_occurrences = 0_usize;
         while let Some(row) = rows.try_next().await.map_err(thread_history_error)? {
             let row = candidate_row(row)?;
-            let item =
-                serde_json::from_str::<ThreadItem>(row.item_json.as_str()).map_err(|err| {
-                    ThreadStoreError::Internal {
-                        message: format!("failed to deserialize stored thread item: {err}"),
-                    }
-                })?;
+            let item = serde_json::from_str::<ThreadItemPayload>(row.item_json.as_str()).map_err(
+                |err| ThreadStoreError::Internal {
+                    message: format!("failed to deserialize stored thread item: {err}"),
+                },
+            )?;
             let Some(text) = searchable_text(&item) else {
                 continue;
             };
@@ -301,9 +308,9 @@ fn invalid_cursor(cursor: &str) -> ThreadStoreError {
     }
 }
 
-fn searchable_text(item: &ThreadItem) -> Option<Cow<'_, str>> {
+fn searchable_text(item: &ThreadItemPayload) -> Option<Cow<'_, str>> {
     match item {
-        ThreadItem::UserMessage { content, .. } => {
+        ThreadItemPayload::UserMessage { content, .. } => {
             let mut text_parts = content
                 .iter()
                 .filter_map(|input| match input {
@@ -327,27 +334,27 @@ fn searchable_text(item: &ThreadItem) -> Option<Cow<'_, str>> {
                 }
             }
         }
-        ThreadItem::AgentMessage { text, .. } => {
+        ThreadItemPayload::AgentMessage { text, .. } => {
             let text = markdown_to_search_text(text);
             (!text.is_empty()).then_some(Cow::Owned(text))
         }
-        ThreadItem::HookPrompt { .. }
-        | ThreadItem::Plan { .. }
-        | ThreadItem::Reasoning { .. }
-        | ThreadItem::CommandExecution { .. }
-        | ThreadItem::FileChange { .. }
-        | ThreadItem::McpToolCall { .. }
-        | ThreadItem::DynamicToolCall { .. }
-        | ThreadItem::ComputerUseCall { .. }
-        | ThreadItem::CollabAgentToolCall { .. }
-        | ThreadItem::SubAgentActivity { .. }
-        | ThreadItem::WebSearch(_)
-        | ThreadItem::ImageView { .. }
-        | ThreadItem::Sleep(_)
-        | ThreadItem::ImageGeneration(_)
-        | ThreadItem::EnteredReviewMode { .. }
-        | ThreadItem::ExitedReviewMode { .. }
-        | ThreadItem::ContextCompaction { .. } => None,
+        ThreadItemPayload::HookPrompt { .. }
+        | ThreadItemPayload::FunctionCallOutput { .. }
+        | ThreadItemPayload::Plan { .. }
+        | ThreadItemPayload::Reasoning { .. }
+        | ThreadItemPayload::CommandExecution { .. }
+        | ThreadItemPayload::FileChange { .. }
+        | ThreadItemPayload::McpToolCall { .. }
+        | ThreadItemPayload::DynamicToolCall { .. }
+        | ThreadItemPayload::CollabAgentToolCall { .. }
+        | ThreadItemPayload::SubAgentActivity { .. }
+        | ThreadItemPayload::WebSearch(_)
+        | ThreadItemPayload::ImageView { .. }
+        | ThreadItemPayload::Sleep(_)
+        | ThreadItemPayload::ImageGeneration(_)
+        | ThreadItemPayload::EnteredReviewMode { .. }
+        | ThreadItemPayload::ExitedReviewMode { .. }
+        | ThreadItemPayload::ContextCompaction { .. } => None,
     }
 }
 
@@ -415,21 +422,22 @@ impl LiteralMatcher {
             lowercase_start = lowercase_end;
         }
 
+        // Use two-pointer method to find matches in linear time.
+        let mut start_span = 0;
+        let mut end_span = 0;
         lowercase_text
             .match_indices(self.lowercase_needle.as_str())
             .take(limit)
             .filter_map(|(start, matched)| {
                 let end = start.saturating_add(matched.len());
-                let original_start = spans
-                    .iter()
-                    .find(|(lowercase, _)| lowercase.contains(&start))?
-                    .1
-                    .start;
-                let original_end = spans
-                    .iter()
-                    .find(|(lowercase, _)| lowercase.contains(&end.saturating_sub(1)))?
-                    .1
-                    .end;
+                while spans.get(start_span)?.0.end <= start {
+                    start_span += 1;
+                }
+                while spans.get(end_span)?.0.end <= end.saturating_sub(1) {
+                    end_span += 1;
+                }
+                let original_start = spans.get(start_span)?.1.start;
+                let original_end = spans.get(end_span)?.1.end;
                 Some(original_start..original_end)
             })
             .collect()

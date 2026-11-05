@@ -1,14 +1,15 @@
 {
-  "$defs": {
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "definitions": {
     "AbsolutePathBuf": {
-      "description": "A path that is guaranteed to be absolute and normalized (though it is not\nguaranteed to be canonicalized or exist on the filesystem).\n\nIMPORTANT: When deserializing an `AbsolutePathBuf`, a base path must be set\nusing [AbsolutePathBufGuard::new]. If no base path is set, the\ndeserialization will fail unless the path being deserialized is already\nabsolute.",
+      "description": "A path that is guaranteed to be absolute and normalized (though it is not guaranteed to be canonicalized or exist on the filesystem).\n\nIMPORTANT: When deserializing an `AbsolutePathBuf`, a base path must be set using [AbsolutePathBufGuard::new]. If no base path is set, the deserialization will fail unless the path being deserialized is already absolute.",
       "type": "string"
     },
     "AdditionalFileSystemPermissions": {
       "properties": {
         "entries": {
           "items": {
-            "$ref": "#/$defs/FileSystemSandboxEntry"
+            "$ref": "#/definitions/FileSystemSandboxEntry"
           },
           "type": [
             "array",
@@ -17,7 +18,7 @@
         },
         "globScanMaxDepth": {
           "format": "uint",
-          "minimum": 1,
+          "minimum": 1.0,
           "type": [
             "integer",
             "null"
@@ -26,7 +27,7 @@
         "read": {
           "description": "This will be removed in favor of `entries`.",
           "items": {
-            "$ref": "#/$defs/LegacyAppPathString"
+            "$ref": "#/definitions/LegacyAppPathString"
           },
           "type": [
             "array",
@@ -36,7 +37,7 @@
         "write": {
           "description": "This will be removed in favor of `entries`.",
           "items": {
-            "$ref": "#/$defs/LegacyAppPathString"
+            "$ref": "#/definitions/LegacyAppPathString"
           },
           "type": [
             "array",
@@ -70,17 +71,19 @@
         {
           "properties": {
             "path": {
-              "$ref": "#/$defs/LegacyAppPathString"
+              "$ref": "#/definitions/LegacyAppPathString"
             },
             "type": {
-              "const": "path",
+              "enum": [
+                "path"
+              ],
               "title": "PathFileSystemPathType",
               "type": "string"
             }
           },
           "required": [
-            "type",
-            "path"
+            "path",
+            "type"
           ],
           "title": "PathFileSystemPath",
           "type": "object"
@@ -91,14 +94,16 @@
               "type": "string"
             },
             "type": {
-              "const": "glob_pattern",
+              "enum": [
+                "glob_pattern"
+              ],
               "title": "GlobPatternFileSystemPathType",
               "type": "string"
             }
           },
           "required": [
-            "type",
-            "pattern"
+            "pattern",
+            "type"
           ],
           "title": "GlobPatternFileSystemPath",
           "type": "object"
@@ -106,12 +111,14 @@
         {
           "properties": {
             "type": {
-              "const": "special",
+              "enum": [
+                "special"
+              ],
               "title": "SpecialFileSystemPathType",
               "type": "string"
             },
             "value": {
-              "$ref": "#/$defs/FileSystemSpecialPath"
+              "$ref": "#/definitions/FileSystemSpecialPath"
             }
           },
           "required": [
@@ -126,15 +133,15 @@
     "FileSystemSandboxEntry": {
       "properties": {
         "access": {
-          "$ref": "#/$defs/FileSystemAccessMode"
+          "$ref": "#/definitions/FileSystemAccessMode"
         },
         "path": {
-          "$ref": "#/$defs/FileSystemPath"
+          "$ref": "#/definitions/FileSystemPath"
         }
       },
       "required": [
-        "path",
-        "access"
+        "access",
+        "path"
       ],
       "type": "object"
     },
@@ -143,7 +150,9 @@
         {
           "properties": {
             "kind": {
-              "const": "root",
+              "enum": [
+                "root"
+              ],
               "type": "string"
             }
           },
@@ -156,7 +165,9 @@
         {
           "properties": {
             "kind": {
-              "const": "minimal",
+              "enum": [
+                "minimal"
+              ],
               "type": "string"
             }
           },
@@ -169,13 +180,15 @@
         {
           "properties": {
             "kind": {
-              "const": "project_roots",
+              "enum": [
+                "project_roots"
+              ],
               "type": "string"
             },
             "subpath": {
               "anyOf": [
                 {
-                  "$ref": "#/$defs/LegacyAppPathString"
+                  "$ref": "#/definitions/LegacyAppPathString"
                 },
                 {
                   "type": "null"
@@ -192,7 +205,9 @@
         {
           "properties": {
             "kind": {
-              "const": "tmpdir",
+              "enum": [
+                "tmpdir"
+              ],
               "type": "string"
             }
           },
@@ -205,7 +220,9 @@
         {
           "properties": {
             "kind": {
-              "const": "slash_tmp",
+              "enum": [
+                "slash_tmp"
+              ],
               "type": "string"
             }
           },
@@ -218,7 +235,9 @@
         {
           "properties": {
             "kind": {
-              "const": "unknown",
+              "enum": [
+                "unknown"
+              ],
               "type": "string"
             },
             "path": {
@@ -227,7 +246,7 @@
             "subpath": {
               "anyOf": [
                 {
-                  "$ref": "#/$defs/LegacyAppPathString"
+                  "$ref": "#/definitions/LegacyAppPathString"
                 },
                 {
                   "type": "null"
@@ -244,7 +263,7 @@
       ]
     },
     "GuardianApprovalReview": {
-      "description": "[UNSTABLE] Temporary approval auto-review payload used by\n`item/autoApprovalReview/*` notifications. This shape is expected to change\nsoon.",
+      "description": "[UNSTABLE] Temporary approval auto-review payload used by `item/autoApprovalReview/*` notifications. This shape is expected to change soon.",
       "properties": {
         "rationale": {
           "type": [
@@ -255,7 +274,7 @@
         "riskLevel": {
           "anyOf": [
             {
-              "$ref": "#/$defs/GuardianRiskLevel"
+              "$ref": "#/definitions/GuardianRiskLevel"
             },
             {
               "type": "null"
@@ -263,12 +282,12 @@
           ]
         },
         "status": {
-          "$ref": "#/$defs/GuardianApprovalReviewStatus"
+          "$ref": "#/definitions/GuardianApprovalReviewStatus"
         },
         "userAuthorization": {
           "anyOf": [
             {
-              "$ref": "#/$defs/GuardianUserAuthorization"
+              "$ref": "#/definitions/GuardianUserAuthorization"
             },
             {
               "type": "null"
@@ -289,22 +308,24 @@
               "type": "string"
             },
             "cwd": {
-              "$ref": "#/$defs/AbsolutePathBuf"
+              "$ref": "#/definitions/LegacyAppPathString"
             },
             "source": {
-              "$ref": "#/$defs/GuardianCommandSource"
+              "$ref": "#/definitions/GuardianCommandSource"
             },
             "type": {
-              "const": "command",
+              "enum": [
+                "command"
+              ],
               "title": "CommandGuardianApprovalReviewActionType",
               "type": "string"
             }
           },
           "required": [
-            "type",
-            "source",
             "command",
-            "cwd"
+            "cwd",
+            "source",
+            "type"
           ],
           "title": "CommandGuardianApprovalReviewAction",
           "type": "object"
@@ -318,51 +339,88 @@
               "type": "array"
             },
             "cwd": {
-              "$ref": "#/$defs/AbsolutePathBuf"
+              "$ref": "#/definitions/AbsolutePathBuf"
             },
             "program": {
               "type": "string"
             },
             "source": {
-              "$ref": "#/$defs/GuardianCommandSource"
+              "$ref": "#/definitions/GuardianCommandSource"
             },
             "type": {
-              "const": "execve",
+              "enum": [
+                "execve"
+              ],
               "title": "ExecveGuardianApprovalReviewActionType",
               "type": "string"
             }
           },
           "required": [
-            "type",
-            "source",
-            "program",
             "argv",
-            "cwd"
+            "cwd",
+            "program",
+            "source",
+            "type"
           ],
           "title": "ExecveGuardianApprovalReviewAction",
           "type": "object"
         },
         {
+          "description": "A child approval for input to an existing command execution item.",
+          "properties": {
+            "approvalId": {
+              "type": "string"
+            },
+            "cwd": {
+              "$ref": "#/definitions/LegacyAppPathString"
+            },
+            "processId": {
+              "type": "string"
+            },
+            "stdin": {
+              "type": "string"
+            },
+            "type": {
+              "enum": [
+                "writeStdin"
+              ],
+              "title": "WriteStdinGuardianApprovalReviewActionType",
+              "type": "string"
+            }
+          },
+          "required": [
+            "approvalId",
+            "cwd",
+            "processId",
+            "stdin",
+            "type"
+          ],
+          "title": "WriteStdinGuardianApprovalReviewAction",
+          "type": "object"
+        },
+        {
           "properties": {
             "cwd": {
-              "$ref": "#/$defs/AbsolutePathBuf"
+              "$ref": "#/definitions/LegacyAppPathString"
             },
             "files": {
               "items": {
-                "$ref": "#/$defs/AbsolutePathBuf"
+                "$ref": "#/definitions/LegacyAppPathString"
               },
               "type": "array"
             },
             "type": {
-              "const": "applyPatch",
+              "enum": [
+                "applyPatch"
+              ],
               "title": "ApplyPatchGuardianApprovalReviewActionType",
               "type": "string"
             }
           },
           "required": [
-            "type",
             "cwd",
-            "files"
+            "files",
+            "type"
           ],
           "title": "ApplyPatchGuardianApprovalReviewAction",
           "type": "object"
@@ -374,28 +432,29 @@
             },
             "port": {
               "format": "uint16",
-              "maximum": 65535,
-              "minimum": 0,
+              "minimum": 0.0,
               "type": "integer"
             },
             "protocol": {
-              "$ref": "#/$defs/NetworkApprovalProtocol"
+              "$ref": "#/definitions/NetworkApprovalProtocol"
             },
             "target": {
               "type": "string"
             },
             "type": {
-              "const": "networkAccess",
+              "enum": [
+                "networkAccess"
+              ],
               "title": "NetworkAccessGuardianApprovalReviewActionType",
               "type": "string"
             }
           },
           "required": [
-            "type",
-            "target",
             "host",
+            "port",
             "protocol",
-            "port"
+            "target",
+            "type"
           ],
           "title": "NetworkAccessGuardianApprovalReviewAction",
           "type": "object"
@@ -427,15 +486,17 @@
               ]
             },
             "type": {
-              "const": "mcpToolCall",
+              "enum": [
+                "mcpToolCall"
+              ],
               "title": "McpToolCallGuardianApprovalReviewActionType",
               "type": "string"
             }
           },
           "required": [
-            "type",
             "server",
-            "toolName"
+            "toolName",
+            "type"
           ],
           "title": "McpToolCallGuardianApprovalReviewAction",
           "type": "object"
@@ -443,7 +504,7 @@
         {
           "properties": {
             "permissions": {
-              "$ref": "#/$defs/RequestPermissionProfile"
+              "$ref": "#/definitions/RequestPermissionProfile"
             },
             "reason": {
               "type": [
@@ -452,14 +513,16 @@
               ]
             },
             "type": {
-              "const": "requestPermissions",
+              "enum": [
+                "requestPermissions"
+              ],
               "title": "RequestPermissionsGuardianApprovalReviewActionType",
               "type": "string"
             }
           },
           "required": [
-            "type",
-            "permissions"
+            "permissions",
+            "type"
           ],
           "title": "RequestPermissionsGuardianApprovalReviewAction",
           "type": "object"
@@ -522,7 +585,7 @@
         "fileSystem": {
           "anyOf": [
             {
-              "$ref": "#/$defs/AdditionalFileSystemPermissions"
+              "$ref": "#/definitions/AdditionalFileSystemPermissions"
             },
             {
               "type": "null"
@@ -532,7 +595,7 @@
         "network": {
           "anyOf": [
             {
-              "$ref": "#/$defs/AdditionalNetworkPermissions"
+              "$ref": "#/definitions/AdditionalNetworkPermissions"
             },
             {
               "type": "null"
@@ -543,14 +606,13 @@
       "type": "object"
     }
   },
-  "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "description": "[UNSTABLE] Temporary notification payload for approval auto-review. This\nshape is expected to change soon.",
+  "description": "[UNSTABLE] Temporary notification payload for approval auto-review. This shape is expected to change soon.",
   "properties": {
     "action": {
-      "$ref": "#/$defs/GuardianApprovalReviewAction"
+      "$ref": "#/definitions/GuardianApprovalReviewAction"
     },
     "review": {
-      "$ref": "#/$defs/GuardianApprovalReview"
+      "$ref": "#/definitions/GuardianApprovalReview"
     },
     "reviewId": {
       "description": "Stable identifier for this review.",
@@ -562,7 +624,7 @@
       "type": "integer"
     },
     "targetItemId": {
-      "description": "Identifier for the reviewed item or tool call when one exists.\n\nIn most cases, one review maps to one target item. The exceptions are\n- execve reviews, where a single command may contain multiple execve\n  calls to review (only possible when using the shell_zsh_fork feature)\n- network policy reviews, where there is no target item\n\nA network call is triggered by a CommandExecution item, so having a\ntarget_item_id set to the CommandExecution item would be misleading\nbecause the review is about the network call, not the command execution.\nTherefore, target_item_id is set to None for network policy reviews.",
+      "description": "Identifier for the reviewed item or tool call when one exists.\n\nIn most cases, one review maps to one target item. The exceptions are - execve reviews, where a single command may contain multiple execve calls to review (only possible when using the shell_zsh_fork feature) - stdin reviews, which refer to the existing parent command item and have a separate approval ID in the action payload - network policy reviews, where there is no target item\n\nA network call is triggered by a CommandExecution item, so having a target_item_id set to the CommandExecution item would be misleading because the review is about the network call, not the command execution. Therefore, target_item_id is set to None for network policy reviews.",
       "type": [
         "string",
         "null"
@@ -576,12 +638,12 @@
     }
   },
   "required": [
-    "threadId",
-    "turnId",
-    "startedAtMs",
-    "reviewId",
+    "action",
     "review",
-    "action"
+    "reviewId",
+    "startedAtMs",
+    "threadId",
+    "turnId"
   ],
   "title": "ItemGuardianApprovalReviewStartedNotification",
   "type": "object"

@@ -86,6 +86,7 @@ jobs:
                       "codex-rs-rest-b",
                       "codex-rs-rest-c",
                       "codex-rs-rest-d",
+                      "codex-rs-rest-e",
                       "tools",
                   ):
                       include.append(
@@ -320,7 +321,7 @@ jobs:
               scope_paths=(
                 codex-rs/agent-graph-store codex-rs/ansi-escape codex-rs/aws-auth codex-rs/cli
                 codex-rs/cloud-tasks-mock-client codex-rs/codex-api codex-rs/codex-home codex-rs/connectors
-                codex-rs/core-skills codex-rs/ext codex-rs/file-search codex-rs/install-context codex-rs/mcp-server
+                codex-rs/ext codex-rs/file-search codex-rs/install-context codex-rs/mcp-server
                 codex-rs/model-provider-info codex-rs/plugin codex-rs/response-debug-context codex-rs/rollout-trace
                 codex-rs/state codex-rs/thread-store codex-rs/vendor
               )
@@ -334,6 +335,23 @@ jobs:
                 codex-rs/keyring-store codex-rs/memories codex-rs/models-manager codex-rs/prompts
                 codex-rs/responses-api-proxy codex-rs/runtime-proof codex-rs/scripts codex-rs/stdio-to-uds codex-rs/uds
                 codex-rs/tools codex-rs/websocket-client
+              )
+              scope_ignores=()
+              ;;
+            codex-rs-rest-e)
+              # Add packages introduced after the established partitions without
+              # changing the CodeQL configuration identities already on main.
+              scope_paths=(
+                codex-rs/agent-mailbox codex-rs/agent-roles codex-rs/attachment-store
+                codex-rs/code-mode-runtime codex-rs/diagnostics codex-rs/history
+                codex-rs/plugin-host codex-rs/user-verification
+                codex-rs/agent-message-board-client codex-rs/app-server-protocol-noop-macros
+                codex-rs/build-info codex-rs/config-schema codex-rs/direct-tool-timing
+                codex-rs/message-board codex-rs/runtime-agent-instance codex-rs/worktree
+                codex-rs/cloud-client codex-rs/core-plugin-common codex-rs/exec-server-cli
+                codex-rs/guardian-context codex-rs/mermaid codex-rs/mxc-sandbox codex-rs/tcp-tunnel
+                codex-rs/message-board-mcp codex-rs/otel-trace-websocket codex-rs/voice-host
+                codex-rs/websocket-auth codex-rs/windows-sandbox-service codex-rs/workload-identity
               )
               scope_ignores=()
               ;;

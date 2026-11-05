@@ -96,9 +96,11 @@ jobs:
           python3 - <<'PY' >> "$GITHUB_OUTPUT"
           import json
 
-          # Downstream checkpoint coverage is intentionally Linux x86_64 only for now.
-          linux_x86_64_arg_comment_lint = [
+          # Keep the Bazel argument-comment coverage on Linux and macOS; the
+          # separate downstream Cargo matrices remain Linux x86_64 only.
+          linux_macos_arg_comment_lint = [
               {"name": "Linux x86_64", "runner": "ubuntu-24.04"},
+              {"name": "macOS", "runner": "macos-15"},
           ]
           linux_x86_64_lint_build = [
               {
@@ -133,7 +135,7 @@ jobs:
                   f"{name}={json.dumps({'include': value}, separators=(',', ':'))}"
               )
 
-          emit("argument_comment_lint_matrix", linux_x86_64_arg_comment_lint)
+          emit("argument_comment_lint_matrix", linux_macos_arg_comment_lint)
           emit("lint_build_matrix", linux_x86_64_lint_build)
           emit("tests_matrix", linux_x86_64_tests)
           emit("remote_tests_matrix", linux_x86_64_remote_tests)
@@ -252,7 +254,7 @@ jobs:
       - uses: ./.github/actions/setup-ci
       - uses: dtolnay/rust-toolchain@e081816240890017053eacbb1bdf337761dc5582 # 1.95.0
         with:
-          toolchain: nightly-2025-09-18
+          toolchain: nightly-2026-08-20
           components: llvm-tools-preview, rustc-dev, rust-src
       - name: Cache cargo-dylint tooling
         id: cargo_dylint_cache
@@ -278,7 +280,7 @@ jobs:
         run: python3 -m unittest discover -s tools/argument-comment-lint -p 'test_*.py'
       - name: Test argument comment lint package
         working-directory: tools/argument-comment-lint
-        run: cargo test
+        run: bash ./test-with-clippy-compat.sh
         env:
           RUST_MIN_STACK: "8388608" # 8 MiB
 
@@ -304,6 +306,14 @@ jobs:
         run: |
           sudo DEBIAN_FRONTEND=noninteractive apt-get update
           sudo DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends pkg-config libcap-dev
+      - name: Resolve app-server/exec-server compatibility releases
+        if: ${{ runner.os == 'Linux' }}
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          releases="$(python3 .github/scripts/resolve_exec_server_releases.py)"
+          echo "CODEX_COMPAT_RELEASES=$releases" >> "$GITHUB_ENV"
       - name: Run argument comment lint on codex-rs via Bazel
         if: ${{ runner.os != 'Windows' }}
         env:

@@ -18,7 +18,9 @@ class TimestampParsingTest(unittest.TestCase):
     def test_parse_timestamp_ignores_non_strings(self) -> None:
         self.assertIsNone(inspect_subagent_tail.parse_timestamp(None))
         self.assertIsNone(inspect_subagent_tail.parse_timestamp(123))
-        self.assertIsNone(inspect_subagent_tail.parse_timestamp({"timestamp": "2026-01-01T00:00:00Z"}))
+        self.assertIsNone(
+            inspect_subagent_tail.parse_timestamp({"timestamp": "2026-01-01T00:00:00Z"})
+        )
 
     def test_time_since_subtracts_aware_datetimes_directly(self) -> None:
         now = datetime(2026, 1, 1, 0, 2, 3, tzinfo=timezone.utc)
@@ -34,7 +36,10 @@ class OutputSummarizationTest(unittest.TestCase):
         cases = [
             ("private token\nsecond line", "text output (2 lines)"),
             (
-                [{"type": "text", "text": "private token"}, {"type": "image", "data": "opaque"}],
+                [
+                    {"type": "text", "text": "private token"},
+                    {"type": "image", "data": "opaque"},
+                ],
                 "list output (2 items: text, image)",
             ),
             (["private token"], "list output (1 items: str)"),

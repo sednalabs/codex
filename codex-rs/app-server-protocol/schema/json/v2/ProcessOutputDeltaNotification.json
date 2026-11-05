@@ -1,26 +1,30 @@
 {
-  "$defs": {
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "definitions": {
     "ProcessOutputStream": {
       "description": "Stream label for `process/outputDelta` notifications.",
       "oneOf": [
         {
-          "const": "stdout",
           "description": "stdout stream. PTY mode multiplexes terminal output here.",
+          "enum": [
+            "stdout"
+          ],
           "type": "string"
         },
         {
-          "const": "stderr",
           "description": "stderr stream.",
+          "enum": [
+            "stderr"
+          ],
           "type": "string"
         }
       ]
     }
   },
-  "$schema": "https://json-schema.org/draft/2020-12/schema",
   "description": "Base64-encoded output chunk emitted for a streaming `process/spawn` request.",
   "properties": {
     "capReached": {
-      "description": "True on the final streamed chunk for this stream when output was\ntruncated by `outputBytesCap`.",
+      "description": "True on the final streamed chunk for this stream when output was truncated by `outputBytesCap`.",
       "type": "boolean"
     },
     "deltaBase64": {
@@ -32,15 +36,19 @@
       "type": "string"
     },
     "stream": {
-      "$ref": "#/$defs/ProcessOutputStream",
+      "allOf": [
+        {
+          "$ref": "#/definitions/ProcessOutputStream"
+        }
+      ],
       "description": "Output stream this chunk belongs to."
     }
   },
   "required": [
-    "processHandle",
-    "stream",
+    "capReached",
     "deltaBase64",
-    "capReached"
+    "processHandle",
+    "stream"
   ],
   "title": "ProcessOutputDeltaNotification",
   "type": "object"

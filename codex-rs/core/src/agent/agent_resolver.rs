@@ -11,52 +11,20 @@ pub(crate) async fn resolve_agent_target(
     turn: &Arc<TurnContext>,
     target: &str,
 ) -> Result<ThreadId, FunctionCallError> {
-    register_session_root(session, turn);
-    if let Ok(thread_id) = ThreadId::from_string(target) {
-        return Ok(thread_id);
-    }
-
     session
         .services
         .agent_control
-        .resolve_agent_reference(session.thread_id, &turn.session_source, target)
+        .resolve(
+            session.thread_id,
+            turn.parent_thread_id,
+            &turn.session_source,
+            target,
+        )
         .await
         .map_err(|err| match err.details() {
-            CodexErrorDetails::UnsupportedOperation(message)
-                if message.starts_with("live agent path ") =>
-            {
+            CodexErrorDetails::UnsupportedOperation(message) => {
                 FunctionCallError::RespondToModel(message.clone())
             }
-            CodexErrorDetails::UnsupportedOperation(message) => FunctionCallError::RespondToModel(
-                format!("invalid agent target {target}: {message}"),
-            ),
             _ => FunctionCallError::RespondToModel(err.to_string()),
         })
-}
-
-/// Resolves a non-empty list of tool-facing agent targets to thread ids.
-pub(crate) async fn resolve_agent_targets(
-    session: &Arc<Session>,
-    turn: &Arc<TurnContext>,
-    targets: Vec<String>,
-) -> Result<Vec<ThreadId>, FunctionCallError> {
-    if targets.is_empty() {
-        return Err(FunctionCallError::RespondToModel(
-            "agent targets must be non-empty".to_string(),
-        ));
-    }
-
-    let mut thread_ids = Vec::with_capacity(targets.len());
-    for target in targets {
-        thread_ids.push(resolve_agent_target(session, turn, &target).await?);
-    }
-
-    Ok(thread_ids)
-}
-
-fn register_session_root(session: &Arc<Session>, turn: &Arc<TurnContext>) {
-    session
-        .services
-        .agent_control
-        .register_session_root(session.thread_id, turn.parent_thread_id);
 }

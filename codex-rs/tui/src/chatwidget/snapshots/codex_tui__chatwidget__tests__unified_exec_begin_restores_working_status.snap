@@ -3,9 +3,9 @@ source: tui/src/chatwidget/tests/exec_flow.rs
 expression: normalized_backend_snapshot(terminal.backend())
 ---
 "                                                                                "
-"• Working (0s • esc esc to interrupt) · 1 background terminal running · /ps to …"
+"• Working (0s • esc to interrupt) · 1 background terminal running · /ps to view…"
 "                                                                                "
 "                                                                                "
 "› Ask Codex to do anything                                                      "
 "                                                                                "
-"  gpt-6-astra default · /tmp/project                                            "
+"  GPT-5.6-Sol default · /tmp/project                                            "

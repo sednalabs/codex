@@ -1,0 +1,54 @@
+---
+source: core/tests/suite/scenarios_frozen_cloud_skills.rs
+expression: "context_snapshot::format_context_snapshot(\"A cloud parent lists and reads a frozen skill alongside a named executor after the snapshot file has been removed.\",\n&bodies.iter().map(SnapshotEntry::body).collect::<Vec<_>>(),\n&ContextSnapshotOptions::default().rewrite_known_segments().include_request_settings(),)"
+---
+Scenario: A cloud parent lists and reads a frozen skill alongside a named executor after the snapshot file has been removed.
+
+## Window 1
+Settings:
+  include: ["reasoning.encrypted_content"]
+  model: "gpt-6-astra"
+  parallel_tool_calls: false
+  prompt_cache_key: "<PROMPT_CACHE_KEY 1>"
+  reasoning: {"context":"all_turns","effort":"low"}
+  store: false
+  stream: true
+  text: {"verbosity":"low"}
+  tool_choice: "auto"
+-- request 1 (request) --
+00:additional_tools/developer (3; hash=e075a43448be3246):
+        - namespace/functions; hash=bbcd688349ca7e12
+          - custom/exec
+          - function/wait
+          - function/request_user_input
+          - function/request_user_input_async
+        - namespace/clock: Tools for reading and waiting on time.; hash=f402e8c5e9b5e317
+          - function/sleep
+        - namespace/collaboration: Tools for spawning and managing sub-agents.; hash=2c8d6295978dbe63
+          - function/followup_task
+          - function/interrupt_agent
+          - function/list_agents
+          - function/send_message
+          - function/spawn_agent
+          - function/wait_agent
+01:message/developer:
+    <MODEL_INSTRUCTIONS>
+02:message/developer[3]:
+    [01] <PERMISSIONS_INSTRUCTIONS>
+    [02] <COLLABORATION_MODE>
+    [03] <SKILLS_INSTRUCTIONS>
+03:message/developer:
+    <MULTI_AGENT_ROLE>
+04:message/developer:
+    <MULTI_AGENT_MODE>
+05:message/user:
+    <ENVIRONMENT_CONTEXT>
+06:message/user:
+    List the cloud skills, then read the work skill.
+07:configuration_update:reasoning={"effort":"low"}
+-- request 2 (request) --
+08:function_call/skills.list:{"authority":{"kind":"cloud"}}
+09:function_call_output:{"next_cursor":null,"skills":[{"authority":{"kind":"cloud"},"description":"Inspect and explain the reque...:work","package":"skill://demo/work"}],"warnings":[]} [hash=0a735291ec9e0ec7]
+-- request 3 (request) --
+10:function_call/skills.read:{"package":"c0/work","source":{"kind":"cloud"}}
+11:function_call_output:{"contents":"# Work\\nInspect the inputs before explaining the result.\\n","installations":[{"package":"sk...cursor":null,"resource":"skill://demo/work/SKILL.md"} [hash=adc0897fa3bc41cf]

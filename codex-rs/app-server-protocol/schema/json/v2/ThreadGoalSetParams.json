@@ -1,5 +1,14 @@
 {
-  "$defs": {
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "definitions": {
+    "ThreadGoalMutationOrigin": {
+      "description": "Distinguishes explicit user actions from automatic goal lifecycle mutations.",
+      "enum": [
+        "user",
+        "automatic"
+      ],
+      "type": "string"
+    },
     "ThreadGoalStatus": {
       "enum": [
         "active",
@@ -12,7 +21,6 @@
       "type": "string"
     }
   },
-  "$schema": "https://json-schema.org/draft/2020-12/schema",
   "properties": {
     "objective": {
       "type": [
@@ -20,10 +28,21 @@
         "null"
       ]
     },
+    "origin": {
+      "anyOf": [
+        {
+          "$ref": "#/definitions/ThreadGoalMutationOrigin"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "description": "Missing provenance does not supply user authorization."
+    },
     "status": {
       "anyOf": [
         {
-          "$ref": "#/$defs/ThreadGoalStatus"
+          "$ref": "#/definitions/ThreadGoalStatus"
         },
         {
           "type": "null"

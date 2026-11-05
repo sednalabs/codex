@@ -169,6 +169,18 @@ def classify_files(files: list[str]) -> dict[str, bool]:
         or path.startswith("tools/argument-comment-lint/")
         for path in files
     )
+    argument_comment_lint_bazel = any(
+        path.startswith("codex-rs/")
+        or path.startswith("tools/argument-comment-lint/")
+        or path
+        in {
+            "justfile",
+            "defs.bzl",
+            "workspace_root_test_launcher.sh.tpl",
+            "workspace_root_test_launcher.bat.tpl",
+        }
+        for path in files
+    )
     argument_comment_lint_package = any(
         path.startswith("tools/argument-comment-lint/")
         or path == ".github/workflows/rust-ci.yml"
@@ -183,10 +195,17 @@ def classify_files(files: list[str]) -> dict[str, bool]:
     return {
         "codex": codex,
         "argument_comment_lint": argument_comment_lint,
+        "argument_comment_lint_bazel": argument_comment_lint_bazel,
         "argument_comment_lint_package": argument_comment_lint_package,
         "workflows": workflows,
         "high_risk": high_risk,
-        "has_relevant_changes": codex or argument_comment_lint or argument_comment_lint_package or workflows or high_risk,
+        "has_relevant_changes": (
+            codex
+            or argument_comment_lint
+            or argument_comment_lint_package
+            or workflows
+            or high_risk
+        ),
     }
 
 
@@ -255,6 +274,7 @@ def forced_full_outputs() -> dict[str, str]:
         "validation_mode": "full",
         "codex": "true",
         "argument_comment_lint": "true",
+        "argument_comment_lint_bazel": "true",
         "argument_comment_lint_package": "true",
         "workflows": "true",
         "has_relevant_changes": "true",
@@ -262,6 +282,7 @@ def forced_full_outputs() -> dict[str, str]:
         "run_cargo_shear": "true",
         "run_argument_comment_lint_package": "true",
         "run_argument_comment_lint_prebuilt": "true",
+        "run_argument_comment_lint_bazel": "true",
         "run_incremental_validation": "false",
         "incremental_profile": "",
         "incremental_lane_set": "",
@@ -330,12 +351,14 @@ def main() -> None:
                     "validation_mode": "light_merge_group",
                     "codex": "false",
                     "argument_comment_lint": "false",
+                    "argument_comment_lint_bazel": "false",
                     "argument_comment_lint_package": "false",
                     "workflows": "false",
                     "run_general": "false",
                     "run_cargo_shear": "false",
                     "run_argument_comment_lint_package": "false",
                     "run_argument_comment_lint_prebuilt": "false",
+                    "run_argument_comment_lint_bazel": "false",
                     "run_incremental_validation": "true",
                     "incremental_profile": "targeted",
                     "incremental_lane_set": "all",
@@ -416,6 +439,7 @@ def main() -> None:
             "validation_mode": "light_followup",
             "codex": as_output(primary["codex"]),
             "argument_comment_lint": as_output(primary["argument_comment_lint"]),
+            "argument_comment_lint_bazel": as_output(primary["argument_comment_lint_bazel"]),
             "argument_comment_lint_package": as_output(primary["argument_comment_lint_package"]),
             "workflows": as_output(primary["workflows"]),
             "has_relevant_changes": as_output(primary["has_relevant_changes"]),
@@ -425,6 +449,7 @@ def main() -> None:
             "run_cargo_shear": "false",
             "run_argument_comment_lint_package": "false",
             "run_argument_comment_lint_prebuilt": "false",
+            "run_argument_comment_lint_bazel": as_output(primary["argument_comment_lint_bazel"]),
             "run_incremental_validation": "true",
             "incremental_profile": "targeted",
             "incremental_lane_set": "all",
@@ -435,6 +460,7 @@ def main() -> None:
             "validation_mode": "light_initial",
             "codex": as_output(primary["codex"]),
             "argument_comment_lint": as_output(primary["argument_comment_lint"]),
+            "argument_comment_lint_bazel": as_output(primary["argument_comment_lint_bazel"]),
             "argument_comment_lint_package": as_output(primary["argument_comment_lint_package"]),
             "workflows": as_output(primary["workflows"]),
             "has_relevant_changes": as_output(primary["has_relevant_changes"]),
@@ -444,6 +470,7 @@ def main() -> None:
             "run_cargo_shear": "false",
             "run_argument_comment_lint_package": "false",
             "run_argument_comment_lint_prebuilt": "false",
+            "run_argument_comment_lint_bazel": as_output(primary["argument_comment_lint_bazel"]),
             "run_incremental_validation": "true",
             "incremental_profile": "targeted",
             "incremental_lane_set": "all",
@@ -454,6 +481,7 @@ def main() -> None:
             "validation_mode": "full",
             "codex": as_output(primary["codex"]),
             "argument_comment_lint": as_output(primary["argument_comment_lint"]),
+            "argument_comment_lint_bazel": as_output(primary["argument_comment_lint_bazel"]),
             "argument_comment_lint_package": as_output(primary["argument_comment_lint_package"]),
             "workflows": as_output(primary["workflows"]),
             "has_relevant_changes": as_output(primary["has_relevant_changes"]),
@@ -461,6 +489,7 @@ def main() -> None:
             "run_cargo_shear": as_output(primary["codex"]),
             "run_argument_comment_lint_package": as_output(primary["argument_comment_lint_package"]),
             "run_argument_comment_lint_prebuilt": as_output(primary["argument_comment_lint"]),
+            "run_argument_comment_lint_bazel": as_output(primary["argument_comment_lint_bazel"]),
             "run_incremental_validation": "false",
             "incremental_profile": "",
             "incremental_lane_set": "",

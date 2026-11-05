@@ -27,13 +27,16 @@ use super::WireContentItem;
 use super::WireExecuteRequest;
 use super::WireImageDetail;
 use super::WireNestedToolCall;
+use super::WireOutputTruncation;
 use super::WireResult;
 use super::WireRuntimeResponse;
+use super::WireSessionCellExecutionLimits;
 use super::WireToolDefinition;
 use super::WireToolKind;
 use super::WireToolName;
 use super::WireWaitOutcome;
 use super::WireWaitRequest;
+use crate::CodeModeSessionCellExecutionLimits;
 use crate::ExecuteRequest;
 
 fn session_id() -> SessionId {
@@ -239,6 +242,62 @@ fn handshake_v1_variants_are_pinned() {
 }
 
 #[test]
+fn open_session_serializes_optional_cell_execution_limits() {
+    assert_wire_round_trip(
+        HostRequest::OpenSession {
+            session_id: session_id(),
+            cell_execution_limits: Some(WireSessionCellExecutionLimits {
+                max_yield_time_ms: Some(250),
+                max_heap_size_bytes: Some(16 * 1024 * 1024),
+            }),
+            output_truncation: None,
+        },
+        json!({
+            "method": "session/open",
+            "sessionId": "session-1",
+            "cellExecutionLimits": {
+                "maxYieldTimeMs": 250,
+                "maxHeapSizeBytes": 16 * 1024 * 1024,
+            },
+        }),
+    );
+}
+
+#[test]
+fn session_cell_execution_limits_convert_between_domain_and_wire() {
+    let domain_limits = CodeModeSessionCellExecutionLimits {
+        max_yield_time_ms: Some(250),
+        max_heap_size_bytes: Some(16_usize * 1024 * 1024),
+    };
+    let wire_limits = WireSessionCellExecutionLimits {
+        max_yield_time_ms: Some(250),
+        max_heap_size_bytes: Some(16_u64 * 1024 * 1024),
+    };
+
+    assert_eq!(
+        WireSessionCellExecutionLimits::try_from(domain_limits.clone())
+            .expect("domain limits convert to wire limits"),
+        wire_limits
+    );
+    assert_eq!(
+        CodeModeSessionCellExecutionLimits::try_from(wire_limits)
+            .expect("wire limits convert to domain limits"),
+        domain_limits
+    );
+}
+
+#[cfg(target_pointer_width = "32")]
+#[test]
+fn session_cell_execution_limits_reject_heap_sizes_that_exceed_usize() {
+    let wire_limits = WireSessionCellExecutionLimits {
+        max_yield_time_ms: None,
+        max_heap_size_bytes: Some(u64::from(u32::MAX) + 1),
+    };
+
+    assert!(CodeModeSessionCellExecutionLimits::try_from(wire_limits).is_err());
+}
+
+#[test]
 fn client_to_host_v1_variants_are_pinned() {
     let execute_request = execute_request();
     for (id, request, encoded_request) in [
@@ -246,8 +305,23 @@ fn client_to_host_v1_variants_are_pinned() {
             request_id(/*value*/ 1),
             HostRequest::OpenSession {
                 session_id: session_id(),
+                cell_execution_limits: None,
+                output_truncation: None,
             },
             json!({ "method": "session/open", "sessionId": "session-1" }),
+        ),
+        (
+            request_id(/*value*/ 10),
+            HostRequest::OpenSession {
+                session_id: session_id(),
+                cell_execution_limits: None,
+                output_truncation: Some(WireOutputTruncation::Server),
+            },
+            json!({
+                "method": "session/open",
+                "sessionId": "session-1",
+                "outputTruncation": "server",
+            }),
         ),
         (
             request_id(/*value*/ 2),
@@ -295,6 +369,7 @@ fn client_to_host_v1_variants_are_pinned() {
                     cell_id: cell_id("cell-1"),
                     yield_time_ms: 50,
                 },
+                max_output_tokens: None,
             },
             json!({
                 "method": "session/wait",
@@ -307,6 +382,7 @@ fn client_to_host_v1_variants_are_pinned() {
             HostRequest::Terminate {
                 session_id: session_id(),
                 cell_id: cell_id("cell-1"),
+                max_output_tokens: None,
             },
             json!({
                 "method": "session/terminate",
@@ -405,6 +481,7 @@ fn host_to_client_v1_variants_are_pinned() {
             request_id(/*value*/ 3),
             HostResponse::WaitCompleted {
                 outcome: WireWaitOutcome::LiveCell(WireRuntimeResponse::Yielded {
+                    code_mode_host_duration_ns: 0,
                     cell_id: cell_id("cell-1"),
                     content_items: content_items(),
                 }),
@@ -416,6 +493,7 @@ fn host_to_client_v1_variants_are_pinned() {
                         "Yielded": {
                             "cell_id": "cell-1",
                             "content_items": content_items_json(),
+                            "code_mode_host_duration_ns": 0,
                         },
                     },
                 },
@@ -425,8 +503,10 @@ fn host_to_client_v1_variants_are_pinned() {
             request_id(/*value*/ 4),
             HostResponse::WaitCompleted {
                 outcome: WireWaitOutcome::MissingCell(WireRuntimeResponse::Result {
+                    code_mode_host_duration_ns: 0,
                     cell_id: cell_id("missing-cell"),
                     content_items: Vec::new(),
+                    result_buffered_for_ns: 0,
                     error_text: Some("cell not found".to_string()),
                 }),
             },
@@ -438,6 +518,8 @@ fn host_to_client_v1_variants_are_pinned() {
                             "cell_id": "missing-cell",
                             "content_items": [],
                             "error_text": "cell not found",
+                            "result_buffered_for_ns": 0,
+                            "code_mode_host_duration_ns": 0,
                         },
                     },
                 },
@@ -482,6 +564,7 @@ fn host_to_client_v1_variants_are_pinned() {
             id: request_id(/*value*/ 7),
             result: WireResult::Ok {
                 value: WireRuntimeResponse::Terminated {
+                    code_mode_host_duration_ns: 0,
                     cell_id: cell_id("cell-1"),
                     content_items: Vec::new(),
                 },
@@ -493,7 +576,11 @@ fn host_to_client_v1_variants_are_pinned() {
             "result": {
                 "status": "ok",
                 "value": {
-                    "Terminated": { "cell_id": "cell-1", "content_items": [] },
+                    "Terminated": {
+                        "cell_id": "cell-1",
+                        "content_items": [],
+                        "code_mode_host_duration_ns": 0,
+                    },
                 },
             },
         }),
@@ -686,6 +773,17 @@ fn every_nested_v1_object_rejects_unknown_fields() {
         .is_err()
     );
     assert!(
+        serde_json::from_value::<HostRequest>(json!({
+            "method": "session/open",
+            "sessionId": "session-1",
+            "cellExecutionLimits": {
+                "maxYieldTimeMs": 250,
+                "unexpected": true,
+            },
+        }))
+        .is_err()
+    );
+    assert!(
         serde_json::from_value::<WireExecuteRequest>(json!({
             "tool_call_id": "call-1",
             "enabled_tools": [],
@@ -729,6 +827,7 @@ fn every_nested_v1_object_rejects_unknown_fields() {
             "Yielded": {
                 "cell_id": "cell-1",
                 "content_items": [],
+                "code_mode_host_duration_ns": 0,
                 "unexpected": true,
             },
         }))

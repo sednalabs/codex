@@ -1,3 +1,4 @@
+use codex_network_proxy::ManagedNetworkSandboxContext;
 use codex_protocol::models::PermissionProfile;
 use std::path::Path;
 
@@ -15,22 +16,24 @@ pub fn allow_network_for_proxy(enforce_managed_network: bool) -> bool {
 /// Converts the permission profile into the CLI invocation for
 /// `codex-linux-sandbox`.
 ///
+/// A managed context selects proxy isolation; a default context keeps its
+/// restrictive policy when an older caller supplies no additional details.
+///
 /// The helper performs the actual sandboxing (bubblewrap by default + seccomp)
 /// after parsing these arguments. The profile JSON flag is emitted before
 /// helper feature flags so the argv order matches the helper's CLI shape. See
 /// `docs/linux_sandbox.md` for the Linux semantics.
-#[allow(clippy::too_many_arguments)]
 pub fn create_linux_sandbox_command_args_for_permission_profile(
     command: Vec<String>,
     command_cwd: &Path,
     permission_profile: &PermissionProfile,
     sandbox_policy_cwd: &Path,
     use_legacy_landlock: bool,
-    allow_network_for_proxy: bool,
+    managed_network: Option<&ManagedNetworkSandboxContext>,
 ) -> Vec<String> {
     let permission_profile_json = serde_json::to_string(permission_profile)
         .unwrap_or_else(|err| panic!("failed to serialize permission profile: {err}"));
-    let sandbox_policy_cwd_arg = sandbox_policy_cwd
+    let sandbox_policy_cwd = sandbox_policy_cwd
         .to_str()
         .unwrap_or_else(|| panic!("cwd must be valid UTF-8"))
         .to_string();
@@ -41,42 +44,26 @@ pub fn create_linux_sandbox_command_args_for_permission_profile(
 
     let mut linux_cmd: Vec<String> = vec![
         "--sandbox-policy-cwd".to_string(),
-        sandbox_policy_cwd_arg,
+        sandbox_policy_cwd,
         "--command-cwd".to_string(),
         command_cwd,
         "--permission-profile".to_string(),
         permission_profile_json,
     ];
-    if should_use_legacy_landlock_for_permission_profile(
-        permission_profile,
-        sandbox_policy_cwd,
-        use_legacy_landlock,
-        allow_network_for_proxy,
-    ) {
+    // Proxy-only networking requires bubblewrap's isolated network namespace.
+    if use_legacy_landlock && managed_network.is_none() {
         linux_cmd.push("--use-legacy-landlock".to_string());
     }
-    if allow_network_for_proxy {
-        linux_cmd.push("--allow-network-for-proxy".to_string());
+    if let Some(managed_network) = managed_network {
+        linux_cmd.push("--managed-network".to_string());
+        linux_cmd.push(
+            serde_json::to_string(managed_network)
+                .unwrap_or_else(|err| panic!("failed to serialize managed network context: {err}")),
+        );
     }
     linux_cmd.push("--".to_string());
     linux_cmd.extend(command);
     linux_cmd
-}
-
-pub fn should_use_legacy_landlock_for_permission_profile(
-    permission_profile: &PermissionProfile,
-    sandbox_policy_cwd: &Path,
-    use_legacy_landlock: bool,
-    allow_network_for_proxy: bool,
-) -> bool {
-    if !use_legacy_landlock || allow_network_for_proxy {
-        return false;
-    }
-
-    let (file_system_sandbox_policy, network_sandbox_policy) =
-        permission_profile.to_runtime_permissions();
-    !file_system_sandbox_policy
-        .needs_direct_runtime_enforcement(network_sandbox_policy, sandbox_policy_cwd)
 }
 
 /// Converts the sandbox cwd and execution options into the CLI invocation for
@@ -109,7 +96,8 @@ fn create_linux_sandbox_command_args(
         linux_cmd.push("--use-legacy-landlock".to_string());
     }
     if allow_network_for_proxy {
-        linux_cmd.push("--allow-network-for-proxy".to_string());
+        linux_cmd.push("--managed-network".to_string());
+        linux_cmd.push("{}".to_string());
     }
 
     // Separator so that command arguments starting with `-` are not parsed as

@@ -1,4 +1,5 @@
 use crate::StateRuntime;
+use crate::sqlite::SqliteWriteQueryExt;
 use chrono::DateTime;
 use chrono::Utc;
 use codex_protocol::ThreadId;
@@ -9,6 +10,7 @@ use codex_protocol::protocol::EventMsg;
 use codex_protocol::protocol::McpToolCallBeginEvent;
 use codex_protocol::protocol::McpToolCallEndEvent;
 use codex_protocol::protocol::RateLimitSnapshot;
+use codex_protocol::protocol::TokenUsageRecord;
 use codex_protocol::protocol::SessionSource;
 use codex_protocol::protocol::ThreadSource;
 use codex_protocol::protocol::TokenCountEvent;
@@ -19,8 +21,25 @@ use sqlx::Row;
 use sqlx::Sqlite;
 use sqlx::SqlitePool;
 use std::collections::HashMap;
+use std::collections::HashSet;
 use std::sync::Arc;
 use uuid::Uuid;
+
+/// Whether the durable response record was complete when projected.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum UsageCallStatus {
+    Completed,
+    Incomplete,
+}
+
+impl UsageCallStatus {
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::Completed => "ok",
+            Self::Incomplete => "incomplete",
+        }
+    }
+}
 
 #[derive(Clone, Debug)]
 struct TurnSnapshot {
@@ -119,6 +138,12 @@ pub struct UsageLogger {
     tool_calls: HashMap<String, ToolCallState>,
     last_provider_call_id: Option<String>,
     last_provider_usage: Option<TokenUsageTotals>,
+    current_response_ids_by_turn: HashMap<String, String>,
+    response_usage_record_ids: HashSet<String>,
+    correlate_response_events: bool,
+    // Keep only the latest accounting snapshot for each active turn; flush when
+    // response identity arrives or the turn ends rather than accumulating events.
+    pending_token_counts_by_turn: HashMap<String, TokenCountEvent>,
 }
 
 impl UsageLogger {
@@ -151,7 +176,9 @@ impl UsageLogger {
         agent_nickname: Option<String>,
         agent_role: Option<String>,
     ) -> anyhow::Result<Self> {
-        let pool = state.usage_ledger_pool();
+        let pool = state
+            .usage_ledger_pool()
+            .ok_or_else(|| anyhow::anyhow!("optional usage ledger is unavailable"))?;
         let parent_thread_id = Self::parent_thread_from_source(&source);
         // Reuse the first persisted root we can find so spawned and forked descendants
         // share one canonical root thread id in `usage_threads`.
@@ -224,7 +251,139 @@ ON CONFLICT(thread_id) DO UPDATE SET
             tool_calls: HashMap::new(),
             last_provider_call_id: None,
             last_provider_usage: None,
+            current_response_ids_by_turn: HashMap::new(),
+            response_usage_record_ids: HashSet::new(),
+            correlate_response_events: false,
+            pending_token_counts_by_turn: HashMap::new(),
         })
+    }
+
+    /// Construct a fail-soft response projection logger for the session recording path.
+    ///
+    /// The rollout's TokenUsageRecord remains authoritative if the optional ledger is
+    /// unavailable; callers can continue normally with `None`.
+    pub async fn try_new_response_projection(
+        state: &Arc<StateRuntime>,
+        thread_id: ThreadId,
+        source: &SessionSource,
+        thread_source: Option<&ThreadSource>,
+        parent_thread_id: Option<ThreadId>,
+        fork_parent_thread_id: Option<ThreadId>,
+    ) -> anyhow::Result<Option<Self>> {
+        if state.usage_ledger_pool().is_none() {
+            return Ok(None);
+        }
+        let mut logger = Self::try_new_with_thread_source(
+            state.clone(),
+            thread_id,
+            source.clone(),
+            thread_source.cloned(),
+            fork_parent_thread_id,
+            /*agent_nickname*/ None,
+            /*agent_role*/ None,
+        )
+        .await?;
+        logger.correlate_response_events = true;
+        if let Some(parent_thread_id) = parent_thread_id {
+            sqlx::query(
+                "UPDATE usage_threads SET parent_thread_id = COALESCE(parent_thread_id, ?) WHERE thread_id = ?",
+            )
+            .bind(parent_thread_id.to_string())
+            .bind(thread_id.to_string())
+            .execute(logger.pool.as_ref())
+            .await?;
+        }
+        Ok(Some(logger))
+    }
+
+    /// Project one durable response record using a stable key so replay is idempotent.
+    /// The response record does not claim a provider or service tier that it does not carry.
+    pub async fn record_response(
+        &mut self,
+        record: &TokenUsageRecord,
+        status: UsageCallStatus,
+    ) -> anyhow::Result<()> {
+        anyhow::ensure!(
+            record.thread_id == self.thread_id,
+            "usage response thread does not match its session"
+        );
+        if record.response_id.trim().is_empty() {
+            anyhow::bail!("usage response has no response id");
+        }
+        let provider_call_id = format!("{}:{}", self.thread_id, record.response_id);
+        if let Some(previous_response_id) = self
+            .current_response_ids_by_turn
+            .insert(record.turn_id.clone(), record.response_id.clone())
+        {
+            if previous_response_id != record.response_id {
+                self.response_usage_record_ids
+                    .remove(&format!("{}:{previous_response_id}", self.thread_id));
+            }
+        }
+        self.response_usage_record_ids
+            .insert(provider_call_id.clone());
+        self.last_provider_call_id = Some(provider_call_id.clone());
+        self.flush_pending_token_count(&record.turn_id).await;
+        let observed_at = Utc::now().to_rfc3339();
+        let usage = &record.usage;
+        let uncached_input_tokens = usage
+            .input_tokens
+            .saturating_sub(usage.cached_input_tokens)
+            .max(0);
+        let requested_model = record
+            .requested_model
+            .as_deref()
+            .map(str::to_ascii_lowercase);
+        let actual_model_used = record
+            .actual_model_used
+            .as_deref()
+            .map(str::to_ascii_lowercase);
+        sqlx::query(
+            r#"
+INSERT INTO usage_provider_calls (
+    provider_call_id, thread_id, turn_id, request_id, provider, requested_model,
+    actual_model_used, started_at, completed_at, input_tokens_uncached,
+    input_tokens_cached, input_tokens_cache_write, output_tokens, total_tokens, status
+)
+VALUES (?, ?, ?, ?, NULL, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+ON CONFLICT(provider_call_id) DO UPDATE SET
+    turn_id = excluded.turn_id,
+    request_id = excluded.request_id,
+    requested_model = COALESCE(excluded.requested_model, usage_provider_calls.requested_model),
+    actual_model_used = COALESCE(excluded.actual_model_used, usage_provider_calls.actual_model_used),
+    completed_at = excluded.completed_at,
+    input_tokens_uncached = excluded.input_tokens_uncached,
+    input_tokens_cached = excluded.input_tokens_cached,
+    input_tokens_cache_write = excluded.input_tokens_cache_write,
+    output_tokens = excluded.output_tokens,
+    total_tokens = excluded.total_tokens,
+    status = excluded.status
+            "#,
+        )
+        .bind(&provider_call_id)
+        .bind(self.thread_id.to_string())
+        .bind(&record.turn_id)
+        .bind(&record.response_id)
+        .bind(requested_model)
+        .bind(actual_model_used)
+        .bind(&observed_at)
+        .bind(&observed_at)
+        .bind(uncached_input_tokens)
+        .bind(usage.cached_input_tokens)
+        .bind(usage.cache_write_input_tokens)
+        .bind(usage.output_tokens)
+        .bind(usage.total_tokens)
+        .bind(status.as_str())
+        .execute_with_busy_retry(self.pool.as_ref())
+        .await?;
+        self.last_provider_usage = Some(TokenUsageTotals {
+            uncached_input_tokens,
+            cached_input_tokens: usage.cached_input_tokens,
+            cache_write_input_tokens: usage.cache_write_input_tokens,
+            output_tokens: usage.output_tokens,
+            total_tokens: usage.total_tokens,
+        });
+        Ok(())
     }
 
     fn parent_thread_from_source(source: &SessionSource) -> Option<ThreadId> {
@@ -295,7 +454,31 @@ ON CONFLICT(thread_id) DO UPDATE SET
         }
         let turn_id = (!event.id.is_empty()).then(|| event.id.clone());
         match &event.msg {
+            EventMsg::RawResponseCompleted(response) => {
+                if let Some(turn_id) = &turn_id {
+                    if let Some(previous_response_id) = self
+                        .current_response_ids_by_turn
+                        .insert(turn_id.clone(), response.response_id.clone())
+                    {
+                        if previous_response_id != response.response_id {
+                            self.response_usage_record_ids.remove(&format!(
+                                "{}:{previous_response_id}",
+                                self.thread_id
+                            ));
+                        }
+                    }
+                    self.flush_pending_token_count(turn_id).await;
+                }
+            }
             EventMsg::TokenCount(token_count) => {
+                if self.correlate_response_events
+                    && let Some(turn_id) = turn_id.as_deref()
+                    && !self.current_response_ids_by_turn.contains_key(turn_id)
+                {
+                    self.pending_token_counts_by_turn
+                        .insert(turn_id.to_string(), token_count.clone());
+                    return;
+                }
                 if let Err(err) = self
                     .handle_token_count(token_count, turn_id.as_deref())
                     .await
@@ -339,6 +522,9 @@ ON CONFLICT(thread_id) DO UPDATE SET
                 }
             }
             EventMsg::TurnComplete(turn_complete) => {
+                if let Some(turn_id) = &turn_id {
+                    self.flush_pending_token_count(turn_id).await;
+                }
                 if let Err(err) = self
                     .handle_turn_complete(turn_complete, turn_id.as_deref())
                     .await
@@ -347,9 +533,32 @@ ON CONFLICT(thread_id) DO UPDATE SET
                 }
                 if let Some(turn_id) = &turn_id {
                     self.turn_snapshots.remove(turn_id);
+                    if let Some(response_id) = self.current_response_ids_by_turn.remove(turn_id) {
+                        self.response_usage_record_ids
+                            .remove(&format!("{}:{response_id}", self.thread_id));
+                    }
+                }
+            }
+            EventMsg::TurnAborted(_) => {
+                if let Some(turn_id) = &turn_id {
+                    self.flush_pending_token_count(turn_id).await;
+                    self.turn_snapshots.remove(turn_id);
+                    if let Some(response_id) = self.current_response_ids_by_turn.remove(turn_id) {
+                        self.response_usage_record_ids
+                            .remove(&format!("{}:{response_id}", self.thread_id));
+                    }
                 }
             }
             _ => {}
+        }
+    }
+
+    async fn flush_pending_token_count(&mut self, turn_id: &str) {
+        let Some(token_count) = self.pending_token_counts_by_turn.remove(turn_id) else {
+            return;
+        };
+        if let Err(err) = self.handle_token_count(&token_count, Some(turn_id)).await {
+            warn!("usage token count: {err}");
         }
     }
 
@@ -404,7 +613,11 @@ ON CONFLICT(thread_id) DO UPDATE SET
             })
             .map(|value| value.to_ascii_lowercase());
         let spawn_request_id = self.lookup_spawn_request_id().await?;
-        let provider_call_id = Uuid::new_v4().to_string();
+        let response_id = turn_id.and_then(|id| self.current_response_ids_by_turn.get(id));
+        let provider_call_id = response_id
+            .map(|response_id| format!("{}:{response_id}", self.thread_id))
+            .unwrap_or_else(|| Uuid::new_v4().to_string());
+        let response_projection_exists = self.response_usage_record_ids.contains(&provider_call_id);
         let started_at = Utc::now();
         let status = if token_count.info.is_some() {
             "ok"
@@ -417,6 +630,7 @@ ON CONFLICT(thread_id) DO UPDATE SET
             provider_call_id,
             thread_id,
             turn_id,
+            request_id,
             spawn_request_id,
             provider,
             requested_model,
@@ -436,11 +650,33 @@ ON CONFLICT(thread_id) DO UPDATE SET
             output_tokens,
             total_tokens,
             status
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"#,
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        ON CONFLICT(provider_call_id) DO UPDATE SET
+            request_id = COALESCE(usage_provider_calls.request_id, excluded.request_id),
+            spawn_request_id = COALESCE(excluded.spawn_request_id, usage_provider_calls.spawn_request_id),
+            provider = COALESCE(excluded.provider, usage_provider_calls.provider),
+            requested_model = COALESCE(excluded.requested_model, usage_provider_calls.requested_model),
+            actual_model_used = COALESCE(excluded.actual_model_used, usage_provider_calls.actual_model_used),
+            requested_service_tier = COALESCE(excluded.requested_service_tier, usage_provider_calls.requested_service_tier),
+            actual_service_tier = COALESCE(excluded.actual_service_tier, usage_provider_calls.actual_service_tier),
+            actual_service_tier_source = COALESCE(excluded.actual_service_tier_source, usage_provider_calls.actual_service_tier_source),
+            fast_mode_requested = COALESCE(excluded.fast_mode_requested, usage_provider_calls.fast_mode_requested),
+            fast_mode_used = COALESCE(excluded.fast_mode_used, usage_provider_calls.fast_mode_used),
+            billing_surface = COALESCE(excluded.billing_surface, usage_provider_calls.billing_surface),
+            account_plan = COALESCE(excluded.account_plan, usage_provider_calls.account_plan),
+            started_at = CASE WHEN ? THEN usage_provider_calls.started_at ELSE excluded.started_at END,
+            completed_at = CASE WHEN ? THEN usage_provider_calls.completed_at ELSE excluded.completed_at END,
+            input_tokens_uncached = CASE WHEN ? THEN usage_provider_calls.input_tokens_uncached ELSE excluded.input_tokens_uncached END,
+            input_tokens_cached = CASE WHEN ? THEN usage_provider_calls.input_tokens_cached ELSE excluded.input_tokens_cached END,
+            input_tokens_cache_write = CASE WHEN ? THEN usage_provider_calls.input_tokens_cache_write ELSE excluded.input_tokens_cache_write END,
+            output_tokens = CASE WHEN ? THEN usage_provider_calls.output_tokens ELSE excluded.output_tokens END,
+            total_tokens = CASE WHEN ? THEN usage_provider_calls.total_tokens ELSE excluded.total_tokens END,
+            status = CASE WHEN ? THEN usage_provider_calls.status ELSE excluded.status END"#,
         )
         .bind(provider_call_id.clone())
         .bind(self.thread_id.to_string())
         .bind(turn_id.map(str::to_string))
+        .bind(response_id.cloned())
         .bind(spawn_request_id)
         .bind(provider.clone())
         .bind(requested_model.clone())
@@ -460,6 +696,14 @@ ON CONFLICT(thread_id) DO UPDATE SET
         .bind(usage.output_tokens)
         .bind(usage.total_tokens)
         .bind(status)
+        .bind(response_projection_exists)
+        .bind(response_projection_exists)
+        .bind(response_projection_exists)
+        .bind(response_projection_exists)
+        .bind(response_projection_exists)
+        .bind(response_projection_exists)
+        .bind(response_projection_exists)
+        .bind(response_projection_exists)
         .execute(self.pool.as_ref())
         .await?;
         self.last_provider_call_id = Some(provider_call_id);
@@ -748,7 +992,9 @@ impl StateRuntime {
         &self,
         thread_id: &str,
     ) -> anyhow::Result<Option<UsageLineageTelemetry>> {
-        let pool = self.usage_ledger_pool();
+        let Some(pool) = self.usage_ledger_pool() else {
+            return Ok(None);
+        };
         let root_thread_id = sqlx::query_scalar::<_, String>(
             r#"SELECT COALESCE(NULLIF(root_thread_id, ''), thread_id)
 FROM usage_threads
@@ -892,7 +1138,9 @@ ORDER BY COALESCE(last_activity_at, t.created_at) DESC, t.thread_id ASC
         &self,
         thread_id: &str,
     ) -> anyhow::Result<Option<UsageThreadRecord>> {
-        let pool = self.usage_ledger_pool();
+        let Some(pool) = self.usage_ledger_pool() else {
+            return Ok(None);
+        };
         let row = sqlx::query(
             r#"
 SELECT
@@ -917,7 +1165,9 @@ WHERE thread_id = ?
         &self,
         child_thread_id: &str,
     ) -> anyhow::Result<Option<String>> {
-        let pool = self.usage_ledger_pool();
+        let Some(pool) = self.usage_ledger_pool() else {
+            return Ok(None);
+        };
         let parent_thread_id = sqlx::query_scalar::<_, String>(
             "SELECT parent_thread_id FROM usage_fork_snapshots WHERE child_thread_id = ?",
         )
@@ -944,7 +1194,9 @@ WHERE thread_id = ?
         if thread_ids.is_empty() {
             return Ok(HashMap::new());
         }
-        let pool = self.usage_ledger_pool();
+        let Some(pool) = self.usage_ledger_pool() else {
+            return Ok(HashMap::new());
+        };
         let mut builder = QueryBuilder::<Sqlite>::new(
             r#"
 SELECT thread_id, display_model
@@ -998,7 +1250,9 @@ WHERE row_num = 1
         child_thread_id: ThreadId,
         parent_thread_id: ThreadId,
     ) -> anyhow::Result<()> {
-        let pool = self.usage_ledger_pool();
+        let Some(pool) = self.usage_ledger_pool() else {
+            return Ok(());
+        };
         let usage = sqlx::query(
             r#"SELECT
                 provider_call_id,
@@ -1080,6 +1334,7 @@ mod tests {
     use super::*;
     use crate::DirectionalThreadSpawnEdgeStatus;
     use anyhow::Result;
+    use codex_protocol::SessionId;
     use codex_protocol::ThreadId;
     use codex_protocol::account::PlanType;
     use codex_protocol::mcp::CallToolResult;
@@ -1094,6 +1349,7 @@ mod tests {
     use codex_protocol::protocol::McpToolCallEndEvent;
     use codex_protocol::protocol::RateLimitSnapshot;
     use codex_protocol::protocol::RateLimitWindow;
+    use codex_protocol::protocol::RawResponseCompletedEvent;
     use codex_protocol::protocol::SessionSource;
     use codex_protocol::protocol::SubAgentSource;
     use codex_protocol::protocol::TokenCountEvent;
@@ -1380,6 +1636,365 @@ INSERT INTO usage_provider_calls (
     }
 
     #[tokio::test]
+    async fn response_projection_and_token_events_share_one_response_row_in_either_order() -> Result<()> {
+        let (runtime, _tmp_dir) = init_runtime().await?;
+        let thread_id = ThreadId::new();
+        let mut logger = UsageLogger::try_new_response_projection(
+            &runtime,
+            thread_id,
+            &SessionSource::Cli,
+            Some(&ThreadSource::User),
+            /*parent_thread_id*/ None,
+            /*fork_parent_thread_id*/ None,
+        )
+        .await?
+        .expect("usage ledger should be available");
+
+        let first_turn = "response-first-turn";
+        let first_usage = TokenUsage {
+            input_tokens: 24,
+            cached_input_tokens: 4,
+            cache_write_input_tokens: 2,
+            output_tokens: 6,
+            total_tokens: 30,
+            ..TokenUsage::default()
+        };
+        let first_record = TokenUsageRecord {
+            thread_id,
+            turn_id: first_turn.to_string(),
+            session_id: SessionId::from(thread_id),
+            root_turn_id: first_turn.to_string(),
+            response_id: "response-first".to_string(),
+            requested_model: Some("Requested-Model".to_string()),
+            actual_model_used: Some("gpt-5.6-sol".to_string()),
+            usage: first_usage.clone(),
+            turn_token_usage: first_usage.clone(),
+            thread_token_usage: first_usage,
+        };
+        logger
+            .record_event(&Event {
+                id: first_turn.to_string(),
+                msg: EventMsg::RawResponseCompleted(RawResponseCompletedEvent {
+                    response_id: first_record.response_id.clone(),
+                    token_usage: Some(first_record.usage.clone()),
+                    usage_metadata: None,
+                }),
+            })
+            .await;
+        logger
+            .record_event(&token_count_event(first_turn, /*include_rate_limit*/ true))
+            .await;
+        logger
+            .record_response(&first_record, UsageCallStatus::Completed)
+            .await?;
+        // Replayed context enriches the same row without replacing durable response totals.
+        logger
+            .record_event(&token_count_event(first_turn, /*include_rate_limit*/ true))
+            .await;
+
+        let second_turn = "event-first-turn";
+        let second_usage = TokenUsage {
+            input_tokens: 31,
+            cached_input_tokens: 7,
+            output_tokens: 8,
+            total_tokens: 39,
+            ..TokenUsage::default()
+        };
+        let second_record = TokenUsageRecord {
+            thread_id,
+            turn_id: second_turn.to_string(),
+            session_id: SessionId::from(thread_id),
+            root_turn_id: second_turn.to_string(),
+            response_id: "event-first".to_string(),
+            requested_model: Some("requested-second".to_string()),
+            actual_model_used: None,
+            usage: second_usage.clone(),
+            turn_token_usage: second_usage.clone(),
+            thread_token_usage: second_usage,
+        };
+        logger
+            .record_response(&second_record, UsageCallStatus::Incomplete)
+            .await?;
+        logger
+            .record_event(&Event {
+                id: second_turn.to_string(),
+                msg: EventMsg::RawResponseCompleted(RawResponseCompletedEvent {
+                    response_id: second_record.response_id.clone(),
+                    token_usage: Some(second_record.usage.clone()),
+                    usage_metadata: None,
+                }),
+            })
+            .await;
+        logger
+            .record_event(&token_count_event(second_turn, /*include_rate_limit*/ true))
+            .await;
+
+        // The event-side writer can receive accounting before the durable response
+        // projection. Buffer it until response identity is known, then converge on
+        // the same stable response key rather than creating a second provider call.
+        let third_turn = "token-event-before-response-turn";
+        let third_usage = TokenUsage {
+            input_tokens: 42,
+            cached_input_tokens: 9,
+            output_tokens: 11,
+            total_tokens: 53,
+            ..TokenUsage::default()
+        };
+        let third_record = TokenUsageRecord {
+            thread_id,
+            turn_id: third_turn.to_string(),
+            session_id: SessionId::from(thread_id),
+            root_turn_id: third_turn.to_string(),
+            response_id: "token-event-before-response".to_string(),
+            requested_model: Some("requested-third".to_string()),
+            actual_model_used: Some("actual-third".to_string()),
+            usage: third_usage.clone(),
+            turn_token_usage: third_usage.clone(),
+            thread_token_usage: third_usage,
+        };
+        let early_token_event = token_count_event(third_turn, /*include_rate_limit*/ true);
+        logger.record_event(&early_token_event).await;
+        // Replayed event metadata before the response must still produce one row.
+        logger.record_event(&early_token_event).await;
+        logger
+            .record_event(&Event {
+                id: third_turn.to_string(),
+                msg: EventMsg::RawResponseCompleted(RawResponseCompletedEvent {
+                    response_id: third_record.response_id.clone(),
+                    token_usage: Some(third_record.usage.clone()),
+                    usage_metadata: None,
+                }),
+            })
+            .await;
+        logger
+            .record_response(&third_record, UsageCallStatus::Completed)
+            .await?;
+        // Replayed response projection is also idempotent.
+        logger
+            .record_response(&third_record, UsageCallStatus::Completed)
+            .await?;
+
+        // A canceled turn may provide token accounting without any response id.
+        // Preserve that observation as an event-only row rather than fabricating
+        // response identity or retaining an unbounded pending entry.
+        let fourth_turn = "aborted-without-response-id";
+        logger
+            .record_event(&token_count_event(fourth_turn, /*include_rate_limit*/ true))
+            .await;
+        logger
+            .record_event(&Event {
+                id: fourth_turn.to_string(),
+                msg: EventMsg::TurnAborted(codex_protocol::protocol::TurnAbortedEvent {
+                    root_turn_id: None,
+                    turn_id: Some(fourth_turn.to_string()),
+                    reason: codex_protocol::protocol::TurnAbortReason::Interrupted,
+                    error: None,
+                    started_at: None,
+                    completed_at: None,
+                    duration_ms: None,
+                }),
+            })
+            .await;
+
+        let fifth_turn = "completed-without-response-id";
+        logger
+            .record_event(&token_count_event(fifth_turn, /*include_rate_limit*/ true))
+            .await;
+        logger
+            .record_event(&Event {
+                id: fifth_turn.to_string(),
+                msg: EventMsg::TurnComplete(codex_protocol::protocol::TurnCompleteEvent {
+                    root_turn_id: None,
+                    turn_id: fifth_turn.to_string(),
+                    last_agent_message: None,
+                    error: None,
+                    started_at: None,
+                    completed_at: None,
+                    duration_ms: None,
+                    time_to_first_token_ms: None,
+                }),
+            })
+            .await;
+
+        let pool = runtime
+            .usage_ledger_pool()
+            .expect("usage ledger should remain available");
+        let rows = sqlx::query(
+            r#"SELECT provider_call_id, turn_id, request_id, provider, requested_model,
+                      actual_model_used, requested_service_tier, actual_service_tier,
+                      fast_mode_used, account_plan, input_tokens_uncached,
+                      input_tokens_cached, total_tokens, status
+               FROM usage_provider_calls
+               WHERE thread_id = ?
+               ORDER BY CASE request_id
+                   WHEN 'response-first' THEN 0
+                   WHEN 'event-first' THEN 1
+                   WHEN 'token-event-before-response' THEN 2
+                   ELSE 3
+               END,
+                   turn_id"#,
+        )
+        .bind(thread_id.to_string())
+        .fetch_all(pool.as_ref())
+        .await?;
+        assert_eq!(rows.len(), 5, "each response/event should have one row");
+        assert_eq!(
+            (
+                rows[0].get::<String, _>("provider_call_id"),
+                rows[0].get::<String, _>("request_id"),
+                rows[0].get::<Option<String>, _>("provider"),
+                rows[0].get::<Option<String>, _>("requested_model"),
+                rows[0].get::<Option<String>, _>("actual_model_used"),
+                rows[0].get::<Option<String>, _>("requested_service_tier"),
+                rows[0].get::<Option<String>, _>("actual_service_tier"),
+                rows[0].get::<Option<bool>, _>("fast_mode_used"),
+                rows[0].get::<Option<String>, _>("account_plan"),
+                rows[0].get::<i64, _>("input_tokens_uncached"),
+                rows[0].get::<i64, _>("input_tokens_cached"),
+                rows[0].get::<i64, _>("total_tokens"),
+                rows[0].get::<Option<String>, _>("status"),
+            ),
+            (
+                format!("{}:response-first", thread_id),
+                "response-first".to_string(),
+                Some("test-provider".to_string()),
+                Some("requested-model".to_string()),
+                Some("gpt-5.6-sol".to_string()),
+                Some("priority".to_string()),
+                Some("priority".to_string()),
+                Some(true),
+                Some("pro".to_string()),
+                20,
+                4,
+                30,
+                Some("ok".to_string()),
+            )
+        );
+        assert_eq!(
+            (
+                rows[2].get::<String, _>("provider_call_id"),
+                rows[2].get::<String, _>("request_id"),
+                rows[2].get::<Option<String>, _>("provider"),
+                rows[2].get::<Option<String>, _>("requested_model"),
+                rows[2].get::<Option<String>, _>("actual_model_used"),
+                rows[2].get::<Option<String>, _>("requested_service_tier"),
+                rows[2].get::<Option<String>, _>("account_plan"),
+                rows[2].get::<i64, _>("input_tokens_uncached"),
+                rows[2].get::<i64, _>("input_tokens_cached"),
+                rows[2].get::<i64, _>("total_tokens"),
+                rows[2].get::<Option<String>, _>("status"),
+            ),
+            (
+                format!("{}:token-event-before-response", thread_id),
+                "token-event-before-response".to_string(),
+                Some("test-provider".to_string()),
+                Some("requested-third".to_string()),
+                Some("actual-third".to_string()),
+                Some("priority".to_string()),
+                Some("pro".to_string()),
+                33,
+                2,
+                53,
+                Some("ok".to_string()),
+            )
+        );
+        let aggregate_total: i64 = sqlx::query_scalar(
+            "SELECT SUM(total_tokens) FROM usage_provider_calls WHERE thread_id = ?",
+        )
+        .bind(thread_id.to_string())
+        .fetch_one(pool.as_ref())
+        .await?;
+        assert_eq!(aggregate_total, 154, "replays must not double count usage");
+        let quota_row = sqlx::query_as::<_, (i64, Option<String>)>(
+            "SELECT COUNT(*), MAX(plan) FROM usage_quota_snapshots WHERE thread_id = ? AND turn_id = ?",
+        )
+        .bind(thread_id.to_string())
+        .bind(third_turn)
+        .fetch_one(pool.as_ref())
+        .await?;
+        assert_eq!(quota_row, (1, Some("Pro".to_string())));
+        assert_eq!(
+            (
+                rows[3].get::<Option<String>, _>("request_id"),
+                rows[3].get::<Option<String>, _>("turn_id"),
+                rows[3].get::<Option<String>, _>("provider"),
+                rows[3].get::<i64, _>("total_tokens"),
+                rows[3].get::<Option<String>, _>("status"),
+            ),
+            (
+                None,
+                Some(fourth_turn.to_string()),
+                Some("test-provider".to_string()),
+                16,
+                Some("ok".to_string()),
+            ),
+            "a terminal turn without response identity stays explicitly event-only"
+        );
+        assert_eq!(
+            (
+                rows[4].get::<Option<String>, _>("request_id"),
+                rows[4].get::<Option<String>, _>("turn_id"),
+                rows[4].get::<i64, _>("total_tokens"),
+            ),
+            (None, Some(fifth_turn.to_string()), 16),
+            "completion without response identity flushes the pending accounting snapshot"
+        );
+        assert_eq!(
+            (
+                rows[1].get::<String, _>("provider_call_id"),
+                rows[1].get::<String, _>("request_id"),
+                rows[1].get::<Option<String>, _>("requested_model"),
+                rows[1].get::<i64, _>("input_tokens_uncached"),
+                rows[1].get::<i64, _>("input_tokens_cached"),
+                rows[1].get::<i64, _>("total_tokens"),
+                rows[1].get::<Option<String>, _>("status"),
+            ),
+            (
+                format!("{}:event-first", thread_id),
+                "event-first".to_string(),
+                Some("requested-second".to_string()),
+                24,
+                7,
+                39,
+                Some("incomplete".to_string()),
+            )
+        );
+        let lineage = runtime
+            .get_usage_thread_record(&thread_id.to_string())
+            .await?
+            .expect("response projection should retain thread lineage");
+        assert_eq!(lineage.root_thread_id, Some(thread_id.to_string()));
+        assert_eq!(lineage.thread_source.as_deref(), Some("user"));
+        runtime.close().await;
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn unavailable_usage_projection_does_not_rebuild_existing_ledger() -> Result<()> {
+        let tmp_dir = tempdir()?;
+        let sqlite = crate::SqliteConfig::new_for_testing(tmp_dir.path().abs());
+        let usage_path = sqlite.usage_db_path();
+        let sentinel = b"preserve an unreadable existing usage database";
+        tokio::fs::write(&usage_path, sentinel).await?;
+
+        let runtime = StateRuntime::init(sqlite, "openai".to_string()).await?;
+        assert!(runtime.usage_ledger_pool().is_none());
+        let logger = UsageLogger::try_new_response_projection(
+            &runtime,
+            ThreadId::new(),
+            &SessionSource::Cli,
+            Some(&ThreadSource::User),
+            /*parent_thread_id*/ None,
+            /*fork_parent_thread_id*/ None,
+        )
+        .await?;
+        assert!(logger.is_none());
+        assert_eq!(tokio::fs::read(usage_path).await?, sentinel);
+        runtime.close().await;
+        Ok(())
+    }
+
+    #[tokio::test]
     async fn usage_logger_records_requested_model_and_quota_snapshot() -> Result<()> {
         let (runtime, _tmp_dir) = init_runtime().await?;
         let thread_id = ThreadId::new();
@@ -1403,7 +2018,9 @@ INSERT INTO usage_provider_calls (
         let token_event = token_count_event(turn_id, /*include_rate_limit*/ true);
         logger.record_event(&token_event).await;
 
-        let pool_arc = runtime.usage_pool();
+        let pool_arc = runtime
+            .usage_ledger_pool()
+            .expect("usage database should be available");
         let pool: &SqlitePool = pool_arc.as_ref();
 
         let provider_row: ProviderCallRow = sqlx::query_as(
@@ -1502,7 +2119,9 @@ WHERE thread_id = ?
     #[tokio::test]
     async fn credit_views_select_standard_fast_and_half_open_rates() -> Result<()> {
         let (runtime, _tmp_dir) = init_runtime().await?;
-        let pool_arc = runtime.usage_pool();
+        let pool_arc = runtime
+            .usage_ledger_pool()
+            .expect("usage database should be available");
         let pool: &SqlitePool = pool_arc.as_ref();
 
         let rate_rows: Vec<CreditRateRow> = sqlx::query_as(
@@ -2048,7 +2667,9 @@ ORDER BY provider_call_id
     #[tokio::test]
     async fn credit_views_cover_gpt6_rates_aliases_and_partial_rollups() -> Result<()> {
         let (runtime, _tmp_dir) = init_runtime().await?;
-        let pool_arc = runtime.usage_pool();
+        let pool_arc = runtime
+            .usage_ledger_pool()
+            .expect("usage database should be available");
         let pool: &SqlitePool = pool_arc.as_ref();
 
         let rates: Vec<(String, String, String, f64, f64, f64)> = sqlx::query_as(
@@ -2327,7 +2948,9 @@ WHERE thread_id = 'gpt6' AND turn_id = 'gpt6-turn'
     #[tokio::test]
     async fn credit_views_apply_september_30_adopted_rate_intervals() -> Result<()> {
         let (runtime, _tmp_dir) = init_runtime().await?;
-        let pool_arc = runtime.usage_pool();
+        let pool_arc = runtime
+            .usage_ledger_pool()
+            .expect("usage database should be available");
         let pool: &SqlitePool = pool_arc.as_ref();
 
         for call in [
@@ -2461,7 +3084,9 @@ ORDER BY provider_call_id
     #[tokio::test]
     async fn credit_views_cover_current_aliases_boundaries_and_rollups() -> Result<()> {
         let (runtime, _tmp_dir) = init_runtime().await?;
-        let pool_arc = runtime.usage_pool();
+        let pool_arc = runtime
+            .usage_ledger_pool()
+            .expect("usage database should be available");
         let pool: &SqlitePool = pool_arc.as_ref();
 
         for call in [
@@ -2677,7 +3302,9 @@ WHERE thread_id = 'aliases' AND turn_id = 'alias-turn'
     #[tokio::test]
     async fn credit_views_preserve_uncertainty_and_partial_totals() -> Result<()> {
         let (runtime, _tmp_dir) = init_runtime().await?;
-        let pool_arc = runtime.usage_pool();
+        let pool_arc = runtime
+            .usage_ledger_pool()
+            .expect("usage database should be available");
         let pool: &SqlitePool = pool_arc.as_ref();
         for call in [
             TestProviderCall {
@@ -2998,7 +3625,9 @@ INSERT INTO usage_codex_credit_rates (
             })
             .await;
 
-        let pool_arc = runtime.usage_pool();
+        let pool_arc = runtime
+            .usage_ledger_pool()
+            .expect("usage database should be available");
         let pool: &SqlitePool = pool_arc.as_ref();
         let provider_row: ProviderCallRow = sqlx::query_as(
             r#"
@@ -3087,7 +3716,9 @@ WHERE thread_id = ?
         )
         .await?;
 
-        let pool_arc = runtime.usage_pool();
+        let pool_arc = runtime
+            .usage_ledger_pool()
+            .expect("usage database should be available");
         let pool: &SqlitePool = pool_arc.as_ref();
         let row: (Option<String>, Option<String>, Option<String>) = sqlx::query_as(
             r#"
@@ -3244,7 +3875,9 @@ WHERE thread_id = ?
             ))
             .await;
 
-        let pool_arc = runtime.usage_pool();
+        let pool_arc = runtime
+            .usage_ledger_pool()
+            .expect("usage database should be available");
         let pool: &SqlitePool = pool_arc.as_ref();
         let provider_rows: Vec<ProviderCallRow> = sqlx::query_as(
             r#"
@@ -3382,7 +4015,9 @@ ORDER BY rowid
         };
         logger.record_event(&tool_end).await;
 
-        let pool_arc = runtime.usage_pool();
+        let pool_arc = runtime
+            .usage_ledger_pool()
+            .expect("usage database should be available");
         let pool: &SqlitePool = pool_arc.as_ref();
 
         let tool_row: ToolCallRow = sqlx::query_as(
@@ -3467,7 +4102,9 @@ WHERE tool_call_id = ?
         };
         logger.record_event(&spawn_end).await;
 
-        let pool_arc = runtime.usage_pool();
+        let pool_arc = runtime
+            .usage_ledger_pool()
+            .expect("usage database should be available");
         let pool: &SqlitePool = pool_arc.as_ref();
 
         let mut spawn_row: SpawnRequestRow = sqlx::query_as(
@@ -3629,7 +4266,9 @@ WHERE child_thread_id = ?
                 })
                 .await;
 
-            let pool_arc = runtime.usage_pool();
+        let pool_arc = runtime
+            .usage_ledger_pool()
+            .expect("usage database should be available");
             let pool: &SqlitePool = pool_arc.as_ref();
             let stored: (Option<String>, Option<String>) = sqlx::query_as(
                 r#"
@@ -3681,7 +4320,9 @@ WHERE spawn_request_id = ?
             .record_usage_fork_snapshot(child_thread_id, parent_thread_id)
             .await?;
 
-        let pool_arc = runtime.usage_pool();
+        let pool_arc = runtime
+            .usage_ledger_pool()
+            .expect("usage database should be available");
         let pool: &SqlitePool = pool_arc.as_ref();
         let mut fork_row: ForkSnapshotRow = sqlx::query_as(
             r#"
@@ -3794,7 +4435,9 @@ WHERE child_thread_id = ?
             ))
             .await;
 
-        let pool_arc = runtime.usage_pool();
+        let pool_arc = runtime
+            .usage_ledger_pool()
+            .expect("usage database should be available");
         let pool: &SqlitePool = pool_arc.as_ref();
         let child_provider_row: ProviderCallRowWithSpawn = sqlx::query_as(
             r#"
@@ -3899,7 +4542,9 @@ WHERE thread_id = ?
         )
         .await?;
 
-        let pool_arc = runtime.usage_pool();
+        let pool_arc = runtime
+            .usage_ledger_pool()
+            .expect("usage database should be available");
         let pool: &SqlitePool = pool_arc.as_ref();
 
         let child_row: ThreadRow = sqlx::query_as(
@@ -4032,7 +4677,9 @@ WHERE thread_id = ?
         )
         .await?;
 
-        let pool_arc = reopened_runtime.usage_pool();
+        let pool_arc = reopened_runtime
+            .usage_ledger_pool()
+            .expect("usage database should be available");
         let pool: &SqlitePool = pool_arc.as_ref();
 
         let child_row: ThreadRow = sqlx::query_as(
@@ -4184,7 +4831,9 @@ WHERE thread_id = ?
             .await?;
         assert_eq!(children, vec![child_thread_id]);
 
-        let pool_arc = runtime.usage_pool();
+        let pool_arc = runtime
+            .usage_ledger_pool()
+            .expect("usage database should be available");
         let pool: &SqlitePool = pool_arc.as_ref();
 
         let spawn_row: SpawnRequestRow = sqlx::query_as(

@@ -1,5 +1,5 @@
 {
-  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$schema": "http://json-schema.org/draft-07/schema#",
   "properties": {
     "contentIndex": {
       "format": "int64",
@@ -19,11 +19,11 @@
     }
   },
   "required": [
-    "threadId",
-    "turnId",
-    "itemId",
+    "contentIndex",
     "delta",
-    "contentIndex"
+    "itemId",
+    "threadId",
+    "turnId"
   ],
   "title": "ReasoningTextDeltaNotification",
   "type": "object"

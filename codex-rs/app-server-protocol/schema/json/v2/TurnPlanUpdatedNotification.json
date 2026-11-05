@@ -1,17 +1,18 @@
 {
-  "$defs": {
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "definitions": {
     "TurnPlanStep": {
       "properties": {
         "status": {
-          "$ref": "#/$defs/TurnPlanStepStatus"
+          "$ref": "#/definitions/TurnPlanStepStatus"
         },
         "step": {
           "type": "string"
         }
       },
       "required": [
-        "step",
-        "status"
+        "status",
+        "step"
       ],
       "type": "object"
     },
@@ -24,7 +25,6 @@
       "type": "string"
     }
   },
-  "$schema": "https://json-schema.org/draft/2020-12/schema",
   "properties": {
     "explanation": {
       "type": [
@@ -34,7 +34,7 @@
     },
     "plan": {
       "items": {
-        "$ref": "#/$defs/TurnPlanStep"
+        "$ref": "#/definitions/TurnPlanStep"
       },
       "type": "array"
     },
@@ -46,9 +46,9 @@
     }
   },
   "required": [
+    "plan",
     "threadId",
-    "turnId",
-    "plan"
+    "turnId"
   ],
   "title": "TurnPlanUpdatedNotification",
   "type": "object"

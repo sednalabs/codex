@@ -141,13 +141,12 @@ checksum = "9330f8b2ff13f34540b44e946ef35111825727b38d33286ef986142615121801"
 
 [[package]]
 name = "clippy_utils"
-version = "0.1.92"
-source = "git+https://github.com/rust-lang/rust-clippy?rev=20ce69b9a63bcd2756cd906fe0964d1e901e042a#20ce69b9a63bcd2756cd906fe0964d1e901e042a"
+version = "0.1.100"
+source = "git+https://github.com/rust-lang/rust-clippy?rev=21baba9c10c5d179915cae82e6247bc2337872fb#21baba9c10c5d179915cae82e6247bc2337872fb"
 dependencies = [
  "arrayvec",
  "itertools",
  "rustc_apfloat",
- "serde",
 ]
 
 [[package]]
@@ -214,28 +213,13 @@ dependencies = [
  "anstyle",
  "anyhow",
  "cargo_metadata",
- "dylint_internal 6.3.2",
+ "dylint_internal",
  "log",
  "once_cell",
  "semver",
  "serde",
  "serde_json",
  "tempfile",
-]
-
-[[package]]
-name = "dylint_internal"
-version = "5.0.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "2e11f358a59510be7fa5c4f412729fabbe31a3587a342e4241a6a72020a2a0c5"
-dependencies = [
- "anyhow",
- "cargo_metadata",
- "log",
- "regex",
- "serde",
- "thiserror 2.0.18",
- "toml 0.9.12+spec-1.1.0",
 ]
 
 [[package]]
@@ -253,27 +237,29 @@ dependencies = [
  "log",
  "pastey",
  "regex",
+ "semver",
  "serde",
  "serde_json",
  "tar",
  "tempfile",
  "thiserror 2.0.18",
- "toml 1.1.8+spec-1.1.0",
+ "toml",
+ "toml_edit",
 ]
 
 [[package]]
 name = "dylint_linting"
-version = "5.0.0"
+version = "6.3.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "4588b33aafbd472a6468ad1521d74094faa2bbdb53d534c2d24320300ea94135"
+checksum = "75bb21fcfeb6cf699039c95e2c23fd3dd9c1fce7f487f2025920a822573ac389"
 dependencies = [
  "cargo_metadata",
- "dylint_internal 5.0.0",
+ "dylint_internal",
  "paste",
  "rustversion",
  "serde",
  "thiserror 2.0.18",
- "toml 0.9.12+spec-1.1.0",
+ "toml",
 ]
 
 [[package]]
@@ -286,7 +272,7 @@ dependencies = [
  "cargo_metadata",
  "compiletest_rs",
  "dylint",
- "dylint_internal 6.3.2",
+ "dylint_internal",
  "env_logger",
  "once_cell",
  "regex",
@@ -486,9 +472,9 @@ checksum = "a6cb138bb79a146c1bd460005623e142ef0181e3d0219cb493e02f7d08a35695"
 
 [[package]]
 name = "itertools"
-version = "0.12.1"
+version = "0.15.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "ba291022dbbd398a455acf126c1e341954079855bc60dfdda641363bd6922569"
+checksum = "8b4baf93f58d4425749ca49a51c50ebab072c5df6994d08fed93541c331481dc"
 dependencies = [
  "either",
 ]
@@ -866,9 +852,9 @@ dependencies = [
 
 [[package]]
 name = "serde_spanned"
-version = "1.1.2"
+version = "1.1.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "4e7523beb55eece201a2356bee0bbca0d1ab466c14c07703b2e0ee6d42cb0c2c"
+checksum = "6662b5879511e06e8999a8a235d848113e942c9124f211511b16466ee2995f26"
 dependencies = [
  "serde_core",
 ]
@@ -898,9 +884,9 @@ dependencies = [
 
 [[package]]
 name = "tar"
-version = "0.4.46"
+version = "0.4.44"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "3f6221d9a6003c78398e3b239969f352578258df48c8eb051caadae0015bc840"
+checksum = "1d863878d212c87a19c1a610eb53bb01fe12951c0501cf5a0d65f724914a667a"
 dependencies = [
  "filetime",
  "libc",
@@ -986,66 +972,55 @@ dependencies = [
 
 [[package]]
 name = "toml"
-version = "0.9.12+spec-1.1.0"
+version = "1.1.6+spec-1.1.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "cf92845e79fc2e2def6a5d828f0801e29a2f8acc037becc5ab08595c7d5e9863"
+checksum = "920602543f0911ab71da12c50d59701da54c196d1a2bf5cb4b75667f137a406a"
 dependencies = [
  "indexmap",
  "serde_core",
  "serde_spanned",
- "toml_datetime 0.7.5+spec-1.1.0",
+ "toml_datetime",
  "toml_parser",
  "toml_writer",
- "winnow 0.7.15",
+ "winnow",
 ]
 
 [[package]]
-name = "toml"
-version = "1.1.8+spec-1.1.0"
+name = "toml_datetime"
+version = "1.1.1+spec-1.1.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "20489e00e4d8741d6be680764cc12e270655e375a20d1011e844a9c3379e678d"
+checksum = "3165f65f62e28e0115a00b2ebdd37eb6f3b641855f9d636d3cd4103767159ad7"
+dependencies = [
+ "serde_core",
+]
+
+[[package]]
+name = "toml_edit"
+version = "0.25.15+spec-1.1.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "1340ea94a5856333492c9064b02c778b191dd2c853778d9609debdcdfea3a614"
 dependencies = [
  "indexmap",
- "serde_core",
- "serde_spanned",
- "toml_datetime 1.1.2+spec-1.1.0",
+ "toml_datetime",
  "toml_parser",
  "toml_writer",
- "winnow 1.0.4",
-]
-
-[[package]]
-name = "toml_datetime"
-version = "0.7.5+spec-1.1.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "92e1cfed4a3038bc5a127e35a2d360f145e1f4b971b551a2ba5fd7aedf7e1347"
-dependencies = [
- "serde_core",
-]
-
-[[package]]
-name = "toml_datetime"
-version = "1.1.2+spec-1.1.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "2b86d767906c6c42421dcba507eb9d203e779497710a47782a224bb871653053"
-dependencies = [
- "serde_core",
+ "winnow",
 ]
 
 [[package]]
 name = "toml_parser"
-version = "1.1.5+spec-1.1.0"
+version = "1.1.3+spec-1.1.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "baa693a8032d7e1cada7d0041e96126df243179ff061456783ac7f12bda4744c"
+checksum = "1d38ac1cf9b95face32296c0a3ede1fdc270627c9d9c02a7274dd6d960dc4d56"
 dependencies = [
- "winnow 1.0.4",
+ "winnow",
 ]
 
 [[package]]
 name = "toml_writer"
-version = "1.1.3+spec-1.1.0"
+version = "1.1.2+spec-1.1.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "06bdbd8cfc056b8d2e2e85f29b56a3bdbecb527cef81eb39e3e7b98af4652770"
+checksum = "7d56353a2a665ad0f41a421187180aab746c8c325620617ad883a99a1cbe66d2"
 
 [[package]]
 name = "tracing"
@@ -1275,15 +1250,12 @@ checksum = "589f6da84c646204747d1270a2a5661ea66ed1cced2631d546fdfb155959f9ec"
 
 [[package]]
 name = "winnow"
-version = "0.7.15"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "df79d97927682d2fd8adb29682d1140b343be4ac0f08fd68b7765d9c059d3945"
-
-[[package]]
-name = "winnow"
 version = "1.0.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "23b97319f7b8343df12cc98938e5c3eb436064524c8d2b4e30a1d3a36eecdf81"
+dependencies = [
+ "memchr",
+]
 
 [[package]]
 name = "wit-bindgen"

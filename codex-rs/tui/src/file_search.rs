@@ -84,7 +84,6 @@ impl FileSearchManager {
             vec![self.search_dir.clone()],
             file_search::FileSearchOptions {
                 compute_indices: true,
-                exclude: vec![".git/**".to_string()],
                 ..Default::default()
             },
             reporter,

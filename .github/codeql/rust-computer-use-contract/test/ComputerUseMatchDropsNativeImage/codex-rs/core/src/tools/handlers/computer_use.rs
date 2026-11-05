@@ -15,9 +15,7 @@ enum WrappedComputerUseOutputContentItem {
     Empty,
 }
 
-fn drops_native_image_smell(
-    item: ComputerUseOutputContentItem,
-) -> FunctionCallOutputContentItem {
+fn drops_native_image_smell(item: ComputerUseOutputContentItem) -> FunctionCallOutputContentItem {
     match item {
         ComputerUseOutputContentItem::InputText { text } => {
             FunctionCallOutputContentItem::InputText { text }
@@ -26,9 +24,7 @@ fn drops_native_image_smell(
     }
 }
 
-fn preserves_native_image(
-    item: ComputerUseOutputContentItem,
-) -> FunctionCallOutputContentItem {
+fn preserves_native_image(item: ComputerUseOutputContentItem) -> FunctionCallOutputContentItem {
     match item {
         ComputerUseOutputContentItem::InputText { text } => {
             FunctionCallOutputContentItem::InputText { text }
@@ -51,9 +47,7 @@ fn preserves_imported_native_image(
     }
 }
 
-fn nested_drop_smell(
-    item: WrappedComputerUseOutputContentItem,
-) -> FunctionCallOutputContentItem {
+fn nested_drop_smell(item: WrappedComputerUseOutputContentItem) -> FunctionCallOutputContentItem {
     match item {
         WrappedComputerUseOutputContentItem::Wrapped(ComputerUseOutputContentItem::InputText {
             text,
@@ -69,9 +63,9 @@ fn nested_preserves_native_image(
         WrappedComputerUseOutputContentItem::Wrapped(ComputerUseOutputContentItem::InputText {
             text,
         }) => FunctionCallOutputContentItem::InputText { text },
-        WrappedComputerUseOutputContentItem::Wrapped(ComputerUseOutputContentItem::InputImage {
-            image_url,
-        }) => FunctionCallOutputContentItem::InputImage { image_url },
+        WrappedComputerUseOutputContentItem::Wrapped(
+            ComputerUseOutputContentItem::InputImage { image_url },
+        ) => FunctionCallOutputContentItem::InputImage { image_url },
         _ => FunctionCallOutputContentItem::Other,
     }
 }

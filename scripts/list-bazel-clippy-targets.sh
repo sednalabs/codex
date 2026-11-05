@@ -27,6 +27,8 @@ manual_rust_test_targets="$(
     --output=label \
     -- 'kind("rust_test rule", attr(tags, "manual", //codex-rs/... except //codex-rs/v8-poc/...))'
 )"
+# Do not re-add the deferred Windows exec-server Wine qualification target.
+manual_rust_test_targets="$(printf '%s\n' "${manual_rust_test_targets}" | grep -v -- '^//codex-rs/core/tests/remote_env_windows:smoke-test$' || true)"
 if [[ "${RUNNER_OS:-}" != "Windows" ]]; then
   # Non-Windows clippy jobs lint the native test binaries; the
   # Windows-cross binaries exist only for the fast Windows test leg.

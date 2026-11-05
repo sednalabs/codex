@@ -1,14 +1,18 @@
 {
-  "$defs": {
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "definitions": {
     "AbsolutePathBuf": {
-      "description": "A path that is guaranteed to be absolute and normalized (though it is not\nguaranteed to be canonicalized or exist on the filesystem).\n\nIMPORTANT: When deserializing an `AbsolutePathBuf`, a base path must be set\nusing [AbsolutePathBufGuard::new]. If no base path is set, the\ndeserialization will fail unless the path being deserialized is already\nabsolute.",
+      "description": "A path that is guaranteed to be absolute and normalized (though it is not guaranteed to be canonicalized or exist on the filesystem).\n\nIMPORTANT: When deserializing an `AbsolutePathBuf`, a base path must be set using [AbsolutePathBufGuard::new]. If no base path is set, the deserialization will fail unless the path being deserialized is already absolute.",
+      "type": "string"
+    },
+    "LegacyAppPathString": {
       "type": "string"
     },
     "SkillDependencies": {
       "properties": {
         "tools": {
           "items": {
-            "$ref": "#/$defs/SkillToolDependency"
+            "$ref": "#/definitions/SkillToolDependency"
           },
           "type": "array"
         }
@@ -28,8 +32,8 @@
         }
       },
       "required": [
-        "path",
-        "message"
+        "message",
+        "path"
       ],
       "type": "object"
     },
@@ -56,7 +60,7 @@
         "iconLarge": {
           "anyOf": [
             {
-              "$ref": "#/$defs/AbsolutePathBuf"
+              "$ref": "#/definitions/AbsolutePathBuf"
             },
             {
               "type": "null"
@@ -73,7 +77,7 @@
         "iconSmall": {
           "anyOf": [
             {
-              "$ref": "#/$defs/AbsolutePathBuf"
+              "$ref": "#/definitions/AbsolutePathBuf"
             },
             {
               "type": "null"
@@ -101,7 +105,7 @@
         "dependencies": {
           "anyOf": [
             {
-              "$ref": "#/$defs/SkillDependencies"
+              "$ref": "#/definitions/SkillDependencies"
             },
             {
               "type": "null"
@@ -117,7 +121,7 @@
         "interface": {
           "anyOf": [
             {
-              "$ref": "#/$defs/SkillInterface"
+              "$ref": "#/definitions/SkillInterface"
             },
             {
               "type": "null"
@@ -128,10 +132,17 @@
           "type": "string"
         },
         "path": {
-          "$ref": "#/$defs/AbsolutePathBuf"
+          "$ref": "#/definitions/LegacyAppPathString"
+        },
+        "pluginId": {
+          "description": "Owning plugin ID, matching `PluginSummary.id`, when known.",
+          "type": [
+            "string",
+            "null"
+          ]
         },
         "scope": {
-          "$ref": "#/$defs/SkillScope"
+          "$ref": "#/definitions/SkillScope"
         },
         "shortDescription": {
           "description": "Legacy short_description from SKILL.md. Prefer SKILL.json interface.short_description.",
@@ -142,11 +153,11 @@
         }
       },
       "required": [
-        "name",
         "description",
+        "enabled",
+        "name",
         "path",
-        "scope",
-        "enabled"
+        "scope"
       ],
       "type": "object"
     },
@@ -205,30 +216,29 @@
         },
         "errors": {
           "items": {
-            "$ref": "#/$defs/SkillErrorInfo"
+            "$ref": "#/definitions/SkillErrorInfo"
           },
           "type": "array"
         },
         "skills": {
           "items": {
-            "$ref": "#/$defs/SkillMetadata"
+            "$ref": "#/definitions/SkillMetadata"
           },
           "type": "array"
         }
       },
       "required": [
         "cwd",
-        "skills",
-        "errors"
+        "errors",
+        "skills"
       ],
       "type": "object"
     }
   },
-  "$schema": "https://json-schema.org/draft/2020-12/schema",
   "properties": {
     "data": {
       "items": {
-        "$ref": "#/$defs/SkillsListEntry"
+        "$ref": "#/definitions/SkillsListEntry"
       },
       "type": "array"
     }

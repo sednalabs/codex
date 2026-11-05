@@ -14,8 +14,9 @@ OPENAI_REPOSITORY = "openai/codex"
 # also select the matching remote executor endpoint.
 GENERIC_REMOTE_CONFIG = "buildbuddy-generic"
 OPENAI_REMOTE_CONFIG = "buildbuddy-openai"
-# These CI configurations require remote build execution. The wrapper supplies
-# an RBE configuration, which also includes the common `remote` settings.
+# These CI configurations request remote build execution. The wrapper supplies
+# an RBE configuration only for trusted workflow runs, which also includes the
+# common `remote` settings.
 REMOTE_EXECUTION_CONFIGS = {
     "--config=ci-linux",
     "--config=ci-macos",
@@ -97,6 +98,15 @@ def uses_openai_host(env: Mapping[str, str]) -> bool:
     return bool(env.get("BUILDBUDDY_API_KEY")) and is_trusted_upstream_run(env)
 
 
+def allows_remote_execution(env: Mapping[str, str]) -> bool:
+    if not env.get("BUILDBUDDY_API_KEY"):
+        return False
+    # Fork workflows may have repository variables or other supplied cache
+    # credentials, but compilation must stay on the standard GitHub runner.
+    # Local development keeps its existing keyed RBE behavior.
+    return env.get("GITHUB_ACTIONS") != "true" or is_trusted_upstream_run(env)
+
+
 def uses_remote_execution(args: Sequence[str]) -> bool:
     try:
         separator_idx = args.index("--")
@@ -110,7 +120,7 @@ def remote_config(args: Sequence[str], env: Mapping[str, str]) -> str | None:
         return None
 
     config = OPENAI_REMOTE_CONFIG if uses_openai_host(env) else GENERIC_REMOTE_CONFIG
-    if uses_remote_execution(args):
+    if uses_remote_execution(args) and allows_remote_execution(env):
         config += "-rbe"
     return config
 
@@ -188,6 +198,10 @@ def bazel_command(*args: str, env: Mapping[str, str] | None = None) -> list[str]
 
 
 def main() -> None:
+    if sys.argv[1:] == ["--remote-execution-allowed"]:
+        print("true" if allows_remote_execution(os.environ) else "false")
+        return
+
     config = remote_config(sys.argv[1:], os.environ)
     if config is None:
         print(

@@ -1,9 +1,9 @@
 #![cfg(not(target_os = "windows"))]
 
+use codex_core::TurnInputRequest;
 use codex_features::Feature;
 use codex_login::CodexAuth;
 use codex_protocol::protocol::EventMsg;
-use codex_protocol::protocol::Op;
 use codex_protocol::user_input::UserInput;
 use core_test_support::responses::ev_completed;
 use core_test_support::responses::ev_response_created;
@@ -11,8 +11,10 @@ use core_test_support::responses::mount_sse_once;
 use core_test_support::responses::sse;
 use core_test_support::responses::start_mock_server;
 use core_test_support::skip_if_no_network;
+use core_test_support::test_codex::TestCodex;
 use core_test_support::test_codex::test_codex;
 use core_test_support::wait_for_event;
+use core_test_support::wait_for_successful_turn;
 use pretty_assertions::assert_eq;
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -36,23 +38,21 @@ async fn request_body_is_zstd_compressed_for_codex_backend_when_enabled() -> any
                 .expect("test config should allow feature update");
             config.model_provider.base_url = Some(base_url);
         });
-    let codex = builder.build(&server).await?.codex;
+    let TestCodex {
+        codex,
+        thread_manager: _thread_manager,
+        ..
+    } = builder.build(&server).await?;
 
     codex
-        .submit(Op::UserInput {
-            items: vec![UserInput::Text {
-                text: "compress me".into(),
-                text_elements: Vec::new(),
-            }],
-            final_output_json_schema: None,
-            responsesapi_client_metadata: None,
-            additional_context: Default::default(),
-            thread_settings: Default::default(),
-        })
+        .start_or_steer_turn(TurnInputRequest::user_input(vec![UserInput::Text {
+            text: "compress me".into(),
+            text_elements: Vec::new(),
+        }]))
         .await?;
 
     // Wait until the task completes so the request definitely hit the server.
-    wait_for_event(&codex, |ev| matches!(ev, EventMsg::TurnComplete(_))).await;
+    wait_for_successful_turn(&codex).await;
 
     let request = request_log.single_request();
     assert_eq!(request.header("content-encoding").as_deref(), Some("zstd"));
@@ -86,19 +86,17 @@ async fn request_body_is_not_compressed_for_api_key_auth_even_when_enabled() -> 
             .expect("test config should allow feature update");
         config.model_provider.base_url = Some(base_url);
     });
-    let codex = builder.build(&server).await?.codex;
+    let TestCodex {
+        codex,
+        thread_manager: _thread_manager,
+        ..
+    } = builder.build(&server).await?;
 
     codex
-        .submit(Op::UserInput {
-            items: vec![UserInput::Text {
-                text: "do not compress".into(),
-                text_elements: Vec::new(),
-            }],
-            final_output_json_schema: None,
-            responsesapi_client_metadata: None,
-            additional_context: Default::default(),
-            thread_settings: Default::default(),
-        })
+        .start_or_steer_turn(TurnInputRequest::user_input(vec![UserInput::Text {
+            text: "do not compress".into(),
+            text_elements: Vec::new(),
+        }]))
         .await?;
 
     wait_for_event(&codex, |ev| matches!(ev, EventMsg::TurnComplete(_))).await;

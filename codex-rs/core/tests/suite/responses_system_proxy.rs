@@ -1,5 +1,7 @@
 use anyhow::Result;
 use codex_features::Feature;
+use codex_models_manager::bundled_models_response;
+use core_test_support::responses;
 use core_test_support::responses::ev_completed;
 use core_test_support::responses::ev_response_created;
 use core_test_support::responses::sse;
@@ -16,6 +18,40 @@ use wiremock::MockServer;
 const SYSTEM_PROXY_TEST_SUBPROCESS_ENV_VAR: &str = "CODEX_SYSTEM_PROXY_TEST_SUBPROCESS";
 const TEST_NAME: &str =
     "suite::responses_system_proxy::regular_responses_turn_honors_respect_system_proxy";
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn responses_beta_header_tracks_system_proxy_opt_in() -> Result<()> {
+    skip_if_no_network!(Ok(()));
+
+    for enabled in [false, true] {
+        let server = MockServer::start().await;
+        let response = responses::mount_sse_once(
+            &server,
+            sse(vec![ev_response_created("resp-1"), ev_completed("resp-1")]),
+        )
+        .await;
+        let mut builder = test_codex().with_config(move |config| {
+            config
+                .features
+                .set_enabled(Feature::RespectSystemProxy, enabled)
+                .expect("test config should allow feature update");
+            config.respect_system_proxy = enabled;
+        });
+        let test = builder.build_with_auto_env(&server).await?;
+        test.submit_turn("hello").await?;
+
+        let request = response.single_request();
+        let beta_features = request.header("x-codex-beta-features").unwrap_or_default();
+        assert_eq!(
+            beta_features
+                .split(',')
+                .any(|feature| feature == "respect_system_proxy"),
+            enabled,
+        );
+    }
+
+    Ok(())
+}
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn regular_responses_turn_honors_respect_system_proxy() -> Result<()> {
@@ -105,6 +141,9 @@ async fn regular_responses_turn_honors_respect_system_proxy() -> Result<()> {
 
     let server = MockServer::start().await;
     let mut builder = test_codex().with_config(|config| {
+        // The proxy serves one inference response; model discovery must not consume it.
+        config.model_catalog =
+            Some(bundled_models_response().expect("bundled models.json should parse"));
         config.model_provider.base_url = Some("http://responses-proxy.invalid/v1".to_string());
         config
             .features
@@ -112,7 +151,7 @@ async fn regular_responses_turn_honors_respect_system_proxy() -> Result<()> {
             .expect("test config should allow feature update");
         config.respect_system_proxy = true;
     });
-    let test = builder.build(&server).await?;
+    let test = builder.build_with_auto_env(&server).await?;
 
     test.submit_turn("hello through the system proxy").await?;
 

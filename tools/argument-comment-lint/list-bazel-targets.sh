@@ -14,6 +14,8 @@ manual_rust_test_targets="$(
     --output=label \
     -- 'kind("rust_test rule", attr(tags, "manual", //codex-rs/...))'
 )"
+# Do not re-add the Wine smoke target after its explicit no-lint exclusion.
+manual_rust_test_targets="$(printf '%s\n' "${manual_rust_test_targets}" | grep -v -- '^//codex-rs/core/tests/remote_env_windows:smoke-test$' || true)"
 if [[ "${RUNNER_OS:-}" != "Windows" ]]; then
   manual_rust_test_targets="$(printf '%s\n' "${manual_rust_test_targets}" | grep -v -- '-windows-cross-bin$' || true)"
 fi
@@ -27,12 +29,8 @@ excluded_targets="$(
 )"
 
 # The lint configuration does not register the transitioned Windows toolchain.
-# The V8 proof-of-concept pulls in the full native rusty_v8/ICU graph in cold
-# hosted frontier runs, which can consume the whole lane before linting ordinary
-# Rust call sites. Keep it covered by build/test workflows instead of this lint.
 printf '%s\n' \
   "//codex-rs/..." \
-  "-//codex-rs/v8-poc/..." \
   "-//codex-rs/core/tests/remote_env_windows:smoke-test"
 if [[ -n "${excluded_targets}" ]]; then
   printf '%s\n' "${excluded_targets}" | sed 's/^/-/'

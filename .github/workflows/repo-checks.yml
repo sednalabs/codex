@@ -74,11 +74,15 @@ jobs:
       - uses: ./.github/actions/setup-ci
 
       - name: Test Codex package builder
+        env:
+          CODEX_REPO_ROOT: ${{ github.workspace }}
         run: python3 -m unittest discover -s scripts/codex_package -p 'test_*.py'
 
       - name: Test standalone installer
         run: python3 -m unittest discover -s scripts/install -p 'test_*.py'
 
+      - name: Test macOS signing and notarization
+        run: python3 -m unittest discover -s .github/scripts/macos-signing -p 'test_*.py'
       - name: Setup pnpm
         uses: pnpm/action-setup@0ebf47130e4866e96fce0953f49152a61190b271 # v5
         with:

@@ -261,10 +261,7 @@ impl ConnectionDriver {
         };
         let target = match self.sessions.delegate_target(&session_id, wire_cell_id) {
             Ok(target) => target,
-            Err(err) => {
-                self.fail(err);
-                return false;
-            }
+            Err(err) => return self.send_delegate_response(id, Err(err)),
         };
         match self.delegates.start(id, target, request) {
             Ok(()) => true,

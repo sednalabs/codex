@@ -1,8 +1,10 @@
-# Windows remote-environment test
+# Deferred Windows remote-environment qualification
 
 This Bazel-only `test_codex` integration test runs a Windows exec-server fixture
 under pinned Wine and exercises the normal model tool-call and remote-execution
-path.
+path. Windows product qualification is deferred in this fork, so the target is
+manual and excluded from wildcard CI. Linux-native remote-environment tests
+remain part of normal CI.
 
 ## Running the test
 

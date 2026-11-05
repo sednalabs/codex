@@ -1,11 +1,11 @@
 {
-  "$defs": {
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "definitions": {
     "AbsolutePathBuf": {
-      "description": "A path that is guaranteed to be absolute and normalized (though it is not\nguaranteed to be canonicalized or exist on the filesystem).\n\nIMPORTANT: When deserializing an `AbsolutePathBuf`, a base path must be set\nusing [AbsolutePathBufGuard::new]. If no base path is set, the\ndeserialization will fail unless the path being deserialized is already\nabsolute.",
+      "description": "A path that is guaranteed to be absolute and normalized (though it is not guaranteed to be canonicalized or exist on the filesystem).\n\nIMPORTANT: When deserializing an `AbsolutePathBuf`, a base path must be set using [AbsolutePathBufGuard::new]. If no base path is set, the deserialization will fail unless the path being deserialized is already absolute.",
       "type": "string"
     }
   },
-  "$schema": "https://json-schema.org/draft/2020-12/schema",
   "description": "Write a file on the host filesystem.",
   "properties": {
     "dataBase64": {
@@ -13,13 +13,17 @@
       "type": "string"
     },
     "path": {
-      "$ref": "#/$defs/AbsolutePathBuf",
+      "allOf": [
+        {
+          "$ref": "#/definitions/AbsolutePathBuf"
+        }
+      ],
       "description": "Absolute path to write."
     }
   },
   "required": [
-    "path",
-    "dataBase64"
+    "dataBase64",
+    "path"
   ],
   "title": "FsWriteFileParams",
   "type": "object"

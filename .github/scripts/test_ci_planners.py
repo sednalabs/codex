@@ -1598,161 +1598,55 @@ class RouteSelectionTests(unittest.TestCase):
         self.assertIn("--jobs=96", clippy_run)
         self.assertIn("--loading_phase_threads=8", clippy_run)
 
-    def test_bazel_windows_tests_serialize_host_global_policy_state(self) -> None:
+    def test_bazel_windows_tests_are_explicitly_deferred_for_sedna(self) -> None:
         payload = load_workflow_payload(REPO_ROOT / ".github/workflows/bazel.yml")
-        windows_steps = (
-            ((payload.get("jobs") or {}).get("test-windows-shard") or {}).get("steps")
-            or []
+        windows_job = (payload.get("jobs") or {}).get("test-windows-shard") or {}
+        self.assertIn(
+            "github.repository != 'sednalabs/codex'",
+            windows_job.get("if") or "",
         )
-        windows_test_run = next(
-            step for step in windows_steps if step.get("name") == "bazel test shard"
-        ).get("run") or ""
-        self.assertIn("--local_test_jobs=1", windows_test_run)
+        self.assertIn(
+            "needs.plan.outputs.run_bazel == 'true'",
+            windows_job.get("if") or "",
+        )
+        deferred_job = (payload.get("jobs") or {}).get("test-windows") or {}
+        self.assertIn(
+            "Windows Bazel CI deferred (unqualified)",
+            deferred_job.get("name") or "",
+        )
+        deferred_step = next(
+            step for step in deferred_job.get("steps") or []
+            if step.get("name") == "Report Windows CI deferral for this fork"
+        )
+        self.assertEqual(
+            deferred_step.get("if"), "github.repository == 'sednalabs/codex'"
+        )
+        for job_name in ("clippy", "verify-release-build"):
+            strategy = (
+                ((payload.get("jobs") or {}).get(job_name) or {}).get("strategy") or {}
+            )
+            matrix_include = str((strategy.get("matrix") or {}).get("include", ""))
+            with self.subTest(job=job_name):
+                self.assertIn("github.repository == 'sednalabs/codex'", matrix_include)
+                self.assertIn('"windows-2022"', matrix_include)
 
-    def test_bazel_windows_native_main_uses_gnullvm_proc_macro_toolchain(self) -> None:
+    def test_bazel_windows_native_main_remains_deferred(self) -> None:
         bazel = load_workflow_payload(REPO_ROOT / ".github/workflows/bazel.yml")
-        self.assertNotIn("test-windows-native-main", bazel.get("jobs") or {})
-
-        payload = load_workflow_payload(
-            REPO_ROOT / ".github/workflows/native-windows-bazel-health.yml"
+        jobs = bazel.get("jobs") or {}
+        self.assertNotIn("test-windows-native-main", jobs)
+        self.assertFalse(
+            (REPO_ROOT / ".github/workflows/native-windows-bazel-health.yml").exists()
         )
-        self.assertEqual(payload.get("name"), "Native Windows Bazel health")
-        triggers = payload.get("on") or {}
-        self.assertEqual((triggers.get("push") or {}).get("branches"), ["main"])
-        dispatch_inputs = (triggers.get("workflow_dispatch") or {}).get("inputs") or {}
-        self.assertEqual(
-            (dispatch_inputs.get("collect_diagnostics") or {}).get("type"),
-            "boolean",
-        )
-        self.assertEqual(
-            payload.get("concurrency"),
-            {
-                "group": "native-windows-bazel-health-${{ github.ref }}",
-                "cancel-in-progress": "false",
-                "queue": "max",
-            },
-        )
-
-        native_job = (payload.get("jobs") or {}).get("test-windows-native-main") or {}
-        self.assertEqual(native_job.get("timeout-minutes"), "90")
-        self.assertEqual(native_job.get("runs-on"), "windows-2022")
-        self.assertEqual(
-            native_job.get("name"),
-            "Bazel test on windows-latest for x86_64-pc-windows-gnullvm (native health)",
-        )
-        native_steps = native_job.get("steps") or []
-        prepare_step = next(
-            (step for step in native_steps if step.get("name") == "Prepare Bazel CI"),
-            None,
-        )
-        self.assertIsNotNone(prepare_step, "Step 'Prepare Bazel CI' not found")
-        self.assertEqual(
-            (prepare_step.get("with") or {}).get("target"),
-            "x86_64-pc-windows-gnullvm",
-        )
-        native_step = next(
-            (step for step in native_steps if step.get("name") == "bazel test //..."),
-            None,
-        )
-        self.assertIsNotNone(native_step, "Step 'bazel test //...' not found")
-        self.assertNotIn("continue-on-error", native_step)
-        native_test_run = native_step.get("run") or ""
-        self.assertNotIn("--platforms=", native_test_run)
-        self.assertNotIn("--windows-msvc-host-platform", native_test_run)
-        self.assertNotIn("toolchain_linker_preference=rust", native_test_run)
+        deferred_job = (bazel.get("jobs") or {}).get("test-windows") or {}
         self.assertIn(
-            "--modify_execution_info=Rustc=+no-remote-cache",
-            native_test_run,
+            "Windows Bazel CI deferred (unqualified)",
+            deferred_job.get("name") or "",
         )
-        self.assertIn("--local_test_jobs=1", native_test_run)
-
-        module_bazel = (REPO_ROOT / "MODULE.bazel").read_text(encoding="utf-8")
-        self.assertIn(
-            '"//patches:rules_rs_windows_gnullvm_exec_toolchain.patch"',
-            module_bazel,
-        )
-        gnullvm_exec_patch = (
-            REPO_ROOT / "patches/rules_rs_windows_gnullvm_exec_toolchain.patch"
-        ).read_text(encoding="utf-8")
-        self.assertIn(
-            "SUPPORTED_RUST_EXEC_TRIPLES = SUPPORTED_EXEC_TRIPLES + [",
-            gnullvm_exec_patch,
-        )
-        self.assertIn(
-            '''+SUPPORTED_RUST_EXEC_TRIPLES = SUPPORTED_EXEC_TRIPLES + [
-+    "x86_64-pc-windows-gnullvm",
-+    "aarch64-pc-windows-gnullvm",
-+]''',
-            gnullvm_exec_patch,
-        )
-        self.assertIn(
-            "@@ -61,0 +62,7 @@ SUPPORTED_EXEC_TRIPLES = [",
-            gnullvm_exec_patch,
-        )
-        for hunk, expected_old, observed_old, expected_new, observed_new in (
-            unified_diff_hunk_line_counts(gnullvm_exec_patch)
-        ):
-            with self.subTest(hunk=hunk):
-                self.assertEqual(observed_old, expected_old)
-                self.assertEqual(observed_new, expected_new)
-        # `//:local_windows` inherits the runner CPU. Each compiler-tool
-        # declaration must therefore resolve using full target-triple
-        # constraints, including ARM64 gnullvm rather than an MSVC fallback.
-        self.assertEqual(
-            gnullvm_exec_patch.count(
-                "exec_compatible_with = triple_to_rust_constraint_set(triple),"
-            ),
-            3,
-        )
-        self.assertEqual(
-            gnullvm_exec_patch.count("execs = SUPPORTED_RUST_EXEC_TRIPLES"),
-            3,
-        )
-        self.assertIn(
-            "if triple in SUPPORTED_EXEC_TRIPLES and exec_triple.arch == host_arch "
-            "and exec_triple.system == host_os:",
-            gnullvm_exec_patch,
-        )
-        self.assertEqual(
-            gnullvm_exec_patch.count(
-                "if version in miri_versions and triple in SUPPORTED_EXEC_TRIPLES:"
-            ),
-            2,
-        )
-        self.assertIn(
-            "name = \"miri_{}_{}_{}\".format(exec_triple.system, exec_triple.arch, version_key),",
-            gnullvm_exec_patch,
-        )
-
-        execution_logs_upload = next(
-            step for step in native_steps if step.get("name") == "Upload Bazel execution logs"
-        )
-        self.assertEqual(
-            (execution_logs_upload.get("with") or {}).get("name"),
-            "bazel-execution-logs-test-windows-native-x86_64-pc-windows-gnullvm",
-        )
-
-        diagnostics_step = next(
-            step
-            for step in native_steps
-            if step.get("name") == "Collect native Windows Bazel diagnostics"
-        )
-        self.assertIn("failure()", diagnostics_step.get("if") or "")
-        self.assertIn("inputs.collect_diagnostics", diagnostics_step.get("if") or "")
-        self.assertIn(
-            "collect-native-windows-bazel-diagnostics.ps1",
-            diagnostics_step.get("run") or "",
-        )
-        diagnostics_upload = next(
-            step
-            for step in native_steps
-            if step.get("name") == "Upload native Windows Bazel diagnostics"
-        )
-        self.assertEqual((diagnostics_upload.get("with") or {}).get("retention-days"), "3")
 
     def test_native_windows_health_analyzes_arm64_gnullvm_rust_toolchain_selection(
         self,
     ) -> None:
+        self.skipTest("native Windows validation is explicitly deferred")
         payload = load_workflow_payload(
             REPO_ROOT / ".github/workflows/native-windows-bazel-health.yml"
         )
@@ -1974,22 +1868,27 @@ class RouteSelectionTests(unittest.TestCase):
 
         test_matrix = (
             ((jobs.get("test") or {}).get("strategy") or {}).get("matrix") or {}
-        ).get("include") or []
-        self.assertEqual(
-            {(entry.get("os"), entry.get("target")) for entry in test_matrix},
-            {
-                ("macos-15", "aarch64-apple-darwin"),
-                ("macos-15-intel", "x86_64-apple-darwin"),
-                ("ubuntu-24.04", "x86_64-unknown-linux-gnu"),
-                ("ubuntu-24.04", "x86_64-unknown-linux-musl"),
-            },
-        )
+        ).get("include") or ""
+        self.assertIsInstance(test_matrix, str)
+        for target in (
+            "aarch64-apple-darwin",
+            "x86_64-apple-darwin",
+            "x86_64-unknown-linux-gnu",
+            "x86_64-unknown-linux-musl",
+        ):
+            self.assertIn(f'"target":"{target}"', test_matrix)
 
-        for job_name in ["test", "clippy", "verify-release-build"]:
+        expected_job_conditions = {
+            "test": "${{ needs.plan.outputs.run_bazel == 'true' }}",
+            "test-windows-shard": "${{ github.repository != 'sednalabs/codex' && needs.plan.outputs.run_bazel == 'true' }}",
+            "clippy": "${{ needs.plan.outputs.run_bazel == 'true' && (github.event_name != 'workflow_dispatch' || !inputs.w14939_focused_tests) }}",
+            "verify-release-build": "${{ needs.plan.outputs.run_bazel == 'true' && (github.event_name != 'workflow_dispatch' || !inputs.w14939_focused_tests) }}",
+        }
+        for job_name, expected_condition in expected_job_conditions.items():
             with self.subTest(job=job_name):
                 job = jobs.get(job_name) or {}
                 self.assertEqual(job.get("needs"), "plan")
-                self.assertEqual(job.get("if"), "${{ needs.plan.outputs.run_bazel == 'true' }}")
+                self.assertEqual(job.get("if"), expected_condition)
 
         windows_shard = jobs.get("test-windows-shard") or {}
         self.assertEqual(windows_shard.get("needs"), "plan")
@@ -2039,72 +1938,102 @@ class RouteSelectionTests(unittest.TestCase):
             ).get("run")
             or ""
         )
+        results_env = next(
+            step
+            for step in (results_job.get("steps") or [])
+            if step.get("name") == "Require the selected Bazel CI mode"
+        ).get("env") or {}
+        self.assertEqual(
+            results_env.get("WINDOWS_DEFERRED"),
+            "${{ github.repository == 'sednalabs/codex' }}",
+        )
+        self.assertEqual(
+            results_env.get("FOCUSED_TESTS"),
+            "${{ github.event_name == 'workflow_dispatch' && inputs.w14939_focused_tests }}",
+        )
         self.assertIn('if mode == "docs_only"', results_run)
         self.assertIn('elif mode == "full"', results_run)
         self.assertIn('elif mode == "observer_only"', results_run)
         self.assertIn('require("docs-only", "success")', results_run)
         self.assertIn('require(job, "skipped")', results_run)
-        self.assertIn('require(job, "success")', results_run)
+        self.assertIn('require("test", "success")', results_run)
+        self.assertIn(
+            '"skipped" if os.environ.get("WINDOWS_DEFERRED") == "true" else "success"',
+            results_run,
+        )
+        self.assertIn('if os.environ.get("FOCUSED_TESTS") == "true":', results_run)
 
         heredoc_start = "python3 - <<'PY'\n"
         self.assertIn(heredoc_start, results_run)
         gate_script = results_run.split(heredoc_start, 1)[1].rsplit("\nPY", 1)[0]
-        for repository, full_windows_shard_result in [
-            ("sednalabs/codex", "skipped"),
-            ("openai/codex", "success"),
+        for repository, windows_deferred in [
+            ("sednalabs/codex", "true"),
+            ("openai/codex", "false"),
         ]:
             for mode, docs_result, normal_result in [
                 ("docs_only", "success", "skipped"),
                 ("observer_only", "skipped", "skipped"),
                 ("full", "skipped", "success"),
             ]:
-                with self.subTest(repository=repository, mode=mode):
-                    windows_shard_result = (
-                        full_windows_shard_result if mode == "full" else "skipped"
-                    )
-                    needs = {
-                        "plan": {"result": "success", "outputs": {"mode": mode}},
-                        "docs-only": {"result": docs_result},
-                        "observer-only": {"result": "success" if mode == "observer_only" else "skipped"},
-                        "test": {"result": normal_result},
-                        "test-windows-shard": {"result": windows_shard_result},
-                        "test-windows": {"result": normal_result},
-                        "clippy": {"result": normal_result},
-                        "verify-release-build": {"result": normal_result},
-                    }
-                    proc = subprocess.run(
-                        ["python3", "-c", gate_script],
-                        check=False,
-                        capture_output=True,
-                        text=True,
-                        env={
+                focused_options = (
+                    ["false", "true"] if mode == "full" else ["false"]
+                )
+                for focused in focused_options:
+                    with self.subTest(repository=repository, mode=mode, focused=focused):
+                        windows_shard_result = (
+                            "skipped"
+                            if mode != "full" or windows_deferred == "true"
+                            else "success"
+                        )
+                        needs = {
+                            "plan": {"result": "success", "outputs": {"mode": mode}},
+                            "docs-only": {"result": docs_result},
+                            "observer-only": {"result": "success" if mode == "observer_only" else "skipped"},
+                            "test": {"result": normal_result},
+                            "test-windows-shard": {"result": windows_shard_result},
+                            "test-windows": {"result": normal_result},
+                            "clippy": {
+                                "result": "skipped" if focused == "true" else normal_result
+                            },
+                            "verify-release-build": {
+                                "result": "skipped" if focused == "true" else normal_result
+                            },
+                        }
+                        test_env = {
                             **os.environ,
                             "GITHUB_REPOSITORY": repository,
                             "NEEDS_JSON": json.dumps(needs),
-                        },
-                    )
-                    self.assertEqual(proc.returncode, 0, proc.stderr)
-
-                    if mode == "full":
-                        wrong_windows_result = (
-                            "success" if full_windows_shard_result == "skipped" else "skipped"
-                        )
-                        wrong_needs = {
-                            **needs,
-                            "test-windows-shard": {"result": wrong_windows_result},
+                            "WINDOWS_DEFERRED": windows_deferred,
+                            "FOCUSED_TESTS": focused,
                         }
-                        wrong_proc = subprocess.run(
+                        proc = subprocess.run(
                             ["python3", "-c", gate_script],
                             check=False,
                             capture_output=True,
                             text=True,
-                            env={
-                                **os.environ,
-                                "GITHUB_REPOSITORY": repository,
-                                "NEEDS_JSON": json.dumps(wrong_needs),
-                            },
+                            env=test_env,
                         )
-                        self.assertNotEqual(wrong_proc.returncode, 0)
+                        self.assertEqual(proc.returncode, 0, proc.stderr)
+
+                        if mode == "full":
+                            wrong_windows_result = (
+                                "success" if windows_shard_result == "skipped" else "skipped"
+                            )
+                            wrong_needs = {
+                                **needs,
+                                "test-windows-shard": {"result": wrong_windows_result},
+                            }
+                            wrong_proc = subprocess.run(
+                                ["python3", "-c", gate_script],
+                                check=False,
+                                capture_output=True,
+                                text=True,
+                                env={
+                                    **test_env,
+                                    "NEEDS_JSON": json.dumps(wrong_needs),
+                                },
+                            )
+                            self.assertNotEqual(wrong_proc.returncode, 0)
 
     def test_bazel_cache_writes_are_limited_to_trusted_post_merge_pushes(self) -> None:
         setup_action = load_workflow_payload(REPO_ROOT / ".github/actions/setup-bazel-ci/action.yml")
@@ -2195,22 +2124,8 @@ class RouteSelectionTests(unittest.TestCase):
                     save_step.get("if") or "",
                 )
 
-        native_health = load_workflow_payload(
-            REPO_ROOT / ".github/workflows/native-windows-bazel-health.yml"
-        )
-        native_steps = (
-            ((native_health.get("jobs") or {}).get("test-windows-native-main") or {}).get(
-                "steps"
-            )
-            or []
-        )
-        native_cache_save = next(
-            step for step in native_steps if step.get("name") == "Save bazel repository cache"
-        )
-        self.assertEqual(native_cache_save.get("continue-on-error"), "true")
-        self.assertIn(
-            "steps.prepare_bazel.outputs.repository-cache-write-enabled == 'true'",
-            native_cache_save.get("if") or "",
+        self.assertFalse(
+            (REPO_ROOT / ".github/workflows/native-windows-bazel-health.yml").exists()
         )
 
     def test_bazel_ci_applies_caller_flags_after_remote_config(self) -> None:
@@ -5516,12 +5431,23 @@ class ValidationPlanScriptTests(unittest.TestCase):
             tool_values,
             ["sccache@0.7.5", "nextest@0.9.103", "nextest@0.9.103"],
         )
+        shard_env = ((payload.get("jobs") or {}).get("shard") or {}).get("env") or {}
+        self.assertEqual(shard_env.get("CODEX_CI_TEST_SHARD"), "${{ matrix.shard }}")
+        self.assertEqual(shard_env.get("CODEX_CI_TEST_SHARD_COUNT"), "4")
         workflow_text = (
             REPO_ROOT / ".github/workflows/rust-ci-full-nextest-platform.yml"
         ).read_text(encoding="utf-8")
         self.assertNotIn("run_id }}-${{ matrix.shard", workflow_text)
         self.assertNotIn("remote-env-target-${{ matrix.shard", workflow_text)
         self.assertNotIn('hash:${{ matrix.shard }}/4', workflow_text)
+        self.assertIn(
+            'codex-remote-test-env-${GITHUB_RUN_ID}-${CODEX_CI_TEST_SHARD}',
+            workflow_text,
+        )
+        self.assertIn(
+            '--partition "hash:${CODEX_CI_TEST_SHARD}/${CODEX_CI_TEST_SHARD_COUNT}"',
+            workflow_text,
+        )
 
     def test_rust_ci_full_nextest_platform_keeps_inputs_out_of_shell_source(self) -> None:
         payload = load_workflow_payload(
@@ -5530,15 +5456,15 @@ class ValidationPlanScriptTests(unittest.TestCase):
         jobs = payload.get("jobs") or {}
 
         self.assertEqual(
-            (jobs["archive"].get("env") or {}).get("INPUT_TARGET"),
+            (jobs["archive"].get("env") or {}).get("CODEX_CI_TARGET"),
             "${{ inputs.target }}",
         )
         self.assertEqual(
-            (jobs["archive"].get("env") or {}).get("INPUT_PROFILE"),
+            (jobs["archive"].get("env") or {}).get("CODEX_CI_PROFILE"),
             "${{ inputs.profile }}",
         )
         self.assertEqual(
-            (jobs["shard"].get("env") or {}).get("INPUT_TEST_THREADS"),
+            (jobs["shard"].get("env") or {}).get("CODEX_CI_TEST_THREADS"),
             "${{ inputs.test_threads }}",
         )
 
@@ -6254,6 +6180,7 @@ class ValidationPlanScriptTests(unittest.TestCase):
             "codex-rs-rest-b",
             "codex-rs-rest-c",
             "codex-rs-rest-d",
+            "codex-rs-rest-e",
             "tools",
         ):
             self.assertIn(f"{rust_scope})", scoped_rust_config_run)
@@ -6292,6 +6219,7 @@ class ValidationPlanScriptTests(unittest.TestCase):
             "codex-rs-rest-b",
             "codex-rs-rest-c",
             "codex-rs-rest-d",
+            "codex-rs-rest-e",
         )
         for rust_scope in rest_scopes:
             self.assertIn(f"{rust_scope})", scoped_rust_config_run)
@@ -6317,20 +6245,22 @@ class ValidationPlanScriptTests(unittest.TestCase):
                 text=True,
             ).stdout.splitlines()
         )
+        expected_tracked_rest_paths = {
+            f"codex-rs/{path}"
+            for path in tracked_codex_rs_dirs
+            if path not in {
+                "core",
+                "tui",
+                *(service_path.split("/", 1)[1] for service_path in service_paths),
+            }
+        }
+        actual_rest_paths = set(all_rest_paths)
+        self.assertTrue(expected_tracked_rest_paths <= actual_rest_paths)
+        # Keep these two inherited path entries stable for existing CodeQL
+        # configuration identity; neither directory exists in this tree.
         self.assertEqual(
-            set(rest_paths["codex-rs-rest-a"])
-            | set(rest_paths["codex-rs-rest-b"])
-            | set(rest_paths["codex-rs-rest-c"])
-            | set(rest_paths["codex-rs-rest-d"]),
-            {
-                f"codex-rs/{path}"
-                for path in tracked_codex_rs_dirs
-                if path not in {
-                    "core",
-                    "tui",
-                    *(service_path.split("/", 1)[1] for service_path in service_paths),
-                }
-            },
+            actual_rest_paths - expected_tracked_rest_paths,
+            {"codex-rs/mcp-server", "codex-rs/runtime-proof"},
         )
         self.assertIn("security-and-quality", scoped_rust_config_run)
         self.assertIn("paths-ignore:", scoped_rust_config_run)
@@ -6533,10 +6463,12 @@ class ValidationPlanScriptTests(unittest.TestCase):
         self.assertIn("jobHasPublishingSink", workflow_security)
         self.assertIn("jobEffectiveWritePermission", workflow_security)
         self.assertIn("jobHasRepoApprovedProvenance", workflow_security)
+        self.assertIn("predicate jobGithubScriptCalls(Job job, string apiCall)", workflow_security)
         self.assertIn(
-            'jobUsesActionMatching(job, "(?i)^actions/github-script(@.*)?$", _)',
+            'step.getCallee().regexpMatch("(?i)^actions/github-script$")',
             workflow_security,
         )
+        self.assertIn('script = step.getArgumentExpr("script")', workflow_security)
         self.assertFalse((REPO_ROOT / ".github/codeql/codeql-rust-pr.yml").exists())
         rust_config = yaml.load(
             (REPO_ROOT / ".github/codeql/codeql-rust.yml").read_text(encoding="utf-8"),
@@ -8082,13 +8014,24 @@ class ValidationPlanScriptTests(unittest.TestCase):
         range_step = next(
             step for step in check_steps if step.get("name") == "Determine comparison range"
         )
+        range_env = range_step.get("env") or {}
+        self.assertEqual(range_env.get("EVENT_NAME"), "${{ github.event_name }}")
+        self.assertEqual(
+            range_env.get("MERGE_GROUP_BASE_SHA"),
+            "${{ github.event.merge_group.base_sha || '' }}",
+        )
+        self.assertEqual(range_env.get("CURRENT_SHA"), "${{ github.sha }}")
         run_script = range_step.get("run") or ""
         self.assertIn(
-            'if [[ "${{ github.event_name }}" == "merge_group" ]]; then',
+            'elif [[ "${EVENT_NAME}" == "merge_group" ]]; then',
             run_script,
         )
-        self.assertIn("github.event.merge_group.base_sha", run_script)
-        self.assertIn("head='${{ github.sha }}'", run_script)
+        self.assertIn('base="${MERGE_GROUP_BASE_SHA}"', run_script)
+        self.assertIn('head="${CURRENT_SHA}"', run_script)
+        self.assertIn(
+            "Unable to determine the exact blob-size comparison range",
+            run_script,
+        )
 
 
 class BazelCiModeScriptTests(unittest.TestCase):
@@ -8336,6 +8279,7 @@ class RustCiModeScriptTests(unittest.TestCase):
 
         self.assertIn("needs.changed.outputs.run_argument_comment_lint_package", results_run)
         self.assertIn("needs.changed.outputs.run_argument_comment_lint_prebuilt", results_run)
+        self.assertIn("needs.changed.outputs.run_argument_comment_lint_bazel", results_run)
         self.assertIn("needs.changed.outputs.run_general", results_run)
         self.assertIn("needs.changed.outputs.run_cargo_shear", results_run)
         self.assertIn("needs.changed.outputs.run_incremental_validation", results_run)
@@ -8349,6 +8293,7 @@ class RustCiModeScriptTests(unittest.TestCase):
         self.assertIn("incremental_validation failed", results_run)
         no_relevant_gate = results_run.split("No relevant changes -> CI not required.")[0]
         self.assertIn("NEEDS_CHANGED_OUTPUTS_WORKFLOWS", no_relevant_gate)
+        self.assertIn("NEEDS_CHANGED_OUTPUTS_ARGUMENT_COMMENT_LINT_BAZEL", no_relevant_gate)
         self.assertIn("needs.changed.outputs.run_incremental_validation", no_relevant_gate)
         self.assertNotIn(
             'NEEDS_CHANGED_OUTPUTS_CODEX}" == \'true\' || "${NEEDS_CHANGED_OUTPUTS_WORKFLOWS}" == \'true\'',
@@ -8398,7 +8343,7 @@ class RustCiModeScriptTests(unittest.TestCase):
         self.assertNotIn("--workspace", helper)
         self.assertIn("steps.targeted_clippy_packages.outputs.packages", clippy.get("if") or "")
 
-    def test_rust_ci_argument_comment_lint_uses_single_cached_bazel_action(self) -> None:
+    def test_rust_ci_keeps_prebuilt_lint_and_adds_linux_macos_bazel_coverage(self) -> None:
         payload = load_workflow_payload(REPO_ROOT / ".github/workflows/rust-ci.yml")
         jobs = payload.get("jobs") or {}
 
@@ -8411,6 +8356,7 @@ class RustCiModeScriptTests(unittest.TestCase):
             or ""
         )
         self.assertIn('"timeout_minutes": 30', matrix_plan_run)
+        self.assertIn('"runner": "macos-15"', matrix_plan_run)
 
         arglint_job = jobs.get("argument_comment_lint_prebuilt") or {}
         self.assertEqual(arglint_job.get("needs"), ["changed", "matrix_plan"])
@@ -8433,6 +8379,46 @@ class RustCiModeScriptTests(unittest.TestCase):
         self.assertEqual(len(lint_steps), 1)
         self.assertEqual(lint_steps[0].get("uses"), "./.github/actions/run-argument-comment-lint")
         self.assertNotIn("buildbuddy-api-key", lint_steps[0].get("with") or {})
+
+        bazel_job = jobs.get("argument_comment_lint_bazel") or {}
+        self.assertEqual(bazel_job.get("needs"), ["changed", "matrix_plan"])
+        self.assertEqual(
+            bazel_job.get("if"),
+            "${{ needs.changed.outputs.run_argument_comment_lint_bazel == 'true' }}",
+        )
+        self.assertEqual(
+            (bazel_job.get("strategy") or {}).get("matrix"),
+            "${{ fromJSON(needs.matrix_plan.outputs.argument_comment_bazel_matrix) }}",
+        )
+        bazel_steps = bazel_job.get("steps") or []
+        self.assertIn(
+            "./.github/actions/setup-bazel-ci",
+            [step.get("uses") for step in bazel_steps],
+        )
+        release_step = next(
+            step
+            for step in bazel_steps
+            if step.get("name") == "Resolve app-server/exec-server compatibility releases"
+        )
+        self.assertEqual(release_step.get("if"), "${{ runner.os == 'Linux' }}")
+        self.assertIn("resolve_exec_server_releases.py", release_step.get("run") or "")
+        bazel_run = next(
+            step.get("run") or ""
+            for step in bazel_steps
+            if step.get("name") == "Run argument comment lint on codex-rs via Bazel"
+        )
+        self.assertIn("list-bazel-targets.sh", bazel_run)
+        self.assertIn("--config=argument-comment-lint", bazel_run)
+        self.assertIn("--keep_going", bazel_run)
+
+        results = jobs.get("results") or {}
+        self.assertIn("argument_comment_lint_bazel", results.get("needs") or [])
+        results_run = next(
+            step.get("run") or ""
+            for step in results.get("steps") or []
+            if step.get("name") == "Summarize"
+        )
+        self.assertIn("needs.changed.outputs.run_argument_comment_lint_bazel", results_run)
 
     def test_argument_comment_lint_platform_workflow_is_pr_only_advisory_coverage(self) -> None:
         payload = load_workflow_payload(
@@ -8474,12 +8460,6 @@ class RustCiModeScriptTests(unittest.TestCase):
             {
                 "include": [
                     {"name": "macOS", "runner": "macos-15", "timeout_minutes": "30"},
-                    {
-                        "name": "Windows",
-                        "runner": "windows-x64",
-                        "runs_on": "windows-2022",
-                        "timeout_minutes": "30",
-                    },
                 ]
             },
         )
@@ -8887,6 +8867,7 @@ class RustCiModeScriptTests(unittest.TestCase):
             ),
         )
         self.assertEqual(outputs["run_argument_comment_lint_prebuilt"], "false")
+        self.assertEqual(outputs["run_argument_comment_lint_bazel"], "true")
 
     def test_light_followup_accepts_small_workflow_catalog_delta_after_green_head(self) -> None:
         green_sha = self.repo.commit(
@@ -8947,6 +8928,7 @@ class RustCiModeScriptTests(unittest.TestCase):
         self.assertEqual(outputs["run_general"], "false")
         self.assertEqual(outputs["run_cargo_shear"], "false")
         self.assertEqual(outputs["run_argument_comment_lint_prebuilt"], "false")
+        self.assertEqual(outputs["run_argument_comment_lint_bazel"], "true")
         self.assertEqual(outputs["run_argument_comment_lint_package"], "false")
         self.assertEqual(outputs["run_incremental_validation"], "true")
         self.assertEqual(
@@ -8970,6 +8952,7 @@ class RustCiModeScriptTests(unittest.TestCase):
         self.assertEqual(outputs["codex"], "false")
         self.assertEqual(outputs["workflows"], "false")
         self.assertEqual(outputs["run_incremental_validation"], "true")
+        self.assertEqual(outputs["run_argument_comment_lint_bazel"], "false")
         self.assertEqual(
             outputs["incremental_lanes"],
             "codex.downstream-docs-check,codex.downstream-divergence-audit",
@@ -8986,6 +8969,7 @@ class RustCiModeScriptTests(unittest.TestCase):
         self.assertEqual(outputs["run_cargo_shear"], "false")
         self.assertEqual(outputs["run_argument_comment_lint_package"], "false")
         self.assertEqual(outputs["run_argument_comment_lint_prebuilt"], "false")
+        self.assertEqual(outputs["run_argument_comment_lint_bazel"], "false")
 
     def test_non_rust_codex_rs_asset_pr_is_irrelevant_to_rust_ci(self) -> None:
         outputs = self.run_rust_ci_mode(
@@ -9002,6 +8986,31 @@ class RustCiModeScriptTests(unittest.TestCase):
         self.assertEqual(outputs["run_cargo_shear"], "false")
         self.assertEqual(outputs["run_argument_comment_lint_package"], "false")
         self.assertEqual(outputs["run_argument_comment_lint_prebuilt"], "false")
+        self.assertEqual(outputs["run_argument_comment_lint_bazel"], "true")
+
+    def test_argument_comment_bazel_lint_preserves_candidate_trigger_paths(self) -> None:
+        trigger_paths = [
+            "codex-rs/core/src/lib.rs",
+            "tools/argument-comment-lint/src/lib.rs",
+            "justfile",
+            "defs.bzl",
+            "workspace_root_test_launcher.sh.tpl",
+            "workspace_root_test_launcher.bat.tpl",
+        ]
+        for path in trigger_paths:
+            with self.subTest(path=path):
+                self.assertTrue(
+                    RESOLVE_RUST_CI_MODE.classify_files([path])["argument_comment_lint_bazel"]
+                )
+
+        self.assertFalse(
+            RESOLVE_RUST_CI_MODE.classify_files(
+                [".github/workflows/rust-ci.yml"]
+            )["argument_comment_lint_bazel"]
+        )
+        self.assertFalse(
+            RESOLVE_RUST_CI_MODE.classify_files(["docs/ci.md"])["argument_comment_lint_bazel"]
+        )
 
     def test_rust_build_script_pr_still_triggers_rust_ci(self) -> None:
         outputs = self.run_rust_ci_mode(
@@ -9015,6 +9024,7 @@ class RustCiModeScriptTests(unittest.TestCase):
         self.assertEqual(outputs["run_general"], "true")
         self.assertEqual(outputs["run_cargo_shear"], "true")
         self.assertEqual(outputs["run_argument_comment_lint_prebuilt"], "true")
+        self.assertEqual(outputs["run_argument_comment_lint_bazel"], "true")
 
     def test_review_request_pr_routes_to_custom_prompt_targeted_validation(self) -> None:
         outputs = self.run_rust_ci_mode(
@@ -10107,15 +10117,32 @@ fi
             },
         )
 
-    def test_prerelease_main_command_dispatches_explicit_markerless_opt_in(self) -> None:
-        justfile = (REPO_ROOT / "justfile").read_text(encoding="utf-8")
-        self.assertIn("prerelease-main:", justfile)
-        self.assertIn(
-            "gh workflow run sedna-release.yml --repo sednalabs/codex --ref main "
-            "-f channel=prerelease -f draft=false -f macos_release_mode=preview "
-            "-f allow_markerless_prerelease=true",
-            justfile,
+    def test_sedna_release_markerless_prerelease_requires_manual_opt_in(self) -> None:
+        payload = load_workflow_payload(
+            REPO_ROOT / ".github/workflows/sedna-release.yml"
         )
+        dispatch_input = (
+            ((payload.get("on") or {}).get("workflow_dispatch") or {}).get("inputs") or {}
+        ).get("allow_markerless_prerelease") or {}
+        self.assertEqual(dispatch_input.get("type"), "boolean")
+        self.assertIn(dispatch_input.get("default"), (False, "false"))
+        release_workflow = REPO_ROOT / ".github/workflows/sedna-release.yml"
+        resolve_step = workflow_step_by_name(
+            release_workflow,
+            "resolve",
+            "Resolve release metadata",
+        )
+        self.assertEqual(
+            (resolve_step.get("env") or {}).get("INPUT_ALLOW_MARKERLESS_PRERELEASE"),
+            "${{ inputs.allow_markerless_prerelease }}",
+        )
+        resolve_run = resolve_step.get("run") or ""
+        self.assertIn(
+            'elif [[ "${INPUT_CHANNEL}" == "prerelease" && '
+            '"${INPUT_ALLOW_MARKERLESS_PRERELEASE}" == "true" ]]; then',
+            resolve_run,
+        )
+        self.assertIn("args+=(--require-marker --missing-marker error)", resolve_run)
 
     def test_sedna_release_main_pushes_are_routed_before_publisher(self) -> None:
         release_payload = load_workflow_payload(
@@ -10654,10 +10681,12 @@ fi
         daemon_update_loop = (
             REPO_ROOT / "codex-rs/app-server-daemon/src/update_loop.rs"
         ).read_text(encoding="utf-8")
-        sedna_updater = daemon_update_loop.split(
-            "async fn install_latest_sedna_standalone", 1
+        installer_runner = daemon_update_loop.split(
+            "async fn run_installer_script(", 1
         )[1]
-        self.assertIn(".stderr(Stdio::inherit())", sedna_updater)
+        self.assertIn(".stderr(Stdio::piped())", installer_runner)
+        self.assertIn("INSTALLER_STDERR_TAIL_BYTES", installer_runner)
+        self.assertIn("standalone Codex updater exited with status", installer_runner)
         self.assertEqual(installer.count('--source-digest "$expected_source_commit"'), 3)
         self.assertEqual(installer.count('--signer-digest "$expected_workflow_sha"'), 3)
         self.assertEqual(

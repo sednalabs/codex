@@ -14,7 +14,6 @@ use codex_http_client::HttpClient;
 use codex_http_client::HttpError;
 use codex_protocol::auth::PlanType as AuthPlanType;
 use codex_protocol::protocol::SessionSource;
-use codex_utils_rustls_provider::ensure_rustls_crypto_provider;
 use crypto_box::SecretKey as Curve25519SecretKey;
 use ed25519_dalek::Signer as _;
 use ed25519_dalek::SigningKey;
@@ -271,8 +270,6 @@ pub fn decode_agent_identity_jwt(
     let Some(jwks) = jwks else {
         return decode_agent_identity_jwt_payload(jwt);
     };
-
-    ensure_rustls_crypto_provider();
 
     let header = decode_header(jwt).context("failed to decode agent identity JWT header")?;
     let kid = header
@@ -831,7 +828,6 @@ mod tests {
     }
 
     fn test_rsa_encoding_key() -> EncodingKey {
-        ensure_rustls_crypto_provider();
         EncodingKey::from_rsa_pem(
             br#"-----BEGIN PRIVATE KEY-----
 MIIEvgIBADANBgkqhkiG9w0BAQEFAASCBKgwggSkAgEAAoIBAQDWpAXYypOsYAwO

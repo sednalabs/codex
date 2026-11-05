@@ -8,9 +8,8 @@ use std::process::Stdio;
 use codex_protocol::models::ContentItem;
 use codex_protocol::models::ResponseItem;
 use codex_protocol::protocol::EventMsg;
-use codex_protocol::protocol::RolloutItem;
-use codex_protocol::protocol::RolloutLine;
 use codex_protocol::protocol::strip_user_message_prefix;
+use futures::future::join_all;
 use regex::Regex;
 use regex::RegexBuilder;
 use tokio::process::Command;
@@ -18,6 +17,8 @@ use tokio::process::Command;
 use super::ARCHIVED_SESSIONS_SUBDIR;
 use super::SESSIONS_SUBDIR;
 use super::compression;
+use crate::ResponseItemEnvelope;
+use crate::RolloutItem;
 
 const MATCH_CONTEXT_BEFORE_CHARS: usize = 48;
 const MATCH_CONTEXT_AFTER_CHARS: usize = 96;
@@ -71,7 +72,7 @@ async fn ripgrep_rollout_paths(
         return Ok(Some(HashSet::new()));
     }
 
-    let output = match Command::new(rg_command)
+    let output = match Command::from(codex_utils_process::background_command(rg_command))
         .arg("-l")
         .arg("--fixed-strings")
         .arg("--ignore-case")
@@ -124,6 +125,7 @@ async fn scan_rollout_matches(
     let mut matches = HashMap::new();
     let mut dirs = vec![root.to_path_buf()];
     let json_search_term = case_insensitive_literal_regex(json_search_term)?;
+    let mut patterns = None;
 
     while let Some(dir) = dirs.pop() {
         let mut entries = match tokio::fs::read_dir(dir).await {
@@ -146,7 +148,16 @@ async fn scan_rollout_matches(
             };
             if rollout_file.is_compressed() {
                 if let Some(snippet) =
-                    first_rollout_content_match_snippet(rollout_file.path(), search_term).await?
+                    first_content_match_snippet(rollout_file.path(), search_term, &mut patterns)
+                        .await
+                        .unwrap_or_else(|err| {
+                            tracing::warn!(
+                                path = %rollout_file.path().display(),
+                                %err,
+                                "Failed to search compressed rollout"
+                            );
+                            None
+                        })
                 {
                     matches.insert(
                         compression::plain_rollout_path(rollout_file.path()),
@@ -178,17 +189,34 @@ pub async fn first_rollout_content_match_snippet(
     path: &Path,
     search_term: &str,
 ) -> io::Result<Option<String>> {
-    let mut lines = compression::open_rollout_line_reader(path).await?;
-    let json_search_term = case_insensitive_literal_regex(json_escaped_search_term(search_term)?)?;
-    let search_term = case_insensitive_literal_regex(search_term)?;
-    while let Some(line) = lines.next_line().await? {
-        if json_search_term.is_match(line.as_str())
-            && let Some(snippet) = content_match_snippet(line.as_str(), &search_term)
-        {
-            return Ok(Some(snippet));
-        }
-    }
-    Ok(None)
+    first_content_match_snippet(path, search_term, &mut None).await
+}
+
+async fn first_content_match_snippet(
+    path: &Path,
+    search_term: &str,
+    patterns: &mut Option<(Regex, Regex)>,
+) -> io::Result<Option<String>> {
+    let lines = compression::open_rollout_line_reader(path).await?;
+    // Keep compilation errors inside the caller's per-file error handler.
+    let (json_search_term, search_term) = match patterns {
+        Some(patterns) => patterns,
+        None => patterns.insert((
+            case_insensitive_literal_regex(json_escaped_search_term(search_term)?)?,
+            case_insensitive_literal_regex(search_term)?,
+        )),
+    };
+    let json_search_term = json_search_term.clone();
+    let search_term = search_term.clone();
+    lines
+        .find_map(move |line| {
+            if json_search_term.is_match(line) {
+                content_match_snippet(line, &search_term)
+            } else {
+                None
+            }
+        })
+        .await
 }
 
 async fn scan_compressed_rollout_matches(
@@ -196,6 +224,7 @@ async fn scan_compressed_rollout_matches(
     search_term: &str,
 ) -> io::Result<RolloutSearchMatches> {
     let mut matches = HashMap::new();
+    let mut paths = Vec::new();
     let mut dirs = vec![root.to_path_buf()];
 
     while let Some(dir) = dirs.pop() {
@@ -220,17 +249,39 @@ async fn scan_compressed_rollout_matches(
             if !rollout_file.is_compressed() {
                 continue;
             }
+            paths.push(rollout_file.into_path());
+        }
+    }
+
+    const COMPRESSED_SEARCH_WORKERS: usize = 4;
+    let scan = async |paths: &[PathBuf]| {
+        let mut matches = HashMap::new();
+        let mut patterns = None;
+        for path in paths {
             if let Some(snippet) =
-                first_rollout_content_match_snippet(rollout_file.path(), search_term).await?
+                first_content_match_snippet(path.as_path(), search_term, &mut patterns)
+                    .await
+                    .unwrap_or_else(|err| {
+                        tracing::warn!(
+                            path = %path.as_path().display(),
+                            %err,
+                            "Failed to search compressed rollout"
+                        );
+                        None
+                    })
             {
                 matches.insert(
-                    compression::plain_rollout_path(rollout_file.path()),
+                    compression::plain_rollout_path(path.as_path()),
                     Some(snippet),
                 );
             }
         }
+        matches
+    };
+    let chunk_size = paths.len().div_ceil(COMPRESSED_SEARCH_WORKERS).max(1);
+    for batch in join_all(paths.chunks(chunk_size).map(scan)).await {
+        matches.extend(batch);
     }
-
     Ok(matches)
 }
 
@@ -247,7 +298,7 @@ fn case_insensitive_literal_regex(search_term: impl AsRef<str>) -> io::Result<Re
 }
 
 fn content_match_snippet(jsonl_line: &str, search_term: &Regex) -> Option<String> {
-    let rollout_line = serde_json::from_str::<RolloutLine>(jsonl_line.trim()).ok()?;
+    let rollout_line = crate::parse_rollout_line(jsonl_line.trim()).ok()?;
     let text = conversation_text_from_item(&rollout_line.item)?;
     excerpt_around_match(text.as_str(), search_term)
 }
@@ -269,7 +320,10 @@ fn conversation_text_from_item(item: &RolloutItem) -> Option<String> {
                 Some(agent.message.trim().to_string())
             }
         }
-        RolloutItem::ResponseItem(ResponseItem::Message { role, content, .. }) => {
+        RolloutItem::ResponseItem(ResponseItemEnvelope {
+            item: ResponseItem::Message { role, content, .. },
+            ..
+        }) => {
             let text = content
                 .iter()
                 .filter_map(content_item_text)
@@ -281,20 +335,27 @@ fn conversation_text_from_item(item: &RolloutItem) -> Option<String> {
                 Some(text)
             }
         }
-        RolloutItem::SessionMeta(_)
+        RolloutItem::DynamicToolsUpdated { .. }
+        | RolloutItem::SessionMeta(_)
         | RolloutItem::TurnContext(_)
         | RolloutItem::EventMsg(_)
         | RolloutItem::ResponseItem(_)
         | RolloutItem::InterAgentCommunication(_)
         | RolloutItem::InterAgentCommunicationMetadata { .. }
         | RolloutItem::Compacted(_)
+        | RolloutItem::RealtimeItem(_)
+        | RolloutItem::RetainedContext(_)
+        | RolloutItem::SecurityRiskScore(_)
+        | RolloutItem::TokenUsageRecord(_)
         | RolloutItem::WorldState(_) => None,
     }
 }
 
 fn content_item_text(item: &ContentItem) -> Option<&str> {
     match item {
-        ContentItem::InputText { text } | ContentItem::OutputText { text } => Some(text.as_str()),
+        ContentItem::InputText { text } | ContentItem::OutputText { text, .. } => {
+            Some(text.as_str())
+        }
         ContentItem::InputImage { .. } | ContentItem::InputAudio { .. } => None,
     }
 }
@@ -343,3 +404,7 @@ fn char_end_after(text: &str, byte_index: usize, chars_after: usize) -> usize {
         .map(|(offset, _)| byte_index.saturating_add(offset))
         .unwrap_or(text.len())
 }
+
+#[cfg(test)]
+#[path = "search_tests.rs"]
+mod tests;

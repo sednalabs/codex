@@ -2,10 +2,8 @@ use super::*;
 use crate::history_cell::AgentMarkdownCell;
 use crate::history_cell::HistoryCell;
 use crate::history_cell::HistoryRenderMode;
-use crate::history_cell::TranscriptDetailMode;
 use crate::keymap::RuntimeKeymap;
 use crate::pager_overlay::TranscriptOverlay;
-use crate::pager_overlay::TranscriptOverlayState;
 use crate::streaming::controller::StreamController;
 use pretty_assertions::assert_eq;
 use ratatui::buffer::Buffer;
@@ -22,6 +20,24 @@ fn context_with_fragment(fragment: &str) -> (TempDir, InlineVisualizationContext
     fs::create_dir_all(&context.thread_dir).expect("create visualization directory");
     fs::write(context.thread_dir.join("chart.html"), fragment).expect("write fragment");
     (codex_home, context)
+}
+
+#[test]
+fn unterminated_visualization_preview_uses_the_stream_context() {
+    let (codex_home, context) = context_with_fragment("<div>chart</div>");
+    let mut controller = StreamController::new_with_inline_visualizations(
+        Some(80),
+        codex_home.path(),
+        HistoryRenderMode::Rich,
+        Some(context),
+    );
+    controller.push("::codex-inline-vis{file=\"chart.html\"}");
+    let lines = crate::terminal_hyperlinks::visible_lines(controller.current_tail_lines());
+    assert_eq!(
+        line_text(&lines[0]),
+        "Open chart visualization in the browser"
+    );
+    assert_eq!(controller.queued_lines(), 0);
 }
 
 #[test]
@@ -126,6 +142,41 @@ fn hides_incomplete_streaming_directive() {
 }
 
 #[test]
+fn hides_incomplete_streaming_content_reference() {
+    for reference in [
+        "Before\n\u{e200}visualize\u{e202}{\"path\":\"/tmp/chart",
+        "Before\n\u{e200}visualize\u{e202}{\"path\":\"/tmp/chart.html\"}",
+    ] {
+        let rewritten = rewrite_inline_visualizations(reference, /*context*/ None);
+
+        assert_eq!(rewritten.markdown, "Before\n");
+        assert!(rewritten.trusted_file_links.is_empty());
+    }
+}
+
+#[test]
+fn unavailable_or_invalid_content_reference_has_explicit_fallback() {
+    let (_codex_home, context) = context_with_fragment("<div>chart</div>");
+    let outside = tempfile::tempdir().expect("outside visualization directory");
+    let outside_path = outside.path().join("chart.html");
+    fs::write(&outside_path, "<div>outside</div>").expect("write outside fragment");
+
+    let references = [
+        serde_json::json!({ "path": outside_path }).to_string(),
+        serde_json::json!({ "path": "chart.html" }).to_string(),
+        "{\"path\":".to_string(),
+    ];
+
+    for payload in references {
+        let reference = format!("\u{e200}visualize\u{e202}{payload}\u{e201}");
+        assert_eq!(
+            rewrite_inline_visualizations(&reference, Some(&context)).markdown,
+            "_Visualization unavailable on this device._"
+        );
+    }
+}
+
+#[test]
 fn unavailable_artifact_has_explicit_fallback() {
     let codex_home = tempfile::tempdir().expect("temp codex home");
     let context = InlineVisualizationContext::new(codex_home.path(), ThreadId::new())
@@ -207,15 +258,94 @@ fn viewer_materializes_sandboxed_static_document() {
 }
 
 #[test]
+fn viewer_embeds_interactive_controls() {
+    let (_home, context) = context_with_fragment(
+        r#"<nav class="nav nav-pills" role="tablist">
+  <button class="nav-link btn-sm" role="tab" aria-controls="costs" data-tooltip="Show costs">Costs</button>
+</nav>
+<section id="costs" role="tabpanel" class="viz-carousel">
+  <div data-variant="Daily">Day</div><div data-variant="Weekly">Week</div>
+</section>"#,
+    );
+    let url = context.link_for("chart.html").expect("viewer link");
+    let document = fs::read_to_string(url.to_file_path().expect("viewer path")).expect("viewer");
+    let (_, srcdoc) = document.split_once(" srcdoc=\"").expect("embedded frame");
+    let (srcdoc, _) = srcdoc.split_once('"').expect("end of frame");
+    let frame = srcdoc
+        .replace("&lt;", "<")
+        .replace("&gt;", ">")
+        .replace("&quot;", "\"")
+        .replace("&#39;", "'")
+        .replace("&amp;", "&");
+    let (head, body) = frame.split_once("<body>").expect("frame body");
+    let (fragment, runtime) = body.split_once("<script").expect("control runtime");
+
+    // Snapshot the controls shipped with the fragment, without copying the entire runtime.
+    let tags = regex_lite::Regex::new(
+        r#"<script id="codex-visualization-(?:tabs|carousel)">|<(?:button|details) [^<>]*class="viz-carousel-[^"]+"[^<>]*>"#,
+    ).unwrap();
+    let controls = tags
+        .find_iter(runtime)
+        .map(|tag| tag.as_str())
+        .collect::<Vec<_>>()
+        .join("\n");
+    let rules = regex_lite::Regex::new(r"(?m)^([^{}\n]+) \{[^{}]*\}").unwrap();
+    let styles = rules
+        .captures_iter(head)
+        .filter(|rule| {
+            matches!(
+                &rule[1],
+                ".btn-sm"
+                    | ".nav-pills .nav-link.active"
+                    | ".viz-carousel > [data-variant][hidden]"
+                    | ".form-select :is(option, optgroup):disabled"
+            )
+        })
+        .map(|rule| rule.get(0).unwrap().as_str())
+        .collect::<Vec<_>>()
+        .join("\n");
+
+    insta::assert_snapshot!(
+        "viewer_controls",
+        format!("{}\n\n{controls}\n\n{styles}", fragment.trim())
+    );
+}
+
+#[test]
 fn viewer_reuses_path_and_refreshes_static_document() {
     let (_codex_home, context) = context_with_fragment("<div>first</div>");
     let first_url = context.link_for("chart.html").expect("first viewer link");
     let viewer_path = first_url.to_file_path().expect("viewer file path");
+    let original_viewer_metadata = fs::metadata(&viewer_path).expect("read viewer metadata");
     assert!(
         fs::read_to_string(&viewer_path)
             .expect("read first viewer")
             .contains("first")
     );
+
+    let reused_url = context.link_for("chart.html").expect("reused viewer link");
+
+    assert_eq!(reused_url, first_url);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::MetadataExt;
+        assert_eq!(
+            fs::metadata(&viewer_path)
+                .expect("read reused viewer metadata")
+                .ino(),
+            original_viewer_metadata.ino()
+        );
+    }
+    #[cfg(windows)]
+    {
+        use std::os::windows::fs::MetadataExt;
+        assert_eq!(
+            fs::metadata(&viewer_path)
+                .expect("read reused viewer metadata")
+                .creation_time(),
+            original_viewer_metadata.creation_time()
+        );
+    }
 
     fs::write(context.thread_dir.join("chart.html"), "<div>second</div>").expect("update fragment");
     let second_url = context.link_for("chart.html").expect("second viewer link");
@@ -229,8 +359,12 @@ fn viewer_reuses_path_and_refreshes_static_document() {
 #[test]
 fn finalized_agent_cell_replays_visualization_link() {
     let (_codex_home, context) = context_with_fragment("<div>chart</div>");
+    let fragment_path = context.thread_dir.join("chart.html");
     let cell = AgentMarkdownCell::new_with_inline_visualizations(
-        "Before\n\n::codex-inline-vis{file=\"chart.html\"}\n\nAfter".to_string(),
+        format!(
+            "Before\n\n\u{e200}visualize\u{e202}{}\u{e201}\n\nAfter",
+            serde_json::json!({ "path": fragment_path })
+        ),
         Path::new("/workspace"),
         Some(context),
     );
@@ -264,7 +398,18 @@ fn finalized_agent_cell_replays_visualization_link() {
         .flat_map(|line| &line.line.spans)
         .find(|span| span.content.starts_with("file://"))
         .expect("visualization URL span");
-    assert_eq!(url_span.style, Style::new().cyan().underlined());
+    assert_eq!(
+        url_span.style,
+        Style::new()
+            .fg(crate::style::readable_color_on(
+                crate::render::highlight::foreground_style_for_scopes(&["markup.underline.link"])
+                    .unwrap()
+                    .fg
+                    .unwrap(),
+                /*background*/ None,
+            ))
+            .underlined()
+    );
     let destinations = lines
         .iter()
         .flat_map(|line| &line.hyperlinks)
@@ -275,6 +420,28 @@ fn finalized_agent_cell_replays_visualization_link() {
         destinations
             .iter()
             .all(|destination| destination.starts_with("file://"))
+    );
+    let source = lines
+        .iter()
+        .find(|line| !line.hyperlinks.is_empty())
+        .and_then(|line| line.source.clone())
+        .expect("linked line copy source");
+    let start = source.text.find("file://").expect("visible file URL");
+    let mut selected = Vec::new();
+    crate::markdown_copy::SelectedLine::append(
+        &mut selected,
+        source,
+        start..start + "file://".len(),
+        "",
+    );
+    let (copied, format) = crate::markdown_copy::selection(&selected, "file://");
+    assert_eq!(
+        (copied.as_str(), format),
+        ("file://", crate::clipboard_copy::CopyFormat::Markdown)
+    );
+    assert_eq!(
+        crate::clipboard_html::render_markdown(&copied),
+        "<p>file://</p>\n"
     );
 }
 
@@ -290,14 +457,7 @@ fn transcript_overlay_remeasures_visualization_when_artifact_becomes_available()
         Path::new("/workspace"),
         Some(context.clone()),
     );
-    let keymap = RuntimeKeymap::defaults();
-    let mut overlay = TranscriptOverlay::new(
-        vec![Arc::new(cell)],
-        keymap.pager,
-        keymap.app.copy,
-        keymap.app.toggle_raw_output,
-        TranscriptOverlayState::new(HistoryRenderMode::Rich, TranscriptDetailMode::Verbose),
-    );
+    let mut overlay = TranscriptOverlay::new(vec![Arc::new(cell)], RuntimeKeymap::defaults().pager);
     let area = Rect::new(
         /*x*/ 0, /*y*/ 0, /*width*/ 240, /*height*/ 12,
     );

@@ -7,7 +7,11 @@ use std::sync::atomic::AtomicBool;
 use std::task::Context;
 use std::task::Poll;
 use std::time::Duration;
+use std::time::Instant;
 
+use codex_code_mode_protocol::CodeModeSessionOptions;
+use codex_code_mode_protocol::TerminateRequest;
+use codex_code_mode_protocol::host::BOUNDED_OUTPUT_CAPABILITY;
 use codex_code_mode_protocol::host::Capability;
 use codex_code_mode_protocol::host::CapabilitySet;
 use codex_code_mode_protocol::host::ClientHello;
@@ -22,11 +26,18 @@ use codex_code_mode_protocol::host::HostResponse;
 use codex_code_mode_protocol::host::HostToClient;
 use codex_code_mode_protocol::host::ProtocolVersion;
 use codex_code_mode_protocol::host::RequestId;
+use codex_code_mode_protocol::host::SESSION_RESOURCE_LIMITS_CAPABILITY;
 use codex_code_mode_protocol::host::SessionId;
 use codex_code_mode_protocol::host::SupportedProtocolVersions;
+use codex_code_mode_protocol::host::WireContentItem;
 use codex_code_mode_protocol::host::WireExecuteRequest;
+use codex_code_mode_protocol::host::WireOutputTruncation;
 use codex_code_mode_protocol::host::WireResult;
+use codex_code_mode_protocol::host::WireRuntimeResponse;
+use codex_code_mode_protocol::host::WireWaitOutcome;
+use codex_code_mode_protocol::host::WireWaitRequest;
 use pretty_assertions::assert_eq;
+use tokio::io::AsyncRead;
 use tokio::io::AsyncWrite;
 use tokio::sync::Semaphore;
 use tokio::sync::mpsc;
@@ -34,8 +45,8 @@ use tokio::sync::oneshot;
 use tokio_util::sync::CancellationToken;
 use tokio_util::task::TaskTracker;
 
+use super::HostLimits;
 use super::HostState;
-use super::MAX_ACTIVE_CELLS;
 use super::MAX_IN_FLIGHT_REQUESTS;
 use super::MAX_RECENT_REQUEST_IDS;
 use super::RequestKind;
@@ -93,6 +104,20 @@ fn execute_request(source: &str) -> WireExecuteRequest {
     }
 }
 
+async fn next_response(reader: &mut FramedReader<impl AsyncRead + Unpin>) -> HostToClient {
+    loop {
+        match reader
+            .read()
+            .await
+            .expect("host response")
+            .expect("host connected")
+        {
+            HostToClient::CellClosed { .. } => {}
+            message => return message,
+        }
+    }
+}
+
 #[tokio::test]
 async fn handshake_and_multiple_session_lifecycles_are_ordered() {
     let (host_stream, client_stream) = tokio::io::duplex(/*max_buf_size*/ 4096);
@@ -123,6 +148,8 @@ async fn handshake_and_multiple_session_lifecycles_are_ordered() {
                 id: request_id,
                 request: HostRequest::OpenSession {
                     session_id: session_id(id),
+                    cell_execution_limits: None,
+                    output_truncation: None,
                 },
             })
             .await
@@ -193,6 +220,8 @@ async fn disconnect_cancels_a_backpressured_host_writer() {
             id: request_id(/*value*/ 1),
             request: HostRequest::OpenSession {
                 session_id: session_id("backpressured-session"),
+                cell_execution_limits: None,
+                output_truncation: None,
             },
         })
         .await
@@ -251,6 +280,210 @@ impl AsyncWrite for BlockingWriter {
 }
 
 #[tokio::test]
+async fn supported_capabilities_are_negotiated_when_optional_or_required() {
+    for capability in [
+        SESSION_RESOURCE_LIMITS_CAPABILITY,
+        BOUNDED_OUTPUT_CAPABILITY,
+    ] {
+        let capability = Capability::new(capability).expect("supported capability");
+        let host_capabilities =
+            CapabilitySet::try_new([capability.clone()]).expect("host capabilities");
+
+        for (required, optional) in [
+            (
+                CapabilitySet::empty(),
+                CapabilitySet::try_new([capability]).expect("optional capabilities"),
+            ),
+            (host_capabilities.clone(), CapabilitySet::empty()),
+        ] {
+            let (host_stream, client_stream) = tokio::io::duplex(/*max_buf_size*/ 1024);
+            let (host_reader, host_writer) = tokio::io::split(host_stream);
+            let (client_reader, client_writer) = tokio::io::split(client_stream);
+            let host = tokio::spawn(run(host_reader, host_writer));
+            let mut reader = FramedReader::new(client_reader);
+            let mut writer = FramedWriter::new(client_writer);
+
+            writer
+                .write(&ClientToHost::ClientHello(
+                    ClientHello::new(
+                        SupportedProtocolVersions::try_new([ProtocolVersion::V1])
+                            .expect("supported versions"),
+                        required,
+                        optional,
+                    )
+                    .expect("client hello"),
+                ))
+                .await
+                .expect("write hello");
+            assert_eq!(
+                reader.read::<HostToClient>().await.expect("host hello"),
+                Some(HostToClient::HostHello(HostHello::new(
+                    ProtocolVersion::V1,
+                    host_capabilities.clone(),
+                )))
+            );
+
+            drop(writer);
+            drop(reader);
+            host.await.expect("host task").expect("host connection");
+        }
+    }
+}
+
+#[tokio::test]
+async fn output_selection_is_per_session() {
+    let (host_stream, client_stream) = tokio::io::duplex(/*max_buf_size*/ 4096);
+    let (host_reader, host_writer) = tokio::io::split(host_stream);
+    let (client_reader, client_writer) = tokio::io::split(client_stream);
+    let host = tokio::spawn(run(host_reader, host_writer));
+    let mut reader = FramedReader::new(client_reader);
+    let mut writer = FramedWriter::new(client_writer);
+    writer
+        .write(&client_hello([ProtocolVersion::V1], CapabilitySet::empty()))
+        .await
+        .expect("write hello");
+    assert_eq!(
+        reader.read::<HostToClient>().await.expect("host hello"),
+        Some(HostToClient::HostHello(HostHello::new(
+            ProtocolVersion::V1,
+            CapabilitySet::empty(),
+        )))
+    );
+    for (id, name, output_truncation) in [
+        (1, "client", None),
+        (2, "server", Some(WireOutputTruncation::Server)),
+    ] {
+        writer
+            .write(&ClientToHost::Request {
+                id: request_id(id),
+                request: HostRequest::OpenSession {
+                    session_id: session_id(name),
+                    cell_execution_limits: None,
+                    output_truncation,
+                },
+            })
+            .await
+            .expect("open session");
+        assert_eq!(
+            reader.read::<HostToClient>().await.expect("session ready"),
+            Some(HostToClient::Response {
+                id: request_id(id),
+                result: WireResult::Ok {
+                    value: HostResponse::SessionReady {
+                        session_id: session_id(name),
+                    },
+                },
+            })
+        );
+    }
+
+    for (id, name, expected_text, expected_wait) in [
+        (
+            3,
+            "client",
+            "0123456789012345678901234567890123456789",
+            "01234567890123456789012345678901234567890123456789012345678901234567890123456789",
+        ),
+        (
+            4,
+            "server",
+            "Warning: truncated output (original token count: 10)\nTotal output lines: 1\n\n0123456789…5 tokens truncated…0123456789",
+            "Warning: truncated output (original token count: 20)\nTotal output lines: 1\n\n01234567890123…13 tokens truncated…67890123456789",
+        ),
+    ] {
+        let mut request = execute_request(
+            "text('0123456789'.repeat(4)); yield_control(); text('0123456789'.repeat(8));",
+        );
+        request.max_output_tokens = Some(5);
+        writer
+            .write(&ClientToHost::Request {
+                id: request_id(id),
+                request: HostRequest::Execute {
+                    session_id: session_id(name),
+                    request,
+                },
+            })
+            .await
+            .expect("execute");
+        // Admission is sent before start_cell can send its initial result.
+        assert!(matches!(
+            next_response(&mut reader).await,
+            HostToClient::Response {
+                id: actual_id,
+                result: WireResult::Ok { value: HostResponse::ExecutionStarted { .. } },
+            } if actual_id == request_id(id)
+        ));
+        let HostToClient::InitialResponse {
+            id: actual_id,
+            result:
+                WireResult::Ok {
+                    value:
+                        WireRuntimeResponse::Yielded {
+                            cell_id,
+                            content_items,
+                            ..
+                        },
+                },
+        } = next_response(&mut reader).await
+        else {
+            panic!("expected initial yield");
+        };
+        assert_eq!(actual_id, request_id(id));
+        assert_eq!(
+            content_items,
+            vec![WireContentItem::InputText {
+                text: expected_text.to_string()
+            }]
+        );
+        writer
+            .write(&ClientToHost::Request {
+                id: request_id(id + 2),
+                request: HostRequest::Wait {
+                    session_id: session_id(name),
+                    request: WireWaitRequest {
+                        cell_id,
+                        yield_time_ms: 60_000,
+                    },
+                    // A supplied budget only affects Server mode and belongs
+                    // to this observation, not the preceding exec.
+                    max_output_tokens: Some(7),
+                },
+            })
+            .await
+            .expect("wait");
+        let HostToClient::Response {
+            id: actual_id,
+            result:
+                WireResult::Ok {
+                    value:
+                        HostResponse::WaitCompleted {
+                            outcome:
+                                WireWaitOutcome::LiveCell(WireRuntimeResponse::Result {
+                                    content_items,
+                                    error_text,
+                                    ..
+                                }),
+                        },
+                },
+        } = next_response(&mut reader).await
+        else {
+            panic!("expected final wait");
+        };
+        assert_eq!(actual_id, request_id(id + 2));
+        assert_eq!(error_text, None);
+        assert_eq!(
+            content_items,
+            vec![WireContentItem::InputText {
+                text: expected_wait.to_string()
+            }]
+        );
+    }
+    drop(writer);
+    drop(reader);
+    host.await.expect("host task").expect("host connection");
+}
+
+#[tokio::test]
 async fn incompatible_or_invalid_handshake_is_rejected() {
     let (host_stream, client_stream) = tokio::io::duplex(/*max_buf_size*/ 1024);
     let (host_reader, host_writer) = tokio::io::split(host_stream);
@@ -286,6 +519,8 @@ async fn incompatible_or_invalid_handshake_is_rejected() {
             id: request_id(/*value*/ 1),
             request: HostRequest::OpenSession {
                 session_id: session_id("session-1"),
+                cell_execution_limits: None,
+                output_truncation: None,
             },
         })
         .await
@@ -351,6 +586,8 @@ async fn session_id_cannot_be_reused_after_shutdown() {
             request_id(/*value*/ 1),
             HostRequest::OpenSession {
                 session_id: id.clone(),
+                cell_execution_limits: None,
+                output_truncation: None,
             },
         ),
         (
@@ -376,7 +613,11 @@ async fn session_id_cannot_be_reused_after_shutdown() {
     writer
         .write(&ClientToHost::Request {
             id: request_id(/*value*/ 3),
-            request: HostRequest::OpenSession { session_id: id },
+            request: HostRequest::OpenSession {
+                session_id: id,
+                cell_execution_limits: None,
+                output_truncation: None,
+            },
         })
         .await
         .expect("reuse session ID");
@@ -395,7 +636,7 @@ async fn session_id_cannot_be_reused_after_shutdown() {
 }
 
 #[test]
-fn request_cancellation_tombstones_are_bounded() {
+fn request_history_is_bounded() {
     let mut requests = RequestRegistry::default();
     let duplicate = request_id(/*value*/ -1);
     requests
@@ -411,10 +652,6 @@ fn request_cancellation_tombstones_are_bounded() {
         requests.cancel(id);
         requests.finish(id);
     }
-    for value in 10_000..20_000 {
-        requests.cancel(request_id(value));
-    }
-
     assert!(requests.active.is_empty());
     assert_eq!(requests.recent.len(), MAX_RECENT_REQUEST_IDS);
     assert_eq!(requests.recent_order.len(), MAX_RECENT_REQUEST_IDS);
@@ -426,11 +663,10 @@ async fn request_task_panic_disconnects_host() {
     let peer = Arc::new(HostPeer::new(outgoing_tx));
     let state = HostState {
         sessions: Mutex::new(HashMap::new()),
+        limits: Arc::new(HostLimits::new()),
         seen_session_ids: Mutex::new(SeenSessionIds::default()),
         requests: Mutex::new(RequestRegistry::default()),
         request_tasks: TaskTracker::new(),
-        request_permits: Arc::new(Semaphore::new(MAX_IN_FLIGHT_REQUESTS)),
-        active_cell_permits: Arc::new(Semaphore::new(MAX_ACTIVE_CELLS)),
         closing: AtomicBool::new(false),
         peer: Arc::clone(&peer),
     };
@@ -455,17 +691,16 @@ async fn execute_request_id_remains_active_until_initial_response() {
     let peer = Arc::new(HostPeer::new(outgoing_tx));
     let state = Arc::new(HostState {
         sessions: Mutex::new(HashMap::new()),
+        limits: Arc::new(HostLimits::new()),
         seen_session_ids: Mutex::new(SeenSessionIds::default()),
         requests: Mutex::new(RequestRegistry::default()),
         request_tasks: TaskTracker::new(),
-        request_permits: Arc::new(Semaphore::new(MAX_IN_FLIGHT_REQUESTS)),
-        active_cell_permits: Arc::new(Semaphore::new(MAX_ACTIVE_CELLS)),
         closing: AtomicBool::new(false),
         peer,
     });
     let session_id = session_id("session-1");
     state
-        .open_session(session_id.clone())
+        .open_session(session_id.clone(), CodeModeSessionOptions::default())
         .expect("open session");
     let request_id = request_id(/*value*/ 1);
 
@@ -502,7 +737,10 @@ async fn execute_request_id_remains_active_until_initial_response() {
     state
         .session(&session_id)
         .expect("session")
-        .terminate(cell_id.into())
+        .terminate(TerminateRequest {
+            cell_id: cell_id.into(),
+            max_output_tokens: None,
+        })
         .await
         .expect("terminate cell");
     state.disconnect().await;
@@ -514,17 +752,19 @@ async fn active_cell_limit_rejects_execute_without_disconnecting() {
     let peer = Arc::new(HostPeer::new(outgoing_tx));
     let state = HostState {
         sessions: Mutex::new(HashMap::new()),
+        limits: Arc::new(HostLimits {
+            request_permits: Arc::new(Semaphore::new(MAX_IN_FLIGHT_REQUESTS)),
+            active_cell_permits: Arc::new(Semaphore::new(/*permits*/ 0)),
+        }),
         seen_session_ids: Mutex::new(SeenSessionIds::default()),
         requests: Mutex::new(RequestRegistry::default()),
         request_tasks: TaskTracker::new(),
-        request_permits: Arc::new(Semaphore::new(MAX_IN_FLIGHT_REQUESTS)),
-        active_cell_permits: Arc::new(Semaphore::new(/*permits*/ 0)),
         closing: AtomicBool::new(false),
         peer: Arc::clone(&peer),
     };
     let session_id = session_id("session-1");
     state
-        .open_session(session_id.clone())
+        .open_session(session_id.clone(), CodeModeSessionOptions::default())
         .expect("open session");
     let request_id = request_id(/*value*/ 1);
 
@@ -536,6 +776,8 @@ async fn active_cell_limit_rejects_execute_without_disconnecting() {
                 request: execute_request("text(\"hello\");"),
             },
             CancellationToken::new(),
+            CancellationToken::new(),
+            Instant::now(),
         )
         .await;
 

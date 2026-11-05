@@ -1,0 +1,4 @@
+| rust-release-disjunction.yml:7:5:23:45 | Job: release | Repository workflow invariant violated: only tag publishers downstream of the Rust or rusty-v8 release validation jobs may publish official GitHub Releases. |
+| rust-release-negated.yml:7:5:23:45 | Job: release | Repository workflow invariant violated: only tag publishers downstream of the Rust or rusty-v8 release validation jobs may publish official GitHub Releases. |
+| rusty-v8-release-disjunction.yml:7:5:16:45 | Job: publish-release | Repository workflow invariant violated: only tag publishers downstream of the Rust or rusty-v8 release validation jobs may publish official GitHub Releases. |
+| rusty-v8-release-negated.yml:7:5:16:45 | Job: publish-release | Repository workflow invariant violated: only tag publishers downstream of the Rust or rusty-v8 release validation jobs may publish official GitHub Releases. |

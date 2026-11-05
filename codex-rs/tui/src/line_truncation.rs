@@ -1,17 +1,23 @@
+use ratatui::buffer::CellWidth;
+use ratatui::style::Style;
 use ratatui::text::Line;
 use ratatui::text::Span;
-use unicode_width::UnicodeWidthChar;
-use unicode_width::UnicodeWidthStr;
 
-pub(crate) fn line_width(line: &Line<'_>) -> usize {
-    line.iter()
-        .map(|span| UnicodeWidthStr::width(span.content.as_ref()))
+/// Paragraph paints each visible grapheme separately, even when the whole string
+/// has a narrower Unicode width (for example, Arabic lam followed by alef).
+pub(crate) fn span_width(span: &Span<'_>) -> usize {
+    span.styled_graphemes(Style::default())
+        .map(|g| usize::from(g.symbol.cell_width()))
         .sum()
 }
 
-pub(crate) fn truncate_line_to_width<'a>(line: Line<'a>, max_width: usize) -> Line<'a> {
+pub(crate) fn line_width(line: &Line<'_>) -> usize {
+    line.iter().map(span_width).sum()
+}
+
+pub(crate) fn truncate_line_to_width(line: Line<'static>, max_width: usize) -> Line<'static> {
     if max_width == 0 {
-        return Line::from(Vec::<Span<'a>>::new());
+        return Line::from(Vec::<Span<'static>>::new());
     }
 
     let Line {
@@ -20,10 +26,10 @@ pub(crate) fn truncate_line_to_width<'a>(line: Line<'a>, max_width: usize) -> Li
         spans,
     } = line;
     let mut used = 0usize;
-    let mut spans_out: Vec<Span<'a>> = Vec::with_capacity(spans.len());
+    let mut spans_out: Vec<Span<'static>> = Vec::with_capacity(spans.len());
 
     for span in spans {
-        let span_width = UnicodeWidthStr::width(span.content.as_ref());
+        let span_width = span_width(&span);
 
         if span_width == 0 {
             spans_out.push(span);
@@ -40,20 +46,18 @@ pub(crate) fn truncate_line_to_width<'a>(line: Line<'a>, max_width: usize) -> Li
             continue;
         }
 
-        let style = span.style;
-        let text = span.content.as_ref();
-        let mut end_idx = 0usize;
-        for (idx, ch) in text.char_indices() {
-            let ch_width = UnicodeWidthChar::width(ch).unwrap_or(0);
-            if used + ch_width > max_width {
+        let mut prefix = String::new();
+        for grapheme in span.styled_graphemes(Style::default()) {
+            let grapheme_width = usize::from(grapheme.symbol.cell_width());
+            if used + grapheme_width > max_width {
                 break;
             }
-            end_idx = idx + ch.len_utf8();
-            used += ch_width;
+            prefix.push_str(grapheme.symbol);
+            used += grapheme_width;
         }
 
-        if end_idx > 0 {
-            spans_out.push(Span::styled(text[..end_idx].to_string(), style));
+        if !prefix.is_empty() {
+            spans_out.push(Span::styled(prefix, span.style));
         }
 
         break;
@@ -72,12 +76,12 @@ pub(crate) fn truncate_line_to_width<'a>(line: Line<'a>, max_width: usize) -> Li
 /// pre-scan + return original line unchanged) and uses `truncate_line_to_width`
 /// for the overflow case.
 /// Performance should be reevaluated if using this method in loops/over larger content in the future.
-pub(crate) fn truncate_line_with_ellipsis_if_overflow<'a>(
-    line: Line<'a>,
+pub(crate) fn truncate_line_with_ellipsis_if_overflow(
+    line: Line<'static>,
     max_width: usize,
-) -> Line<'a> {
+) -> Line<'static> {
     if max_width == 0 {
-        return Line::from(Vec::<Span<'a>>::new());
+        return Line::from(Vec::<Span<'static>>::new());
     }
 
     if line_width(&line) <= max_width {
@@ -98,3 +102,7 @@ pub(crate) fn truncate_line_with_ellipsis_if_overflow<'a>(
         spans,
     }
 }
+
+#[cfg(test)]
+#[path = "line_truncation_tests.rs"]
+mod tests;

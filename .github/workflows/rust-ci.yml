@@ -25,6 +25,7 @@ jobs:
     runs-on: ubuntu-24.04
     outputs:
       argument_comment_lint_matrix: ${{ steps.plan.outputs.argument_comment_lint_matrix }}
+      argument_comment_bazel_matrix: ${{ steps.plan.outputs.argument_comment_bazel_matrix }}
     steps:
       - name: Compute platform matrices
         id: plan
@@ -41,9 +42,15 @@ jobs:
                   "timeout_minutes": 30,
               }
           ]
+          linux_macos_bazel = [
+              {"name": "Linux x86_64", "runner": "ubuntu-24.04"},
+              {"name": "macOS", "runner": "macos-15"},
+          ]
 
           payload = json.dumps({"include": linux_x86_64_only}, separators=(",", ":"))
           print(f"argument_comment_lint_matrix={payload}")
+          bazel_payload = json.dumps({"include": linux_macos_bazel}, separators=(",", ":"))
+          print(f"argument_comment_bazel_matrix={bazel_payload}")
           PY
 
   # --- Detect what changed so the fast PR workflow only runs relevant jobs ----
@@ -55,6 +62,7 @@ jobs:
       scheduled_duplicate_reason: ${{ steps.schedule_duplicate.outputs.reason || '' }}
       scheduled_duplicate_run_url: ${{ steps.schedule_duplicate.outputs.matched_run_url || '' }}
       argument_comment_lint: ${{ steps.detect.outputs.argument_comment_lint || steps.scheduled_skip_plan.outputs.argument_comment_lint }}
+      argument_comment_lint_bazel: ${{ steps.detect.outputs.argument_comment_lint_bazel || steps.scheduled_skip_plan.outputs.argument_comment_lint_bazel }}
       argument_comment_lint_package: ${{ steps.detect.outputs.argument_comment_lint_package || steps.scheduled_skip_plan.outputs.argument_comment_lint_package }}
       codex: ${{ steps.detect.outputs.codex || steps.scheduled_skip_plan.outputs.codex }}
       workflows: ${{ steps.detect.outputs.workflows || steps.scheduled_skip_plan.outputs.workflows }}
@@ -64,6 +72,7 @@ jobs:
       run_cargo_shear: ${{ steps.detect.outputs.run_cargo_shear || steps.scheduled_skip_plan.outputs.run_cargo_shear }}
       run_argument_comment_lint_package: ${{ steps.detect.outputs.run_argument_comment_lint_package || steps.scheduled_skip_plan.outputs.run_argument_comment_lint_package }}
       run_argument_comment_lint_prebuilt: ${{ steps.detect.outputs.run_argument_comment_lint_prebuilt || steps.scheduled_skip_plan.outputs.run_argument_comment_lint_prebuilt }}
+      run_argument_comment_lint_bazel: ${{ steps.detect.outputs.run_argument_comment_lint_bazel || steps.scheduled_skip_plan.outputs.run_argument_comment_lint_bazel }}
       run_incremental_validation: ${{ steps.detect.outputs.run_incremental_validation || steps.scheduled_skip_plan.outputs.run_incremental_validation }}
       incremental_profile: ${{ steps.detect.outputs.incremental_profile || steps.scheduled_skip_plan.outputs.incremental_profile }}
       incremental_lane_set: ${{ steps.detect.outputs.incremental_lane_set || steps.scheduled_skip_plan.outputs.incremental_lane_set }}
@@ -375,6 +384,8 @@ jobs:
             echo "run_cargo_shear=false"
             echo "run_argument_comment_lint_package=false"
             echo "run_argument_comment_lint_prebuilt=false"
+            echo "argument_comment_lint_bazel=false"
+            echo "run_argument_comment_lint_bazel=false"
             echo "run_incremental_validation=false"
             echo "incremental_profile="
             echo "incremental_lane_set="
@@ -550,13 +561,13 @@ jobs:
       - name: Install nightly argument-comment-lint toolchain
         shell: bash
         run: |
-          rustup toolchain install nightly-2025-09-18 \
+          rustup toolchain install nightly-2026-08-20 \
             --profile minimal \
             --component llvm-tools-preview \
             --component rustc-dev \
             --component rust-src \
             --no-self-update
-          rustup default nightly-2025-09-18
+          rustup default nightly-2026-08-20
       - name: Cache cargo-dylint tooling
         id: cargo_dylint_cache
         uses: actions/cache@2c8a9bd7457de244a408f35966fab2fb45fda9c8 # v6.0.0
@@ -581,7 +592,9 @@ jobs:
         run: python3 -m unittest discover -s tools/argument-comment-lint -p 'test_*.py'
       - name: Test argument comment lint package
         working-directory: tools/argument-comment-lint
-        run: cargo test
+        run: bash ./test-with-clippy-compat.sh
+        env:
+          RUST_MIN_STACK: "8388608" # 8 MiB
 
       - name: Check for a clean worktree
         if: always() && !cancelled()
@@ -627,6 +640,63 @@ jobs:
         if: always() && !cancelled()
         uses: ./.github/actions/check-clean-worktree
 
+  argument_comment_lint_bazel:
+    name: Argument comment lint via Bazel - ${{ matrix.name }}
+    runs-on: ${{ matrix.runner }}
+    needs: [changed, matrix_plan]
+    if: ${{ needs.changed.outputs.run_argument_comment_lint_bazel == 'true' }}
+    strategy:
+      fail-fast: false
+      matrix: ${{ fromJSON(needs.matrix_plan.outputs.argument_comment_bazel_matrix) }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.sha || github.sha }}
+          persist-credentials: false
+      - uses: ./.github/actions/setup-bazel-ci
+        with:
+          target: ${{ runner.os }}
+      - name: Install Linux sandbox build dependencies
+        if: ${{ runner.os == 'Linux' }}
+        shell: bash
+        run: |
+          sudo DEBIAN_FRONTEND=noninteractive apt-get update
+          sudo DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends pkg-config libcap-dev
+      - name: Resolve app-server/exec-server compatibility releases
+        if: ${{ runner.os == 'Linux' }}
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          releases="$(python3 .github/scripts/resolve_exec_server_releases.py)"
+          echo "CODEX_COMPAT_RELEASES=$releases" >> "$GITHUB_ENV"
+      - name: Run argument comment lint on codex-rs via Bazel
+        env:
+          BUILDBUDDY_API_KEY: ${{ secrets.BUILDBUDDY_API_KEY }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          bazel_extra_args=()
+          if [[ "${RUNNER_OS}" == "macOS" ]]; then
+            bazel_extra_args+=(--jobs=8 --loading_phase_threads=8)
+          fi
+          bazel_targets=()
+          while IFS= read -r bazel_target; do
+            bazel_targets+=("${bazel_target}")
+          done < <(./tools/argument-comment-lint/list-bazel-targets.sh)
+          ./.github/scripts/run-bazel-ci.sh \
+            -- \
+            build \
+            --config=argument-comment-lint \
+            "${bazel_extra_args[@]}" \
+            --keep_going \
+            "--build_metadata=COMMIT_SHA=${GITHUB_SHA}" \
+            -- \
+            "${bazel_targets[@]}"
+      - name: Check for a clean worktree
+        if: always() && !cancelled()
+        uses: ./.github/actions/check-clean-worktree
+
   # --- Gatherer job that you mark as the ONLY required status -----------------
   results:
     name: Rust CI required gate
@@ -640,6 +710,7 @@ jobs:
         cargo_shear,
         argument_comment_lint_package,
         argument_comment_lint_prebuilt,
+        argument_comment_lint_bazel,
       ]
     if: always()
     runs-on: ubuntu-24.04
@@ -653,6 +724,7 @@ jobs:
           echo "reuse  : ${{ needs.changed.outputs.scheduled_duplicate_run_url }}"
           echo "argpkg : ${{ needs.argument_comment_lint_package.result }}"
           echo "arglint: ${{ needs.argument_comment_lint_prebuilt.result }}"
+          echo "argbazel: ${{ needs.argument_comment_lint_bazel.result }}"
           echo "planner: ${{ needs.planner_fixtures.result }}"
           echo "general: ${{ needs.general.result }}"
           echo "shear  : ${{ needs.cargo_shear.result }}"
@@ -672,7 +744,7 @@ jobs:
 
           # If nothing relevant changed (PR touching only root README, etc.),
           # declare success after confirming no incremental validation was selected.
-          if [[ "${NEEDS_CHANGED_OUTPUTS_ARGUMENT_COMMENT_LINT}" != 'true' && "${NEEDS_CHANGED_OUTPUTS_CODEX}" != 'true' && "${NEEDS_CHANGED_OUTPUTS_WORKFLOWS}" != 'true' && '${{ needs.changed.outputs.run_incremental_validation }}' != 'true' ]]; then
+          if [[ "${NEEDS_CHANGED_OUTPUTS_ARGUMENT_COMMENT_LINT}" != 'true' && "${NEEDS_CHANGED_OUTPUTS_ARGUMENT_COMMENT_LINT_BAZEL}" != 'true' && "${NEEDS_CHANGED_OUTPUTS_CODEX}" != 'true' && "${NEEDS_CHANGED_OUTPUTS_WORKFLOWS}" != 'true' && '${{ needs.changed.outputs.run_incremental_validation }}' != 'true' ]]; then
             echo 'No relevant changes -> CI not required.'
             exit 0
           fi
@@ -683,6 +755,10 @@ jobs:
 
           if [[ '${{ needs.changed.outputs.run_argument_comment_lint_prebuilt }}' == 'true' ]]; then
             [[ '${{ needs.argument_comment_lint_prebuilt.result }}' == 'success' ]] || { echo 'argument_comment_lint_prebuilt failed'; exit 1; }
+          fi
+
+          if [[ '${{ needs.changed.outputs.run_argument_comment_lint_bazel }}' == 'true' ]]; then
+            [[ '${{ needs.argument_comment_lint_bazel.result }}' == 'success' ]] || { echo 'argument_comment_lint_bazel failed'; exit 1; }
           fi
 
           if [[ '${{ needs.changed.outputs.run_general }}' == 'true' ]]; then
@@ -698,5 +774,6 @@ jobs:
           fi
         env:
           NEEDS_CHANGED_OUTPUTS_ARGUMENT_COMMENT_LINT: ${{ needs.changed.outputs.argument_comment_lint }}
+          NEEDS_CHANGED_OUTPUTS_ARGUMENT_COMMENT_LINT_BAZEL: ${{ needs.changed.outputs.argument_comment_lint_bazel }}
           NEEDS_CHANGED_OUTPUTS_CODEX: ${{ needs.changed.outputs.codex }}
           NEEDS_CHANGED_OUTPUTS_WORKFLOWS: ${{ needs.changed.outputs.workflows }}

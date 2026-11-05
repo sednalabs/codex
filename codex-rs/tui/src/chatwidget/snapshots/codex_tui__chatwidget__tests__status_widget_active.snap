@@ -3,9 +3,9 @@ source: tui/src/chatwidget/tests/status_and_layout.rs
 expression: normalized_backend_snapshot(terminal.backend())
 ---
 "                                                                                "
-"• Analyzing (0s • esc esc to interrupt)                                         "
+"• Analyzing (0s • esc to interrupt)                                             "
 "                                                                                "
 "                                                                                "
 "› Ask Codex to do anything                                                      "
 "                                                                                "
-"  gpt-6-astra default · /tmp/project                                            "
+"  GPT-5.6-Sol default · /tmp/project                                            "

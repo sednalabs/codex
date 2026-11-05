@@ -8,13 +8,101 @@ predicate workflowName(Workflow workflow, string name) {
   name = workflow.getName()
 }
 
+bindingset[pattern]
+predicate jobConditionMatchesExactly(Job job, string pattern) {
+  exists(If condition |
+    condition = job.getIf() and
+    condition.getCondition().regexpMatch(
+      "(?s)^\\s*(?:\\$\\{\\{\\s*" + pattern + "\\s*\\}\\}|" + pattern + ")\\s*$"
+    )
+  )
+}
+
 predicate repoReleaseWorkflow(Workflow workflow) {
-  workflowName(workflow, "sedna-release")
+  workflowName(workflow, "rust-release") or
+  workflowName(workflow, "rusty-v8-release")
 }
 
 predicate repoOfficialReleaseJob(Job job) {
   repoReleaseWorkflow(job.getWorkflow()) and
-  job.getId() = "publish-release"
+  (
+    workflowName(job.getWorkflow(), "rust-release") and
+    job.getId() = "release" and
+    jobConditionMatchesExactly(
+      job,
+      "always\\(\\)\\s*&&\\s*needs\\.tag-check\\.result\\s*==\\s*'success'\\s*&&\\s*needs\\.build\\.result\\s*==\\s*'success'\\s*&&\\s*needs\\.finalize-macos\\.result\\s*==\\s*'success'\\s*&&\\s*\\(\\s*needs\\.build-windows\\.result\\s*==\\s*'success'\\s*\\|\\|\\s*\\(\\s*github\\.repository\\s*==\\s*'sednalabs/codex'\\s*&&\\s*needs\\.build-windows\\.result\\s*==\\s*'skipped'\\s*\\)\\s*\\)\\s*&&\\s*needs\\.argument-comment-lint-release-assets\\.result\\s*==\\s*'success'\\s*&&\\s*\\(\\s*needs\\.stage-npm-packages\\.result\\s*==\\s*'success'\\s*\\|\\|\\s*\\(\\s*github\\.repository\\s*==\\s*'sednalabs/codex'\\s*&&\\s*needs\\.stage-npm-packages\\.result\\s*==\\s*'skipped'\\s*\\)\\s*\\)\\s*&&\\s*\\(\\s*needs\\.provisioned-macos-candidate\\.result\\s*==\\s*'success'\\s*\\|\\|\\s*\\(\\s*vars\\.CODEX_PROVISIONED_MACOS_CANDIDATE\\s*!=\\s*'true'\\s*&&\\s*needs\\.provisioned-macos-candidate\\.result\\s*==\\s*'skipped'\\s*\\)\\s*\\)"
+    )
+    or
+    workflowName(job.getWorkflow(), "rusty-v8-release") and
+    job.getId() = "publish-release" and
+    jobConditionMatchesExactly(
+      job,
+      "always\\(\\)\\s*&&\\s*needs\\.metadata\\.result\\s*==\\s*'success'\\s*&&\\s*needs\\.build\\.result\\s*==\\s*'success'\\s*&&\\s*\\(\\s*needs\\.build-windows-source\\.result\\s*==\\s*'success'\\s*\\|\\|\\s*\\(\\s*github\\.repository\\s*==\\s*'sednalabs/codex'\\s*&&\\s*needs\\.build-windows-source\\.result\\s*==\\s*'skipped'\\s*\\)\\s*\\)"
+    )
+  )
+}
+
+predicate jobUsesPinnedClaAssistant(Job job) {
+  workflowName(job.getWorkflow(), "CLA Assistant") and
+  job.getId() = "cla" and
+  jobConditionMatchesExactly(job, "github\\.repository\\s*==\\s*'openai/codex'") and
+  exists(UsesStep claStep |
+    claStep.getEnclosingJob() = job and
+    claStep.getCallee().regexpMatch("(?i)^contributor-assistant/github-action$") and
+    claStep.getVersion().regexpMatch("(?i)^ca4a40a7d1004f18d9960b404b97e5f30a505a08$") and
+    claStep.getArgument("path-to-signatures") = "signatures/cla.json" and
+    claStep.getArgument("branch") = "cla-signatures" and
+    claStep.getArgument("path-to-document") = "https://github.com/openai/codex/blob/main/docs/CLA.md" and
+    claStep.getArgument("allowlist") = "codex,dependabot,dependabot[bot],github-actions[bot]"
+  ) and
+  not jobChecksOutCode(job) and
+  not exists(Run run | run.getEnclosingJob() = job) and
+  not exists(UsesStep step |
+    step.getEnclosingJob() = job and
+    not (
+      step.getCallee().regexpMatch("(?i)^contributor-assistant/github-action$") and
+      step.getVersion().regexpMatch("(?i)^ca4a40a7d1004f18d9960b404b97e5f30a505a08$")
+    )
+  )
+}
+
+/**
+ * This fork carries upstream-only Python publication workflows. The exact
+ * canonical repository condition makes these jobs unreachable in
+ * sednalabs/codex. This is a fork-local unreachable-job exception only; it
+ * does not assess or attest the canonical OpenAI publisher or its reusable
+ * build workflows.
+ */
+predicate jobIsForkUnreachableCanonicalPythonPublisher(Job job) {
+  workflowName(job.getWorkflow(), "python-sdk-cli-release") and
+  job.getEnvironment().getName() = "pypi" and
+  (
+    job.getId() = "publish-python-runtime" and
+    jobConditionMatchesExactly(
+      job,
+      "github\\.repository\\s*==\\s*'openai/codex'\\s*&&\\s*needs\\.resolve-cli-release\\.outputs\\.publish\\s*==\\s*'true'\\s*&&\\s*needs\\.prepare-python-runtime\\.result\\s*==\\s*'success'\\s*&&\\s*needs\\.build-python-sdk\\.result\\s*==\\s*'success'"
+    )
+    or
+    job.getId() = "publish-python-sdk" and
+    jobConditionMatchesExactly(
+      job,
+      "github\\.repository\\s*==\\s*'openai/codex'\\s*&&\\s*needs\\.resolve-cli-release\\.outputs\\.publish\\s*==\\s*'true'\\s*&&\\s*needs\\.build-python-sdk\\.result\\s*==\\s*'success'\\s*&&\\s*needs\\.publish-python-runtime\\.result\\s*==\\s*'success'"
+    )
+  )
+}
+
+predicate jobUsesTrustedPypiPublisher(Job job) {
+  jobUsesActionMatching(job, "(?i)^pypa/gh-action-pypi-publish@.*", _)
+}
+
+bindingset[apiCall]
+predicate jobGithubScriptCalls(Job job, string apiCall) {
+  exists(UsesStep step, Expression script |
+    step.getEnclosingJob() = job and
+    step.getCallee().regexpMatch("(?i)^actions/github-script$") and
+    script = step.getArgumentExpr("script") and
+    script.getExpression().regexpMatch("(?is).*github\\.rest\\." + apiCall + "\\s*\\(.*")
+  )
 }
 
 predicate untrustedTrigger(Event event) {
@@ -35,17 +123,17 @@ predicate jobHasUntrustedTrigger(Job job, string eventName) {
   )
 }
 
-predicate jobUsesAction(Job job, string callee) {
+predicate jobUsesAction(Job job, string actionReference) {
   exists(UsesStep step |
     step.getEnclosingJob() = job and
-    callee = step.getCallee()
+    actionReference = step.getCallee() + "@" + step.getVersion()
   )
 }
 
 bindingset[pattern]
-predicate jobUsesActionMatching(Job job, string pattern, string callee) {
-  jobUsesAction(job, callee) and
-  callee.regexpMatch(pattern)
+predicate jobUsesActionMatching(Job job, string pattern, string actionReference) {
+  jobUsesAction(job, actionReference) and
+  actionReference.regexpMatch(pattern)
 }
 
 predicate jobRunCommand(Job job, string command) {
@@ -69,7 +157,7 @@ predicate jobChecksOutCode(Job job) {
 predicate jobChecksOutInputRef(Job job) {
   exists(UsesStep step, Expression expr |
     step.getEnclosingJob() = job and
-    step.getCallee().regexpMatch("(?i)^actions/checkout@") and
+    step.getCallee().regexpMatch("(?i)^actions/checkout$") and
     expr = step.getArgumentExpr("ref") and
     expr.getExpression().regexpMatch("(?i).*(inputs\\.|github\\.event\\.).*")
   )
@@ -96,23 +184,23 @@ predicate releasePublishingCommand(string command, string sinkKind) {
   sinkKind = "container image publication"
 }
 
-bindingset[callee]
-predicate releasePublishingAction(string callee, string sinkKind) {
+bindingset[actionReference]
+predicate releasePublishingAction(string actionReference, string sinkKind) {
   (
-    callee.regexpMatch("(?i)^(softprops/action-gh-release|ncipollo/release-action)@.*") and
+    actionReference.regexpMatch("(?i)^(softprops/action-gh-release|ncipollo/release-action)@.*") and
     sinkKind = "GitHub Release publication"
   )
   or
   (
-    callee.regexpMatch("(?i)^docker/build-push-action@.*") and
+    actionReference.regexpMatch("(?i)^docker/build-push-action@.*") and
     sinkKind = "container image publication"
   )
 }
 
 predicate jobUsesReleasePublishingAction(Job job, string sinkKind) {
-  exists(string callee |
-    jobUsesAction(job, callee) and
-    releasePublishingAction(callee, sinkKind)
+  exists(string actionReference |
+    jobUsesAction(job, actionReference) and
+    releasePublishingAction(actionReference, sinkKind)
   )
 }
 
@@ -132,9 +220,9 @@ predicate jobHasOfficialReleaseSink(Job job, string sinkKind) {
     sinkKind = "GitHub Release publication"
   )
   or
-  exists(string callee |
-    jobUsesAction(job, callee) and
-    callee.regexpMatch("(?i)^(softprops/action-gh-release|ncipollo/release-action)@.*") and
+  exists(string actionReference |
+    jobUsesAction(job, actionReference) and
+    actionReference.regexpMatch("(?i)^(softprops/action-gh-release|ncipollo/release-action)@.*") and
     sinkKind = "GitHub Release publication"
   )
 }
@@ -244,11 +332,14 @@ predicate jobNeedsWritePermission(Job job, string permissionName) {
   permissionName = "id-token" and
   jobHasSigningMarker(job)
   or
+  permissionName = "id-token" and
+  jobUsesTrustedPypiPublisher(job)
+  or
   permissionName = "attestations" and
   jobHasNativeAttestationMarker(job)
   or
   permissionName = "security-events" and
-  jobUsesActionMatching(job, "(?i)^github/codeql-action/", _)
+  jobUsesActionMatching(job, "(?i)^github/codeql-action@.*", _)
   or
     permissionName = "actions" and
     exists(string command |
@@ -256,6 +347,23 @@ predicate jobNeedsWritePermission(Job job, string permissionName) {
       command.regexpMatch("(?is).*\\bgh\\s+workflow\\s+run\\b.*")
     )
   or
+  permissionName = "contents" and
+  jobUsesPinnedClaAssistant(job)
+  or
   permissionName = "issues" and
-  jobUsesActionMatching(job, "(?i)^actions/github-script(@.*)?$", _)
+  jobUsesPinnedClaAssistant(job)
+  or
+  permissionName = "actions" and
+  jobUsesPinnedClaAssistant(job)
+  or
+  permissionName = "pull-requests" and
+  jobGithubScriptCalls(job, "pulls\\.update")
+  or
+  permissionName = "issues" and
+  (
+    jobGithubScriptCalls(job, "issues\\.createComment") or
+    jobGithubScriptCalls(job, "issues\\.update") or
+    jobGithubScriptCalls(job, "issues\\.lock") or
+    jobGithubScriptCalls(job, "issues\\.unlock")
+  )
 }

@@ -1,21 +1,15 @@
 use super::*;
-use crate::extensions::app_server_hooks;
+use crate::plugin_config_reload;
 
 #[derive(Clone)]
 pub(crate) struct MarketplaceRequestProcessor {
-    config: Arc<Config>,
     config_manager: ConfigManager,
     thread_manager: Arc<ThreadManager>,
 }
 
 impl MarketplaceRequestProcessor {
-    pub(crate) fn new(
-        config: Arc<Config>,
-        config_manager: ConfigManager,
-        thread_manager: Arc<ThreadManager>,
-    ) -> Self {
+    pub(crate) fn new(config_manager: ConfigManager, thread_manager: Arc<ThreadManager>) -> Self {
         Self {
-            config,
             config_manager,
             thread_manager,
         }
@@ -52,8 +46,10 @@ impl MarketplaceRequestProcessor {
         &self,
         params: MarketplaceRemoveParams,
     ) -> Result<MarketplaceRemoveResponse, JSONRPCErrorError> {
+        let config = self.load_global_config().await?;
         remove_marketplace(
-            self.config.codex_home.to_path_buf(),
+            config.codex_home.to_path_buf(),
+            config.config_layer_stack,
             CoreMarketplaceRemoveRequest {
                 marketplace_name: params.marketplace_name,
             },
@@ -73,20 +69,29 @@ impl MarketplaceRequestProcessor {
         &self,
         params: MarketplaceUpgradeParams,
     ) -> Result<MarketplaceUpgradeResponse, JSONRPCErrorError> {
-        let config = self.load_latest_config(/*fallback_cwd*/ None).await?;
+        let config = self.load_global_config().await?;
         let plugins_manager = self.thread_manager.plugins_manager();
         let MarketplaceUpgradeParams { marketplace_name } = params;
         let plugins_input = config.plugins_config_input();
+        let reload_config = plugin_config_reload::global(self.config_manager.clone());
 
         let outcome = tokio::task::spawn_blocking(move || {
             plugins_manager.upgrade_configured_marketplaces_for_config(
                 &plugins_input,
                 marketplace_name.as_deref(),
+                &reload_config,
             )
         })
         .await
         .map_err(|err| internal_error(format!("failed to upgrade marketplaces: {err}")))?
         .map_err(invalid_request)?;
+
+        if !outcome.upgraded_roots.is_empty() {
+            self.thread_manager.plugins_manager().clear_cache();
+            self.thread_manager.skills_service().clear_cache();
+            self.thread_manager.invalidate_mcp_runtimes().await;
+            self.thread_manager.refresh_hook_runtimes().await;
+        }
 
         Ok(MarketplaceUpgradeResponse {
             selected_marketplaces: outcome.selected_marketplaces,
@@ -106,9 +111,9 @@ impl MarketplaceRequestProcessor {
         &self,
         params: MarketplaceAddParams,
     ) -> Result<MarketplaceAddResponse, JSONRPCErrorError> {
-        let config = self.load_latest_config(/*fallback_cwd*/ None).await?;
-        let mut response = add_marketplace_to_codex_home(
-            self.config.codex_home.to_path_buf(),
+        let config = self.load_global_config().await?;
+        add_marketplace_to_codex_home(
+            config.codex_home.to_path_buf(),
             config.config_layer_stack.requirements().clone(),
             MarketplaceAddRequest {
                 source: params.source,
@@ -117,25 +122,20 @@ impl MarketplaceRequestProcessor {
             },
         )
         .await
-        .map_err(|err| match err {
-            MarketplaceAddError::InvalidRequest(message) => invalid_request(message),
-            MarketplaceAddError::Internal(message) => internal_error(message),
-        })
         .map(|outcome| MarketplaceAddResponse {
             marketplace_name: outcome.marketplace_name,
             installed_root: outcome.installed_root,
             already_added: outcome.already_added,
-        })?;
-        app_server_hooks().augment_marketplace_add_response(&mut response);
-        Ok(response)
+        })
+        .map_err(|err| match err {
+            MarketplaceAddError::InvalidRequest(message) => invalid_request(message),
+            MarketplaceAddError::Internal(message) => internal_error(message),
+        })
     }
 
-    async fn load_latest_config(
-        &self,
-        fallback_cwd: Option<PathBuf>,
-    ) -> Result<Config, JSONRPCErrorError> {
+    async fn load_global_config(&self) -> Result<Config, JSONRPCErrorError> {
         self.config_manager
-            .load_latest_config(fallback_cwd)
+            .load_non_project_config()
             .await
             .map_err(|err| internal_error(format!("failed to reload config: {err}")))
     }

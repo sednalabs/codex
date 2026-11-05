@@ -2,6 +2,9 @@
 # Keep this list short and limited to intentional large checked-in assets.
 
 .github/codex-cli-splash.png
+# Maintained planner test suite is 525,564 bytes; this policy supports exact paths only,
+# not a per-path size cap. Revisit this exception if the suite grows.
+.github/scripts/test_ci_planners.py
 MODULE.bazel.lock
 codex-rs/app-server-protocol/schema/json/codex_app_server_protocol.schemas.json
 codex-rs/app-server-protocol/schema/json/codex_app_server_protocol.v2.schemas.json
@@ -9,5 +12,3 @@ codex-rs/models-manager/models.json
 codex-rs/tui/tests/fixtures/oss-story.jsonl
 codex-rs/tui_app_server/tests/fixtures/oss-story.jsonl
 codex-rs/tui/src/app.rs
-# The planner fixture suite is an intentional checked-in validation asset.
-.github/scripts/test_ci_planners.py

@@ -1,4 +1,0 @@
-interface:
-  display_name: "PR Babysitter"
-  short_description: "Watch PR CI, reviews, and merge conflicts"
-  default_prompt: "Use $babysit-pr with one exact-head blocking watcher, defaulting repair owners to actionable failures and reserving terminal-complete collection for a named evidence need."

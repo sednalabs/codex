@@ -17,22 +17,21 @@ jobs:
   metadata:
     runs-on: ubuntu-latest
     outputs:
-      # A stale PR head can contain the old detector, which does not emit this
-      # output. Missing must mean "run" so older branches cannot silently skip
-      # the expensive V8 coverage while reporting success.
+      # Older revisions can contain a detector that does not emit this output.
+      # Missing must mean "run" so they cannot silently skip the expensive V8
+      # coverage while reporting success.
       canary_required: ${{ steps.changes.outputs.canary_required || 'true' }}
       v8_version: ${{ steps.v8_version.outputs.version }}
       windows_source_required: ${{ steps.changes.outputs.windows_source_required }}
 
     steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
         with:
-          ref: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.sha || github.sha }}
           fetch-depth: 0
           persist-credentials: false
 
       - name: Set up Python
-        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405 # v6.2.0
         with:
           python-version: "3.12"
 
@@ -66,6 +65,11 @@ jobs:
           echo "${output}"
           echo "${output}" >> "${GITHUB_OUTPUT}"
 
+      - name: Report Windows CI deferral for this fork
+        if: github.repository == 'sednalabs/codex'
+        shell: bash
+        run: echo 'Windows CI and release artifacts are deferred and unqualified for sednalabs/codex.' >> "$GITHUB_STEP_SUMMARY"
+
       - name: Check for a clean worktree
         if: always() && !cancelled()
         uses: ./.github/actions/check-clean-worktree
@@ -91,98 +95,86 @@ jobs:
             platform: linux_amd64
             sandbox: false
             target: x86_64-unknown-linux-gnu
-            v8_cpu: x64
             variant: release
           - runner: ubuntu-24.04
             bazel_config: ci-v8
             platform: linux_amd64
             sandbox: true
             target: x86_64-unknown-linux-gnu
-            v8_cpu: x64
             variant: ptrcomp-sandbox
           - runner: ubuntu-24.04-arm
             bazel_config: ci-v8
             platform: linux_arm64
             sandbox: false
             target: aarch64-unknown-linux-gnu
-            v8_cpu: arm64
             variant: release
           - runner: ubuntu-24.04-arm
             bazel_config: ci-v8
             platform: linux_arm64
             sandbox: true
             target: aarch64-unknown-linux-gnu
-            v8_cpu: arm64
             variant: ptrcomp-sandbox
           - runner: macos-15-intel
             bazel_config: ci-macos
             platform: macos_amd64
             sandbox: false
             target: x86_64-apple-darwin
-            v8_cpu: x64
             variant: release
           - runner: macos-15-intel
             bazel_config: ci-macos
             platform: macos_amd64
             sandbox: true
             target: x86_64-apple-darwin
-            v8_cpu: x64
             variant: ptrcomp-sandbox
           - runner: macos-15
             bazel_config: ci-macos
             platform: macos_arm64
             sandbox: false
             target: aarch64-apple-darwin
-            v8_cpu: arm64
             variant: release
           - runner: macos-15
             bazel_config: ci-macos
             platform: macos_arm64
             sandbox: true
             target: aarch64-apple-darwin
-            v8_cpu: arm64
             variant: ptrcomp-sandbox
           - runner: ubuntu-24.04
             bazel_config: ci-v8
             platform: linux_amd64_musl
             sandbox: false
             target: x86_64-unknown-linux-musl
-            v8_cpu: x64
             variant: release
           - runner: ubuntu-24.04
             bazel_config: ci-v8
             platform: linux_amd64_musl
             sandbox: true
             target: x86_64-unknown-linux-musl
-            v8_cpu: x64
             variant: ptrcomp-sandbox
           - runner: ubuntu-24.04-arm
             bazel_config: ci-v8
             platform: linux_arm64_musl
             sandbox: false
             target: aarch64-unknown-linux-musl
-            v8_cpu: arm64
             variant: release
           - runner: ubuntu-24.04-arm
             bazel_config: ci-v8
             platform: linux_arm64_musl
             sandbox: true
             target: aarch64-unknown-linux-musl
-            v8_cpu: arm64
             variant: ptrcomp-sandbox
     steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
         with:
-          ref: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.sha || github.sha }}
           persist-credentials: false
 
-      - name: Set up Bazel
-        uses: ./.github/actions/setup-bazel-ci
+      - name: Prepare Bazel CI
+        uses: ./.github/actions/prepare-bazel-ci
         with:
           target: ${{ matrix.target }}
+          cache-scope: bazel-v8
 
       - name: Set up Python
-        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405 # v6.2.0
         with:
           python-version: "3.12"
 
@@ -190,6 +182,7 @@ jobs:
         uses: dtolnay/rust-toolchain@e081816240890017053eacbb1bdf337761dc5582 # 1.95.0
         with:
           toolchain: "1.95.0"
+          targets: ${{ matrix.target }}
 
       - name: Build Bazel V8 release pair
         env:
@@ -197,7 +190,6 @@ jobs:
           PLATFORM: ${{ matrix.platform }}
           SANDBOX: ${{ matrix.sandbox }}
           TARGET: ${{ matrix.target }}
-          V8_CPU: ${{ matrix.v8_cpu }}
         shell: bash
         run: |
           set -euo pipefail
@@ -212,14 +204,9 @@ jobs:
           bazel_args=(
             build
             "--platforms=@llvm//platforms:${PLATFORM}"
-            --config=rusty-v8-upstream-libcxx
-            "--config=v8-target-${V8_CPU}"
             "${pair_target}"
             --build_metadata=COMMIT_SHA=$(git rev-parse HEAD)
           )
-          if [[ "${SANDBOX}" != "true" ]]; then
-            bazel_args+=(--config=v8-release-compat)
-          fi
 
           ./.github/scripts/run_bazel_with_buildbuddy.py \
             --noexperimental_remote_repo_contents_cache \
@@ -233,7 +220,6 @@ jobs:
           PLATFORM: ${{ matrix.platform }}
           SANDBOX: ${{ matrix.sandbox }}
           TARGET: ${{ matrix.target }}
-          V8_CPU: ${{ matrix.v8_cpu }}
         shell: bash
         run: |
           set -euo pipefail
@@ -243,15 +229,32 @@ jobs:
             --target "${TARGET}"
             --output-dir "dist/${TARGET}"
             --bazel-config "${BAZEL_CONFIG}"
-            --bazel-config "v8-target-${V8_CPU}"
           )
           if [[ "${SANDBOX}" == "true" ]]; then
             stage_args+=(--sandbox)
-          else
-            stage_args+=(--bazel-config v8-release-compat)
           fi
 
           python3 .github/scripts/rusty_v8_bazel.py stage-release-pair "${stage_args[@]}"
+
+      # Larger Linux runner images may omit the host linker used by Cargo build scripts.
+      - name: Install native Linux Cargo smoke dependencies
+        if: ${{ runner.os == 'Linux' }}
+        env:
+          TARGET: ${{ matrix.target }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          packages=(build-essential)
+          if [[ "${TARGET}" == *-musl ]]; then
+            packages+=(musl-tools)
+          fi
+          sudo apt-get update -y
+          sudo DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends "${packages[@]}"
+          if [[ "${TARGET}" == *-musl ]]; then
+            # Use musl only for target links; Cargo build scripts still link on the glibc host.
+            linker_var="CARGO_TARGET_${TARGET^^}_LINKER"
+            echo "${linker_var//-/_}=$(command -v musl-gcc)" >> "${GITHUB_ENV}"
+          fi
 
       - name: Smoke test staged artifact with Cargo
         env:
@@ -261,16 +264,6 @@ jobs:
         run: |
           set -euo pipefail
 
-          host_arch="$(uname -m)"
-          case "${TARGET}:${host_arch}" in
-            x86_64-apple-darwin:x86_64|aarch64-apple-darwin:arm64|x86_64-unknown-linux-gnu:x86_64|aarch64-unknown-linux-gnu:aarch64)
-              ;;
-            *)
-              echo "Skipping non-native Cargo smoke for ${TARGET} on ${host_arch}."
-              exit 0
-              ;;
-          esac
-
           archive="$(find "dist/${TARGET}" -maxdepth 1 -type f -name 'librusty_v8_*.a.gz' -print -quit)"
           binding="$(find "dist/${TARGET}" -maxdepth 1 -type f -name 'src_binding_*.rs' -print -quit)"
           if [[ -z "${archive}" || -z "${binding}" ]]; then
@@ -278,15 +271,15 @@ jobs:
             exit 1
           fi
 
-          cargo_args=(test -p codex-v8-poc)
+          cargo_args=(test -p codex-v8-poc --target "${TARGET}")
           if [[ "${SANDBOX}" == "true" ]]; then
             cargo_args+=(--features sandbox)
           fi
+          cargo_args+=(-- --include-ignored)
 
           (
             cd codex-rs
             CARGO_TARGET_DIR="${RUNNER_TEMP}/rusty-v8-cargo-smoke-${TARGET}-${SANDBOX}" \
-            CARGO_NET_GIT_FETCH_WITH_CLI=true \
             RUSTY_V8_ARCHIVE="${GITHUB_WORKSPACE}/${archive}" \
             RUSTY_V8_SRC_BINDING_PATH="${GITHUB_WORKSPACE}/${binding}" \
             cargo "${cargo_args[@]}"
@@ -305,7 +298,7 @@ jobs:
   build-windows-source:
     name: Build ptrcomp-sandbox ${{ matrix.target }} from source
     needs: metadata
-    if: ${{ needs.metadata.outputs.windows_source_required == 'true' }}
+    if: ${{ github.repository != 'sednalabs/codex' && needs.metadata.outputs.windows_source_required == 'true' }}
     runs-on: ${{ matrix.runner }}
     permissions:
       contents: read
@@ -319,7 +312,9 @@ jobs:
             target: aarch64-pc-windows-msvc
 
     steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v6
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
+        with:
+          persist-credentials: false
 
       - id: setup_ci
         uses: ./.github/actions/setup-ci
@@ -329,15 +324,26 @@ jobs:
         run: git config --global core.symlinks true
 
       - name: Check out upstream rusty_v8
-        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v6
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
         with:
           repository: denoland/rusty_v8
           ref: v${{ needs.metadata.outputs.v8_version }}
           path: upstream-rusty-v8
           submodules: recursive
+          persist-credentials: false
+
+      - name: Download upstream Windows build tools
+        shell: bash
+        working-directory: upstream-rusty-v8
+        run: |
+          set -euo pipefail
+          # Upstream skips this submodule and downloads the pinned archive in CI.
+          mkdir -p tools/win
+          curl -fL https://chromium.googlesource.com/chromium/src/tools/win/+archive/faefd1b6fa9eeb033ad6fe60368ccb9bf908cbd0.tar.gz |
+            tar -xz -C tools/win
 
       - name: Set up Python
-        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405 # v6
         with:
           python-version: "3.11"
           architecture: x64
@@ -363,31 +369,32 @@ jobs:
         run: git submodule status --recursive > git_submodule_status.txt
 
       - name: Restore upstream source-build cache
-        uses: actions/cache@2c8a9bd7457de244a408f35966fab2fb45fda9c8 # v5
+        uses: actions/cache@668228422ae6a00e4ad889ee87cd7109ec5666a7 # v5
         with:
           path: |
             ${{ steps.setup_ci.outputs.cargo-target-dir }}/sccache
             ${{ steps.setup_ci.outputs.cargo-target-dir }}/${{ matrix.target }}/release/gn_out
-          key: rusty-v8-source-${{ matrix.target }}-${{ matrix.runner }}-sandbox-${{ hashFiles('upstream-rusty-v8/Cargo.lock', 'upstream-rusty-v8/build.rs', 'upstream-rusty-v8/git_submodule_status.txt') }}
+          key: rusty-v8-source-${{ matrix.target }}-${{ matrix.runner }}-sandbox-${{ hashFiles('upstream-rusty-v8/Cargo.lock', 'upstream-rusty-v8/build.rs', 'upstream-rusty-v8/git_submodule_status.txt', 'patches/v8_array_sort_elements_kind.patch') }}
           restore-keys: |
             rusty-v8-source-${{ matrix.target }}-${{ matrix.runner }}-sandbox-
 
-      - name: Install and start sccache
+      - name: Apply V8 Array.sort backport
+        shell: bash
+        working-directory: upstream-rusty-v8/v8
+        run: git apply -p3 "${GITHUB_WORKSPACE}/patches/v8_array_sort_elements_kind.patch"
+
+      - name: Install sccache
+        uses: taiki-e/install-action@44c6d64aa62cd779e873306675c7a58e86d6d532 # v2.62.49
+        with:
+          tool: sccache@0.8.2
+
+      - name: Start sccache
         shell: pwsh
         env:
           SCCACHE_CACHE_SIZE: 256M
           SCCACHE_DIR: ${{ steps.setup_ci.outputs.cargo-target-dir }}/sccache
           SCCACHE_IDLE_TIMEOUT: 0
-        run: |
-          $version = "v0.8.2"
-          $platform = "x86_64-pc-windows-msvc"
-          $basename = "sccache-$version-$platform"
-          $url = "https://github.com/mozilla/sccache/releases/download/$version/$basename.tar.gz"
-          cd ~
-          curl -LO $url
-          tar -xzvf "$basename.tar.gz"
-          . $basename/sccache --start-server
-          echo "$(pwd)/$basename" | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
+        run: sccache --start-server
 
       - name: Install Chromium clang for ARM64 MSVC cross build
         if: matrix.target == 'aarch64-pc-windows-msvc'

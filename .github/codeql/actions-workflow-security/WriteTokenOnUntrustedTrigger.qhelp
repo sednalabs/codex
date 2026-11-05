@@ -14,5 +14,14 @@
       to a separate protected workflow or a narrowly scoped job that does not
       checkout or execute untrusted code.
     </p>
+    <p>
+      Repository-specific exceptions are limited to the pinned CLA assistant
+      with fixed signature storage and no checkout or run step, and the
+      upstream-only Python publication jobs whose complete conditions require
+      <code>github.repository == 'openai/codex'</code>. The Python exception
+      only records that those jobs cannot run in this Sedna fork; it is not an
+      assessment of canonical OpenAI publisher or reusable-build safety. Do not
+      generalize either exception without preserving its exact gate.
+    </p>
   </recommendation>
 </qhelp>

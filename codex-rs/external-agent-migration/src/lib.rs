@@ -1,7 +1,5 @@
 //! Migration helpers for importing external-agent configuration into Codex.
 
-extern crate yaml_serde as serde_yaml;
-
 mod config_values;
 mod detect;
 mod hooks_cla;
@@ -58,7 +56,10 @@ use mcp::parse_env_placeholder;
 pub use memory::ExternalMemoryFile;
 pub use memory::discover_external_memory_files;
 pub use rewrite::RewriteProfile;
+pub use service::DetectedConnectorCandidate;
+pub use service::DetectedConnectorSource;
 pub use service::ExternalAgentConfigDetectOptions;
+pub use service::ExternalAgentConfigDetection;
 pub use service::ExternalAgentConfigImportItemResult;
 pub use service::ExternalAgentConfigImportOutcome;
 pub use service::ExternalAgentConfigImportRawError;
