@@ -225,8 +225,15 @@ pub(crate) async fn read_consumer(
     session.ensure_identity().await?;
     let (threads, next_cursor) =
         page.map_err(|_| "Chat listing timed out. Select Retry.".to_string())??;
-    let mut pending = futures::stream::iter(threads.iter().map(|root| descendants(handle, root)))
-        .buffer_unordered(/*n*/ 2);
+    let discoveries = threads
+        .iter()
+        .cloned()
+        .map(|root| {
+            let handle = handle.clone();
+            async move { descendants(&handle, &root).await }
+        })
+        .collect::<Vec<_>>();
+    let mut pending = futures::stream::iter(discoveries).buffer_unordered(/*n*/ 2);
     let deadline = tokio::time::Instant::now() + ESTIMATE_BUDGET;
     let mut queries = Vec::new();
     while let Ok(Some(result)) = tokio::time::timeout_at(deadline, pending.next()).await {
