@@ -37,17 +37,17 @@ impl ExternalAuth for ExternalCredentials {
             self.refreshes.fetch_add(/*val*/ 1, Ordering::SeqCst);
             match self.outcome {
                 RefreshOutcome::Accepted => Ok(self.auth.clone()),
-                RefreshOutcome::Rejected => Err(std::io::Error::other("refresh rejected")),
+                RefreshOutcome::Rejected => Err(RefreshTokenError::Permanent(
+                    RefreshTokenFailedError::new(
+                        RefreshTokenFailedReason::Other,
+                        "refresh rejected".to_string(),
+                    ),
+                )
+                .into()),
             }
         })
     }
 
-    fn classify_error(&self, error: std::io::Error) -> RefreshTokenError {
-        RefreshTokenError::Permanent(RefreshTokenFailedError::new(
-            RefreshTokenFailedReason::Other,
-            error.to_string(),
-        ))
-    }
 }
 
 #[tokio::test]
@@ -58,6 +58,33 @@ async fn failed_recovery_preserves_unauthorized_status() {
 #[tokio::test]
 async fn persistent_unauthorized_stops_after_successful_recovery() {
     assert_unauthorized_after_recovery(RefreshOutcome::Accepted, /*expected_requests*/ 2).await;
+}
+
+#[tokio::test]
+async fn analytics_client_does_not_follow_redirects() {
+    let target = MockServer::start().await;
+    Mock::given(method("GET"))
+        .respond_with(ResponseTemplate::new(/*s*/ 200))
+        .expect(/*n*/ 0)
+        .mount(&target)
+        .await;
+    let source = MockServer::start().await;
+    Mock::given(method("GET"))
+        .respond_with(ResponseTemplate::new(/*s*/ 302).insert_header("Location", target.uri()))
+        .expect(/*n*/ 1)
+        .mount(&source)
+        .await;
+    let client = Client::new_without_redirects(
+        source.uri(),
+        HttpClientFactory::new(OutboundProxyPolicy::ReqwestDefault),
+    );
+    let error = client
+        .get_account_analytics(crate::AnalyticsReport::Usage, "2026-09-01", "2026-09-07")
+        .await
+        .unwrap_err();
+    assert_eq!(error.status().map(|status| status.as_u16()), Some(302));
+    source.verify().await;
+    target.verify().await;
 }
 
 async fn assert_unauthorized_after_recovery(outcome: RefreshOutcome, expected_requests: u64) {

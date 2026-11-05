@@ -4,6 +4,8 @@ pub(crate) mod types;
 pub use client::AddCreditsNudgeCreditType;
 pub use client::Client;
 pub use client::RequestError;
+pub use client::ThreadUsage;
+pub use client::ThreadUsageBreakdownGroup;
 pub use client::analytics::AnalyticsReport;
 pub use client::analytics::AnalyticsResponse;
 pub use codex_backend_openapi_models::models::analytics as analytics_models;

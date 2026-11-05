@@ -36,6 +36,9 @@ use std::fmt;
 
 mod rate_limit_resets;
 pub(crate) mod analytics;
+mod thread_usage;
+pub use thread_usage::ThreadUsage;
+pub use thread_usage::ThreadUsageBreakdownGroup;
 
 #[derive(Debug)]
 pub enum RequestError {
