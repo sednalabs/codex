@@ -423,6 +423,7 @@ pub(crate) enum AppEvent {
         cursor: Option<String>,
         previous: Vec<Option<String>>,
         result: Result<crate::analytics_chats::AccountChats, String>,
+        session: Option<codex_backend_client::AnalyticsSession>,
     },
 
     /// Open the reset-credit flow selected from the `/usage` menu.

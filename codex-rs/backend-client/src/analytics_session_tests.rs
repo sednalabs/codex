@@ -78,7 +78,7 @@ async fn analytics_client_does_not_follow_redirects() {
         HttpClientFactory::new(OutboundProxyPolicy::ReqwestDefault),
     );
     let error = client
-        .get_account_analytics(crate::AnalyticsReport::Usage, "2026-09-01", "2026-09-07")
+        .get_accounts_check()
         .await
         .unwrap_err();
     assert_eq!(error.status().map(|status| status.as_u16()), Some(302));
@@ -125,11 +125,7 @@ async fn assert_unauthorized_after_recovery(outcome: RefreshOutcome, expected_re
         auth,
     };
     let error = session
-        .request(|client| async move {
-            client
-                .get_account_analytics(crate::AnalyticsReport::Usage, "2026-09-01", "2026-09-07")
-                .await
-        })
+        .request(|client| async move { client.get_accounts_check().await })
         .await
         .unwrap_err();
     assert_eq!(error.status().map(|status| status.as_u16()), Some(401));

@@ -1166,26 +1166,32 @@ impl App {
                 let state_db = self.state_db.clone();
                 let tx = self.app_event_tx.clone();
                 tokio::spawn(async move {
-                    let result = match codex_backend_client::AnalyticsSession::from_config(
-                        &config,
-                        config.http_client_factory(),
+                    let (result, session) = match tokio::time::timeout(
+                        Duration::from_secs(/*secs*/ 10),
+                        codex_backend_client::AnalyticsSession::from_config(
+                            &config,
+                            config.http_client_factory(),
+                        ),
                     )
                     .await
                     {
-                        Ok(session) => {
-                            match crate::analytics_chats::read_account(&handle, &session, cursor.clone()).await {
+                        Ok(Ok(session)) => {
+                            let result = match crate::analytics_chats::read_account(&handle, &session, cursor.clone()).await {
                                 Ok(mut page) => page.attach_local_usage(state_db.as_deref(), &session)
                                     .await.map(|()| page),
                                 Err(error) => Err(error),
-                            }
+                            };
+                            (result, Some(session))
                         }
-                        Err(error) => Err(error),
+                        Ok(Err(error)) => (Err(error), None),
+                        Err(_) => (Err("Account lookup timed out. Select Retry.".to_string()), None),
                     };
                     tx.send(AppEvent::AnalyticsChatsLoaded {
                         request_id,
                         cursor,
                         previous,
                         result,
+                        session,
                     });
                 });
             }
@@ -1193,8 +1199,16 @@ impl App {
                 request_id,
                 cursor,
                 previous,
-                result,
+                mut result,
+                session,
             } => {
+                if result.is_ok() && let Some(session) = session {
+                    result = match tokio::time::timeout(Duration::from_secs(/*secs*/ 2), session.ensure_identity()).await {
+                        Ok(Ok(())) => result,
+                        Ok(Err(error)) => Err(error),
+                        Err(_) => Err("Account verification timed out. Select Retry.".to_string()),
+                    };
+                }
                 self.chat_widget.finish_analytics_chats(
                     request_id,
                     cursor,

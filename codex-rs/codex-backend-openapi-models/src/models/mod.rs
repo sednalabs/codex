@@ -65,4 +65,3 @@ pub use self::spend_control_limit_details::SpendControlLimitDetails;
 
 pub(crate) mod spend_control_status_details;
 pub use self::spend_control_status_details::SpendControlStatusDetails;
-pub mod analytics;

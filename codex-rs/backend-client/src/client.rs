@@ -35,7 +35,6 @@ use serde::de::DeserializeOwned;
 use std::fmt;
 
 mod rate_limit_resets;
-pub(crate) mod analytics;
 pub(crate) mod task_usage;
 mod thread_usage;
 pub use thread_usage::ThreadUsage;

@@ -26,6 +26,12 @@ pub struct AnalyticsSession {
     account: AnalyticsAccount,
 }
 
+impl std::fmt::Debug for AnalyticsSession {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("AnalyticsSession").finish_non_exhaustive()
+    }
+}
+
 impl AnalyticsSession {
     /// Load local ChatGPT credentials and the current server plan using the configured HTTP policy.
     pub async fn from_config(
