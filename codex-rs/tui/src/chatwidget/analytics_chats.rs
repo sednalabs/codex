@@ -73,7 +73,7 @@ impl ChatWidget {
         };
         if let Some(next_cursor) = next_cursor {
             let mut history = previous.clone();
-            history.push(cursor.clone());
+            history.push(cursor);
             items.push(SelectionItem {
                 name: "Older chats".to_string(),
                 actions: vec![Box::new(move |tx| {
