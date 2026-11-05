@@ -6180,6 +6180,7 @@ class ValidationPlanScriptTests(unittest.TestCase):
             "codex-rs-rest-b",
             "codex-rs-rest-c",
             "codex-rs-rest-d",
+            "codex-rs-rest-e",
             "tools",
         ):
             self.assertIn(f"{rust_scope})", scoped_rust_config_run)
@@ -6218,6 +6219,7 @@ class ValidationPlanScriptTests(unittest.TestCase):
             "codex-rs-rest-b",
             "codex-rs-rest-c",
             "codex-rs-rest-d",
+            "codex-rs-rest-e",
         )
         for rust_scope in rest_scopes:
             self.assertIn(f"{rust_scope})", scoped_rust_config_run)
@@ -6243,20 +6245,22 @@ class ValidationPlanScriptTests(unittest.TestCase):
                 text=True,
             ).stdout.splitlines()
         )
+        expected_tracked_rest_paths = {
+            f"codex-rs/{path}"
+            for path in tracked_codex_rs_dirs
+            if path not in {
+                "core",
+                "tui",
+                *(service_path.split("/", 1)[1] for service_path in service_paths),
+            }
+        }
+        actual_rest_paths = set(all_rest_paths)
+        self.assertTrue(expected_tracked_rest_paths <= actual_rest_paths)
+        # Keep these two inherited path entries stable for existing CodeQL
+        # configuration identity; neither directory exists in this tree.
         self.assertEqual(
-            set(rest_paths["codex-rs-rest-a"])
-            | set(rest_paths["codex-rs-rest-b"])
-            | set(rest_paths["codex-rs-rest-c"])
-            | set(rest_paths["codex-rs-rest-d"]),
-            {
-                f"codex-rs/{path}"
-                for path in tracked_codex_rs_dirs
-                if path not in {
-                    "core",
-                    "tui",
-                    *(service_path.split("/", 1)[1] for service_path in service_paths),
-                }
-            },
+            actual_rest_paths - expected_tracked_rest_paths,
+            {"codex-rs/mcp-server", "codex-rs/runtime-proof"},
         )
         self.assertIn("security-and-quality", scoped_rust_config_run)
         self.assertIn("paths-ignore:", scoped_rust_config_run)
@@ -6459,10 +6463,12 @@ class ValidationPlanScriptTests(unittest.TestCase):
         self.assertIn("jobHasPublishingSink", workflow_security)
         self.assertIn("jobEffectiveWritePermission", workflow_security)
         self.assertIn("jobHasRepoApprovedProvenance", workflow_security)
+        self.assertIn("predicate jobGithubScriptCalls(Job job, string apiCall)", workflow_security)
         self.assertIn(
-            'jobUsesActionMatching(job, "(?i)^actions/github-script(@.*)?$", _)',
+            'step.getCallee().regexpMatch("(?i)^actions/github-script$")',
             workflow_security,
         )
+        self.assertIn('script = step.getArgumentExpr("script")', workflow_security)
         self.assertFalse((REPO_ROOT / ".github/codeql/codeql-rust-pr.yml").exists())
         rust_config = yaml.load(
             (REPO_ROOT / ".github/codeql/codeql-rust.yml").read_text(encoding="utf-8"),
