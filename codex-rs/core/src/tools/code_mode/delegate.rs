@@ -309,3 +309,7 @@ impl CoreTurnHost {
             })
     }
 }
+
+#[cfg(test)]
+#[path = "delegate_tests.rs"]
+mod tests;
