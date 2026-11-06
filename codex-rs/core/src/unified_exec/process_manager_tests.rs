@@ -291,6 +291,21 @@ async fn first_output_wait_returns_for_live_process_and_times_out_without_output
     .expect("output should wake before the deadline");
     assert!(early);
     assert_eq!(collected.to_bytes(), b"ready".to_vec());
+
+    output.lock().await.push_chunk(b"already ready".to_vec());
+    let (collected, early) = UnifiedExecProcessManager::collect_output_until_deadline(
+        &output,
+        &notify,
+        &closed,
+        &closed_notify,
+        &cancel,
+        /*pause_state*/ None,
+        Instant::now(),
+        /*return_on_output*/ true,
+    )
+    .await;
+    assert!(early);
+    assert_eq!(collected.to_bytes(), b"already ready".to_vec());
 }
 
 #[tokio::test(start_paused = true)]
@@ -326,7 +341,7 @@ async fn quiet_output_collection_survives_five_minutes_and_wakes_on_exit() {
 }
 
 #[tokio::test]
-async fn output_collection_stays_bounded_across_repeated_drains() {
+async fn quiet_output_collection_stays_bounded_until_exit() {
     let output_buffer = Arc::new(tokio::sync::Mutex::new(HeadTailBuffer::default()));
     let output_notify = Arc::new(Notify::new());
     let output_closed = Arc::new(AtomicBool::new(false));
@@ -349,16 +364,6 @@ async fn output_collection_stays_bounded_across_repeated_drains() {
                 vec![byte; crate::unified_exec::UNIFIED_EXEC_OUTPUT_MAX_BYTES],
             );
             output_notify.notify_one();
-            tokio::time::timeout(Duration::from_secs(1), async {
-                loop {
-                    if output_buffer.lock().await.retained_bytes() == 0 {
-                        break;
-                    }
-                    tokio::task::yield_now().await;
-                }
-            })
-            .await
-            .expect("collector should drain each chunk");
         }
 
         output_closed.store(true, Ordering::Release);
@@ -377,6 +382,51 @@ async fn output_collection_stays_bounded_across_repeated_drains() {
         ]);
     }
     assert_eq!(collected, expected);
+}
+
+#[tokio::test]
+async fn dropping_quiet_output_collection_preserves_buffer_for_next_wait() {
+    let output = Arc::new(tokio::sync::Mutex::new(HeadTailBuffer::default()));
+    let notify = Arc::new(Notify::new());
+    let closed = Arc::new(AtomicBool::new(false));
+    let closed_notify = Arc::new(Notify::new());
+    let cancel = CancellationToken::new();
+    output.lock().await.push_chunk(b"recoverable output".to_vec());
+
+    {
+        let collect = UnifiedExecProcessManager::collect_output_until_deadline(
+            &output,
+            &notify,
+            &closed,
+            &closed_notify,
+            &cancel,
+            /*pause_state*/ None,
+            Instant::now() + Duration::from_secs(60),
+            /*return_on_output*/ false,
+        );
+        tokio::pin!(collect);
+        tokio::select! {
+            biased;
+            _ = &mut collect => panic!("quiet collection returned before exit"),
+            _ = tokio::task::yield_now() => {}
+        }
+    }
+
+    closed.store(true, Ordering::Release);
+    cancel.cancel();
+    let (recovered, early) = UnifiedExecProcessManager::collect_output_until_deadline(
+        &output,
+        &notify,
+        &closed,
+        &closed_notify,
+        &cancel,
+        /*pause_state*/ None,
+        Instant::now() + Duration::from_secs(1),
+        /*return_on_output*/ false,
+    )
+    .await;
+    assert!(!early);
+    assert_eq!(recovered.to_bytes(), b"recoverable output".to_vec());
 }
 
 #[tokio::test]

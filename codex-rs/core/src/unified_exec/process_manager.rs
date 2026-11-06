@@ -1309,7 +1309,6 @@ impl UnifiedExecProcessManager {
     ) -> (HeadTailBuffer, bool) {
         const POST_EXIT_CLOSE_WAIT_CAP: Duration = Duration::from_millis(50);
 
-        let mut collected = HeadTailBuffer::default();
         let mut exit_signal_received = cancellation_token.is_cancelled();
         let mut post_exit_deadline: Option<Instant> = None;
         loop {
@@ -1319,78 +1318,71 @@ impl UnifiedExecProcessManager {
                 &mut post_exit_deadline,
             )
             .await;
-            let drained_output: HeadTailBuffer;
-            let has_drained_output: bool;
-            let mut wait_for_output = None;
-            {
+            exit_signal_received |= cancellation_token.is_cancelled();
+            if exit_signal_received && output_closed.load(std::sync::atomic::Ordering::Acquire) {
+                break;
+            }
+            let wait_for_output = if return_on_output && !exit_signal_received {
                 let mut guard = output_buffer.lock().await;
-                drained_output = guard.drain();
-                has_drained_output =
-                    drained_output.retained_bytes() > 0 || drained_output.omitted_bytes() > 0;
-                if !has_drained_output {
-                    wait_for_output = Some(output_notify.notified());
+                if guard.retained_bytes() > 0 || guard.omitted_bytes() > 0 {
+                    if cancellation_token.is_cancelled() {
+                        exit_signal_received = true;
+                        continue;
+                    }
+                    // Keep the process handle even if exit races this return.
+                    return (guard.drain(), true);
                 }
+                Some(output_notify.notified())
+            } else {
+                None
+            };
+            let remaining = deadline.saturating_duration_since(Instant::now());
+            if remaining == Duration::ZERO {
+                break;
             }
 
-            if !has_drained_output {
-                exit_signal_received |= cancellation_token.is_cancelled();
-                if exit_signal_received && output_closed.load(std::sync::atomic::Ordering::Acquire)
-                {
+            if exit_signal_received {
+                let now = Instant::now();
+                let close_wait_deadline = *post_exit_deadline
+                    .get_or_insert_with(|| now + remaining.min(POST_EXIT_CLOSE_WAIT_CAP));
+                let close_wait_remaining = close_wait_deadline.saturating_duration_since(now);
+                if close_wait_remaining == Duration::ZERO {
                     break;
                 }
-                let remaining = deadline.saturating_duration_since(Instant::now());
-                if remaining == Duration::ZERO {
-                    break;
-                }
-
-                if exit_signal_received {
-                    let now = Instant::now();
-                    let close_wait_deadline = *post_exit_deadline
-                        .get_or_insert_with(|| now + remaining.min(POST_EXIT_CLOSE_WAIT_CAP));
-                    let close_wait_remaining = close_wait_deadline.saturating_duration_since(now);
-                    if close_wait_remaining == Duration::ZERO {
-                        break;
-                    }
-                    let notified = wait_for_output.unwrap_or_else(|| output_notify.notified());
-                    let closed = output_closed_notify.notified();
-                    tokio::pin!(notified);
-                    tokio::pin!(closed);
-                    tokio::select! {
-                        _ = &mut notified => {}
-                        _ = &mut closed => {}
-                        _ = tokio::time::sleep(close_wait_remaining) => break,
-                        _ = Self::wait_for_pause_change(pause_state.as_ref()) => {}
-                    }
+                let closed = output_closed_notify.notified();
+                tokio::pin!(closed);
+                closed.as_mut().enable();
+                if output_closed.load(std::sync::atomic::Ordering::Acquire) {
                     continue;
                 }
-
-                let notified = wait_for_output.unwrap_or_else(|| output_notify.notified());
-                tokio::pin!(notified);
-                let exit_notified = cancellation_token.cancelled();
-                tokio::pin!(exit_notified);
                 tokio::select! {
-                    _ = &mut notified => {}
-                    _ = &mut exit_notified => exit_signal_received = true,
-                    _ = tokio::time::sleep(remaining) => break,
+                    _ = &mut closed => {}
+                    _ = tokio::time::sleep(close_wait_remaining) => break,
                     _ = Self::wait_for_pause_change(pause_state.as_ref()) => {}
                 }
                 continue;
             }
 
-            collected.push_buffer(drained_output);
-
-            exit_signal_received |= cancellation_token.is_cancelled();
-            if return_on_output && !exit_signal_received {
-                // Keep the process handle even if exit races this return: the
-                // caller must be able to collect trailing output and exit status.
-                return (collected, true);
-            }
-            if Instant::now() >= deadline {
-                break;
+            if let Some(notified) = wait_for_output {
+                tokio::pin!(notified);
+                tokio::select! {
+                    _ = &mut notified => {}
+                    _ = cancellation_token.cancelled() => exit_signal_received = true,
+                    _ = tokio::time::sleep(remaining) => break,
+                    _ = Self::wait_for_pause_change(pause_state.as_ref()) => {}
+                }
+            } else {
+                // The shared buffer is already bounded. Keep it intact until
+                // this window finishes so a dropped wait does not consume it.
+                tokio::select! {
+                    _ = cancellation_token.cancelled() => exit_signal_received = true,
+                    _ = tokio::time::sleep(remaining) => break,
+                    _ = Self::wait_for_pause_change(pause_state.as_ref()) => {}
+                }
             }
         }
 
-        (collected, false)
+        (output_buffer.lock().await.drain(), false)
     }
 
     async fn extend_deadlines_while_paused(
