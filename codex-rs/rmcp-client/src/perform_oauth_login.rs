@@ -1476,14 +1476,14 @@ impl OauthLoginFlow {
             let OauthCallbackResult {
                 code,
                 state: csrf_state,
-                ..
+                issuer,
             } = match callback {
                 CallbackResult::Success(callback) => callback,
                 CallbackResult::Error(error) => return Err(anyhow!(error)),
             };
 
             self.oauth_state
-                .handle_callback(&code, &csrf_state)
+                .handle_callback_with_issuer(&code, &csrf_state, issuer.as_deref())
                 .await
                 .context("failed to handle OAuth callback")?;
 

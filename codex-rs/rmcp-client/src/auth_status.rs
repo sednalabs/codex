@@ -650,7 +650,7 @@ mod tests {
             scoped,
             Some("https://mcp.example/mcp")
         ));
-        assert!(!device_only_issuer_matches(resource, scoped, None));
+        assert!(!device_only_issuer_matches(resource, scoped, /*issuer*/ None));
         assert!(!device_only_issuer_matches(
             resource,
             scoped,
