@@ -1976,11 +1976,13 @@ mod tests {
     async fn authorization_manager_for(
         tokens: &StoredOAuthTokens,
     ) -> Result<Arc<Mutex<AuthorizationManager>>> {
+        // This helper tests persistence, so its synthetic issuer must match the
+        // credential binding; separate tests exercise issuer mismatch rejection.
         let server = MockServer::start().await;
         Mock::given(method("GET"))
             .and(path("/.well-known/oauth-authorization-server/mcp"))
             .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
-                "issuer": format!("{}/mcp", server.uri()),
+                "issuer": tokens.issuer.as_deref(),
                 "authorization_endpoint": format!("{}/oauth/authorize", server.uri()),
                 "token_endpoint": format!("{}/oauth/token", server.uri()),
             })))
