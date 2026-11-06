@@ -1,7 +1,7 @@
 /**
  * @name Native visual response production handler coverage missing
  * @id rust/native-visual-response-production-handler-coverage-missing
- * @description Production Android and browser visual handlers must remain discoverable with at least one recognized successful response exit so native-image guard analysis cannot become vacuous.
+ * @description Production Android visual handlers must remain discoverable with at least one recognized successful response exit so native-image guard analysis cannot become vacuous.
  * @kind problem
  * @problem.severity error
  * @precision high
@@ -21,11 +21,6 @@ predicate expectedProductionHandler(File file, string handlerName) {
       handlerName = "step" or
       handlerName = "install_build_from_run"
     )
-  )
-  or
-  (
-    file.getRelativePath() = "codex-rs/browser-computer-use/src/lib.rs" and
-    handlerName = "handle_with_provider"
   )
 }
 

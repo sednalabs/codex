@@ -579,13 +579,11 @@ tui-native-computer-use-targeted:
     cargo test --locked -p codex-tui history_cell::tests::computer_use_call_failure_is_visible --lib -- --exact --test-threads=1
     cargo test --locked -p codex-tui chatwidget::tests::history_replay::replayed_completed_computer_use_call_is_visible --lib -- --exact --test-threads=1
     cargo test --locked -p codex-tui chatwidget::tests::history_replay::live_computer_use_call_is_visible_while_active_and_after_completion --lib -- --exact --test-threads=1
-    cargo test --locked -p codex-browser-computer-use --lib -- --test-threads=1
     cargo test --locked -p codex-tui desktop_computer_use_provider::tests:: --lib -- --test-threads=1
     cargo test --locked -p codex-tui computer_use_provider::tests:: --lib -- --test-threads=1
 
-# Focused exec native computer-use slice for configured browser tool
-
-# advertisement and provider request handling in non-interactive sessions.
+# Focused exec native computer-use slice for Android tool advertisement and
+# provider request handling in non-interactive sessions.
 exec-native-computer-use-targeted:
     cargo test --locked -p codex-exec tests::thread_lifecycle_params_include_configured_native_dynamic_tools --lib -- --exact --test-threads=1
     cargo test --locked -p codex-exec --test all event_processor_with_json_output::computer_use_started_and_completed_translate_to_thread_events -- --exact --test-threads=1
@@ -595,27 +593,20 @@ exec-native-computer-use-targeted:
 # and deferred tool-search discovery.
 native-computer-use-tool-registry-targeted:
     cargo test --locked -p codex-tools canonical_android_dynamic_tool --lib -- --test-threads=1
-    cargo test --locked -p codex-tools canonical_browser_dynamic_tool --lib -- --test-threads=1
+    cargo test --locked -p codex-tools native_computer_use_provider_registry_does_not_claim_retired_browser_tools --lib -- --test-threads=1
     cargo test --locked -p codex-tools desktop_tool --lib -- --test-threads=1
-    cargo test --locked -p codex-tools browser_backend_schema_exposes_supported_provider_backends --lib -- --test-threads=1
-    cargo test --locked -p codex-tools native_computer_use_registry_classifies_android_and_browser_tools --lib -- --test-threads=1
     cargo test --locked -p codex-tools native_computer_use_registry_classifies_desktop_tools --lib -- --test-threads=1
     cargo test --locked -p codex-android-computer-use configured_android_tools_load_from_explicit_codex_home --lib -- --test-threads=1
     cargo test --locked -p codex-android-computer-use prefer_stable_ui_defaults_to_true_unless_disabled --lib -- --test-threads=1
-    cargo test --locked -p codex-core browser_handler_uses_browser_adapter --lib -- --test-threads=1
     cargo test --locked -p codex-core computer_use_call_times_out_and_unregisters_pending_response --lib -- --test-threads=1
-    cargo test --locked -p codex-tui browser_provider_requires_configured_backend --lib -- --test-threads=1
-    cargo test --locked -p codex-browser-computer-use command_provider_bridge_returns_native_image_response --lib -- --test-threads=1
-    cargo test --locked -p codex-browser-computer-use browser_provider_response_preserves_native_image --lib -- --test-threads=1
+    cargo test --locked -p codex-core resumed_thread_drops_legacy_browser_declarations --lib -- --test-threads=1
+    cargo test --locked -p codex-core forked_thread_drops_legacy_browser_declarations --lib -- --test-threads=1
+    cargo test --locked -p codex-core namespaced_browser_named_tool_is_preserved_as_a_persistent_tool --lib -- --test-threads=1
     cargo test --locked -p codex-tui unknown_computer_use_tool_is_not_claimed_by_provider_registry --lib -- --test-threads=1
 
 # Focused native computer-use operator diagnostics slice.
 native-computer-use-doctor-targeted:
-    cargo test --locked -p codex-cli doctor::tests::native_computer_use_check_reports_android_browser_and_desktop_config_files -- --exact --test-threads=1
-
-# Hosted Playwright and skill-contract evidence for the native browser surface.
-native-browser-evidence-targeted:
-    .github/scripts/validation-lanes/native-browser-evidence.sh
+    cargo test --locked -p codex-cli --bin codex doctor::tests::native_computer_use_check_reports_android_and_desktop_config_files -- --exact --test-threads=1
 
 # Focused downstream agent-workflow helper sanity slice.
 [no-cd]
@@ -653,7 +644,7 @@ build-policy-sanity:
 code-mode-declaration-targeted:
     cargo test --locked -p codex-tools code_mode_ --lib -- --test-threads=1
     cargo test --locked -p codex-tools raw_tool_json_matches_value_encoding --lib -- --exact --test-threads=1
-    RUST_MIN_STACK="${RUST_MIN_STACK:-{{ rust_min_stack }}}" CODEX_JS_REPL_NODE_PATH="${CODEX_JS_REPL_NODE_PATH:-/tmp/codex-node22/bin/node}" cargo nextest run -p codex-core --no-fail-fast --test-threads=1 --test all -- suite::code_mode::code_mode_exports_all_tools_metadata_for_builtin_tools suite::code_mode::code_mode_exports_all_tools_metadata_for_namespaced_mcp_tools suite::code_mode::code_mode_declaration_normalization_is_layout_tolerant_and_semantically_strict suite::code_mode::code_mode_native_browser_result_forwards_screenshot_as_input_image suite::code_mode::code_mode_failed_native_browser_result_forwards_input_image suite::code_mode::code_mode_can_call_hidden_dynamic_tools suite::code_mode::code_mode_excludes_configured_nested_tool_namespaces suite::code_mode::code_mode_write_stdin_can_return_on_live_output suite::code_mode::code_mode_write_stdin_calls_run_in_parallel_across_sessions --exact
+    RUST_MIN_STACK="${RUST_MIN_STACK:-{{ rust_min_stack }}}" CODEX_JS_REPL_NODE_PATH="${CODEX_JS_REPL_NODE_PATH:-/tmp/codex-node22/bin/node}" cargo nextest run -p codex-core --no-fail-fast --test-threads=1 --test all -- suite::code_mode::code_mode_exports_all_tools_metadata_for_builtin_tools suite::code_mode::code_mode_exports_all_tools_metadata_for_namespaced_mcp_tools suite::code_mode::code_mode_declaration_normalization_is_layout_tolerant_and_semantically_strict suite::code_mode::code_mode_can_call_hidden_dynamic_tools suite::code_mode::code_mode_excludes_configured_nested_tool_namespaces suite::code_mode::code_mode_write_stdin_can_return_on_live_output suite::code_mode::code_mode_write_stdin_calls_run_in_parallel_across_sessions --exact
 
 # Focused tool-context serialization slice for custom/function/abort outputs.
 core-context-serialization-targeted:

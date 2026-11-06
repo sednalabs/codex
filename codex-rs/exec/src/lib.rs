@@ -58,7 +58,6 @@ use codex_app_server_protocol::TurnStartParams;
 use codex_app_server_protocol::TurnStartResponse;
 use codex_app_server_protocol::TurnStartedNotification;
 use codex_arg0::Arg0DispatchPaths;
-use codex_browser_computer_use::BrowserComputerUseOutcome;
 use codex_cloud_config::cloud_config_bundle_loader_for_storage;
 use codex_config::AppToolApproval;
 use codex_config::CloudConfigBundleLoader;
@@ -112,7 +111,6 @@ use codex_protocol::protocol::SessionConfiguredEvent;
 use codex_protocol::protocol::SessionSource;
 use codex_protocol::user_input::UserInput;
 use codex_tools::COMPUTER_USE_ADAPTER_ANDROID;
-use codex_tools::COMPUTER_USE_ADAPTER_BROWSER;
 use codex_tools::native_computer_use_provider_for_call;
 use codex_utils_absolute_path::AbsolutePathBuf;
 use codex_utils_cli::SharedCliOptions;
@@ -1313,13 +1311,8 @@ fn thread_resume_params_from_config(
 fn configured_native_dynamic_tools(
     config: &Config,
 ) -> Option<Vec<codex_app_server_protocol::DynamicToolSpec>> {
-    let mut tools = codex_browser_computer_use::configured_browser_dynamic_tools_for_codex_home(
+    let tools = codex_android_computer_use::configured_android_dynamic_tools_for_codex_home(
         config.codex_home.as_path(),
-    );
-    tools.extend(
-        codex_android_computer_use::configured_android_dynamic_tools_for_codex_home(
-            config.codex_home.as_path(),
-        ),
     );
     (!tools.is_empty()).then_some(tools)
 }
@@ -1330,16 +1323,10 @@ enum ExecComputerUseProviderOutcome {
 }
 
 fn exec_computer_use_providers() -> &'static [ExecComputerUseProvider] {
-    static PROVIDERS: [ExecComputerUseProvider; 2] = [
-        ExecComputerUseProvider {
-            adapter: COMPUTER_USE_ADAPTER_ANDROID,
-            handler: ExecComputerUseProviderHandler::Android,
-        },
-        ExecComputerUseProvider {
-            adapter: COMPUTER_USE_ADAPTER_BROWSER,
-            handler: ExecComputerUseProviderHandler::Browser,
-        },
-    ];
+    static PROVIDERS: [ExecComputerUseProvider; 1] = [ExecComputerUseProvider {
+        adapter: COMPUTER_USE_ADAPTER_ANDROID,
+        handler: ExecComputerUseProviderHandler::Android,
+    }];
 
     &PROVIDERS
 }
@@ -1353,7 +1340,6 @@ struct ExecComputerUseProvider {
 #[derive(Clone, Copy)]
 enum ExecComputerUseProviderHandler {
     Android,
-    Browser,
 }
 
 impl ExecComputerUseProvider {
@@ -1378,20 +1364,6 @@ impl ExecComputerUseProvider {
                         ExecComputerUseProviderOutcome::Handled(response)
                     }
                     AndroidComputerUseOutcome::Unavailable => {
-                        ExecComputerUseProviderOutcome::Unavailable
-                    }
-                }
-            }
-            ExecComputerUseProviderHandler::Browser => {
-                match codex_browser_computer_use::handle_browser_computer_use_for_codex_home(
-                    params, codex_home,
-                )
-                .await
-                {
-                    BrowserComputerUseOutcome::Handled(response) => {
-                        ExecComputerUseProviderOutcome::Handled(response)
-                    }
-                    BrowserComputerUseOutcome::Unavailable => {
                         ExecComputerUseProviderOutcome::Unavailable
                     }
                 }
@@ -2735,11 +2707,6 @@ mod tests {
     async fn thread_lifecycle_params_include_configured_native_dynamic_tools() {
         let codex_home = tempdir().expect("create temp codex home");
         std::fs::write(
-            codex_home.path().join("browser-computer-use.json"),
-            r#"{"provider":"playwright"}"#,
-        )
-        .expect("write browser provider config");
-        std::fs::write(
             codex_home.path().join("android-computer-use.json"),
             r#"{"mcp_url":"https://android-provider.example/mcp"}"#,
         )
@@ -2760,8 +2727,6 @@ mod tests {
         );
 
         let native_tools = vec![
-            "browser_observe".to_string(),
-            "browser_step".to_string(),
             "android_observe".to_string(),
             "android_step".to_string(),
             "android_install_build_from_run".to_string(),
@@ -2793,7 +2758,7 @@ mod tests {
                 .iter()
                 .map(|provider| provider.adapter)
                 .collect::<Vec<_>>(),
-            vec![COMPUTER_USE_ADAPTER_ANDROID, COMPUTER_USE_ADAPTER_BROWSER]
+            vec![COMPUTER_USE_ADAPTER_ANDROID]
         );
     }
 
@@ -2806,7 +2771,7 @@ mod tests {
                 call_id: "call-unknown".to_string(),
                 turn_id: "turn-1".to_string(),
                 environment_id: Some("env-1".to_string()),
-                adapter: COMPUTER_USE_ADAPTER_BROWSER.to_string(),
+                adapter: "browser".to_string(),
                 tool: "browser_private_backend_probe".to_string(),
                 arguments: serde_json::json!({}),
             },

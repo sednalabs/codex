@@ -300,8 +300,8 @@ two-line git-attribution fixture carry is now upstream-equivalent and historical
 
 Upstream `7fd7a2f9a2` enables the complete code-mode integration suite in Linux
 and macOS Bazel CI while keeping two narrow Windows exclusions. This strengthens
-hosted proof of downstream native-browser image forwarding and dynamic-tool
-compatibility; it adds no runtime capability. Upstream `bbfc3f0152` canonicalizes
+hosted proof of Code Mode dynamic-tool compatibility and the generic MCP image
+helper contract; it adds no runtime capability. Upstream `bbfc3f0152` canonicalizes
 Guardian review cwd reuse through `PathUri` without changing model, provider,
 reasoning, permission, or reviewer selection.
 
@@ -564,7 +564,7 @@ Supporting docs:
 - [`downstream-divergence-tracking.md`](downstream-divergence-tracking.md) documents the registry and generation workflow for keeping these notes current as the fork grows.
 - [`sedna-docs-governance.md`](sedna-docs-governance.md) defines authority, freshness, and the manual-versus-generated boundary.
 - [`generated/upstream-status.md`](generated/upstream-status.md) and [`generated/upstream-gaps.md`](generated/upstream-gaps.md) are the current-state receipts; [`upstream-sync/2026-07-28.md`](upstream-sync/2026-07-28.md) records the bounded harvest decisions.
-- [`native-computer-use.md`](native-computer-use.md) documents the first-party computer-use adapter contract, including Android, browser, app-server, TUI, rollout, and validation boundaries.
+- [`native-computer-use.md`](native-computer-use.md) documents current Android/Desktop adapter contracts, the ordinary Browser MCP boundary, and historical app-server, TUI, rollout, and validation context.
 
 ### Core + protocol: blocking wait for unified exec, stable wait output, and compaction turn-count metadata
 
@@ -631,23 +631,21 @@ User-visible behavior:
 
 Why:
 
-- Preserve native computer-use as a Codex-owned transcript and tool contract instead of treating Android or browser observe/step tools as ordinary ad hoc dynamic tools.
-- Let runtime providers supply Android, browser, or desktop capability while Codex owns the canonical model-facing schema, adapter dispatch, protocol events, app-server requests, live TUI projection, and rollout-trace runtime boundaries. Computer-use events remain transient rather than thread-snapshot state.
-- Keep Solar Gravity Lab positioned as a proving and consumer app rather than the generic owner of Codex Android tooling, and keep browser runtime ownership in a provider bridge rather than in hot core code.
+- Preserve native computer-use as a Codex-owned transcript and tool contract for Android and Desktop while keeping Browser on the ordinary MCP surface.
+- Let runtime providers supply Android or Desktop capability while Codex owns the canonical model-facing schemas, adapter dispatch, protocol events, app-server requests, live TUI projection, and rollout-trace runtime boundaries. Computer-use events remain transient rather than thread-snapshot state.
+- Keep Solar Gravity Lab positioned as a proving and consumer app rather than the generic owner of Codex Android tooling. Browser servers own their tools, browser process, and profile lifecycle through normal MCP connections.
 
-Browser surface boundary:
+Browser MCP boundary:
 
-- Upstream product Browser Use (`@Browser`) and the official signed-in Chrome integration (`@Chrome`) are app-supplied browser surfaces. Their availability, and the presence of upstream `browser_use` feature controls, do not mean that the stock upstream CLI discovers or operates a local browser provider.
-- Upstream CLI/app-server can carry generic browser-like dynamic tools when an external host supplies their schemas and execution. Downstream additionally owns the bare `browser_observe` and `browser_step` schemas, local provider discovery, CLI/TUI advertisement, native computer-use transcript and image semantics, and thread lifecycle propagation.
-- In this carry, "native" describes the Codex-owned tool, transcript, image, and lifecycle contract; it does not require a browser engine implemented without Playwright. The built-in downstream provider may use Playwright while preserving the native Codex contract.
-- A downstream `backend: "chrome"` request selects a configured Chrome-class provider. It does not by itself select upstream `@Chrome`, the official extension, or the user's regular signed-in Chrome profile.
+- Browser tasks use a separately configured MCP server; Codex does not install or launch a browser provider and does not auto-advertise `browser_observe` or `browser_step`.
+- MCP image blocks use Codex's normal typed image-output path. A Code Mode caller must explicitly pass a returned image block to `image(...)` rather than stringify it.
+- This is not a claim that a standalone server reproduces the former combined step-plus-screenshot schema, in-process inspection summaries, or profile continuity. The accepted default is a temporary isolated server-owned profile. Existing native profiles and cookies are left untouched and are not migrated or read.
 
 User-visible behavior:
 
 - Bare `android_observe`, `android_step`, and `android_install_build_from_run` dynamic tools are promoted to canonical Codex function tools and handled by `ToolHandlerKind::ComputerUse`.
-- Bare `browser_observe` and `browser_step` dynamic tools are also promoted to canonical Codex function tools with adapter `browser`; the shared browser provider crate routes them to a configured browser bridge for TUI and exec, and CLI/TUI sessions auto-advertise those browser tools when a local browser provider is configured.
 - Bare `desktop_observe` and `desktop_step` dynamic tools are promoted to canonical Codex function tools with adapter `desktop`; the TUI routes them to an operator-configured command provider for independent macOS Screen Recording/Accessibility-style runtimes or future native desktop providers.
-- Namespaced Android-like, browser-like, and desktop-like tools remain normal dynamic tools.
+- Namespaced Android-like and desktop-like tools remain normal dynamic tools; Browser MCP tools remain ordinary MCP tools.
 - App-server `dynamicTools` accepts deferred bare native tools for
   `tool_search`, while still rejecting deferred bare ordinary dynamic tools.
   A capability-bearing native tool requests a full loaded-thread reload so the
@@ -666,9 +664,6 @@ User-visible behavior:
   merged graph so Symphonia resolves to the dependency version actually
   selected downstream; parent lock entries are not safe to union mechanically.
 - `android_observe` is non-mutating; `android_step` is mutating and supports both compatibility single-action fields and preferred batched `actions[]`, including atomic two-to-five-pointer `multi_touch` input that never degrades to sequential single-touch calls; `android_install_build_from_run` is mutating and maps provider-side artifact installation into the same native transcript path.
-- `browser_observe` is non-mutating and can return compact visible-control, attention-state, and multi-capture viewport metadata for UX review; `browser_step` is mutating and supports compatibility single-action fields plus preferred batched `actions[]`, with a `backend` hint for `auto`, `browser`, `chrome`, `chromium`, or provider-declared backends such as `iab`, accessibility-oriented selectors, and human-like mouse/keyboard primitives for pages where coordinate-level interaction is the right fallback.
-- The browser bridge supports a built-in Playwright backend for `backend=auto/browser/chromium` plus an operator-configured command provider for in-app-browser, signed-in Chrome, remote, or hosted browser providers. Playwright never claims `backend=chrome`; that backend requires an external command provider with genuine signed-in Chrome/extension/CDP integration. The Playwright backend can run headed Google Chrome against an operator-managed display for realistic remote-editor UX loops, keeps native image output available through screenshot fallbacks when headed Chrome window state is stale, returns a fresh screenshot and selector candidates on action failure when possible, can save redacted audit artifacts, supports locally configured service-account navigation headers, and defaults to per-thread profile isolation so concurrent sidecars do not share a Chrome profile, lock, or restored URL unless an operator explicitly configures shared isolation.
-- Thread-spawned sidecars inherit the parent thread's advertised native dynamic tools, so browser-capable agents receive `browser_observe` and `browser_step` through the native computer-use path instead of having to fall back to Playwright MCP or another compatibility adapter.
 - The Android adapter remains the MCP-backed reference runtime provider; reuse
   `android-emulator-mcp` or a successor when it exposes the current Android MCP
   contract, and keep harness-specific translation in the provider rather than
@@ -679,19 +674,20 @@ User-visible behavior:
   and hierarchy receipts, log/performance artifacts for focused debugging, and
   post-failure observations that help agents recover from partially completed
   mutating actions.
-- App-server API v2 sends `item/computerUse/call` requests to capable clients and records `ThreadItem::ComputerUseCall` start/completion items.
+- App-server API v2 sends `item/computerUse/call` requests to capable clients
+  and records `ThreadItem::ComputerUseCall` start/completion items.
 - The active TUI session renders live native computer-use items with compact
-  adapter-specific labels such as `Used browser`, `Used computer`, and `Used
-Android emulator`; these transient app-server projections are not persisted
-  into thread snapshots or replayed after resume. Exec JSON/human output
-  projects the same calls as compact computer-use events without embedding
-  screenshot bytes in transcript text.
+  adapter-specific labels such as `Used computer` and `Used Android emulator`;
+  these transient app-server projections are not persisted into thread
+  snapshots or replayed after resume. Exec JSON/human output projects the same
+  calls as compact computer-use events without embedding screenshot bytes in
+  transcript text.
 - Responses can include `inputText` and `inputImage` content items plus `success` and optional `error`.
-- Android screenshots and browser viewport captures are model-facing only when returned as native image content. Provider artifact paths can be used for diagnostics, audit, and replay, but they are not instructions for the model to fetch local files.
+- Android screenshots are model-facing only when returned as native image content. Browser MCP images use the ordinary MCP typed-image path. Provider artifact paths are diagnostics, not instructions for the model to fetch local files.
 - For MCP-backed Android providers, `structuredContent` is parsed for state and UI metadata without dropping `content[]` image entries. The native bridge must preserve both channels so JSON summaries never preempt the screenshot pixels.
 - Computer-use events remain transient in every history mode; live rollout tracing maps them to tool-runtime start/end events without persisting them into thread snapshots.
 - See [`native-computer-use.md`](native-computer-use.md) for the full contract and validation guidance.
-- See [`native-computer-use-contracts.md`](native-computer-use-contracts.md) for the desktop, browser-shell, Chrome-extension, and bundled-plugin provider contracts.
+- See [`native-computer-use-contracts.md`](native-computer-use-contracts.md) for Android and desktop provider contracts.
 
 ### Usage ledger: first-party local `usage.sqlite`
 

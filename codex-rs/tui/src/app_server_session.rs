@@ -1668,14 +1668,9 @@ fn configured_native_dynamic_tools(
 ) -> Option<Vec<codex_app_server_protocol::DynamicToolSpec>> {
     let codex_home = config.codex_home.as_path();
     let mut tools =
-        crate::browser_computer_use_provider::configured_browser_dynamic_tools_for_codex_home(
-            codex_home,
-        );
-    tools.extend(
         crate::android_computer_use_provider::configured_android_dynamic_tools_for_codex_home(
             codex_home,
-        ),
-    );
+        );
     tools.extend(crate::desktop_computer_use_provider::configured_desktop_dynamic_tools());
     (!tools.is_empty()).then_some(tools)
 }
@@ -2108,16 +2103,12 @@ mod tests {
     async fn thread_lifecycle_params_include_configured_native_dynamic_tools() {
         let temp_dir = tempfile::tempdir().expect("tempdir");
         std::fs::write(
-            temp_dir.path().join("browser-computer-use.json"),
-            r#"{"provider":"playwright"}"#,
+            temp_dir.path().join("android-computer-use.json"),
+            r#"{"mcp_url":"https://android-provider.example/mcp"}"#,
         )
-        .expect("write browser provider config");
+        .expect("write Android provider config");
         let config = build_config(&temp_dir).await;
         let thread_id = ThreadId::new();
-        let expected_browser_tools =
-            crate::browser_computer_use_provider::configured_browser_dynamic_tools_for_codex_home(
-                temp_dir.path(),
-            );
 
         let start = thread_start_params_from_config(
             &config,
@@ -2143,8 +2134,17 @@ mod tests {
             .dynamic_tools
             .expect("start should include configured native tools");
 
-        assert!(!expected_browser_tools.is_empty());
-        assert!(start_tools.starts_with(&expected_browser_tools));
+        assert!(
+            start_tools
+                .iter()
+                .any(|tool| tool.name == "android_observe")
+        );
+        assert!(start_tools.iter().any(|tool| tool.name == "android_step"));
+        assert!(
+            start_tools
+                .iter()
+                .any(|tool| tool.name == "android_install_build_from_run")
+        );
         assert_eq!(resume.dynamic_tools, Some(start_tools.clone()));
         assert_eq!(fork.dynamic_tools, Some(start_tools));
     }

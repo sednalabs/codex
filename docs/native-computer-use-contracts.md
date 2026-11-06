@@ -1,13 +1,14 @@
 # Native Computer-Use Provider Contracts
 
 This document defines provider-facing interoperability contracts for native
-computer-use runtimes. It covers desktop, browser-shell, Chrome-extension,
-and Android MCP providers, including their capabilities, request/response
-schemas, permissions, lifecycle transitions, and model-visible image output.
+Android and desktop computer-use runtimes. Later sections explicitly marked
+historical describe the retired Browser shell and Chrome-extension carry;
+current Browser MCP servers use their own ordinary MCP tools and lifecycle.
 
-Providers implement these contracts behind the configured command, MCP, or
-provider-registry seams while Codex owns the canonical transcript and
-model-facing tool contract.
+Native providers implement these contracts behind the configured MCP or
+desktop command-provider seams while Codex owns the canonical transcript and
+model-facing tool contract. These requirements do not describe a Browser
+adapter in Codex.
 
 The requirements use public Codex interfaces, documented operating-system and
 browser APIs, and ordinary observable behavior of compatible environments.
@@ -95,7 +96,12 @@ Desktop provider configuration:
 }
 ```
 
-## Browser Shell Provider Contract
+## Retired Browser Shell Provider Contract (historical)
+
+The native Browser shell/provider contract below is retired. Browser work now
+uses a separately configured MCP server through the ordinary MCP interface;
+Codex does not discover Browser profiles or provide a native Browser bridge.
+The remaining details are retained for historical context only.
 
 The browser adapter is the provider target for in-app-browser shells,
 Windows-hosted browser shells, Chrome extension backends, remote browsers, and
@@ -146,7 +152,7 @@ Recommended Windows implementation shape:
 - the provider owns any native pipe or other internal transport behind the
   command-provider seam
 
-## Chrome Extension Provider Contract
+## Retired Chrome Extension Provider Contract (historical)
 
 The Chrome backend needs signed-in browser state and must preserve user
 control. An independent Chrome provider should use public Chrome extension,
@@ -178,12 +184,11 @@ Provider integration interfaces:
 
 ## Provider Integration Interfaces
 
-Browser, Chrome, and computer-use integrations can be represented through these
-public Codex seams:
+Desktop computer-use providers use the native command-provider seam. Browser
+servers use ordinary configured MCP connections rather than a Codex adapter:
 
 - plugin discovery and skill routing tell the agent which surface to prefer
-- browser providers expose browser sessions, tabs, screenshots, and actions
-- Chrome providers add signed-in browser state and user-tab claiming
+- Browser MCP servers expose their own advertised tools, images, and lifecycle
 - desktop providers expose app screenshots, accessibility/UI digests, and UI
   input actions
 - providers are replaceable behind command, MCP, or future native-host
@@ -196,15 +201,17 @@ requirements.
 
 ## Validation Expectations
 
-Provider-independent Codex changes are covered by:
+Provider-independent Codex changes for remaining native adapters are covered
+by:
 
-- canonical tool schema tests for Android, browser, and desktop tools
+- canonical tool schema tests for Android and desktop tools
 - TUI provider bridge tests for command-provider JSON round trips and native
   image enforcement
 - app-server computer-use round-trip tests
 - downstream docs and divergence registry checks
 
-Runtime-provider implementations need their own provider-side tests:
+Browser MCP behavior is tested by the configured MCP server and its consumer.
+Remaining native runtime-provider implementations need provider-side tests:
 
 - permission-state transitions
 - screenshot capture with native image output

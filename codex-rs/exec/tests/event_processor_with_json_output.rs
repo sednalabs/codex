@@ -369,10 +369,10 @@ fn computer_use_started_and_completed_translate_to_thread_events() {
     let started =
         processor.collect_thread_events(ServerNotification::ItemStarted(ItemStartedNotification {
             item: ThreadItem::ComputerUseCall {
-                id: "browser-1".to_string(),
+                id: "android-1".to_string(),
                 environment_id: None,
-                adapter: "browser".to_string(),
-                tool: "browser_step".to_string(),
+                adapter: "android".to_string(),
+                tool: "android_step".to_string(),
                 arguments: json!({"action": "click"}),
                 status: ApiComputerUseCallStatus::InProgress,
                 content_items: None,
@@ -394,8 +394,8 @@ fn computer_use_started_and_completed_translate_to_thread_events() {
                 item: ExecThreadItem {
                     id: "item_0".to_string(),
                     details: ThreadItemDetails::ComputerUseCall(ComputerUseCallItem {
-                        adapter: "browser".to_string(),
-                        tool: "browser_step".to_string(),
+                        adapter: "android".to_string(),
+                        tool: "android_step".to_string(),
                         arguments: json!({"action": "click"}),
                         status: ComputerUseCallStatus::InProgress,
                         preview: None,
@@ -412,15 +412,15 @@ fn computer_use_started_and_completed_translate_to_thread_events() {
     let completed = processor.collect_thread_events(ServerNotification::ItemCompleted(
         ItemCompletedNotification {
             item: ThreadItem::ComputerUseCall {
-                id: "browser-1".to_string(),
+                id: "android-1".to_string(),
                 environment_id: None,
-                adapter: "browser".to_string(),
-                tool: "browser_step".to_string(),
+                adapter: "android".to_string(),
+                tool: "android_step".to_string(),
                 arguments: json!({"action": "click"}),
                 status: ApiComputerUseCallStatus::Completed,
                 content_items: Some(vec![
                     ApiComputerUseCallOutputContentItem::InputText {
-                        text: "Browser observation".to_string(),
+                        text: "Android observation".to_string(),
                     },
                     ApiComputerUseCallOutputContentItem::InputImage {
                         image_url: "data:image/png;base64,AAA".to_string(),
@@ -446,11 +446,11 @@ fn computer_use_started_and_completed_translate_to_thread_events() {
                 item: ExecThreadItem {
                     id: "item_0".to_string(),
                     details: ThreadItemDetails::ComputerUseCall(ComputerUseCallItem {
-                        adapter: "browser".to_string(),
-                        tool: "browser_step".to_string(),
+                        adapter: "android".to_string(),
+                        tool: "android_step".to_string(),
                         arguments: json!({"action": "click"}),
                         status: ComputerUseCallStatus::Completed,
-                        preview: Some("Browser observation\n<native screenshot>".to_string()),
+                        preview: Some("Android observation\n<native screenshot>".to_string()),
                         success: Some(true),
                         error: None,
                         duration_ms: Some(64),

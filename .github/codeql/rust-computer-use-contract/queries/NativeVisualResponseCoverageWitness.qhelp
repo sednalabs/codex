@@ -3,7 +3,7 @@
   <overview>
     <p>
       This summary metric is an applicability witness for the native visual
-      response detector.  It reports each production Android and browser
+      response detector.  It reports each production Android
       visual handler with the number of successful response exits that the
       query can inspect.
     </p>
