@@ -2719,6 +2719,15 @@ async fn unified_exec_keeps_long_running_session_after_turn_end() -> Result<()> 
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn unified_exec_interrupt_preserves_long_running_session() -> Result<()> {
+    assert_interrupt_preserves_unified_exec_session(false).await
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn terminal_only_wait_interrupt_preserves_long_running_session() -> Result<()> {
+    assert_interrupt_preserves_unified_exec_session(true).await
+}
+
+async fn assert_interrupt_preserves_unified_exec_session(terminal_only: bool) -> Result<()> {
     skip_if_no_network!(Ok(()));
     skip_if_sandbox!(Ok(()));
     skip_if_host_windows!(Ok(()));
@@ -2745,10 +2754,14 @@ async fn unified_exec_interrupt_preserves_long_running_session() -> Result<()> {
 
     let call_id = "uexec-long-running-interrupt";
     let command = format!("printf '%s' $$ > '{pid_path_str}' && exec sleep 3000");
-    let args = json!({
+    let mut args = json!({
         "cmd": command,
-        "yield_time_ms": 30000,
+        "yield_time_ms": if terminal_only { 100 } else { 30000 },
     });
+    if terminal_only {
+        args["wait_until_terminal"] = json!(true);
+        args["max_wait_ms"] = json!(3_600_000);
+    }
 
     let responses = vec![sse(vec![
         ev_response_created("resp-1"),
@@ -2801,6 +2814,11 @@ async fn unified_exec_interrupt_preserves_long_running_session() -> Result<()> {
         "expected numeric pid, got {pid:?}"
     );
 
+    if terminal_only {
+        // Let the initial short yield expire so interruption reaches the
+        // terminal-only continuation, rather than the initial exec call.
+        tokio::time::sleep(Duration::from_secs(1)).await;
+    }
     codex.submit(Op::Interrupt).await?;
     wait_for_event(&codex, |event| matches!(event, EventMsg::TurnAborted(_))).await;
 
