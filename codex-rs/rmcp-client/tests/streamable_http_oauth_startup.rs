@@ -67,7 +67,8 @@ async fn refreshes_expired_persisted_token_before_initialize() -> anyhow::Result
             "token_endpoint": format!("{}/oauth/token", server.uri()),
             "scopes_supported": ["profile", "offline_access"],
         })))
-        .expect(1)
+        // Initialization discovers metadata, and the locked refresh revalidates it.
+        .expect(2)
         .mount(&server)
         .await;
     Mock::given(method("POST"))
