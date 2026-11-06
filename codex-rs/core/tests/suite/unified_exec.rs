@@ -2753,7 +2753,13 @@ async fn assert_interrupt_preserves_unified_exec_session(terminal_only: bool) ->
     let pid_path_str = pid_path.to_string_lossy();
 
     let call_id = "uexec-long-running-interrupt";
-    let command = format!("printf '%s' $$ > '{pid_path_str}' && exec sleep 3000");
+    let command = if terminal_only {
+        format!(
+            "printf '%s' $$ > '{pid_path_str}' && sleep 0.4 && printf 'wait-window-marker' && exec sleep 3000"
+        )
+    } else {
+        format!("printf '%s' $$ > '{pid_path_str}' && exec sleep 3000")
+    };
     let mut args = json!({
         "cmd": command,
         "yield_time_ms": if terminal_only { 100 } else { 30000 },
@@ -2761,6 +2767,7 @@ async fn assert_interrupt_preserves_unified_exec_session(terminal_only: bool) ->
     if terminal_only {
         args["wait_until_terminal"] = json!(true);
         args["max_wait_ms"] = json!(3_600_000);
+        args["heartbeat_interval_ms"] = json!(250);
     }
 
     let responses = vec![
@@ -2821,8 +2828,22 @@ async fn assert_interrupt_preserves_unified_exec_session(terminal_only: bool) ->
     );
 
     if terminal_only {
-        // Let the initial short yield expire so interruption reaches the
-        // terminal-only continuation, rather than the initial exec call.
+        // Wait for output produced after the initial yield, then allow a quiet
+        // collection window to finish before interrupting the next window.
+        tokio::time::timeout(
+            Duration::from_secs(10),
+            wait_for_event_match(&codex, |msg| match msg {
+                EventMsg::ExecCommandOutputDelta(ev)
+                    if ev.call_id == call_id
+                        && String::from_utf8_lossy(&ev.chunk).contains("wait-window-marker") =>
+                {
+                    Some(())
+                }
+                _ => None,
+            }),
+        )
+        .await
+        .context("terminal wait did not emit the output marker")?;
         tokio::time::sleep(Duration::from_secs(1)).await;
     }
     codex.submit(Op::Interrupt).await?;
@@ -2872,6 +2893,10 @@ async fn assert_interrupt_preserves_unified_exec_session(terminal_only: bool) ->
                 || interrupted_output
                     .contains(&format!("Process running with session ID {process_id}")),
             "follow-up model input did not contain session ID {process_id}: {interrupted_output:?}"
+        );
+        assert!(
+            interrupted_output.contains("wait-window-marker"),
+            "follow-up model input lost output from the preceding wait window: {interrupted_output:?}"
         );
     }
 
