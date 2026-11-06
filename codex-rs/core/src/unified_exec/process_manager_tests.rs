@@ -391,7 +391,10 @@ async fn dropping_quiet_output_collection_preserves_buffer_for_next_wait() {
     let closed = Arc::new(AtomicBool::new(false));
     let closed_notify = Arc::new(Notify::new());
     let cancel = CancellationToken::new();
-    output.lock().await.push_chunk(b"recoverable output".to_vec());
+    output
+        .lock()
+        .await
+        .push_chunk(b"recoverable output".to_vec());
 
     {
         let collect = UnifiedExecProcessManager::collect_output_until_deadline(

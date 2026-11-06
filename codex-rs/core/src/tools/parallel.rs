@@ -70,7 +70,7 @@ fn is_terminal_exec_call(call: &ToolCall) -> bool {
         .ok()
         .and_then(|args| {
             args.get("wait_until_terminal")
-                .and_then(|value| value.as_bool())
+                .and_then(serde_json::Value::as_bool)
         })
         .unwrap_or(false)
 }
@@ -85,7 +85,9 @@ fn is_empty_terminal_stdin_call(call: &ToolCall) -> bool {
     serde_json::from_str::<serde_json::Value>(arguments)
         .ok()
         .is_some_and(|args| {
-            args.get("wait_until_terminal").and_then(|v| v.as_bool()) == Some(true)
+            args.get("wait_until_terminal")
+                .and_then(serde_json::Value::as_bool)
+                == Some(true)
                 && args.get("chars").is_none_or(|v| v.as_str() == Some(""))
         })
 }
@@ -404,9 +406,7 @@ impl ToolCallRuntime {
         AnyToolResult {
             call_id: call.call_id.clone(),
             payload: call.payload.clone(),
-            result: Box::new(AbortedToolOutput {
-                message,
-            }),
+            result: Box::new(AbortedToolOutput { message }),
             post_tool_use_payload: None,
         }
     }
@@ -713,7 +713,7 @@ mod tests {
         };
         assert!(is_terminal_exec_call(&call));
         let ResponseInputItem::FunctionCallOutput { output, .. } =
-            ToolCallRuntime::aborted_response(&call, 1.0, Some(123)).into_response()
+            ToolCallRuntime::aborted_response(&call, /*secs*/ 1.0, Some(123)).into_response()
         else {
             panic!("expected function output");
         };
@@ -735,8 +735,7 @@ mod tests {
         };
         assert!(is_empty_terminal_stdin_call(&call));
         call.payload = ToolPayload::Function {
-            arguments: r#"{"session_id":1,"chars":"yes","wait_until_terminal":true}"#
-                .to_string(),
+            arguments: r#"{"session_id":1,"chars":"yes","wait_until_terminal":true}"#.to_string(),
         };
         assert!(!is_empty_terminal_stdin_call(&call));
         call.tool_name = ToolName::namespaced("other", "write_stdin");
