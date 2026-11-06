@@ -337,28 +337,38 @@ struct DeviceOnlyOAuthDiscoveryMetadata {
 
 /// Binds direct device-only discovery to the issuer URL identified by its metadata path.
 fn device_only_issuer_matches(
-    resource_url: &Url,
+    resource_url: &str,
     metadata_path: &str,
     issuer: Option<&str>,
 ) -> bool {
-    let Some(issuer) = issuer.and_then(|issuer| Url::parse(issuer).ok()) else {
+    let Some(issuer) = issuer else {
         return false;
     };
-    if !matches!(issuer.scheme(), "http" | "https")
-        || !issuer.username().is_empty()
-        || issuer.password().is_some()
-        || issuer.query().is_some()
-        || issuer.fragment().is_some()
+    let Ok(parsed_issuer) = Url::parse(issuer) else {
+        return false;
+    };
+    if !matches!(parsed_issuer.scheme(), "http" | "https")
+        || !parsed_issuer.username().is_empty()
+        || parsed_issuer.password().is_some()
+        || parsed_issuer.query().is_some()
+        || parsed_issuer.fragment().is_some()
     {
         return false;
     }
-    let mut expected = resource_url.clone();
-    expected.set_query(None);
-    expected.set_fragment(None);
+    // Keep the configured URL's original spelling. Parsing a URL before
+    // comparing identifiers can normalize a different issuer into a match.
+    let resource_identity = resource_url.split(['?', '#']).next().unwrap_or(resource_url);
     if metadata_path == "/.well-known/oauth-authorization-server" {
-        expected.set_path("/");
+        let Some((scheme, remainder)) = resource_identity.split_once("://") else {
+            return false;
+        };
+        let origin_end = scheme.len() + 3 + remainder.find('/').unwrap_or(remainder.len());
+        let origin = &resource_identity[..origin_end];
+        // The root metadata location is shared by these two issuer
+        // identifiers. Accept either exact spelling at initial discovery.
+        return issuer == origin || issuer.strip_suffix('/') == Some(origin);
     }
-    issuer == expected
+    issuer == resource_identity
 }
 
 fn device_only_discovery_from_metadata(
@@ -453,7 +463,7 @@ async fn discover_device_only_oauth_with_headers(
             Ok(metadata) => metadata,
             Err(_) => continue,
         };
-        if !device_only_issuer_matches(&base_url, &candidate_path, metadata.issuer.as_deref()) {
+        if !device_only_issuer_matches(url, &candidate_path, metadata.issuer.as_deref()) {
             continue;
         }
         if let Some(discovery) = device_only_discovery_from_metadata(metadata) {
@@ -505,7 +515,7 @@ async fn discover_device_only_oauth_with_http_client(
                 Ok(metadata) => metadata,
                 Err(_) => continue,
             };
-        if !device_only_issuer_matches(&base_url, &candidate_path, metadata.issuer.as_deref()) {
+        if !device_only_issuer_matches(url, &candidate_path, metadata.issuer.as_deref()) {
             continue;
         }
         if let Some(discovery) = device_only_discovery_from_metadata(metadata) {
@@ -598,32 +608,58 @@ mod tests {
 
     #[test]
     fn device_only_issuer_is_bound_to_the_discovery_location() {
-        let resource = Url::parse("https://mcp.example/mcp").expect("valid resource URL");
+        let resource = "https://mcp.example/mcp";
         let scoped = "/.well-known/oauth-authorization-server/mcp";
         let root = "/.well-known/oauth-authorization-server";
         assert!(device_only_issuer_matches(
-            &resource,
+            resource,
             scoped,
             Some("https://mcp.example/mcp")
         ));
         assert!(device_only_issuer_matches(
-            &resource,
+            resource,
             root,
             Some("https://mcp.example")
         ));
-        assert!(!device_only_issuer_matches(&resource, scoped, None));
+        assert!(device_only_issuer_matches(
+            resource,
+            root,
+            Some("https://mcp.example/")
+        ));
         assert!(!device_only_issuer_matches(
-            &resource,
+            resource,
+            scoped,
+            Some("https://MCP.EXAMPLE/mcp")
+        ));
+        assert!(!device_only_issuer_matches(
+            resource,
+            scoped,
+            Some("https://mcp.example:443/mcp")
+        ));
+        let explicit = "https://MCP.EXAMPLE:443/mcp";
+        assert!(device_only_issuer_matches(
+            explicit,
+            scoped,
+            Some("https://MCP.EXAMPLE:443/mcp")
+        ));
+        assert!(!device_only_issuer_matches(
+            explicit,
+            scoped,
+            Some("https://mcp.example/mcp")
+        ));
+        assert!(!device_only_issuer_matches(resource, scoped, None));
+        assert!(!device_only_issuer_matches(
+            resource,
             scoped,
             Some("https://other.example/mcp")
         ));
         assert!(!device_only_issuer_matches(
-            &resource,
+            resource,
             scoped,
             Some("https://mcp.example")
         ));
         assert!(!device_only_issuer_matches(
-            &resource,
+            resource,
             scoped,
             Some("https://user@mcp.example/mcp")
         ));

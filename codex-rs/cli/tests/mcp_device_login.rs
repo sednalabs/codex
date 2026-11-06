@@ -178,7 +178,7 @@ async fn device_login_persists_issuer_without_rewriting_unrelated_metadata() -> 
     });
     std::fs::write(
         &path,
-        serde_json::to_vec(&json!({"unrelated|synthetic": unrelated.clone()}))?,
+        serde_json::to_vec(&json!({"unrelated|synthetic": unrelated}))?,
     )?;
 
     let mut command = assert_cmd::Command::new(codex_utils_cargo_bin::cargo_bin("codex")?);
