@@ -376,10 +376,9 @@ async fn status_snapshot_includes_reasoning_details() {
     );
     let mut rendered_lines = render_lines(&composite.display_lines(/*width*/ 80));
     assert!(
-        rendered_lines.iter().any(|line| line.contains(&format!(
-            "(v{})",
-            crate::version::CODEX_DISPLAY_VERSION
-        ))),
+        rendered_lines
+            .iter()
+            .any(|line| line.contains(&format!("(v{})", crate::version::CODEX_DISPLAY_VERSION))),
         "status banner must include the build display version",
     );
     if cfg!(windows) {
