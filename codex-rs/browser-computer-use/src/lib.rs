@@ -74,12 +74,12 @@ pub fn configured_browser_dynamic_tools_for_codex_home(codex_home: &Path) -> Vec
     vec![
         browser_dynamic_tool(
             BROWSER_OBSERVE_TOOL_NAME,
-            "Capture the current browser viewport as a model-visible screenshot.",
+            "Capture the current browser viewport as a model-visible screenshot. Optional view.viewportWidth and view.viewportHeight set this call's CSS viewport size; view.scrollY sets its initial vertical scroll. The response reports measured geometry. This is not mobile-device emulation.",
             "non_mutating",
         ),
         browser_dynamic_tool(
             BROWSER_STEP_TOOL_NAME,
-            "Perform bounded browser actions, then return a fresh browser screenshot.",
+            "Perform bounded browser actions, then return a fresh browser screenshot. Optional view.viewportWidth and view.viewportHeight set this call's CSS viewport size; view.scrollY sets its initial vertical scroll. The response reports measured geometry. This is not mobile-device emulation.",
             "mutating",
         ),
     ]
@@ -92,6 +92,29 @@ fn browser_dynamic_tool(name: &str, description: &str, mutation_class: &str) -> 
         description: description.to_string(),
         input_schema: json!({
             "type": "object",
+            "properties": {
+                "view": {
+                    "type": "object",
+                    "description": "Per-call CSS viewport and vertical scroll. The response reports measured effective viewport and scroll geometry; compare it with the requested values. This does not change the user agent, enable touch input, or change device scale factor.",
+                    "properties": {
+                        "viewportWidth": {
+                            "type": "integer",
+                            "minimum": 1,
+                            "description": "CSS viewport width in pixels for this call."
+                        },
+                        "viewportHeight": {
+                            "type": "integer",
+                            "minimum": 1,
+                            "description": "CSS viewport height in pixels for this call."
+                        },
+                        "scrollY": {
+                            "type": "number",
+                            "description": "Vertical page scroll position in CSS pixels to restore before capture or actions."
+                        }
+                    },
+                    "additionalProperties": true
+                }
+            },
             "additionalProperties": true
         }),
         defer_loading: false,
@@ -1524,6 +1547,21 @@ mod tests {
                 .and_then(|capability| capability.family.as_deref())
                 == Some(COMPUTER_USE_ADAPTER_BROWSER)
         }));
+        for tool in tools {
+            let view = &tool.input_schema["properties"]["view"];
+            assert_eq!(view["properties"]["viewportWidth"]["type"], "integer");
+            assert_eq!(view["properties"]["viewportWidth"]["minimum"], 1);
+            assert_eq!(view["properties"]["viewportHeight"]["type"], "integer");
+            assert_eq!(view["properties"]["viewportHeight"]["minimum"], 1);
+            assert_eq!(view["properties"]["scrollY"]["type"], "number");
+            assert_eq!(tool.input_schema["additionalProperties"], true);
+            assert_eq!(view["additionalProperties"], true);
+            assert!(
+                view["description"].as_str().is_some_and(
+                    |description| description.contains("does not change the user agent")
+                )
+            );
+        }
     }
 
     #[test]

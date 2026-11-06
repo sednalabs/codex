@@ -174,6 +174,68 @@ test("provider records selector and wheel settled trail in its manifest", async 
   }
 });
 
+test("provider applies a per-call CSS viewport and scroll and returns measured screenshot evidence", async () => {
+  const stateDir = await fs.mkdtemp(path.join(os.tmpdir(), "codex-browser-provider-viewport-"));
+  const server = http.createServer((_request, response) => {
+    response.end("<!doctype html><html><body style='margin:0'><main style='height:2400px'>viewport fixture</main></body></html>");
+  });
+  await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
+  const address = server.address();
+  const request = {
+    tool: "browser_observe",
+    arguments: {
+      url: `http://127.0.0.1:${address.port}/`,
+      scope: "viewport_and_page",
+      view: { viewportWidth: 390, viewportHeight: 844, scrollY: 120 },
+    },
+  };
+  const child = spawn(process.execPath, [fileURLToPath(new URL("./browser_playwright_provider.mjs", import.meta.url))], {
+    env: {
+      ...process.env,
+      CODEX_BROWSER_PLAYWRIGHT_STATE_DIR: stateDir,
+      CODEX_BROWSER_PLAYWRIGHT_ISOLATION: "shared",
+      CODEX_BROWSER_PLAYWRIGHT_HEADLESS: "1",
+      CODEX_BROWSER_PLAYWRIGHT_VIEWPORT_WIDTH: "1280",
+      CODEX_BROWSER_PLAYWRIGHT_VIEWPORT_HEIGHT: "720",
+      CODEX_BROWSER_PLAYWRIGHT_CAPTURE_MODE: "viewport",
+      CODEX_BROWSER_PLAYWRIGHT_ARTIFACT_POLICY: "off",
+    },
+    stdio: ["pipe", "pipe", "inherit"],
+  });
+  child.stdin.end(JSON.stringify(request));
+  try {
+    const output = await new Promise((resolve, reject) => {
+      let text = "";
+      child.stdout.on("data", (chunk) => { text += chunk; });
+      child.on("error", reject);
+      child.on("close", (code, signal) => {
+        if (code !== 0) {
+          reject(new Error(`provider exited with code ${code} signal ${signal}: ${text}`));
+        } else {
+          resolve(text);
+        }
+      });
+    });
+    const response = JSON.parse(output);
+    assert.equal(response.success, true, response.contentItems?.[0]?.text);
+    const text = response.contentItems[0].text;
+    assert.match(text, /viewport: 390x844 scroll=0,120 document=\d+x\d+/);
+    assert.match(text, /capture_metadata: \{"requestedViewport":\{"width":390,"height":844\},"effectiveViewport":\{"width":390,"height":844\},"clientViewport":\{"width":390,"height":844\}/);
+
+    const images = response.contentItems.filter(({ type }) => type === "inputImage");
+    assert.equal(images.length, 1);
+    assert.equal(images[0].detail, "high");
+    assert.match(images[0].imageUrl, /^data:image\/png;base64,/);
+    const png = Buffer.from(images[0].imageUrl.slice("data:image/png;base64,".length), "base64");
+    assert.deepEqual([...png.subarray(0, 8)], [137, 80, 78, 71, 13, 10, 26, 10]);
+    assert.equal(png.readUInt32BE(16), 390);
+    assert.equal(png.readUInt32BE(20), 844);
+  } finally {
+    await new Promise((resolve) => server.close(resolve));
+    await fs.rm(stateDir, { recursive: true, force: true });
+  }
+});
+
 test("provider lets a first navigate action replace stale persisted state", async () => {
   const stateDir = await fs.mkdtemp(path.join(os.tmpdir(), "codex-browser-provider-navigate-"));
   const server = http.createServer((_request, response) => {
