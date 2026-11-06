@@ -293,6 +293,38 @@ async fn first_output_wait_returns_for_live_process_and_times_out_without_output
     assert_eq!(collected.to_bytes(), b"ready".to_vec());
 }
 
+#[tokio::test(start_paused = true)]
+async fn quiet_output_collection_survives_five_minutes_and_wakes_on_exit() {
+    let output = Arc::new(tokio::sync::Mutex::new(HeadTailBuffer::default()));
+    let notify = Arc::new(Notify::new());
+    let closed = Arc::new(AtomicBool::new(false));
+    let closed_notify = Arc::new(Notify::new());
+    let cancel = CancellationToken::new();
+    let collect = UnifiedExecProcessManager::collect_output_until_deadline(
+        &output,
+        &notify,
+        &closed,
+        &closed_notify,
+        &cancel,
+        /*pause_state*/ None,
+        Instant::now() + Duration::from_secs(3_600),
+        /*return_on_output*/ false,
+    );
+    tokio::pin!(collect);
+
+    tokio::select! {
+        _ = &mut collect => panic!("quiet wait returned before its configured deadline"),
+        _ = tokio::time::sleep(Duration::from_secs(301)) => {}
+    }
+
+    closed.store(true, Ordering::Release);
+    cancel.cancel();
+    closed_notify.notify_waiters();
+    let (collected, returned_on_output) = collect.await;
+    assert_eq!(collected.total_bytes(), 0);
+    assert!(!returned_on_output);
+}
+
 #[tokio::test]
 async fn output_collection_stays_bounded_across_repeated_drains() {
     let output_buffer = Arc::new(tokio::sync::Mutex::new(HeadTailBuffer::default()));
