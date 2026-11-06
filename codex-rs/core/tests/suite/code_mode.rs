@@ -13,8 +13,6 @@ use codex_features::CurrentTimeSource;
 use codex_features::Feature;
 use codex_login::CodexAuth;
 use codex_models_manager::bundled_models_response;
-use codex_protocol::computer_use::ComputerUseOutputContentItem;
-use codex_protocol::computer_use::ComputerUseResponse;
 use codex_protocol::config_types::WebSearchMode;
 use codex_protocol::dynamic_tools::DynamicToolCallOutputContentItem;
 use codex_protocol::dynamic_tools::DynamicToolResponse;

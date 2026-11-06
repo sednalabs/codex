@@ -2134,11 +2134,17 @@ mod tests {
             .dynamic_tools
             .expect("start should include configured native tools");
 
-        assert!(start_tools.iter().any(|tool| tool.name == "android_observe"));
+        assert!(
+            start_tools
+                .iter()
+                .any(|tool| tool.name == "android_observe")
+        );
         assert!(start_tools.iter().any(|tool| tool.name == "android_step"));
-        assert!(start_tools
-            .iter()
-            .any(|tool| tool.name == "android_install_build_from_run"));
+        assert!(
+            start_tools
+                .iter()
+                .any(|tool| tool.name == "android_install_build_from_run")
+        );
         assert_eq!(resume.dynamic_tools, Some(start_tools.clone()));
         assert_eq!(fork.dynamic_tools, Some(start_tools));
     }

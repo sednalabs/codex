@@ -1323,12 +1323,10 @@ enum ExecComputerUseProviderOutcome {
 }
 
 fn exec_computer_use_providers() -> &'static [ExecComputerUseProvider] {
-    static PROVIDERS: [ExecComputerUseProvider; 1] = [
-        ExecComputerUseProvider {
-            adapter: COMPUTER_USE_ADAPTER_ANDROID,
-            handler: ExecComputerUseProviderHandler::Android,
-        },
-    ];
+    static PROVIDERS: [ExecComputerUseProvider; 1] = [ExecComputerUseProvider {
+        adapter: COMPUTER_USE_ADAPTER_ANDROID,
+        handler: ExecComputerUseProviderHandler::Android,
+    }];
 
     &PROVIDERS
 }

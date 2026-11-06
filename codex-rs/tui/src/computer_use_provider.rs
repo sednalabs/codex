@@ -91,17 +91,15 @@ mod tests {
     use serde_json::json;
     #[tokio::test]
     async fn unknown_computer_use_tool_is_not_claimed_by_provider_registry() {
-        let outcome = handle_computer_use(
-            &ComputerUseCallParams {
-                thread_id: "thread-1".to_string(),
-                call_id: "call-unknown".to_string(),
-                turn_id: "turn-1".to_string(),
-                environment_id: Some("env-1".to_string()),
-                adapter: "browser".to_string(),
-                tool: "browser_private_backend_probe".to_string(),
-                arguments: json!({}),
-            },
-        )
+        let outcome = handle_computer_use(&ComputerUseCallParams {
+            thread_id: "thread-1".to_string(),
+            call_id: "call-unknown".to_string(),
+            turn_id: "turn-1".to_string(),
+            environment_id: Some("env-1".to_string()),
+            adapter: "browser".to_string(),
+            tool: "browser_private_backend_probe".to_string(),
+            arguments: json!({}),
+        })
         .await;
 
         assert!(matches!(outcome, ComputerUseProviderOutcome::Unavailable));
@@ -109,17 +107,15 @@ mod tests {
 
     #[tokio::test]
     async fn desktop_provider_requires_configured_command() {
-        let outcome = handle_computer_use(
-            &ComputerUseCallParams {
-                thread_id: "thread-1".to_string(),
-                call_id: "call-desktop-observe".to_string(),
-                turn_id: "turn-1".to_string(),
-                environment_id: Some("env-1".to_string()),
-                adapter: "desktop".to_string(),
-                tool: "desktop_observe".to_string(),
-                arguments: json!({"scope": "screen_and_ui"}),
-            },
-        )
+        let outcome = handle_computer_use(&ComputerUseCallParams {
+            thread_id: "thread-1".to_string(),
+            call_id: "call-desktop-observe".to_string(),
+            turn_id: "turn-1".to_string(),
+            environment_id: Some("env-1".to_string()),
+            adapter: "desktop".to_string(),
+            tool: "desktop_observe".to_string(),
+            arguments: json!({"scope": "screen_and_ui"}),
+        })
         .await;
 
         assert!(matches!(outcome, ComputerUseProviderOutcome::Unavailable));
