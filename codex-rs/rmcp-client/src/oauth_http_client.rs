@@ -3,6 +3,7 @@ use std::sync::Mutex;
 use std::sync::atomic::AtomicU64;
 use std::sync::atomic::Ordering;
 use std::time::Duration;
+use std::time::Instant;
 
 use codex_exec_server::HttpClient;
 use codex_exec_server::HttpHeader;
@@ -14,6 +15,10 @@ use futures::future::BoxFuture;
 use oauth2::HttpRequest;
 use oauth2::HttpResponse;
 use reqwest::header::HeaderMap;
+use reqwest::header::HeaderValue;
+use reqwest::header::USER_AGENT;
+use url::Origin;
+use url::Url;
 use rmcp::transport::auth::OAuthHttpClient;
 use rmcp::transport::auth::OAuthHttpClientError;
 use rmcp::transport::auth::OAuthHttpClientFuture;
@@ -21,14 +26,17 @@ use rmcp::transport::auth::OAuthHttpRedirectPolicy;
 use rmcp::transport::auth::OAuthHttpRequest;
 
 use crate::auth_status::OAuthDiscoveryTimeout;
+use crate::utils::MCP_USER_AGENT;
 
 const MAX_OAUTH_HTTP_RESPONSE_BODY_BYTES: usize = 1024 * 1024;
+const MAX_OAUTH_HTTP_REDIRECTS: usize = 10;
 static NEXT_OAUTH_REQUEST_ID: AtomicU64 = AtomicU64::new(0);
 
 #[derive(Clone)]
 pub(crate) struct OAuthHttpClientAdapter {
     http_client: OAuthHttpClientBackend,
     default_headers: HeaderMap,
+    resource_origin: Option<Origin>,
     timeout: OAuthDiscoveryTimeout,
     fixed_api_exchange_observer: Option<FixedApiExchangeObserver>,
 }
@@ -134,6 +142,7 @@ impl OAuthHttpClientAdapter {
         Self {
             http_client: OAuthHttpClientBackend::ExecServer(http_client),
             default_headers,
+            resource_origin: None,
             timeout: OAuthDiscoveryTimeout::Requested,
             fixed_api_exchange_observer: None,
         }
@@ -147,6 +156,7 @@ impl OAuthHttpClientAdapter {
         Self {
             http_client: OAuthHttpClientBackend::ExecServer(http_client),
             default_headers,
+            resource_origin: None,
             timeout: OAuthDiscoveryTimeout::Capped(max_timeout),
             fixed_api_exchange_observer: None,
         }
@@ -160,9 +170,25 @@ impl OAuthHttpClientAdapter {
         Self {
             http_client: OAuthHttpClientBackend::Direct(http_client),
             default_headers,
+            resource_origin: None,
             timeout: OAuthDiscoveryTimeout::Capped(max_timeout),
             fixed_api_exchange_observer: None,
         }
+    }
+
+    pub(crate) fn new_scoped(
+        http_client: Arc<dyn HttpClient>,
+        default_headers: HeaderMap,
+        resource_url: &str,
+        timeout: OAuthDiscoveryTimeout,
+    ) -> Result<Self, url::ParseError> {
+        Ok(Self {
+            http_client: OAuthHttpClientBackend::ExecServer(http_client),
+            default_headers,
+            resource_origin: Some(Url::parse(resource_url)?.origin()),
+            timeout,
+            fixed_api_exchange_observer: None,
+        })
     }
 
     /// Attaches the bounded observer used by the fixed Ops API login/refresh paths.
@@ -190,11 +216,33 @@ impl OAuthHttpClientAdapter {
             }
         };
         let (parts, body) = request.into_parts();
-        let mut headers = self.default_headers.clone();
+        let mut request_url = self.resource_origin.as_ref()
+            .map(|_| Url::parse(&parts.uri.to_string()))
+            .transpose()
+            .map_err(|error| OAuthHttpClientError::from(error.to_string()))?;
+        let is_resource_origin = match (&self.resource_origin, &request_url) {
+            (Some(origin), Some(url)) => url.origin() == *origin,
+            _ => true,
+        };
+        let mut headers = if is_resource_origin {
+            self.default_headers.clone()
+        } else {
+            HeaderMap::new()
+        };
         for name in parts.headers.keys() {
             headers.remove(name);
         }
+        let has_resource_only_headers = self.resource_origin.is_some()
+            && is_resource_origin
+            && headers.iter().any(|(name, value)| {
+                name != USER_AGENT || value != HeaderValue::from_static(MCP_USER_AGENT)
+            });
         headers.extend(parts.headers);
+        if !is_resource_origin {
+            headers.insert(USER_AGENT, HeaderValue::from_static(MCP_USER_AGENT));
+        }
+        let follow_same_origin_redirects =
+            has_resource_only_headers && redirect_policy == HttpRedirectPolicy::Follow;
         let timeout = match self.timeout {
             OAuthDiscoveryTimeout::Requested => timeout,
             OAuthDiscoveryTimeout::Capped(max_timeout) => {
@@ -206,7 +254,6 @@ impl OAuthHttpClientAdapter {
                 .unwrap_or(u64::MAX)
                 .max(1)
         });
-        let request_id = NEXT_OAUTH_REQUEST_ID.fetch_add(1, Ordering::Relaxed);
         let (status, response_headers, response_body) = match &self.http_client {
             OAuthHttpClientBackend::ExecServer(http_client) => {
                 let headers = headers
@@ -221,28 +268,76 @@ impl OAuthHttpClientAdapter {
                         })
                     })
                     .collect::<Result<Vec<_>, OAuthHttpClientError>>()?;
-                let (response, mut body_stream) = http_client
-                    .http_request_stream(HttpRequestParams {
-                        method: parts.method.to_string(),
-                        url: parts.uri.to_string(),
-                        headers,
-                        body: (!body.is_empty()).then_some(body.into()),
-                        timeout_ms,
-                        redirect_policy,
-                        request_id: format!("oauth-request-{request_id}"),
-                        stream_response: true,
-                    })
-                    .await
-                    .map_err(|error| OAuthHttpClientError::from(error.to_string()))?;
-                let mut response_body = Vec::new();
-                while let Some(chunk) = body_stream
-                    .recv()
-                    .await
-                    .map_err(|error| OAuthHttpClientError::from(error.to_string()))?
-                {
-                    append_bounded_body(&mut response_body, &chunk)?;
+                let deadline = timeout.map(|timeout| Instant::now() + timeout);
+                let mut params = HttpRequestParams {
+                    method: parts.method.to_string(),
+                    url: parts.uri.to_string(),
+                    headers,
+                    body: (!body.is_empty()).then_some(body.into()),
+                    timeout_ms,
+                    redirect_policy: if follow_same_origin_redirects {
+                        HttpRedirectPolicy::Stop
+                    } else {
+                        redirect_policy
+                    },
+                    request_id: String::new(),
+                    stream_response: true,
+                };
+                let mut redirects = 0;
+                loop {
+                    let request_id = NEXT_OAUTH_REQUEST_ID.fetch_add(1, Ordering::Relaxed);
+                    params.request_id = format!("oauth-request-{request_id}");
+                    let (response, mut body_stream) = http_client
+                        .http_request_stream(params.clone())
+                        .await
+                        .map_err(|error| OAuthHttpClientError::from(error.to_string()))?;
+                    let mut response_body = Vec::new();
+                    while let Some(chunk) = body_stream
+                        .recv()
+                        .await
+                        .map_err(|error| OAuthHttpClientError::from(error.to_string()))?
+                    {
+                        append_bounded_body(&mut response_body, &chunk)?;
+                    }
+                    if !follow_same_origin_redirects
+                        || !matches!(response.status, 301 | 302 | 303 | 307 | 308)
+                    {
+                        break (response.status, response.headers, response_body);
+                    }
+                    let next_url = response.headers.iter()
+                        .find(|header| header.name.eq_ignore_ascii_case("location"))
+                        .and_then(|header| request_url.as_ref()?.join(&header.value).ok())
+                        .filter(|url| self.resource_origin.as_ref().is_some_and(|origin| url.origin() == *origin));
+                    let Some(next_url) = next_url else {
+                        break (response.status, response.headers, response_body);
+                    };
+                    if redirects >= MAX_OAUTH_HTTP_REDIRECTS {
+                        return Err(OAuthHttpClientError::from("OAuth HTTP request exceeded redirect limit"));
+                    }
+                    if response.status == 303
+                        || (matches!(response.status, 301 | 302) && params.method == "POST")
+                    {
+                        if params.method != "HEAD" {
+                            params.method = "GET".to_string();
+                        }
+                        params.body = None;
+                        params.headers.retain(|header| {
+                            !["content-type", "content-length", "content-encoding", "transfer-encoding"]
+                                .iter()
+                                .any(|name| header.name.eq_ignore_ascii_case(name))
+                        });
+                    }
+                    params.url = next_url.to_string();
+                    if let Some(deadline) = deadline {
+                        let remaining = deadline.checked_duration_since(Instant::now())
+                            .ok_or_else(|| OAuthHttpClientError::from("OAuth HTTP request timed out"))?;
+                        params.timeout_ms = Some(
+                            u64::try_from(remaining.as_millis()).unwrap_or(u64::MAX).max(1),
+                        );
+                    }
+                    request_url = Some(next_url);
+                    redirects += 1;
                 }
-                (response.status, response.headers, response_body)
             }
             OAuthHttpClientBackend::Direct(http_client) => {
                 let method = reqwest::Method::from_bytes(parts.method.as_str().as_bytes())
