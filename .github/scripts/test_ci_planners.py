@@ -4176,7 +4176,7 @@ class ValidationPlanScriptTests(unittest.TestCase):
         self.assertEqual(payload["planned_job_count"], 17)
         self.assertEqual(payload["rust_batching_mode"], "auto")
         self.assertEqual(payload["selected_workflow_lane_count"], 0)
-        self.assertEqual(payload["selected_node_lane_count"], 1)
+        self.assertEqual(payload["selected_node_lane_count"], 0)
         self.assertEqual(payload["selected_rust_minimal_lane_count"], 0)
         self.assertEqual(payload["selected_rust_minimal_batch_count"], 9)
         self.assertEqual(payload["selected_rust_integration_lane_count"], 1)
