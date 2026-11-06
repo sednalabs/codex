@@ -357,7 +357,10 @@ fn device_only_issuer_matches(
     }
     // Keep the configured URL's original spelling. Parsing a URL before
     // comparing identifiers can normalize a different issuer into a match.
-    let resource_identity = resource_url.split(['?', '#']).next().unwrap_or(resource_url);
+    let resource_identity = resource_url
+        .split(['?', '#'])
+        .next()
+        .unwrap_or(resource_url);
     if metadata_path == "/.well-known/oauth-authorization-server" {
         let Some((scheme, remainder)) = resource_identity.split_once("://") else {
             return false;
