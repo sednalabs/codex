@@ -138,26 +138,13 @@ enum OAuthHttpClientBackend {
 }
 
 impl OAuthHttpClientAdapter {
+    #[cfg(test)]
     pub(crate) fn new(http_client: Arc<dyn HttpClient>, default_headers: HeaderMap) -> Self {
         Self {
             http_client: OAuthHttpClientBackend::ExecServer(http_client),
             default_headers,
             resource_origin: None,
             timeout: OAuthDiscoveryTimeout::Requested,
-            fixed_api_exchange_observer: None,
-        }
-    }
-
-    pub(crate) fn new_with_max_timeout(
-        http_client: Arc<dyn HttpClient>,
-        default_headers: HeaderMap,
-        max_timeout: Duration,
-    ) -> Self {
-        Self {
-            http_client: OAuthHttpClientBackend::ExecServer(http_client),
-            default_headers,
-            resource_origin: None,
-            timeout: OAuthDiscoveryTimeout::Capped(max_timeout),
             fixed_api_exchange_observer: None,
         }
     }
@@ -575,6 +562,51 @@ mod security_tests {
             Some(Duration::from_secs(10)),
         ).await.map_err(|error| anyhow::anyhow!(error))?;
         assert_eq!(response.status(), oauth2::http::StatusCode::CREATED);
+        resource.verify().await;
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn direct_scoped_discovery_preserves_same_origin_headers() -> anyhow::Result<()> {
+        let resource = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/metadata"))
+            .and(header("x-api-key", "synthetic-secret"))
+            .respond_with(ResponseTemplate::new(302).insert_header("location", "/metadata-final"))
+            .expect(1)
+            .mount(&resource)
+            .await;
+        Mock::given(method("GET"))
+            .and(path("/metadata-final"))
+            .and(header("x-api-key", "synthetic-secret"))
+            .respond_with(ResponseTemplate::new(200))
+            .expect(1)
+            .mount(&resource)
+            .await;
+        let defaults = crate::utils::build_default_headers(
+            Some(HashMap::from([("x-api-key".to_string(), "synthetic-secret".to_string())])),
+            /*env_http_headers*/ None,
+        )?;
+        let client = codex_http_client::HttpClientBuilder::new()
+            .without_redirects()
+            .without_retries()
+            .without_request_logging()
+            .build_direct()?;
+        let adapter = OAuthHttpClientAdapter::new_direct_scoped(
+            client,
+            defaults,
+            &format!("{}/mcp", resource.uri()),
+            OAuthDiscoveryTimeout::Capped(Duration::from_secs(10)),
+        )?;
+        let response = adapter.execute_request(
+            oauth2::http::Request::builder()
+                .method("GET")
+                .uri(format!("{}/metadata", resource.uri()))
+                .body(Vec::new())?,
+            OAuthHttpRedirectPolicy::Follow,
+            Some(Duration::from_secs(10)),
+        ).await.map_err(|error| anyhow::anyhow!(error))?;
+        assert_eq!(response.status(), oauth2::http::StatusCode::OK);
         resource.verify().await;
         Ok(())
     }

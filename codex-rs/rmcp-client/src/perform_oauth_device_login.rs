@@ -74,13 +74,11 @@ pub async fn perform_oauth_device_login(
         }),
         "OAuth device authorization grant is not advertised"
     );
-    let resource_client = oauth_device_client(server_url, server_url, &default_headers)?;
     let device_client =
         oauth_device_client(server_url, device_authorization_endpoint, &default_headers)?;
     let token_client = oauth_device_client(server_url, token_endpoint, &default_headers)?;
     let oauth_client_id = resolve_device_oauth_client_id(
         server_url,
-        &resource_client,
         &default_headers,
         scopes,
         oauth_client_id,
@@ -182,7 +180,6 @@ fn validate_oauth_endpoint(endpoint: &str) -> Result<Url> {
 
 async fn resolve_device_oauth_client_id(
     server_url: &str,
-    http_client: &Client,
     default_headers: &HeaderMap,
     scopes: &[String],
     oauth_client_id: Option<&str>,
@@ -192,8 +189,19 @@ async fn resolve_device_oauth_client_id(
         return Ok(client_id.trim().to_string());
     }
 
-    let mut auth_manager = AuthorizationManager::new(server_url).await?;
-    auth_manager.with_client(http_client.clone())?;
+    let client = codex_http_client::HttpClientBuilder::new()
+        .without_redirects()
+        .without_retries()
+        .without_request_logging()
+        .build_direct()?;
+    let oauth_client = crate::oauth_http_client::OAuthHttpClientAdapter::new_direct_scoped(
+        client,
+        default_headers.clone(),
+        server_url,
+        crate::auth_status::OAuthDiscoveryTimeout::Capped(Duration::from_secs(30)),
+    )?;
+    let auth_manager =
+        AuthorizationManager::new_with_oauth_http_client(server_url, std::sync::Arc::new(oauth_client)).await?;
     let metadata = discover_metadata(&auth_manager).await?;
     anyhow::ensure!(
         metadata.issuer.as_deref() == Some(expected_issuer),
@@ -683,14 +691,67 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn device_client_does_not_forward_resource_headers_to_other_origins() -> Result<()> {
+        use wiremock::matchers::{method, path};
+        use wiremock::{Mock, MockServer, ResponseTemplate};
+
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/token"))
+            .respond_with(ResponseTemplate::new(200))
+            .expect(1)
+            .mount(&server)
+            .await;
+        let defaults = build_default_headers(
+            Some(HashMap::from([("x-api-key".to_string(), "synthetic-secret".to_string())])),
+            /*env_http_headers*/ None,
+        )?;
+        let endpoint = format!("{}/token", server.uri());
+        let client = oauth_device_client("https://resource.example/mcp", &endpoint, &defaults)?;
+        client.post(endpoint).send().await?;
+        let requests = server.received_requests().await.expect("recorded request");
+        assert_eq!(requests.len(), 1);
+        assert!(!requests[0].headers.contains_key("x-api-key"));
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn device_post_does_not_follow_cross_origin_redirects() -> Result<()> {
+        use wiremock::matchers::{method, path};
+        use wiremock::{Mock, MockServer, ResponseTemplate};
+
+        let resource = MockServer::start().await;
+        let destination = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/device"))
+            .respond_with(ResponseTemplate::new(307).insert_header("location", format!("{}/other", destination.uri())))
+            .expect(1)
+            .mount(&resource)
+            .await;
+        Mock::given(method("POST"))
+            .and(path("/other"))
+            .respond_with(ResponseTemplate::new(200))
+            .expect(0)
+            .mount(&destination)
+            .await;
+        let defaults = build_default_headers(
+            Some(HashMap::from([("x-api-key".to_string(), "synthetic-secret".to_string())])),
+            /*env_http_headers*/ None,
+        )?;
+        let endpoint = format!("{}/device", resource.uri());
+        let client = oauth_device_client(&format!("{}/mcp", resource.uri()), &endpoint, &defaults)?;
+        let response = client.post(endpoint).send().await?;
+        assert_eq!(response.status(), StatusCode::TEMPORARY_REDIRECT);
+        destination.verify().await;
+        Ok(())
+    }
+
+    #[tokio::test]
     async fn device_login_dynamic_registration_uses_device_grant_shape() {
         let registration_count = Arc::new(AtomicUsize::new(0));
         let server = spawn_device_registration_server(registration_count.clone()).await;
-        let client = Client::builder().no_proxy().build().expect("client");
-
         let client_id = resolve_device_oauth_client_id(
             &format!("{server}/mcp"),
-            &client,
             &HeaderMap::new(),
             &["profile".to_string(), "ops:read".to_string()],
             /*oauth_client_id*/ None,
@@ -712,11 +773,8 @@ mod tests {
             vec![DEVICE_CODE_GRANT_TYPE],
         )
         .await;
-        let client = Client::builder().no_proxy().build().expect("client");
-
         let client_id = resolve_device_oauth_client_id(
             &format!("{server}/mcp"),
-            &client,
             &HeaderMap::new(),
             &["profile".to_string(), "ops:read".to_string()],
             /*oauth_client_id*/ None,
@@ -733,11 +791,8 @@ mod tests {
     async fn device_login_configured_client_id_skips_dynamic_registration() {
         let registration_count = Arc::new(AtomicUsize::new(0));
         let server = spawn_device_registration_server(registration_count.clone()).await;
-        let client = Client::builder().no_proxy().build().expect("client");
-
         let client_id = resolve_device_oauth_client_id(
             &format!("{server}/mcp"),
-            &client,
             &HeaderMap::new(),
             &["profile".to_string(), "ops:read".to_string()],
             Some("configured-device-client"),
