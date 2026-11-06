@@ -2770,17 +2770,17 @@ async fn assert_interrupt_preserves_unified_exec_session(terminal_only: bool) ->
         args["heartbeat_interval_ms"] = json!(250);
     }
 
-    let responses = vec![
-        sse(vec![
-            ev_response_created("resp-1"),
-            ev_function_call(call_id, "exec_command", &serde_json::to_string(&args)?),
-            ev_completed("resp-1"),
-        ]),
-        sse(vec![
+    let mut responses = vec![sse(vec![
+        ev_response_created("resp-1"),
+        ev_function_call(call_id, "exec_command", &serde_json::to_string(&args)?),
+        ev_completed("resp-1"),
+    ])];
+    if terminal_only {
+        responses.push(sse(vec![
             ev_assistant_message("msg-after-interrupt", "continued"),
             ev_completed("resp-after-interrupt"),
-        ]),
-    ];
+        ]));
+    }
     let request_log = mount_sse_sequence(&server, responses).await;
 
     let session_model = session_configured.model.clone();

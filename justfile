@@ -401,6 +401,7 @@ blocking-waits-core-targeted:
     CODEX_JS_REPL_NODE_PATH="${CODEX_JS_REPL_NODE_PATH:-/tmp/codex-node22/bin/node}" cargo test -p codex-core completion_rule_distinguishes_any_from_all --lib -- --exact --test-threads=1
 
 blocking-waits-unified-exec-targeted:
+    RUST_MIN_STACK="${RUST_MIN_STACK:-{{ rust_min_stack }}}" CODEX_JS_REPL_NODE_PATH="${CODEX_JS_REPL_NODE_PATH:-/tmp/codex-node22/bin/node}" cargo nextest run -j 1 --retries 0 -p codex-core --test all -- suite::unified_exec::unified_exec_interrupt_preserves_long_running_session --exact
     RUST_MIN_STACK="${RUST_MIN_STACK:-{{ rust_min_stack }}}" CODEX_JS_REPL_NODE_PATH="${CODEX_JS_REPL_NODE_PATH:-/tmp/codex-node22/bin/node}" cargo nextest run -j 1 --retries 0 -p codex-core --test all -- suite::unified_exec::terminal_only_wait_interrupt_preserves_long_running_session --exact
     RUST_MIN_STACK="${RUST_MIN_STACK:-{{ rust_min_stack }}}" cargo test -p codex-core unified_exec::process_manager::tests::interrupted_exec_lookup_is_scoped_to_turn_and_call --lib -- --exact --test-threads=1
     RUST_MIN_STACK="${RUST_MIN_STACK:-{{ rust_min_stack }}}" cargo test -p codex-core tools::parallel::tests::interrupted_terminal_exec_response_exposes_only_a_known_handle --lib -- --exact --test-threads=1
