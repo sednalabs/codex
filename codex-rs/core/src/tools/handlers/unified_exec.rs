@@ -187,15 +187,17 @@ impl TerminalWaitOutput {
                 .original_token_count
                 .unwrap_or_else(|| bytes.len().div_ceil(APPROX_BYTES_PER_TOKEN)),
         );
-        self.omitted_bytes = self.omitted_bytes.saturating_add(
-            response.output_omitted_bytes.map_or(0, NonZeroUsize::get),
-        );
+        self.omitted_bytes = self
+            .omitted_bytes
+            .saturating_add(response.output_omitted_bytes.map_or(0, NonZeroUsize::get));
         self.bytes.push_chunk(bytes);
     }
 
     fn finish(self, response: &mut ExecCommandToolOutput) {
-        response.output_omitted_bytes =
-            NonZeroUsize::new(self.omitted_bytes.saturating_add(self.bytes.omitted_bytes()));
+        response.output_omitted_bytes = NonZeroUsize::new(
+            self.omitted_bytes
+                .saturating_add(self.bytes.omitted_bytes()),
+        );
         response.original_token_count = Some(self.original_tokens);
         response.raw_output = self.bytes.to_bytes();
     }

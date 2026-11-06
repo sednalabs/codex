@@ -97,7 +97,10 @@ fn terminal_wait_output_bounds_accumulation_and_reports_omissions() {
 
     assert_eq!(response.raw_output, b"abcdijkl");
     assert_eq!(response.original_token_count, Some(3));
-    assert_eq!(response.output_omitted_bytes.map(NonZeroUsize::get), Some(7));
+    assert_eq!(
+        response.output_omitted_bytes.map(NonZeroUsize::get),
+        Some(7)
+    );
 }
 
 async fn invocation_for_payload(
