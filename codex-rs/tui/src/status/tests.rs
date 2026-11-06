@@ -187,6 +187,7 @@ fn render_lines(lines: &[Line<'static>]) -> Vec<String> {
 }
 
 fn sanitize_directory(lines: Vec<String>) -> Vec<String> {
+    let lines = sanitize_version_banner(lines);
     let frame_width = lines
         .iter()
         .find(|line| line.starts_with('╭'))
@@ -374,6 +375,12 @@ async fn status_snapshot_includes_reasoning_details() {
         reasoning_effort_override,
     );
     let mut rendered_lines = render_lines(&composite.display_lines(/*width*/ 80));
+    assert!(
+        rendered_lines
+            .iter()
+            .any(|line| line.contains(&format!("(v{})", crate::version::CODEX_DISPLAY_VERSION))),
+        "status banner must include the build display version",
+    );
     if cfg!(windows) {
         for line in &mut rendered_lines {
             *line = line.replace('\\', "/");
