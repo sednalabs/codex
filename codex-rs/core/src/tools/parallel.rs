@@ -75,21 +75,32 @@ fn is_terminal_exec_call(call: &ToolCall) -> bool {
         .unwrap_or(false)
 }
 
-fn is_empty_terminal_stdin_call(call: &ToolCall) -> bool {
+fn terminal_stdin_has_input(call: &ToolCall) -> Option<bool> {
     if call.tool_name.namespace.is_some() || call.tool_name.name != "write_stdin" {
-        return false;
+        return None;
     }
     let ToolPayload::Function { arguments } = &call.payload else {
-        return false;
+        return None;
     };
     serde_json::from_str::<serde_json::Value>(arguments)
         .ok()
-        .is_some_and(|args| {
-            args.get("wait_until_terminal")
+        .and_then(|args| {
+            if args
+                .get("wait_until_terminal")
                 .and_then(serde_json::Value::as_bool)
-                == Some(true)
-                && args.get("chars").is_none_or(|v| v.as_str() == Some(""))
+                != Some(true)
+            {
+                return None;
+            }
+            match args.get("chars") {
+                None => Some(false),
+                Some(value) => value.as_str().map(|input| !input.is_empty()),
+            }
         })
+}
+
+fn is_empty_terminal_stdin_call(call: &ToolCall) -> bool {
+    terminal_stdin_has_input(call) == Some(false)
 }
 
 impl SpawnPublicationGuard {
@@ -401,6 +412,10 @@ impl ToolCallRuntime {
         } else if is_terminal_exec_call(call) {
             message.push_str(
                 "\nThe launch may have taken effect, but no session handle could be recovered. Check before retrying.",
+            );
+        } else if terminal_stdin_has_input(call) == Some(true) {
+            message.push_str(
+                "\nInput may already have been sent. Check the session before sending it again.",
             );
         }
         AnyToolResult {
@@ -738,6 +753,16 @@ mod tests {
             arguments: r#"{"session_id":1,"chars":"yes","wait_until_terminal":true}"#.to_string(),
         };
         assert!(!is_empty_terminal_stdin_call(&call));
+        let ResponseInputItem::FunctionCallOutput { output, .. } =
+            ToolCallRuntime::aborted_response(&call, /*secs*/ 1.0, None).into_response()
+        else {
+            panic!("expected function output");
+        };
+        let FunctionCallOutputBody::Text(message) = output.body else {
+            panic!("expected text output");
+        };
+        assert!(message.contains("Input may already have been sent"));
+        assert!(!message.contains("yes"));
         call.tool_name = ToolName::namespaced("other", "write_stdin");
         assert!(!is_empty_terminal_stdin_call(&call));
     }
