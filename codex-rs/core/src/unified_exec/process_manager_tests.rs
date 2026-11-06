@@ -672,6 +672,83 @@ fn pruning_protects_recent_processes_even_if_exited() {
 
 #[cfg(unix)]
 #[tokio::test]
+async fn interrupted_exec_lookup_is_scoped_to_turn_and_call() {
+    let process = Arc::new(
+        crate::unified_exec::process_tests::remote_process(
+            codex_exec_server::WriteStatus::Accepted,
+            /*terminate_error*/ None,
+        )
+        .await,
+    );
+    let manager = UnifiedExecProcessManager::default();
+    let cwd = PathUri::parse("file:///tmp").expect("test cwd should be valid");
+    {
+        let mut store = manager.process_store.lock().await;
+        for (process_id, turn_id) in [(1, "turn-a"), (2, "turn-b")] {
+            store.processes.insert(
+                process_id,
+                ProcessEntry {
+                    process: Arc::clone(&process),
+                    call_id: "shared-call".to_string(),
+                    turn_id: turn_id.to_string(),
+                    process_id,
+                    cwd: cwd.clone(),
+                    initial_exec_command_active: Arc::new(AtomicBool::new(false)),
+                    hook_command: String::new(),
+                    tty: false,
+                    network_approval: None,
+                    session: std::sync::Weak::new(),
+                    last_used: Instant::now(),
+                    completion_cause: Arc::new(std::sync::atomic::AtomicU8::new(0)),
+                },
+            );
+        }
+    }
+    assert_eq!(
+        manager
+            .interrupted_exec_process_id("turn-a", "shared-call")
+            .await,
+        Some(1)
+    );
+    assert_eq!(
+        manager
+            .interrupted_exec_process_id("other-turn", "shared-call")
+            .await,
+        None
+    );
+    assert_eq!(
+        manager
+            .interrupted_exec_process_id("turn-a", "other-call")
+            .await,
+        None
+    );
+    manager.process_store.lock().await.processes.insert(
+        3,
+        ProcessEntry {
+            process,
+            call_id: "shared-call".to_string(),
+            turn_id: "turn-a".to_string(),
+            process_id: 3,
+            cwd,
+            initial_exec_command_active: Arc::new(AtomicBool::new(false)),
+            hook_command: String::new(),
+            tty: false,
+            network_approval: None,
+            session: std::sync::Weak::new(),
+            last_used: Instant::now(),
+            completion_cause: Arc::new(std::sync::atomic::AtomicU8::new(0)),
+        },
+    );
+    assert_eq!(
+        manager
+            .interrupted_exec_process_id("turn-a", "shared-call")
+            .await,
+        None
+    );
+}
+
+#[cfg(unix)]
+#[tokio::test]
 async fn pruning_does_not_evict_live_process_while_exited_process_is_finalizing() {
     let exited_process = Arc::new(
         crate::unified_exec::process_tests::remote_process(
@@ -709,6 +786,7 @@ async fn pruning_does_not_evict_live_process_while_exited_process_is_finalizing(
                     Arc::clone(&live_process)
                 },
                 call_id: format!("call-{process_id}"),
+                turn_id: "turn".to_string(),
                 process_id,
                 cwd: cwd.clone(),
                 initial_exec_command_active: Arc::new(AtomicBool::new(false)),

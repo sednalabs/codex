@@ -903,6 +903,22 @@ impl UnifiedExecProcessManager {
         Ok(response)
     }
 
+    /// Find a stored process for the exact turn and originating tool call.
+    /// A result is a recoverable handle, not proof that the process is still running.
+    pub(crate) async fn interrupted_exec_process_id(
+        &self,
+        turn_id: &str,
+        call_id: &str,
+    ) -> Option<i32> {
+        let store = self.process_store.lock().await;
+        let mut matches = store
+            .processes
+            .values()
+            .filter(|entry| entry.turn_id == turn_id && entry.call_id == call_id);
+        let process_id = matches.next()?.process_id;
+        matches.next().is_none().then_some(process_id)
+    }
+
     async fn refresh_process_state(&self, process_id: i32, retain_exited: bool) -> ProcessStatus {
         let mut store = self.process_store.lock().await;
         let Some(entry) = store.processes.get_mut(&process_id) else {
@@ -997,6 +1013,7 @@ impl UnifiedExecProcessManager {
         let entry = ProcessEntry {
             process: Arc::clone(&process),
             call_id: context.call_id.clone(),
+            turn_id: context.turn.sub_id.clone(),
             process_id,
             cwd: cwd.clone(),
             initial_exec_command_active,

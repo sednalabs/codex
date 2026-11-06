@@ -59,6 +59,22 @@ fn is_multi_agent_spawn_call(call: &ToolCall, multi_agent_v2_namespace: Option<&
         && matches!(&call.payload, ToolPayload::Function { .. })
 }
 
+fn is_terminal_exec_call(call: &ToolCall) -> bool {
+    if call.tool_name.namespace.is_some() || call.tool_name.name != "exec_command" {
+        return false;
+    }
+    let ToolPayload::Function { arguments } = &call.payload else {
+        return false;
+    };
+    serde_json::from_str::<serde_json::Value>(arguments)
+        .ok()
+        .and_then(|args| {
+            args.get("wait_until_terminal")
+                .and_then(|value| value.as_bool())
+        })
+        .unwrap_or(false)
+}
+
 impl SpawnPublicationGuard {
     fn begin(
         session: &Session,
@@ -262,7 +278,16 @@ impl ToolCallRuntime {
                                 Err(err) => return Err(Self::tool_task_join_error(err)),
                             }
                         }
-                        let response = Self::aborted_response(&call, secs);
+                        let recovery_process_id = if is_terminal_exec_call(&call) {
+                            abort_session
+                                .services
+                                .unified_exec_manager
+                                .interrupted_exec_process_id(&abort_turn.sub_id, &call.call_id)
+                                .await
+                        } else {
+                            None
+                        };
+                        let response = Self::aborted_response(&call, secs, recovery_process_id);
                         notify_tool_aborted(
                             abort_session.as_ref(),
                             abort_turn.as_ref(),
@@ -313,12 +338,26 @@ impl ToolCallRuntime {
         }
     }
 
-    fn aborted_response(call: &ToolCall, secs: f32) -> AnyToolResult {
+    fn aborted_response(
+        call: &ToolCall,
+        secs: f32,
+        recovery_process_id: Option<i32>,
+    ) -> AnyToolResult {
+        let mut message = Self::abort_message(call, secs);
+        if let Some(process_id) = recovery_process_id {
+            message.push_str(&format!(
+                "\nBackground session ID: {process_id}. It may already have exited. Check it with write_stdin using empty input; earlier output may be incomplete."
+            ));
+        } else if is_terminal_exec_call(call) {
+            message.push_str(
+                "\nThe launch may have taken effect, but no session handle could be recovered. Check before retrying.",
+            );
+        }
         AnyToolResult {
             call_id: call.call_id.clone(),
             payload: call.payload.clone(),
             result: Box::new(AbortedToolOutput {
-                message: Self::abort_message(call, secs),
+                message,
             }),
             post_tool_use_payload: None,
         }
@@ -616,6 +655,28 @@ mod tests {
                 arguments: "{}".to_string(),
             },
         }
+    }
+
+    #[test]
+    fn interrupted_terminal_exec_response_exposes_only_a_known_handle() {
+        let mut call = tool_call("exec_command");
+        call.payload = ToolPayload::Function {
+            arguments: r#"{"wait_until_terminal":true}"#.to_string(),
+        };
+        assert!(is_terminal_exec_call(&call));
+        let ResponseInputItem::FunctionCallOutput { output, .. } =
+            ToolCallRuntime::aborted_response(&call, 1.0, Some(123)).into_response()
+        else {
+            panic!("expected function output");
+        };
+        let FunctionCallOutputBody::Text(message) = output.body else {
+            panic!("expected text output");
+        };
+        assert!(message.contains("Background session ID: 123"));
+        assert!(message.contains("may already have exited"));
+
+        call.tool_name = ToolName::namespaced("other", "exec_command");
+        assert!(!is_terminal_exec_call(&call));
     }
 
     struct ImmediateHandler {
