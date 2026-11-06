@@ -176,7 +176,20 @@ fn oauth_device_client(
     build_reqwest_client(
         Client::builder()
             .timeout(Duration::from_secs(30))
-            .redirect(reqwest::redirect::Policy::none()),
+            .redirect(reqwest::redirect::Policy::custom(|attempt| {
+                if attempt.previous().len() >= 10 {
+                    return attempt.error("OAuth device request exceeded redirect limit");
+                }
+                if attempt
+                    .previous()
+                    .first()
+                    .is_some_and(|first| first.origin() == attempt.url().origin())
+                {
+                    attempt.follow()
+                } else {
+                    attempt.stop()
+                }
+            })),
         &headers,
     )
 }
@@ -737,6 +750,49 @@ mod tests {
         let requests = server.received_requests().await.expect("recorded request");
         assert_eq!(requests.len(), 1);
         assert!(!requests[0].headers.contains_key("x-api-key"));
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn device_post_follows_same_origin_redirects() -> Result<()> {
+        use wiremock::Mock;
+        use wiremock::MockServer;
+        use wiremock::ResponseTemplate;
+        use wiremock::matchers::body_string;
+        use wiremock::matchers::header;
+        use wiremock::matchers::method;
+        use wiremock::matchers::path;
+
+        let resource = MockServer::start().await;
+        let request_body = "synthetic-device-request";
+        Mock::given(method("POST"))
+            .and(path("/device"))
+            .and(header("x-api-key", "synthetic-secret"))
+            .and(body_string(request_body))
+            .respond_with(ResponseTemplate::new(307).insert_header("location", "/redirected"))
+            .expect(1)
+            .mount(&resource)
+            .await;
+        Mock::given(method("POST"))
+            .and(path("/redirected"))
+            .and(header("x-api-key", "synthetic-secret"))
+            .and(body_string(request_body))
+            .respond_with(ResponseTemplate::new(200))
+            .expect(1)
+            .mount(&resource)
+            .await;
+        let defaults = build_default_headers(
+            Some(HashMap::from([(
+                "x-api-key".to_string(),
+                "synthetic-secret".to_string(),
+            )])),
+            /*env_http_headers*/ None,
+        )?;
+        let endpoint = format!("{}/device", resource.uri());
+        let client = oauth_device_client(&format!("{}/mcp", resource.uri()), &endpoint, &defaults)?;
+        let response = client.post(endpoint).body(request_body).send().await?;
+        assert_eq!(response.status(), StatusCode::OK);
+        resource.verify().await;
         Ok(())
     }
 
