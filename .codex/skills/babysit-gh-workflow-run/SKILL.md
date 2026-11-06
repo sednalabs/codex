@@ -51,7 +51,10 @@ For delivery through the merge queue, read [Delivery through the merge queue](re
 - Workflow/ref discovery falls back to the direct Actions runs API when `gh run list --workflow` cannot find runs attached to a renamed or deleted workflow id. The fallback still requires an exact normalized workflow name/file match plus the caller's ref, SHA, and minimum-run filters.
 - Exact-run reads fall back to the direct Actions run and jobs APIs when `gh run view` fails because the referenced workflow metadata was renamed, removed, or is otherwise unavailable. The fallback remains bound to the caller's exact repository and run id.
 - For `validation-lab`, treat same-question scratch/integration reruns as `supersession_mode=auto` by default, but use explicit retained intent such as `compare`, `milestone`, or `retain` when a run is evidence you want to preserve rather than auto-supersede.
-- `gh_dispatch_and_watch` now retries once without `supersession_*` inputs when a workflow rejects those fields, so plain workflows such as `rust-ci-full` can still use the helper safely.
+- `gh_dispatch_and_watch` retries once without helper-added `supersession_*` inputs only after a definitive HTTP 422 unexpected-input rejection. Ambiguous dispatch outcomes never trigger fallback.
+- The dispatch helper captures the run URL returned by `gh`, emits a provisional receipt immediately, verifies that exact run's repository, workflow, dispatch event, host branch and full SHA, then emits a verified receipt and watches that ID. A missing or malformed URL, an unreadable run or an identity mismatch stops without selecting another run or redispatching. The separate validation target still requires target-bound evidence.
+- Before dispatch, the helper resolves the selected repository's canonical URL through `gh repo view` and pins its host for dispatch, verification, and the watcher. Cwd autodetection uses gh's current-repository context without a hostless repository override, then cross-checks the owner/repository. An explicit unqualified repository uses gh's explicit-selector semantics and does not establish the host of a different local remote. It supports `[HOST/]OWNER/REPO` and `GH_HOST`; empty or whitespace-only repository selector environment variables, an explicit host that conflicts with `GH_HOST`, a malformed or contradictory URL, or unavailable repository metadata stop before dispatch. The configured GitHub App broker is read-only and rejects dispatch, so its presence stops this helper before dispatch; it is never bypassed.
+- The helper requires a branch-name dispatch ref: a SHA-only ref cannot establish the expected host branch. `--stale-head-retries` remains accepted only as `0`; reconcile a mismatched run before any separately authorized dispatch.
 - When a watched run publishes a `validation-summary` artifact, prefer that structured summary over raw log scraping.
 - Keep GitHub's workflow host identity (`headBranch`/`headSha`) separate from a workflow's validation target. For a run hosted on `main` that validates an input ref, use `--host-ref main` plus `--validation-target-ref` / `--validation-target-sha`; `--head-sha` remains the workflow-host run selector.
 - The watcher reads authoritative validation-target identity from structured `validation-summary` evidence when present. For Agent Ops surface runs with an expected target SHA, it also consumes the matching `ops-mcp-surface-acceptance-<sha>` receipt artifact instead of discarding that target-bound proof. It reports a separate target as `unknown` only when neither source provides identity evidence, and stops with `stop_validation_target_identity_mismatch` when authoritative evidence contradicts the expected target.
@@ -93,7 +96,7 @@ Optional:
 - hold until a failure target's run reaches status completed by adding `--require-terminal-run` with `--watch-until-action`
 - terminal-wait semantics in one flag: `--watch-until-terminal` (alias `--wait-until-terminal`) implies both `--watch-until-action` and `--require-terminal-run`
 - repeated dispatch input passthrough with `--input key=value` when using `gh_dispatch_and_watch`
-- bounded stale-head redispatch with `--stale-head-retries` when branch propagation races produce runs on an older head SHA
+- legacy `--stale-head-retries 0`; a nonzero value stops before dispatch
 
 ## Core Workflow
 
@@ -247,8 +250,11 @@ the hook, or silently fall back after a configured hook fails.
   --supersession-mode milestone \
   --supersession-key pre-merge-checkpoint \
   --wait-for all_done
-Use `--min-run-id <id>` with `gh_dispatch_and_watch` when the target workflow/ref should ignore any matching run whose `databaseId` is below the given bound; the watcher helper already uses the same flag for workflow/ref targets.
 ```
+
+For `gh_dispatch_and_watch`, `--min-run-id` is a lower-bound guard on the
+returned ID, never a selector for a different run. The standalone watcher still
+supports that flag for workflow/ref discovery.
 
 ## Output Expectations
 
@@ -272,8 +278,7 @@ Return concise structured state that includes:
 - per-target `alerts` when Gemini failed so the parent can notice the missing summary immediately
 - whether each target followed a newer matching run
 - top-level `actions` list that tells the parent whether to keep waiting or act
-- for deterministic dispatch races, `stop_stale_head_dispatch_detected` with `stale_head_dispatch` details when newly created runs keep landing on the wrong head SHA
-- for dispatch visibility failures, `stop_dispatch_run_not_visible` with `dispatch_visibility` details when no new run appears within the configured appearance timeout window
+- for an unverified dispatch identity or an exact-run mismatch, `stop_operator_help_required` after any provisional identity receipt; reconcile the returned run before considering another dispatch
 - for dispatch host/ref mismatches, `stop_dispatch_host_branch_mismatch` with `appearance_wait.dispatch_host_mismatch` details and a suggested `--target ... host-ref=...` form
 - for contradictory authoritative target evidence, `stop_validation_target_identity_mismatch`; never substitute the GitHub run's `headSha` as validation-target evidence for a separate target contract
 - top-level `summary` counts across all targets
@@ -297,7 +302,7 @@ The normal watcher path makes no Gemini or other model-provider call. If and onl
 - Do not route a pure delegated workflow wait to `terminal-babysitter` when `awaiter` would be sufficient.
 - Do not use a pure babysitter lane when the real seam is workflow watch plus bounded fix/rerun ownership.
 - Prefer exact run ids when the parent already knows them.
-- For a fresh dispatch, use `gh_dispatch_and_watch` to wait for remote branch tip sync, dispatch only when SHA matches, and watch only a newer matching run.
+- For a fresh dispatch, use `gh_dispatch_and_watch` to wait for remote branch tip sync, dispatch only when SHA matches, and watch only the verified ID returned by that dispatch.
 - When the parent only knows workflow plus ref, let the helper follow the newest matching run so cancelled superseded runs do not create noise.
 - When the parent knows the exact workflow-host branch head it just dispatched, pass `--head-sha` so the watcher cannot latch onto an older completed run on the same host ref.
 - If a `workflow_dispatch` run is hosted on a branch different from the logical ref (for example hosted on `main` while testing `validation/...` input), pass `--host-ref` (or `host-ref=` in `--target`) so the watcher can select it deterministically.
