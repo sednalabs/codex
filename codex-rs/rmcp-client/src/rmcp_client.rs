@@ -1720,10 +1720,12 @@ async fn create_oauth_transport_and_runtime(
     StreamableHttpClientTransport<SingleAttemptOAuthClient<StreamableHttpClientAdapter>>,
     OAuthPersistor,
 )> {
-    let oauth_http_client = Arc::new(OAuthHttpClientAdapter::new(
+    let oauth_http_client = Arc::new(OAuthHttpClientAdapter::new_scoped(
         http_client.clone(),
         default_headers.clone(),
-    ));
+        url,
+        crate::auth_status::OAuthDiscoveryTimeout::Requested,
+    )?);
     let mut manager =
         AuthorizationManager::new_with_oauth_http_client(url.to_string(), oauth_http_client)
             .await?;

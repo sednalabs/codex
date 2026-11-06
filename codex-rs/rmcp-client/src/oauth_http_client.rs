@@ -191,6 +191,21 @@ impl OAuthHttpClientAdapter {
         })
     }
 
+    pub(crate) fn new_direct_scoped(
+        http_client: DirectHttpClient,
+        default_headers: HeaderMap,
+        resource_url: &str,
+        timeout: OAuthDiscoveryTimeout,
+    ) -> Result<Self, url::ParseError> {
+        Ok(Self {
+            http_client: OAuthHttpClientBackend::Direct(http_client),
+            default_headers,
+            resource_origin: Some(Url::parse(resource_url)?.origin()),
+            timeout,
+            fixed_api_exchange_observer: None,
+        })
+    }
+
     /// Attaches the bounded observer used by the fixed Ops API login/refresh paths.
     pub(crate) fn with_fixed_api_exchange_observer(
         mut self,
@@ -200,7 +215,7 @@ impl OAuthHttpClientAdapter {
         self
     }
 
-    async fn execute_request(
+    pub(crate) async fn execute_request(
         &self,
         request: HttpRequest,
         redirect_policy: OAuthHttpRedirectPolicy,
@@ -340,43 +355,77 @@ impl OAuthHttpClientAdapter {
                 }
             }
             OAuthHttpClientBackend::Direct(http_client) => {
-                let method = reqwest::Method::from_bytes(parts.method.as_str().as_bytes())
+                let mut method = reqwest::Method::from_bytes(parts.method.as_str().as_bytes())
                     .map_err(|_| OAuthHttpClientError::from("invalid OAuth HTTP method"))?;
-                let mut request = http_client
-                    .request(method, parts.uri.to_string())
-                    .headers(headers);
-                if !body.is_empty() {
-                    request = request.body(body);
-                }
-                if let Some(timeout) = timeout {
-                    request = request.timeout(timeout);
-                }
-                let response = request
-                    .send()
-                    .await
-                    .map_err(|error| OAuthHttpClientError::from(error.to_string()))?;
-                let status = response.status().as_u16();
-                let response_headers = response
-                    .headers()
-                    .iter()
-                    .map(|(name, value)| {
-                        Ok(HttpHeader {
-                            name: name.as_str().to_string(),
-                            value: value
-                                .to_str()
-                                .map_err(|error| OAuthHttpClientError::from(error.to_string()))?
-                                .to_string(),
+                let mut request_body = body;
+                let mut current_url = parts.uri.to_string();
+                let redirect_origin = request_url.as_ref().map(Url::origin);
+                let deadline = timeout.map(|timeout| Instant::now() + timeout);
+                let follow_scoped = self.resource_origin.is_some()
+                    && redirect_policy == HttpRedirectPolicy::Follow;
+                let mut redirects = 0;
+                loop {
+                    let mut request = http_client
+                        .request(method.clone(), current_url.clone())
+                        .headers(headers.clone());
+                    if !request_body.is_empty() {
+                        request = request.body(request_body.clone());
+                    }
+                    if let Some(deadline) = deadline {
+                        let remaining = deadline.checked_duration_since(Instant::now())
+                            .ok_or_else(|| OAuthHttpClientError::from("OAuth HTTP request timed out"))?;
+                        request = request.timeout(remaining);
+                    }
+                    let response = request
+                        .send()
+                        .await
+                        .map_err(|error| OAuthHttpClientError::from(error.to_string()))?;
+                    let status = response.status().as_u16();
+                    let response_headers = response
+                        .headers()
+                        .iter()
+                        .map(|(name, value)| {
+                            Ok(HttpHeader {
+                                name: name.as_str().to_string(),
+                                value: value
+                                    .to_str()
+                                    .map_err(|error| OAuthHttpClientError::from(error.to_string()))?
+                                    .to_string(),
+                            })
                         })
-                    })
-                    .collect::<Result<Vec<_>, OAuthHttpClientError>>()?;
-                let mut body_stream = response.bytes_stream();
-                let mut response_body = Vec::new();
-                while let Some(chunk) = body_stream.next().await {
-                    let chunk =
-                        chunk.map_err(|error| OAuthHttpClientError::from(error.to_string()))?;
-                    append_bounded_body(&mut response_body, &chunk)?;
+                        .collect::<Result<Vec<_>, OAuthHttpClientError>>()?;
+                    let mut body_stream = response.bytes_stream();
+                    let mut response_body = Vec::new();
+                    while let Some(chunk) = body_stream.next().await {
+                        let chunk = chunk.map_err(|error| OAuthHttpClientError::from(error.to_string()))?;
+                        append_bounded_body(&mut response_body, &chunk)?;
+                    }
+                    if !follow_scoped || !matches!(status, 301 | 302 | 303 | 307 | 308) {
+                        break (status, response_headers, response_body);
+                    }
+                    let next_url = response_headers.iter()
+                        .find(|header| header.name.eq_ignore_ascii_case("location"))
+                        .and_then(|header| request_url.as_ref()?.join(&header.value).ok())
+                        .filter(|url| redirect_origin.as_ref().is_some_and(|origin| url.origin() == *origin));
+                    let Some(next_url) = next_url else {
+                        break (status, response_headers, response_body);
+                    };
+                    if redirects >= MAX_OAUTH_HTTP_REDIRECTS {
+                        return Err(OAuthHttpClientError::from("OAuth HTTP request exceeded redirect limit"));
+                    }
+                    if status == 303 || (matches!(status, 301 | 302) && method == reqwest::Method::POST) {
+                        if method != reqwest::Method::HEAD {
+                            method = reqwest::Method::GET;
+                        }
+                        request_body.clear();
+                        for name in ["content-type", "content-length", "content-encoding", "transfer-encoding"] {
+                            headers.remove(name);
+                        }
+                    }
+                    current_url = next_url.to_string();
+                    request_url = Some(next_url);
+                    redirects += 1;
                 }
-                (status, response_headers, response_body)
             }
         };
         let mut builder = oauth2::http::Response::builder().status(status);
@@ -435,5 +484,139 @@ impl<'client> oauth2::AsyncHttpClient<'client> for OAuthHttpClientAdapter {
             }
             response.map_err(std::io::Error::other)
         })
+    }
+}
+
+#[cfg(test)]
+mod security_tests {
+    use super::*;
+    use codex_exec_server::RouteAwareHttpClient;
+    use codex_http_client::HttpClientFactory;
+    use codex_http_client::OutboundProxyPolicy;
+    use std::collections::HashMap;
+    use wiremock::Mock;
+    use wiremock::MockServer;
+    use wiremock::ResponseTemplate;
+    use wiremock::matchers::header;
+    use wiremock::matchers::method;
+    use wiremock::matchers::path;
+
+    #[tokio::test]
+    async fn resource_headers_are_not_forwarded_to_cross_origin_oauth_endpoints() -> anyhow::Result<()> {
+        let resource = MockServer::start().await;
+        let destination = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/register"))
+            .respond_with(ResponseTemplate::new(201))
+            .expect(1)
+            .mount(&destination)
+            .await;
+        let defaults = crate::utils::build_default_headers(
+            Some(HashMap::from([("x-api-key".to_string(), "synthetic-secret".to_string())])),
+            /*env_http_headers*/ None,
+        )?;
+        let adapter = OAuthHttpClientAdapter::new_scoped(
+            Arc::new(RouteAwareHttpClient::new(HttpClientFactory::new(
+                OutboundProxyPolicy::ReqwestDefault,
+            ))),
+            defaults,
+            &format!("{}/mcp", resource.uri()),
+            OAuthDiscoveryTimeout::Requested,
+        )?;
+        adapter.execute_request(
+            oauth2::http::Request::builder()
+                .method("POST")
+                .uri(format!("{}/register", destination.uri()))
+                .body(Vec::new())?,
+            OAuthHttpRedirectPolicy::Stop,
+            Some(Duration::from_secs(10)),
+        ).await.map_err(|error| anyhow::anyhow!(error))?;
+        let requests = destination.received_requests().await.expect("recorded requests");
+        assert_eq!(requests.len(), 1);
+        assert!(!requests[0].headers.contains_key("x-api-key"));
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn same_origin_redirect_preserves_configured_resource_headers() -> anyhow::Result<()> {
+        let resource = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/register"))
+            .and(header("x-api-key", "synthetic-secret"))
+            .respond_with(ResponseTemplate::new(307).insert_header("location", "/registered"))
+            .expect(1)
+            .mount(&resource)
+            .await;
+        Mock::given(method("POST"))
+            .and(path("/registered"))
+            .and(header("x-api-key", "synthetic-secret"))
+            .respond_with(ResponseTemplate::new(201))
+            .expect(1)
+            .mount(&resource)
+            .await;
+        let defaults = crate::utils::build_default_headers(
+            Some(HashMap::from([("x-api-key".to_string(), "synthetic-secret".to_string())])),
+            /*env_http_headers*/ None,
+        )?;
+        let adapter = OAuthHttpClientAdapter::new_scoped(
+            Arc::new(RouteAwareHttpClient::new(HttpClientFactory::new(
+                OutboundProxyPolicy::ReqwestDefault,
+            ))),
+            defaults,
+            &format!("{}/mcp", resource.uri()),
+            OAuthDiscoveryTimeout::Requested,
+        )?;
+        let response = adapter.execute_request(
+            oauth2::http::Request::builder()
+                .method("POST")
+                .uri(format!("{}/register", resource.uri()))
+                .body(Vec::new())?,
+            OAuthHttpRedirectPolicy::Follow,
+            Some(Duration::from_secs(10)),
+        ).await.map_err(|error| anyhow::anyhow!(error))?;
+        assert_eq!(response.status(), oauth2::http::StatusCode::CREATED);
+        resource.verify().await;
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn credentialed_redirects_are_bounded_to_resource_origin() -> anyhow::Result<()> {
+        let resource = MockServer::start().await;
+        let destination = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/register"))
+            .and(header("x-api-key", "synthetic-secret"))
+            .respond_with(ResponseTemplate::new(307).insert_header("location", format!("{}/other", destination.uri())))
+            .expect(1)
+            .mount(&resource)
+            .await;
+        Mock::given(method("POST")).and(path("/other"))
+            .respond_with(ResponseTemplate::new(201))
+            .expect(0)
+            .mount(&destination)
+            .await;
+        let defaults = crate::utils::build_default_headers(
+            Some(HashMap::from([("x-api-key".to_string(), "synthetic-secret".to_string())])),
+            /*env_http_headers*/ None,
+        )?;
+        let adapter = OAuthHttpClientAdapter::new_scoped(
+            Arc::new(RouteAwareHttpClient::new(HttpClientFactory::new(
+                OutboundProxyPolicy::ReqwestDefault,
+            ))),
+            defaults,
+            &format!("{}/mcp", resource.uri()),
+            OAuthDiscoveryTimeout::Requested,
+        )?;
+        let response = adapter.execute_request(
+            oauth2::http::Request::builder()
+                .method("POST")
+                .uri(format!("{}/register", resource.uri()))
+                .body(Vec::new())?,
+            OAuthHttpRedirectPolicy::Follow,
+            Some(Duration::from_secs(10)),
+        ).await.map_err(|error| anyhow::anyhow!(error))?;
+        assert_eq!(response.status(), oauth2::http::StatusCode::TEMPORARY_REDIRECT);
+        destination.verify().await;
+        Ok(())
     }
 }

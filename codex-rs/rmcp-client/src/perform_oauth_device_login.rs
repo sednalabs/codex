@@ -9,6 +9,10 @@ use anyhow::anyhow;
 use oauth2::PkceCodeChallenge;
 use reqwest::Client;
 use reqwest::StatusCode;
+use reqwest::header::HeaderMap;
+use reqwest::header::HeaderValue;
+use reqwest::header::USER_AGENT;
+use url::Url;
 use rmcp::transport::AuthorizationManager;
 use rmcp::transport::auth::OAuthTokenResponse;
 use serde::Deserialize;
@@ -22,6 +26,7 @@ use crate::WrappedOAuthTokenResponse;
 use crate::oauth::compute_expires_at_millis;
 use crate::perform_oauth_login::OAuthProviderError;
 use crate::save_oauth_tokens_locked;
+use crate::utils::MCP_USER_AGENT;
 use crate::utils::build_default_headers;
 use crate::utils::build_reqwest_client;
 use codex_config::types::AuthKeyringBackendKind;
@@ -53,14 +58,37 @@ pub async fn perform_oauth_device_login(
 ) -> Result<()> {
     anyhow::ensure!(!issuer.trim().is_empty(), "OAuth device login requires issuer-bound metadata");
     let default_headers = build_default_headers(http_headers, env_http_headers)?;
-    let http_client = build_reqwest_client(
-        Client::builder().timeout(Duration::from_secs(30)),
+    let discovery = crate::auth_status::discover_streamable_http_oauth_with_headers(
+        server_url,
         &default_headers,
-    )?;
-    let oauth_client_id =
-        resolve_device_oauth_client_id(server_url, &http_client, scopes, oauth_client_id).await?;
+    ).await?.ok_or_else(|| anyhow!("OAuth device login requires published authorization metadata"))?;
+    anyhow::ensure!(
+        discovery.issuer.as_deref() == Some(issuer)
+            && discovery.token_endpoint == token_endpoint
+            && discovery.device_authorization_endpoint.as_deref() == Some(device_authorization_endpoint),
+        "OAuth device authorization metadata changed before login"
+    );
+    anyhow::ensure!(
+        discovery.grant_types_supported.as_ref().is_none_or(|grant_types| {
+            grant_types.iter().any(|grant| grant == DEVICE_CODE_GRANT_TYPE)
+        }),
+        "OAuth device authorization grant is not advertised"
+    );
+    let resource_client = oauth_device_client(server_url, server_url, &default_headers)?;
+    let device_client =
+        oauth_device_client(server_url, device_authorization_endpoint, &default_headers)?;
+    let token_client = oauth_device_client(server_url, token_endpoint, &default_headers)?;
+    let oauth_client_id = resolve_device_oauth_client_id(
+        server_url,
+        &resource_client,
+        &default_headers,
+        scopes,
+        oauth_client_id,
+        issuer,
+    )
+    .await?;
     let (details, pkce) = request_device_authorization_with_pkce_fallback(
-        &http_client,
+        &device_client,
         device_authorization_endpoint,
         &oauth_client_id,
         scopes,
@@ -71,7 +99,7 @@ pub async fn perform_oauth_device_login(
     show_authorization_prompt(DeviceAuthorizationPrompt::new(server_name, &details));
 
     let token_response = match poll_device_token(
-        &http_client,
+        &token_client,
         token_endpoint,
         &oauth_client_id,
         oauth_resource,
@@ -83,7 +111,7 @@ pub async fn perform_oauth_device_login(
         Ok(token_response) => token_response,
         Err(err) if pkce.is_some() && is_invalid_request_provider_error(&err) => {
             let details = request_device_authorization(
-                &http_client,
+                &device_client,
                 device_authorization_endpoint,
                 &oauth_client_id,
                 scopes,
@@ -96,7 +124,7 @@ pub async fn perform_oauth_device_login(
             )?;
             show_authorization_prompt(DeviceAuthorizationPrompt::new(server_name, &details));
             poll_device_token(
-                &http_client,
+                &token_client,
                 token_endpoint,
                 &oauth_client_id,
                 oauth_resource,
@@ -122,11 +150,43 @@ pub async fn perform_oauth_device_login(
     save_oauth_tokens_locked(server_name, &stored, store_mode, keyring_backend_kind).await
 }
 
+fn oauth_device_client(resource_url: &str, endpoint: &str, default_headers: &HeaderMap) -> Result<Client> {
+    let resource = validate_oauth_endpoint(resource_url)?;
+    let endpoint = validate_oauth_endpoint(endpoint)?;
+    let headers = if resource.origin() == endpoint.origin() {
+        default_headers.clone()
+    } else {
+        let mut headers = HeaderMap::new();
+        headers.insert(USER_AGENT, HeaderValue::from_static(MCP_USER_AGENT));
+        headers
+    };
+    build_reqwest_client(
+        Client::builder()
+            .timeout(Duration::from_secs(30))
+            .redirect(reqwest::redirect::Policy::none()),
+        &headers,
+    )
+}
+
+fn validate_oauth_endpoint(endpoint: &str) -> Result<Url> {
+    let endpoint = Url::parse(endpoint).context("OAuth endpoint must be a valid URL")?;
+    anyhow::ensure!(
+        matches!(endpoint.scheme(), "http" | "https")
+            && endpoint.username().is_empty()
+            && endpoint.password().is_none()
+            && endpoint.fragment().is_none(),
+        "OAuth endpoint must be an HTTP or HTTPS URL without credentials or a fragment"
+    );
+    Ok(endpoint)
+}
+
 async fn resolve_device_oauth_client_id(
     server_url: &str,
     http_client: &Client,
+    default_headers: &HeaderMap,
     scopes: &[String],
     oauth_client_id: Option<&str>,
+    expected_issuer: &str,
 ) -> Result<String> {
     if let Some(client_id) = oauth_client_id.filter(|client_id| !client_id.trim().is_empty()) {
         return Ok(client_id.trim().to_string());
@@ -135,6 +195,11 @@ async fn resolve_device_oauth_client_id(
     let mut auth_manager = AuthorizationManager::new(server_url).await?;
     auth_manager.with_client(http_client.clone())?;
     let metadata = discover_metadata(&auth_manager).await?;
+    anyhow::ensure!(
+        metadata.issuer.as_deref() == Some(expected_issuer),
+        "OAuth authorization server issuer changed during device login"
+    );
+    crate::oauth::validate_authorization_server_endpoints(&metadata)?;
     let registration_endpoint = metadata
         .registration_endpoint
         .as_deref()
@@ -146,8 +211,9 @@ async fn resolve_device_oauth_client_id(
         })?;
     let supports_refresh_token = metadata_supports_refresh_token(&metadata.additional_fields);
 
+    let registration_client = oauth_device_client(server_url, registration_endpoint, default_headers)?;
     register_device_oauth_client(
-        http_client,
+        &registration_client,
         registration_endpoint,
         scopes,
         supports_refresh_token,
@@ -625,8 +691,10 @@ mod tests {
         let client_id = resolve_device_oauth_client_id(
             &format!("{server}/mcp"),
             &client,
+            &HeaderMap::new(),
             &["profile".to_string(), "ops:read".to_string()],
             /*oauth_client_id*/ None,
+            &format!("{server}/mcp"),
         )
         .await
         .expect("dynamic device registration");
@@ -649,8 +717,10 @@ mod tests {
         let client_id = resolve_device_oauth_client_id(
             &format!("{server}/mcp"),
             &client,
+            &HeaderMap::new(),
             &["profile".to_string(), "ops:read".to_string()],
             /*oauth_client_id*/ None,
+            &format!("{server}/mcp"),
         )
         .await
         .expect("dynamic device registration");
@@ -668,8 +738,10 @@ mod tests {
         let client_id = resolve_device_oauth_client_id(
             &format!("{server}/mcp"),
             &client,
+            &HeaderMap::new(),
             &["profile".to_string(), "ops:read".to_string()],
             Some("configured-device-client"),
+            &format!("{server}/mcp"),
         )
         .await
         .expect("configured client id");

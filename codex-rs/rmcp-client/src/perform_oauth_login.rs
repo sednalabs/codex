@@ -1405,7 +1405,12 @@ impl OauthLoginFlow {
             http_client,
         } = http_context;
         let default_headers = build_default_headers(http_headers, env_http_headers)?;
-        let oauth_http_client = Arc::new(OAuthHttpClientAdapter::new(http_client, default_headers));
+        let oauth_http_client = Arc::new(OAuthHttpClientAdapter::new_scoped(
+            http_client,
+            default_headers,
+            server_url,
+            crate::auth_status::OAuthDiscoveryTimeout::Requested,
+        )?);
 
         let scope_refs: Vec<&str> = scopes.iter().map(String::as_str).collect();
         let (oauth_state, authorization_server_issuer) = start_authorization(

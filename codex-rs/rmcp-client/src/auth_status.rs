@@ -7,9 +7,6 @@ use anyhow::Result;
 use codex_config::types::AuthKeyringBackendKind;
 use codex_config::types::OAuthCredentialsStoreMode;
 use codex_exec_server::HttpClient;
-use codex_exec_server::HttpHeader;
-use codex_exec_server::HttpRedirectPolicy;
-use codex_exec_server::HttpRequestParams;
 use codex_protocol::protocol::McpAuthStatus;
 use futures::FutureExt;
 use reqwest::Client;
@@ -267,16 +264,26 @@ pub async fn discover_streamable_http_oauth_with_http_client(
     .await
 }
 
-async fn discover_streamable_http_oauth_with_headers(
+pub(crate) async fn discover_streamable_http_oauth_with_headers(
     url: &str,
     default_headers: &HeaderMap,
 ) -> Result<Option<StreamableHttpOAuthDiscovery>> {
-    // Use no_proxy to avoid a bug in the system-configuration crate that
-    // can result in a panic. See #8912.
-    let builder = Client::builder().timeout(DISCOVERY_TIMEOUT).no_proxy();
-    let client = apply_default_headers(builder, default_headers).build()?;
-    let mut authorization_manager = AuthorizationManager::new(url).await?;
-    authorization_manager.with_client(client)?;
+    // Preserve the direct, no-proxy route while scoping resource headers to their origin.
+    let client = codex_http_client::HttpClientBuilder::new()
+        .without_redirects()
+        .without_retries()
+        .without_request_logging()
+        .build_direct()?;
+    let oauth_http_client = OAuthHttpClientAdapter::new_direct_scoped(
+        client,
+        default_headers.clone(),
+        url,
+        OAuthDiscoveryTimeout::Capped(DISCOVERY_TIMEOUT),
+    )?;
+    let authorization_manager = AuthorizationManager::new_with_oauth_http_client(
+        url,
+        Arc::new(oauth_http_client),
+    ).await?;
     match discover_streamable_http_oauth_with_manager(&authorization_manager).await? {
         Some(discovery) => Ok(Some(discovery)),
         // rmcp's standard metadata type requires an authorization endpoint.
@@ -292,16 +299,12 @@ async fn discover_streamable_http_oauth_with_headers_and_http_client(
     http_client: Arc<dyn HttpClient>,
     discovery_timeout: OAuthDiscoveryTimeout,
 ) -> Result<Option<StreamableHttpOAuthDiscovery>> {
-    let oauth_http_client = match discovery_timeout {
-        OAuthDiscoveryTimeout::Requested => {
-            OAuthHttpClientAdapter::new(http_client.clone(), default_headers.clone())
-        }
-        OAuthDiscoveryTimeout::Capped(max_timeout) => OAuthHttpClientAdapter::new_with_max_timeout(
-            http_client.clone(),
-            default_headers.clone(),
-            max_timeout,
-        ),
-    };
+    let oauth_http_client = OAuthHttpClientAdapter::new_scoped(
+        http_client.clone(),
+        default_headers.clone(),
+        url,
+        discovery_timeout,
+    )?;
     let authorization_manager =
         AuthorizationManager::new_with_oauth_http_client(url, Arc::new(oauth_http_client)).await?;
     match discover_streamable_http_oauth_with_manager(&authorization_manager).await? {
@@ -310,7 +313,7 @@ async fn discover_streamable_http_oauth_with_headers_and_http_client(
             discover_device_only_oauth_with_http_client(
                 url,
                 &default_headers,
-                http_client.as_ref(),
+                http_client.clone(),
                 discovery_timeout,
             )
             .await
@@ -409,29 +412,24 @@ fn discovery_from_authorization_metadata(
     }
 }
 
-fn oauth_discovery_protocol_headers(default_headers: &HeaderMap) -> Result<Vec<HttpHeader>> {
-    let mut headers = default_headers
-        .iter()
-        .map(|(name, value)| {
-            Ok(HttpHeader {
-                name: name.as_str().to_string(),
-                value: value.to_str()?.to_string(),
-            })
-        })
-        .collect::<Result<Vec<_>>>()?;
-    headers.push(HttpHeader {
-        name: OAUTH_DISCOVERY_HEADER.to_string(),
-        value: OAUTH_DISCOVERY_VERSION.to_string(),
-    });
-    Ok(headers)
-}
-
 async fn discover_device_only_oauth_with_headers(
     url: &str,
     default_headers: &HeaderMap,
 ) -> Result<Option<StreamableHttpOAuthDiscovery>> {
     let base_url = Url::parse(url)?;
-    let builder = Client::builder().timeout(DISCOVERY_TIMEOUT).no_proxy();
+    let builder = Client::builder()
+        .timeout(DISCOVERY_TIMEOUT)
+        .no_proxy()
+        .redirect(reqwest::redirect::Policy::custom(|attempt| {
+            if attempt.previous().len() >= 10 {
+                return attempt.error("OAuth metadata exceeded redirect limit");
+            }
+            if attempt.previous().first().is_some_and(|first| first.origin() == attempt.url().origin()) {
+                attempt.follow()
+            } else {
+                attempt.stop()
+            }
+        }));
     let client = apply_default_headers(builder, default_headers).build()?;
 
     for candidate_path in discovery_paths(base_url.path()) {
@@ -467,41 +465,38 @@ async fn discover_device_only_oauth_with_headers(
 async fn discover_device_only_oauth_with_http_client(
     url: &str,
     default_headers: &HeaderMap,
-    http_client: &dyn HttpClient,
+    http_client: Arc<dyn HttpClient>,
     discovery_timeout: OAuthDiscoveryTimeout,
 ) -> Result<Option<StreamableHttpOAuthDiscovery>> {
     let base_url = Url::parse(url)?;
-    let timeout_ms = match discovery_timeout {
-        OAuthDiscoveryTimeout::Requested => None,
-        OAuthDiscoveryTimeout::Capped(timeout) => {
-            Some(timeout.as_millis().try_into().unwrap_or(u64::MAX))
-        }
-    };
+    let adapter = OAuthHttpClientAdapter::new_scoped(
+        http_client,
+        default_headers.clone(),
+        url,
+        discovery_timeout,
+    )?;
 
-    for (index, candidate_path) in discovery_paths(base_url.path()).into_iter().enumerate() {
+    for candidate_path in discovery_paths(base_url.path()) {
         let mut discovery_url = base_url.clone();
         discovery_url.set_path(&candidate_path);
-        let response = match http_client
-            .http_request(HttpRequestParams {
-                method: "GET".to_string(),
-                url: discovery_url.to_string(),
-                headers: oauth_discovery_protocol_headers(default_headers)?,
-                body: None,
-                timeout_ms,
-                redirect_policy: HttpRedirectPolicy::Follow,
-                request_id: format!("oauth-device-only-discovery-{index}"),
-                stream_response: false,
-            })
-            .await
-        {
+        let request = oauth2::http::Request::builder()
+            .method("GET")
+            .uri(discovery_url.as_str())
+            .header(OAUTH_DISCOVERY_HEADER, OAUTH_DISCOVERY_VERSION)
+            .body(Vec::new())?;
+        let response = match adapter.execute_request(
+            request,
+            rmcp::transport::auth::OAuthHttpRedirectPolicy::Follow,
+            /*timeout*/ None,
+        ).await {
             Ok(response) => response,
             Err(_) => continue,
         };
-        if response.status != StatusCode::OK.as_u16() {
+        if response.status().as_u16() != StatusCode::OK.as_u16() {
             continue;
         }
         let metadata = match serde_json::from_slice::<DeviceOnlyOAuthDiscoveryMetadata>(
-            &response.body.into_inner(),
+            response.body(),
         ) {
             Ok(metadata) => metadata,
             Err(_) => continue,
@@ -577,18 +572,6 @@ fn discovery_paths(base_path: &str) -> Vec<String> {
 mod tests {
     use super::*;
 
-    #[test]
-    fn device_only_issuer_is_bound_to_the_discovery_location() {
-        let resource = Url::parse("https://mcp.example/mcp").expect("valid resource URL");
-        let scoped = "/.well-known/oauth-authorization-server/mcp";
-        let root = "/.well-known/oauth-authorization-server";
-        assert!(device_only_issuer_matches(&resource, scoped, Some("https://mcp.example/mcp")));
-        assert!(device_only_issuer_matches(&resource, root, Some("https://mcp.example")));
-        assert!(!device_only_issuer_matches(&resource, scoped, None));
-        assert!(!device_only_issuer_matches(&resource, scoped, Some("https://other.example/mcp")));
-        assert!(!device_only_issuer_matches(&resource, scoped, Some("https://mcp.example")));
-        assert!(!device_only_issuer_matches(&resource, scoped, Some("https://user@mcp.example/mcp")));
-    }
     use axum::Router;
     use axum::http::HeaderMap as AxumHeaderMap;
     use axum::http::HeaderValue;
@@ -608,6 +591,19 @@ mod tests {
     use std::ffi::OsString;
     use std::sync::Mutex;
     use tokio::task::JoinHandle;
+
+    #[test]
+    fn device_only_issuer_is_bound_to_the_discovery_location() {
+        let resource = Url::parse("https://mcp.example/mcp").expect("valid resource URL");
+        let scoped = "/.well-known/oauth-authorization-server/mcp";
+        let root = "/.well-known/oauth-authorization-server";
+        assert!(device_only_issuer_matches(&resource, scoped, Some("https://mcp.example/mcp")));
+        assert!(device_only_issuer_matches(&resource, root, Some("https://mcp.example")));
+        assert!(!device_only_issuer_matches(&resource, scoped, None));
+        assert!(!device_only_issuer_matches(&resource, scoped, Some("https://other.example/mcp")));
+        assert!(!device_only_issuer_matches(&resource, scoped, Some("https://mcp.example")));
+        assert!(!device_only_issuer_matches(&resource, scoped, Some("https://user@mcp.example/mcp")));
+    }
 
     struct TestServer {
         url: String,
