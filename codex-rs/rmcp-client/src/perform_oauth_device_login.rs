@@ -711,8 +711,11 @@ mod tests {
 
     #[tokio::test]
     async fn device_client_does_not_forward_resource_headers_to_other_origins() -> Result<()> {
-        use wiremock::matchers::{method, path};
-        use wiremock::{Mock, MockServer, ResponseTemplate};
+        use wiremock::Mock;
+        use wiremock::MockServer;
+        use wiremock::ResponseTemplate;
+        use wiremock::matchers::method;
+        use wiremock::matchers::path;
 
         let server = MockServer::start().await;
         Mock::given(method("POST"))
@@ -739,8 +742,11 @@ mod tests {
 
     #[tokio::test]
     async fn device_post_does_not_follow_cross_origin_redirects() -> Result<()> {
-        use wiremock::matchers::{method, path};
-        use wiremock::{Mock, MockServer, ResponseTemplate};
+        use wiremock::Mock;
+        use wiremock::MockServer;
+        use wiremock::ResponseTemplate;
+        use wiremock::matchers::method;
+        use wiremock::matchers::path;
 
         let resource = MockServer::start().await;
         let destination = MockServer::start().await;
