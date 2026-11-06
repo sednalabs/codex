@@ -46,10 +46,12 @@ pub async fn perform_oauth_device_login(
     scopes: &[String],
     oauth_client_id: Option<&str>,
     oauth_resource: Option<&str>,
+    issuer: &str,
     device_authorization_endpoint: &str,
     token_endpoint: &str,
     mut show_authorization_prompt: impl FnMut(DeviceAuthorizationPrompt),
 ) -> Result<()> {
+    anyhow::ensure!(!issuer.trim().is_empty(), "OAuth device login requires issuer-bound metadata");
     let default_headers = build_default_headers(http_headers, env_http_headers)?;
     let http_client = build_reqwest_client(
         Client::builder().timeout(Duration::from_secs(30)),
@@ -112,6 +114,7 @@ pub async fn perform_oauth_device_login(
     let stored = StoredOAuthTokens {
         server_name: server_name.to_string(),
         url: server_url.to_string(),
+        issuer: Some(issuer.to_string()),
         client_id: oauth_client_id,
         token_response: WrappedOAuthTokenResponse(token_response),
         expires_at,
