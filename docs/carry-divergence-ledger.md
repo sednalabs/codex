@@ -1541,7 +1541,18 @@ bundles during upstream sync merely because they once shared this carry entry.
 
 ### First-Party Usage Ledger Ownership
 
+- `/usage` also offers account-scoped Analytics Chats using the upstream-shaped
+  workspace estimate and consumer task endpoints. It queries the existing local
+  ledger for bounded root, subagent, fork and other thread details only after a
+  matching account backend response. The local values are estimates and may
+  overcount or be partial; missing data is unavailable rather than zero. The
+  indexed recent history and page-local ranking are explicitly incomplete.
+  Reevaluate the integration against upstream Analytics during syncs and retain
+  the account identity, redirect, timeout and existing-ledger boundaries.
+
 - Downstream keeps usage-ledger ownership in this repo.
+- Runtime startup preserves older usage database files and their SQLite
+  sidecars; opening the current ledger does not merge or delete those files.
 - Billing-turn canonicalization and historical AUD reporting remain downstream
   requirements, and the canonical local ledger implementation lives in
   `usage.sqlite` rather than an external sibling repository.

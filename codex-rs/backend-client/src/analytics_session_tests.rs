@@ -1,0 +1,181 @@
+//! Authentication recovery preserves actionable status without changing the account scope.
+
+use super::*;
+use codex_http_client::OutboundProxyPolicy;
+use codex_login::ExternalAuth;
+use codex_login::ExternalAuthFuture;
+use codex_login::ExternalAuthRefreshContext;
+use codex_login::RefreshTokenError;
+use codex_protocol::auth::RefreshTokenFailedError;
+use codex_protocol::auth::RefreshTokenFailedReason;
+use pretty_assertions::assert_eq;
+use std::sync::atomic::AtomicUsize;
+use std::sync::atomic::Ordering;
+use wiremock::Mock;
+use wiremock::MockServer;
+use wiremock::ResponseTemplate;
+use wiremock::matchers::method;
+
+enum RefreshOutcome {
+    Accepted,
+    Rejected,
+}
+
+struct ExternalCredentials {
+    auth: CodexAuth,
+    outcome: RefreshOutcome,
+    refreshes: AtomicUsize,
+}
+
+impl ExternalAuth for ExternalCredentials {
+    fn resolve(&self) -> ExternalAuthFuture<'_, CodexAuth> {
+        Box::pin(async { Ok(self.auth.clone()) })
+    }
+
+    fn refresh(&self, _context: ExternalAuthRefreshContext) -> ExternalAuthFuture<'_, CodexAuth> {
+        Box::pin(async {
+            self.refreshes.fetch_add(/*val*/ 1, Ordering::SeqCst);
+            match self.outcome {
+                RefreshOutcome::Accepted => Ok(self.auth.clone()),
+                RefreshOutcome::Rejected => {
+                    Err(RefreshTokenError::Permanent(RefreshTokenFailedError::new(
+                        RefreshTokenFailedReason::Other,
+                        "refresh rejected".to_string(),
+                    ))
+                    .into())
+                }
+            }
+        })
+    }
+}
+
+#[tokio::test]
+async fn failed_recovery_preserves_unauthorized_status() {
+    assert_unauthorized_after_recovery(RefreshOutcome::Rejected, /*expected_requests*/ 1).await;
+}
+
+#[tokio::test]
+async fn persistent_unauthorized_stops_after_successful_recovery() {
+    assert_unauthorized_after_recovery(RefreshOutcome::Accepted, /*expected_requests*/ 2).await;
+}
+
+#[tokio::test]
+async fn analytics_client_does_not_follow_redirects() {
+    let target = MockServer::start().await;
+    Mock::given(method("GET"))
+        .respond_with(ResponseTemplate::new(/*s*/ 200))
+        .expect(/*n*/ 0)
+        .mount(&target)
+        .await;
+    let source = MockServer::start().await;
+    Mock::given(method("GET"))
+        .respond_with(ResponseTemplate::new(/*s*/ 302).insert_header("Location", target.uri()))
+        .expect(/*n*/ 1)
+        .mount(&source)
+        .await;
+    let client = Client::new_without_redirects(
+        source.uri(),
+        HttpClientFactory::new(OutboundProxyPolicy::ReqwestDefault),
+    );
+    let error = client.get_accounts_check().await.unwrap_err();
+    assert_eq!(error.status().map(|status| status.as_u16()), Some(302));
+    source.verify().await;
+    target.verify().await;
+}
+
+async fn assert_unauthorized_after_recovery(outcome: RefreshOutcome, expected_requests: u64) {
+    let auth = CodexAuth::from_external_chatgpt_tokens(
+        "e30.eyJleHAiOjQxMDI0NDQ4MDAsImh0dHBzOi8vYXBpLm9wZW5haS5jb20vYXV0aCI6eyJjaGF0Z3B0X3VzZXJfaWQiOiJ1c2VyLWEifX0.test", "account-a", Some("plus"),
+    ).unwrap();
+    let auth_manager = AuthManager::from_auth_for_testing(auth.clone());
+    let credentials = Arc::new(ExternalCredentials {
+        auth: auth.clone(),
+        outcome,
+        refreshes: AtomicUsize::new(/*v*/ 0),
+    });
+    auth_manager
+        .set_external_auth(credentials.clone())
+        .await
+        .unwrap();
+    let server = MockServer::start().await;
+    Mock::given(method("GET"))
+        .respond_with(ResponseTemplate::new(/*s*/ 401))
+        .expect(expected_requests)
+        .mount(&server)
+        .await;
+    let client = Client::new_without_redirects(
+        server.uri(),
+        HttpClientFactory::new(OutboundProxyPolicy::ReqwestDefault),
+    )
+    .with_auth_provider(codex_model_provider::auth_provider_from_auth_manager(
+        Arc::clone(&auth_manager),
+        &auth,
+    ));
+    let session = AnalyticsSession {
+        account: AnalyticsAccount {
+            id: "account-a".into(),
+            email: None,
+            plan_type: auth.account_plan_type(),
+        },
+        client,
+        auth_manager,
+        auth,
+    };
+    let error = session
+        .request(|client| async move { client.get_accounts_check().await })
+        .await
+        .unwrap_err();
+    assert_eq!(error.status().map(|status| status.as_u16()), Some(401));
+    session.ensure_identity().await.unwrap();
+    assert_eq!(credentials.refreshes.load(Ordering::SeqCst), 1);
+    server.verify().await;
+}
+
+#[tokio::test]
+async fn account_change_during_request_discards_result() {
+    let token = "e30.eyJleHAiOjQxMDI0NDQ4MDAsImh0dHBzOi8vYXBpLm9wZW5haS5jb20vYXV0aCI6eyJjaGF0Z3B0X3VzZXJfaWQiOiJ1c2VyLWEifX0.test";
+    let auth = CodexAuth::from_external_chatgpt_tokens(token, "account-a", Some("plus")).unwrap();
+    let manager = AuthManager::from_auth_for_testing(auth.clone());
+    let first = Arc::new(ExternalCredentials {
+        auth: auth.clone(),
+        outcome: RefreshOutcome::Accepted,
+        refreshes: AtomicUsize::new(/*v*/ 0),
+    });
+    manager.set_external_auth(first).await.unwrap();
+    let client = Client::new_without_redirects(
+        "http://127.0.0.1:1",
+        HttpClientFactory::new(OutboundProxyPolicy::ReqwestDefault),
+    );
+    let session = AnalyticsSession {
+        client,
+        auth_manager: Arc::clone(&manager),
+        auth,
+        account: AnalyticsAccount {
+            id: "account-a".into(),
+            email: None,
+            plan_type: None,
+        },
+    };
+    let second = CodexAuth::from_external_chatgpt_tokens(token, "account-b", Some("plus")).unwrap();
+    let result = session
+        .request(|_| {
+            let manager = Arc::clone(&manager);
+            let second = second.clone();
+            async move {
+                manager
+                    .set_external_auth(Arc::new(ExternalCredentials {
+                        auth: second,
+                        outcome: RefreshOutcome::Accepted,
+                        refreshes: AtomicUsize::new(/*v*/ 0),
+                    }))
+                    .await
+                    .unwrap();
+                Ok(123)
+            }
+        })
+        .await;
+    assert_eq!(
+        result.unwrap_err().to_string(),
+        "Account changed. Select Retry to refresh Analytics."
+    );
+}

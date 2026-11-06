@@ -10,6 +10,7 @@ use super::reset_credits::reset_credit_options;
 use super::*;
 
 const USAGE_MENU_VIEW_ID: &str = "usage-menu";
+pub(super) const ANALYTICS_CHATS_VIEW_ID: &str = "analytics-chats";
 const RATE_LIMIT_RESET_VIEW_ID: &str = "rate-limit-reset";
 const RATE_LIMIT_RESET_CONFIRMATION_VIEW_ID: &str = "rate-limit-reset-confirmation";
 
@@ -66,6 +67,18 @@ impl ChatWidget {
                     is_disabled: !reset_action_enabled,
                     actions: vec![Box::new(|tx| {
                         tx.send(AppEvent::OpenRateLimitResetCredits);
+                    })],
+                    dismiss_on_select: true,
+                    ..Default::default()
+                },
+                SelectionItem {
+                    name: "Analytics Chats".to_string(),
+                    description: Some("View chat usage and estimates.".to_string()),
+                    actions: vec![Box::new(|tx| {
+                        tx.send(AppEvent::OpenAnalyticsChats {
+                            cursor: None,
+                            previous: Vec::new(),
+                        });
                     })],
                     dismiss_on_select: true,
                     ..Default::default()
@@ -519,6 +532,7 @@ impl ChatWidget {
     }
 
     pub(crate) fn clear_pending_rate_limit_reset_requests(&mut self) {
+        self.pending_analytics_chats_request_id = None;
         self.pending_rate_limit_reset_request_id = None;
         self.pending_rate_limit_reset_idempotency_key = None;
         self.rate_limit_reset_picker_request_id = None;
@@ -527,6 +541,7 @@ impl ChatWidget {
         self.rate_limit_snapshots_by_limit_id.clear();
         self.clear_pending_rate_limit_reset_hint();
         self.bottom_pane.dismiss_view_by_id(USAGE_MENU_VIEW_ID);
+        self.bottom_pane.dismiss_view_by_id(ANALYTICS_CHATS_VIEW_ID);
         self.bottom_pane
             .dismiss_view_by_id(RATE_LIMIT_RESET_VIEW_ID);
         self.bottom_pane
@@ -567,7 +582,7 @@ impl ChatWidget {
         self.request_redraw();
     }
 
-    fn take_next_rate_limit_reset_request_id(&mut self) -> u64 {
+    pub(super) fn take_next_rate_limit_reset_request_id(&mut self) -> u64 {
         let request_id = self.next_rate_limit_reset_request_id;
         self.next_rate_limit_reset_request_id = self
             .next_rate_limit_reset_request_id

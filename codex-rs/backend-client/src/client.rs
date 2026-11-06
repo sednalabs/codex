@@ -35,6 +35,10 @@ use serde::de::DeserializeOwned;
 use std::fmt;
 
 mod rate_limit_resets;
+pub(crate) mod task_usage;
+mod thread_usage;
+pub use thread_usage::ThreadUsage;
+pub use thread_usage::ThreadUsageBreakdownGroup;
 
 #[derive(Debug)]
 pub enum RequestError {
@@ -152,6 +156,17 @@ impl fmt::Debug for Client {
 }
 
 impl Client {
+    /// Create a client that never follows redirects for account-scoped analytics.
+    pub fn new_without_redirects(base_url: impl Into<String>, factory: HttpClientFactory) -> Self {
+        let mut client = Self::new(base_url, factory.clone());
+        client.http =
+            RouteAwareClientPool::with_chatgpt_cloudflare_cookies_without_redirects_or_request_logging(
+                factory,
+                ClientRouteClass::Api,
+            );
+        client
+    }
+
     pub fn new(base_url: impl Into<String>, http_client_factory: HttpClientFactory) -> Self {
         let mut base_url = base_url.into();
         // Normalize common ChatGPT hostnames to include /backend-api so we hit the WHAM paths.
@@ -314,14 +329,15 @@ impl Client {
         Ok(self.get_rate_limits_with_reset_credits().await?.rate_limits)
     }
 
-    pub async fn get_accounts_check(&self) -> Result<AccountsCheckResponse> {
+    pub async fn get_accounts_check(&self) -> Result<AccountsCheckResponse, RequestError> {
         let url = match self.path_style {
             PathStyle::CodexApi => format!("{}/api/codex/accounts/check", self.base_url),
             PathStyle::ChatGptApi => format!("{}/wham/accounts/check", self.base_url),
         };
         let req = self.request(Method::GET, &url).headers(self.headers());
-        let (body, ct) = self.exec_request(req, "GET", &url).await?;
+        let (body, ct) = self.exec_request_detailed(req, "GET", &url).await?;
         self.decode_json(&url, &ct, &body)
+            .map_err(RequestError::Other)
     }
 
     pub async fn get_token_usage_profile(&self) -> Result<TokenUsageProfile> {

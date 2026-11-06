@@ -1,0 +1,13 @@
+---
+source: tui/src/chatwidget/tests/usage.rs
+assertion_line: 1158
+expression: "render_bottom_popup(&chat, 80)"
+---
+  Analytics Chats
+  30d index partial; page rank; local may be partial or overcount.
+
+› 1. Example chat                              Estimated credits: 1.250000
+       Local root/subagent detail unavailable
+  2. Older chats
+
+  Press enter to confirm or esc to go back

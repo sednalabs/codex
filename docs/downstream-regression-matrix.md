@@ -12,6 +12,14 @@ that should fail if the behavior regresses. Historical references to
 `carry/main` refer to the pre-cutover name for the maintained downstream
 branch.
 
+## Account-scoped Analytics Chats
+
+Validation-lab named `codex-backend-client` and `codex-tui` analytics tests
+cover account changes, redirect refusal, bounded and partial responses, local
+lineage labels, and the paginated `/usage` view. Snapshot updates need review.
+Historical database compatibility and writer deduplication remain separate
+usage-ledger guardrails; an installed-host acceptance is a separate step.
+
 ## MCP Streamable HTTP cancellation
 
 `codex.rmcp-client-transport` runs the complete client suite, including a dedicated
@@ -103,7 +111,7 @@ Fast lanes used by `core-test-smoke` locally and by the remote smoke matrix:
 - `core-carry-ui-smoke` isolates `codex-tui` replayed-queue and selected-agent
   footer regressions, so downstream interactive behavior still fails during the
   PR smoke pass without obscuring core-only timing.
-- `core-ledger-smoke` now includes the `usage.sqlite` cleanup, turn-reset, and
+- `core-ledger-smoke` now includes historical usage-file preservation, turn-reset, and
   restart-lineage regressions, so downstream accounting behavior
   fails during the same smoke pass.
 - `core-runtime-surface-smoke` isolates the fragile codex-core runtime seams in

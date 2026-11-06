@@ -94,7 +94,6 @@ const LOG_PARTITION_SIZE_LIMIT_BYTES: i64 = 10 * 1024 * 1024;
 const LOG_PARTITION_ROW_LIMIT: i64 = 1_000;
 const STATE_DB_BASENAME: &str = "state";
 const LOGS_DB_BASENAME: &str = "logs";
-const USAGE_DB_BASENAME: &str = "usage";
 #[derive(Clone)]
 pub struct StateRuntime {
     sqlite: SqliteConfig,
@@ -153,13 +152,8 @@ impl StateRuntime {
             "logs",
         )
         .await;
-        remove_legacy_db_files(
-            sqlite.home(),
-            database_filename(&usage_path)?,
-            USAGE_DB_BASENAME,
-            "usage",
-        )
-        .await;
+        // Usage databases can contain irreplaceable accounting history, so keep
+        // older files and their SQLite sidecars even when opening a newer version.
         let state_migrator = runtime_state_migrator();
         let logs_migrator = runtime_logs_migrator();
         let usage_migrator = runtime_usage_migrator();
@@ -776,7 +770,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn init_removes_legacy_logs_and_usage_db_files() {
+    async fn init_removes_legacy_logs_but_preserves_usage_databases() {
         let codex_home = unique_temp_dir();
         tokio::fs::create_dir_all(&codex_home)
             .await
@@ -846,17 +840,17 @@ mod tests {
 
             let legacy_usage_path = codex_home.join(format!("{unversioned_usage_name}{suffix}"));
             assert_eq!(
-                tokio::fs::try_exists(&legacy_usage_path)
+                tokio::fs::read(&legacy_usage_path)
                     .await
-                    .expect("check legacy usage path"),
-                false
+                    .expect("read preserved legacy usage file"),
+                b"legacy"
             );
             let old_usage_path = codex_home.join(format!("usage_0.sqlite{suffix}"));
             assert_eq!(
-                tokio::fs::try_exists(&old_usage_path)
+                tokio::fs::read(&old_usage_path)
                     .await
-                    .expect("check old usage path"),
-                false
+                    .expect("read preserved old usage file"),
+                b"old_usage"
             );
         }
 

@@ -695,6 +695,13 @@ Android emulator`; these transient app-server projections are not persisted
 
 ### Usage ledger: first-party local `usage.sqlite`
 
+The `/usage` Analytics Chats view lists indexed chats active in the last 30 days.
+History can be incomplete and ranking is only within a page. Workspace values
+are backend credit estimates; consumer values describe task allowance and
+balance usage. Where available, local root, subagent and fork details use the
+existing ledger's estimates, which can be partial or overcount historical calls.
+These sources are shown separately and missing data is not zero.
+
 Why:
 
 - Downstream keeps usage-ledger ownership in this repo so the CLI and runtime can emit authoritative local facts without depending on transcript reconstruction or an external sibling repository.

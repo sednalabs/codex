@@ -411,6 +411,21 @@ pub(crate) enum AppEvent {
     /// Open the default token-activity view selected from the `/usage` menu.
     OpenTokenActivity,
 
+    /// Load one page of account-scoped Analytics Chats.
+    OpenAnalyticsChats {
+        cursor: Option<String>,
+        previous: Vec<Option<String>>,
+    },
+
+    /// Complete an Analytics Chats request if it is still current.
+    AnalyticsChatsLoaded {
+        request_id: u64,
+        cursor: Option<String>,
+        previous: Vec<Option<String>>,
+        result: Result<crate::analytics_chats::AccountChats, String>,
+        session: Option<codex_backend_client::AnalyticsSession>,
+    },
+
     /// Open the reset-credit flow selected from the `/usage` menu.
     OpenRateLimitResetCredits,
 

@@ -31,6 +31,8 @@ codex-android-computer-use = { workspace = true }
 codex-app-server-client = { workspace = true }
 codex-app-server-protocol = { workspace = true }
 codex-arg0 = { workspace = true }
+codex-backend-client = { workspace = true }
+futures = { workspace = true }
 codex-browser-computer-use = { workspace = true }
 codex-install-context = { workspace = true }
 codex-cloud-config = { workspace = true }

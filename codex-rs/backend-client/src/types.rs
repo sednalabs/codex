@@ -117,6 +117,8 @@ pub struct AccountsCheckResponse {
 pub struct AccountEntry {
     pub id: String,
     #[serde(default)]
+    pub plan_type: Option<codex_protocol::account::PlanType>,
+    #[serde(default)]
     pub name: Option<String>,
     #[serde(default)]
     pub profile_picture_url: Option<String>,
@@ -156,6 +158,8 @@ struct ChatGptAccountEntry {
 struct ChatGptAccountInfo {
     account_id: Option<String>,
     #[serde(default)]
+    plan_type: Option<codex_protocol::account::PlanType>,
+    #[serde(default)]
     name: Option<String>,
     #[serde(default)]
     profile_picture_url: Option<String>,
@@ -178,6 +182,7 @@ impl<'de> Deserialize<'de> for AccountsCheckResponse {
                     let account = accounts.remove(account_id)?.account;
                     Some(AccountEntry {
                         id: account.account_id?,
+                        plan_type: account.plan_type,
                         name: account.name,
                         profile_picture_url: account.profile_picture_url,
                         structure: account.structure,
