@@ -3723,6 +3723,7 @@ async fn multi_agent_v2_completion_queues_message_for_direct_parent() {
         expected_message.clone(),
         /*trigger_turn*/ false,
     );
+    expected_communication.intent = Some(codex_protocol::protocol::AgentMessageIntent::ResultReady);
     expected_communication.origin =
         Some(codex_protocol::protocol::AgentCommunicationOrigin::Result);
     let expected = (

@@ -9,6 +9,7 @@ use crate::agent_communication::AgentCommunicationContext;
 use crate::agent_communication::AgentCommunicationKind;
 use crate::tools::context::FunctionToolOutput;
 use codex_protocol::openai_models::ReasoningEffort;
+use codex_protocol::protocol::AgentMessageIntent;
 use codex_protocol::protocol::InterAgentCommunication;
 use codex_protocol::user_input::UserInput;
 use futures::future::BoxFuture;
@@ -52,6 +53,8 @@ pub(crate) struct SendMessageArgs {
     pub(crate) items: SendMessageField,
     #[serde(default)]
     pub(crate) interrupt: bool,
+    #[serde(default)]
+    pub(crate) intent: AgentMessageIntent,
 }
 
 #[derive(Debug, Deserialize)]
@@ -64,12 +67,15 @@ pub(crate) enum SendMessagePayload {
 }
 
 impl SendMessageArgs {
-    pub(crate) fn into_parts(self) -> Result<(String, String, bool), FunctionCallError> {
+    pub(crate) fn into_parts(
+        self,
+    ) -> Result<(String, String, bool, AgentMessageIntent), FunctionCallError> {
         let Self {
             target,
             message,
             items,
             interrupt,
+            intent,
         } = self;
         let message = match (message.0, items.0) {
             (Some(_), Some(_)) => Err(FunctionCallError::RespondToModel(
@@ -81,7 +87,7 @@ impl SendMessageArgs {
                 "missing field `message`".to_string(),
             )),
         }?;
-        Ok((target, message, interrupt))
+        Ok((target, message, interrupt, intent))
     }
 }
 
@@ -149,6 +155,7 @@ struct SendMessageReceipt {
     recipient_task_name: String,
     effective_identity_scope: &'static str,
     handoff_state: &'static str,
+    intent: AgentMessageIntent,
     effective_model: Option<String>,
     effective_model_provider_id: Option<String>,
     effective_reasoning_effort: Option<ReasoningEffort>,
@@ -179,6 +186,7 @@ pub(crate) async fn handle_message_string_tool(
         message_content(message)?,
         /*interrupt*/ false,
         expected_model,
+        AgentMessageIntent::Progress,
     )
     .await
 }
@@ -219,6 +227,7 @@ pub(crate) fn handle_message_submission(
     message: String,
     interrupt: bool,
     expected_model: Option<String>,
+    intent: AgentMessageIntent,
 ) -> BoxFuture<'static, Result<FunctionToolOutput, FunctionCallError>> {
     Box::pin(handle_message_submission_inner(
         invocation,
@@ -227,6 +236,7 @@ pub(crate) fn handle_message_submission(
         message,
         interrupt,
         expected_model,
+        intent,
     ))
 }
 
@@ -237,6 +247,7 @@ async fn handle_message_submission_inner(
     message: String,
     interrupt: bool,
     expected_model: Option<String>,
+    intent: AgentMessageIntent,
 ) -> Result<FunctionToolOutput, FunctionCallError> {
     let ToolInvocation {
         session,
@@ -315,8 +326,9 @@ async fn handle_message_submission_inner(
         .session_source
         .get_agent_path()
         .unwrap_or_else(AgentPath::root);
-    let communication =
+    let mut communication =
         communication_from_tool_message(author, receiver_agent_path.clone(), message);
+    communication.intent = (!intent.is_progress()).then_some(intent);
     let kind = match mode {
         MessageDeliveryMode::QueueOnly => AgentCommunicationKind::Message,
         MessageDeliveryMode::TriggerTurn => AgentCommunicationKind::Followup,
@@ -348,6 +360,7 @@ async fn handle_message_submission_inner(
                 recipient_task_name: receiver_agent_path.to_string(),
                 effective_identity_scope: "recipient",
                 handoff_state: "queued",
+                intent,
                 effective_model: receiver_config.as_ref().map(|config| config.model.clone()),
                 effective_model_provider_id: receiver_config
                     .as_ref()
@@ -394,7 +407,13 @@ pub(crate) async fn handle_message_items_tool(
     let tool_name = invocation.tool_name.clone();
     let prompt = message_content_from_items(tool_name.name.as_str(), items)?;
     handle_message_submission(
-        invocation, mode, target, prompt, interrupt, /*expected_model*/ None,
+        invocation,
+        mode,
+        target,
+        prompt,
+        interrupt,
+        /*expected_model*/ None,
+        AgentMessageIntent::Progress,
     )
     .await
 }

@@ -2164,6 +2164,7 @@ impl Session {
             message,
             /*trigger_turn*/ false,
         );
+        communication.intent = Some(codex_protocol::protocol::AgentMessageIntent::ResultReady);
         communication.origin = Some(codex_protocol::protocol::AgentCommunicationOrigin::Result);
         let context =
             AgentCommunicationContext::new(AgentCommunicationKind::Result, self.thread_id);
