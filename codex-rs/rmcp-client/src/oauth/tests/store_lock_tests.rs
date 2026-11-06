@@ -28,6 +28,7 @@ use super::OAuthStoreLock;
 use super::OAuthStoreLockFailure;
 use crate::oauth::StoredOAuthTokens;
 use crate::oauth::WrappedOAuthTokenResponse;
+use crate::oauth::compute_store_key;
 use crate::oauth::fallback_file_path;
 use crate::oauth::load_oauth_tokens_from_file;
 use crate::oauth::load_oauth_tokens_from_keyring;
@@ -49,6 +50,7 @@ const STORE_LOCK_CONTENTION_EVENT_TIMEOUT: Duration = Duration::from_secs(/*secs
 fn assert_tokens_match_without_expiry(actual: &StoredOAuthTokens, expected: &StoredOAuthTokens) {
     assert_eq!(actual.server_name, expected.server_name);
     assert_eq!(actual.url, expected.url);
+    assert_eq!(actual.issuer, expected.issuer);
     assert_eq!(actual.client_id, expected.client_id);
     assert_eq!(actual.expires_at, expected.expires_at);
     assert_token_response_match_without_expiry(&actual.token_response, &expected.token_response);
@@ -99,10 +101,49 @@ fn sample_tokens() -> StoredOAuthTokens {
     StoredOAuthTokens {
         server_name: "test-server".to_string(),
         url: "https://example.test".to_string(),
+        issuer: Some("https://example.test".to_string()),
         client_id: "client-id".to_string(),
         token_response: WrappedOAuthTokenResponse(response),
         expires_at,
     }
+}
+
+#[test]
+fn fallback_update_preserves_issuer_and_unknown_fields() -> Result<()> {
+    let _env = TempCodexHome::new();
+    let tokens = sample_tokens();
+    save_oauth_tokens_to_file(&tokens)?;
+    let path = fallback_file_path()?;
+    let key = compute_store_key(&tokens.server_name, &tokens.url)?;
+    let mut store: serde_json::Value = serde_json::from_slice(&std::fs::read(&path)?)?;
+    store[&key]["future_marker"] = serde_json::json!({"kept": true});
+    std::fs::write(&path, serde_json::to_vec(&store)?)?;
+
+    save_oauth_tokens_to_file(&tokens)?;
+    let stored: serde_json::Value = serde_json::from_slice(&std::fs::read(&path)?)?;
+    assert_eq!(stored[&key]["future_marker"]["kept"], true);
+    let loaded = load_oauth_tokens_from_file(&tokens.server_name, &tokens.url)?
+        .expect("host credential remains readable");
+    assert_eq!(loaded.issuer, tokens.issuer);
+    Ok(())
+}
+
+#[test]
+fn host_cannot_adopt_or_replace_executor_owned_fallback_entry() -> Result<()> {
+    let _env = TempCodexHome::new();
+    let tokens = sample_tokens();
+    save_oauth_tokens_to_file(&tokens)?;
+    let path = fallback_file_path()?;
+    let key = compute_store_key(&tokens.server_name, &tokens.url)?;
+    let mut store: serde_json::Value = serde_json::from_slice(&std::fs::read(&path)?)?;
+    store[&key]["executor_owned"] = serde_json::json!(true);
+    std::fs::write(&path, serde_json::to_vec(&store)?)?;
+
+    assert!(load_oauth_tokens_from_file(&tokens.server_name, &tokens.url)?.is_none());
+    assert!(save_oauth_tokens_to_file(&tokens).is_err());
+    let unchanged: serde_json::Value = serde_json::from_slice(&std::fs::read(&path)?)?;
+    assert_eq!(unchanged[&key]["executor_owned"], true);
+    Ok(())
 }
 
 const LOCK_HOLDER_CHILD_TEST: &str =

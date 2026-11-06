@@ -548,6 +548,14 @@ async fn run_login(config_overrides: &CliConfigOverrides, login_args: LoginArgs)
             );
         };
 
+        let issuer = oauth_config
+            .issuer
+            .as_deref()
+            .filter(|issuer| !issuer.trim().is_empty())
+            .ok_or_else(|| {
+                anyhow!("OAuth device login requires verified authorization server issuer metadata")
+            })?;
+
         perform_oauth_device_login(
             &name,
             &url,
@@ -558,6 +566,7 @@ async fn run_login(config_overrides: &CliConfigOverrides, login_args: LoginArgs)
             &resolved_scopes.scopes,
             server.oauth_client_id(),
             server.oauth_resource.as_deref(),
+            issuer,
             device_authorization_endpoint,
             token_endpoint,
             print_device_authorization_prompt,

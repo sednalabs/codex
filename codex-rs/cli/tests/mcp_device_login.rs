@@ -114,3 +114,93 @@ async fn device_login_preserves_configured_and_discovered_scopes_on_rejection() 
     }
     Ok(())
 }
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn device_login_persists_issuer_without_rewriting_unrelated_metadata() -> Result<()> {
+    let server = MockServer::start().await;
+    let base = server.uri();
+    Mock::given(method("GET"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "issuer": base,
+            "resource": format!("{base}/mcp"),
+            "authorization_servers": [base],
+            "authorization_endpoint": format!("{base}/authorize"),
+            "device_authorization_endpoint": format!("{base}/device"),
+            "token_endpoint": format!("{base}/token"),
+            "response_types_supported": ["code"],
+            "grant_types_supported": ["urn:ietf:params:oauth:grant-type:device_code", "refresh_token"]
+        })))
+        .mount(&server)
+        .await;
+    Mock::given(method("POST"))
+        .and(path("/device"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "device_code": "synthetic-device-code",
+            "user_code": "TEST-CODE",
+            "verification_uri": format!("{base}/verify"),
+            "expires_in": 30,
+            "interval": 1
+        })))
+        .expect(1)
+        .mount(&server)
+        .await;
+    Mock::given(method("POST"))
+        .and(path("/token"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "access_token": "synthetic-new-access",
+            "refresh_token": "synthetic-new-refresh",
+            "token_type": "Bearer",
+            "expires_in": 3600
+        })))
+        .expect(1)
+        .mount(&server)
+        .await;
+
+    let home = TempDir::new()?;
+    std::fs::write(
+        home.path().join("config.toml"),
+        format!(
+            "mcp_oauth_credentials_store = \"file\"\n[mcp_servers.fixture]\nurl = \"{base}/mcp\"\nscopes = [\"read\"]\n[mcp_servers.fixture.oauth]\nclient_id = \"fixed-device-client\"\n"
+        ),
+    )?;
+    let path = home.path().join(".credentials.json");
+    let unrelated = json!({
+        "server_name": "unrelated",
+        "server_url": "https://unrelated.test/mcp",
+        "issuer": "https://unrelated.test",
+        "client_id": "synthetic-client",
+        "access_token": "synthetic-predecessor-access",
+        "refresh_token": "synthetic-predecessor-refresh",
+        "expires_at": null,
+        "scopes": ["read"],
+        "executor_owned": true,
+        "future_marker": {"kept": true}
+    });
+    std::fs::write(
+        &path,
+        serde_json::to_vec(&json!({"unrelated|synthetic": unrelated}))?,
+    )?;
+
+    let mut command = assert_cmd::Command::new(codex_utils_cargo_bin::cargo_bin("codex")?);
+    let output = command
+        .env("CODEX_HOME", home.path())
+        .args(["mcp", "login", "--device-auth", "fixture"])
+        .timeout(Duration::from_secs(30))
+        .output()?;
+    assert!(
+        output.status.success(),
+        "synthetic login failed: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let store: serde_json::Value = serde_json::from_slice(&std::fs::read(path)?)?;
+    assert_eq!(store["unrelated|synthetic"], unrelated);
+    let created = store
+        .as_object()
+        .expect("credential map")
+        .values()
+        .find(|value| value["server_name"] == "fixture")
+        .expect("fixture credential");
+    assert_eq!(created["issuer"], base);
+    assert_eq!(created["refresh_token"], "synthetic-new-refresh");
+    Ok(())
+}

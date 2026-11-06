@@ -27,6 +27,7 @@ pub struct McpOAuthLoginConfig {
     pub url: String,
     pub http_headers: Option<HashMap<String, String>>,
     pub env_http_headers: Option<HashMap<String, String>>,
+    pub issuer: Option<String>,
     pub authorization_endpoint: Option<String>,
     pub token_endpoint: Option<String>,
     pub discovered_scopes: Option<Vec<String>>,
@@ -73,6 +74,7 @@ pub async fn oauth_login_support(transport: &McpServerTransportConfig) -> McpOAu
     .await
     {
         Ok(Some(discovery)) => {
+            config.issuer = discovery.issuer;
             config.authorization_endpoint = discovery.authorization_endpoint;
             config.token_endpoint = Some(discovery.token_endpoint);
             config.discovered_scopes = discovery.scopes_supported;
@@ -103,6 +105,7 @@ pub async fn oauth_login_support_with_http_client(
     .await
     {
         Ok(Some(discovery)) => {
+            config.issuer = discovery.issuer;
             config.authorization_endpoint = discovery.authorization_endpoint;
             config.token_endpoint = Some(discovery.token_endpoint);
             config.discovered_scopes = discovery.scopes_supported;
@@ -132,6 +135,7 @@ fn oauth_login_candidate(transport: &McpServerTransportConfig) -> Option<McpOAut
         url: url.clone(),
         http_headers: http_headers.clone(),
         env_http_headers: env_http_headers.clone(),
+        issuer: None,
         authorization_endpoint: None,
         token_endpoint: None,
         discovered_scopes: None,

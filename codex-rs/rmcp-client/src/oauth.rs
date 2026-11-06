@@ -17,6 +17,7 @@
 //! If the keyring is not available or fails, we fall back to CODEX_HOME/.credentials.json which is consistent with other coding CLI agents.
 
 mod api_profile;
+mod issuer_binding;
 mod refresh_lock;
 mod refresh_transaction;
 mod resolved_store;
@@ -84,6 +85,8 @@ use tokio::sync::Mutex;
 use codex_utils_home_dir::find_codex_home;
 
 pub use self::api_profile::perform_fixed_ops_api_access_token_with_refresh;
+pub(crate) use self::issuer_binding::validate_authorization_server_endpoints;
+pub(crate) use self::issuer_binding::validate_refresh_token_issuer;
 pub(crate) use self::resolved_store::ResolvedOAuthCredentialStore;
 pub(crate) use self::resolved_store::ResolvedOAuthTokens;
 pub(crate) use self::resolved_store::resolve_oauth_tokens_from_store_policy;
@@ -107,10 +110,27 @@ pub(crate) fn refresh_error_requires_reauthorization(error: &AuthError) -> bool 
 pub struct StoredOAuthTokens {
     pub server_name: String,
     pub url: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub issuer: Option<String>,
     pub client_id: String,
     pub token_response: WrappedOAuthTokenResponse,
     #[serde(default)]
     pub expires_at: Option<u64>,
+}
+
+impl StoredOAuthTokens {
+    pub(crate) fn has_refresh_token(&self) -> bool {
+        self.token_response
+            .0
+            .refresh_token()
+            .is_some_and(|token| !token.secret().trim().is_empty())
+    }
+
+    pub(crate) fn bound_issuer(&self) -> Option<&str> {
+        self.issuer
+            .as_deref()
+            .filter(|issuer| !issuer.trim().is_empty())
+    }
 }
 
 /// Wrap OAuthTokenResponse to allow for partial equality comparison.
@@ -188,9 +208,7 @@ fn oauth_tokens_are_usable(tokens: &StoredOAuthTokens) -> bool {
 
     let token_response = &tokens.token_response.0;
     if token_needs_refresh(tokens.expires_at) {
-        return token_response
-            .refresh_token()
-            .is_some_and(|token| !token.secret().trim().is_empty());
+        return tokens.bound_issuer().is_some() && tokens.has_refresh_token();
     }
 
     !token_response.access_token().secret().trim().is_empty()
@@ -633,6 +651,7 @@ impl OAuthPersistor {
                 let stored = StoredOAuthTokens {
                     server_name: self.inner.server_name.clone(),
                     url: self.inner.url.clone(),
+                    issuer: previous.as_ref().and_then(|tokens| tokens.issuer.clone()),
                     client_id,
                     token_response: new_token_response,
                     expires_at,
@@ -749,6 +768,8 @@ type FallbackFile = BTreeMap<String, FallbackTokenEntry>;
 struct FallbackTokenEntry {
     server_name: String,
     server_url: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    issuer: Option<String>,
     client_id: String,
     access_token: String,
     #[serde(default)]
@@ -757,6 +778,10 @@ struct FallbackTokenEntry {
     refresh_token: Option<String>,
     #[serde(default)]
     scopes: Vec<String>,
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    executor_owned: bool,
+    #[serde(flatten)]
+    extra: BTreeMap<String, Value>,
 }
 
 fn load_oauth_tokens_from_file(server_name: &str, url: &str) -> Result<Option<StoredOAuthTokens>> {
@@ -768,6 +793,11 @@ fn load_oauth_tokens_from_file(server_name: &str, url: &str) -> Result<Option<St
     let key = compute_store_key(server_name, url)?;
 
     for entry in store.values() {
+        // This client does not implement executor credential lookup. Never adopt an
+        // executor-owned entry as a host credential, even if its identity matches.
+        if entry.executor_owned {
+            continue;
+        }
         let entry_key = compute_store_key(&entry.server_name, &entry.server_url)?;
         if entry_key != key {
             continue;
@@ -791,6 +821,7 @@ fn load_oauth_tokens_from_file(server_name: &str, url: &str) -> Result<Option<St
         let mut stored = StoredOAuthTokens {
             server_name: entry.server_name.clone(),
             url: entry.server_url.clone(),
+            issuer: entry.issuer.clone(),
             client_id: entry.client_id.clone(),
             token_response: WrappedOAuthTokenResponse(token_response),
             expires_at: entry.expires_at,
@@ -814,6 +845,13 @@ fn save_oauth_tokens_to_file(tokens: &StoredOAuthTokens) -> Result<()> {
 fn save_oauth_tokens_to_file_with_lock_held(tokens: &StoredOAuthTokens) -> Result<()> {
     let key = compute_store_key(&tokens.server_name, &tokens.url)?;
     let mut store = read_fallback_file_unlocked()?.unwrap_or_default();
+    if store.get(&key).is_some_and(|entry| entry.executor_owned) {
+        anyhow::bail!("host OAuth credential key conflicts with an executor-owned credential");
+    }
+    let extra = store
+        .get(&key)
+        .map(|entry| entry.extra.clone())
+        .unwrap_or_default();
 
     let token_response = &tokens.token_response.0;
     let expires_at = tokens
@@ -829,11 +867,14 @@ fn save_oauth_tokens_to_file_with_lock_held(tokens: &StoredOAuthTokens) -> Resul
     let entry = FallbackTokenEntry {
         server_name: tokens.server_name.clone(),
         server_url: tokens.url.clone(),
+        issuer: tokens.issuer.clone(),
         client_id: tokens.client_id.clone(),
         access_token: token_response.access_token().secret().to_string(),
         expires_at,
         refresh_token,
         scopes,
+        executor_owned: false,
+        extra,
     };
 
     store.insert(key, entry);
@@ -847,6 +888,9 @@ fn delete_oauth_tokens_from_file(key: &str) -> Result<bool> {
         None => return Ok(false),
     };
 
+    if store.get(key).is_some_and(|entry| entry.executor_owned) {
+        anyhow::bail!("host OAuth credential key conflicts with an executor-owned credential");
+    }
     let removed = store.remove(key).is_some();
 
     if removed {
@@ -1935,11 +1979,13 @@ mod tests {
     async fn authorization_manager_for(
         tokens: &StoredOAuthTokens,
     ) -> Result<Arc<Mutex<AuthorizationManager>>> {
+        // This helper tests persistence, so its synthetic issuer must match the
+        // credential binding; separate tests exercise issuer mismatch rejection.
         let server = MockServer::start().await;
         Mock::given(method("GET"))
             .and(path("/.well-known/oauth-authorization-server/mcp"))
             .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
-                "issuer": format!("{}/mcp", server.uri()),
+                "issuer": tokens.issuer.as_deref(),
                 "authorization_endpoint": format!("{}/oauth/authorize", server.uri()),
                 "token_endpoint": format!("{}/oauth/token", server.uri()),
             })))
@@ -1958,6 +2004,13 @@ mod tests {
         {
             let mut guard = manager.lock().await;
             guard.set_credential_store(store);
+            // Preload synthetic, already-selected metadata: these tests exercise
+            // persistence, not authorization-server discovery.
+            guard.set_metadata(serde_json::from_value(serde_json::json!({
+                "issuer": tokens.issuer.as_deref(),
+                "authorization_endpoint": format!("{}/oauth/authorize", server.uri()),
+                "token_endpoint": format!("{}/oauth/token", server.uri()),
+            }))?);
             guard.initialize_from_store().await?;
         }
         Ok(manager)
@@ -1969,6 +2022,7 @@ mod tests {
     ) {
         assert_eq!(actual.server_name, expected.server_name);
         assert_eq!(actual.url, expected.url);
+        assert_eq!(actual.issuer, expected.issuer);
         assert_eq!(actual.client_id, expected.client_id);
         assert_eq!(actual.expires_at, expected.expires_at);
         assert_token_response_match_without_expiry(
@@ -2022,6 +2076,7 @@ mod tests {
         StoredOAuthTokens {
             server_name: "test-server".to_string(),
             url: "https://example.test".to_string(),
+            issuer: Some("https://example.test".to_string()),
             client_id: "client-id".to_string(),
             token_response: WrappedOAuthTokenResponse(response),
             expires_at,

@@ -67,7 +67,8 @@ async fn refreshes_expired_persisted_token_before_initialize() -> anyhow::Result
             "token_endpoint": format!("{}/oauth/token", server.uri()),
             "scopes_supported": ["profile", "offline_access"],
         })))
-        .expect(1)
+        // Initialization discovers metadata, and the locked refresh revalidates it.
+        .expect(2)
         .mount(&server)
         .await;
     Mock::given(method("POST"))
@@ -315,6 +316,7 @@ async fn invalid_token_recovery_child() -> anyhow::Result<()> {
     let tokens = StoredOAuthTokens {
         server_name: INVALID_TOKEN_SERVER_NAME.to_string(),
         url: server_url.clone(),
+        issuer: Some(server_url.clone()),
         client_id: "test-client-id".to_string(),
         token_response: WrappedOAuthTokenResponse(token_response),
         expires_at: Some(expires_at),
@@ -474,6 +476,7 @@ async fn persisted_credentials_auth_status_child() -> anyhow::Result<()> {
     let tokens = StoredOAuthTokens {
         server_name: SERVER_NAME.to_string(),
         url: UNREFRESHABLE_SERVER_URL.to_string(),
+        issuer: Some(UNREFRESHABLE_SERVER_URL.to_string()),
         client_id: "test-client-id".to_string(),
         token_response: WrappedOAuthTokenResponse(response),
         expires_at: Some(0),
@@ -503,6 +506,7 @@ async fn persisted_credentials_auth_status_child() -> anyhow::Result<()> {
     let tokens = StoredOAuthTokens {
         server_name: SERVER_NAME.to_string(),
         url: UNEXPIRED_SERVER_URL.to_string(),
+        issuer: Some(UNEXPIRED_SERVER_URL.to_string()),
         client_id: "test-client-id".to_string(),
         token_response: WrappedOAuthTokenResponse(response),
         expires_at: Some(now.saturating_add(/*rhs*/ 120_000)),
@@ -526,6 +530,7 @@ async fn persisted_credentials_auth_status_child() -> anyhow::Result<()> {
     let tokens = StoredOAuthTokens {
         server_name: SERVER_NAME.to_string(),
         url: REFRESHABLE_SERVER_URL.to_string(),
+        issuer: Some(REFRESHABLE_SERVER_URL.to_string()),
         client_id: "test-client-id".to_string(),
         token_response: WrappedOAuthTokenResponse(response),
         expires_at: Some(0),
@@ -539,6 +544,21 @@ async fn persisted_credentials_auth_status_child() -> anyhow::Result<()> {
 
     let status = auth_status(REFRESHABLE_SERVER_URL).await?;
     assert_eq!(status, McpAuthState::OAuth);
+
+    // A refresh token without a verified issuer must require reauthentication.
+    let mut unbound = tokens;
+    unbound.issuer = None;
+    save_oauth_tokens(
+        SERVER_NAME,
+        &unbound,
+        OAuthCredentialsStoreMode::File,
+        AuthKeyringBackendKind::default(),
+    )?;
+    let status = auth_status(REFRESHABLE_SERVER_URL).await?;
+    assert_eq!(
+        status,
+        McpAuthState::LoggedOut(McpLoginRequirement::Reauthentication)
+    );
     Ok(())
 }
 
@@ -576,6 +596,7 @@ async fn oauth_startup_child() -> anyhow::Result<()> {
     let tokens = StoredOAuthTokens {
         server_name: SERVER_NAME.to_string(),
         url: server_url.clone(),
+        issuer: Some(server_url.clone()),
         client_id: "test-client-id".to_string(),
         token_response: WrappedOAuthTokenResponse(response),
         expires_at: Some(0),
@@ -619,6 +640,7 @@ async fn expired_unrefreshable_startup_child() -> anyhow::Result<()> {
     let tokens = StoredOAuthTokens {
         server_name: SERVER_NAME.to_string(),
         url: server_url.clone(),
+        issuer: Some(server_url.clone()),
         client_id: "test-client-id".to_string(),
         token_response: WrappedOAuthTokenResponse(response),
         expires_at: Some(0),

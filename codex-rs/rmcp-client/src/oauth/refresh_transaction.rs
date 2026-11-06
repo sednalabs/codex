@@ -29,6 +29,9 @@ use super::compute_expires_at_millis;
 use super::refresh_error_requires_reauthorization;
 use super::refresh_lock::RefreshCredentialLock;
 use super::token_needs_refresh;
+use super::validate_authorization_server_endpoints;
+use super::validate_refresh_token_issuer;
+use crate::oauth_metadata::discover_metadata;
 
 const REFRESH_REQUEST_TIMEOUT: Duration = Duration::from_secs(45);
 
@@ -190,6 +193,18 @@ impl OAuthPersistor {
             };
         if should_adopt {
             debug!("adopting newer MCP OAuth credentials without contacting the provider");
+            if latest.has_refresh_token() {
+                let previous = self.inner.last_credentials.lock().await;
+                let expected_issuer = previous.as_ref().and_then(StoredOAuthTokens::bound_issuer);
+                if latest.bound_issuer().is_none() || latest.bound_issuer() != expected_issuer {
+                    return Err(AuthError::AuthorizationRequired).with_context(|| {
+                        format!(
+                            "OAuth refresh credentials for server {} could not be bound to the previously validated issuer; authorization required",
+                            self.inner.server_name
+                        )
+                    });
+                }
+            }
             self.adopt_credentials(latest).await?;
             return Ok(());
         }
@@ -212,6 +227,12 @@ impl OAuthPersistor {
         // The provider uses a separate HTTP client and cannot re-enter AuthClient. Retain this
         // guard so requests cannot observe credentials while they are staged and committed.
         let mut guard = manager.lock().await;
+        let metadata = discover_metadata(&guard)
+            .await
+            .context("failed to resolve OAuth metadata before using stored refresh credentials")?;
+        validate_authorization_server_endpoints(&metadata)?;
+        validate_refresh_token_issuer(&metadata, &latest)?;
+        guard.set_metadata(metadata);
         if let Err(error) =
             install_tokens_in_manager_guard(&mut guard, &latest, CredentialExposure::Refresh).await
         {
@@ -332,10 +353,14 @@ async fn install_tokens_in_manager_guard(
     authorization_manager.set_credential_store(store);
     // TODO(stevenlee): Add an RMCP adoption API that atomically updates credentials, client ID,
     // and private current_scopes; this path cannot synchronize RMCP's scope-upgrade state.
-    authorization_manager
+    let adopted = authorization_manager
         .initialize_from_store()
         .await
         .context("failed to adopt refreshed OAuth tokens")?;
+    if !adopted {
+        return Err(AuthError::AuthorizationRequired)
+            .context("OAuth authorization manager rejected credential adoption");
+    }
     Ok(())
 }
 
@@ -375,6 +400,7 @@ pub(super) fn stored_credentials_from_tokens(
         granted_scopes,
         token_received_at,
     )
+    .with_issuer(tokens.issuer.clone())
 }
 
 pub(super) fn request_oauth_token_response(tokens: &StoredOAuthTokens) -> OAuthTokenResponse {
@@ -398,6 +424,7 @@ fn refreshed_tokens(
     StoredOAuthTokens {
         server_name: inner.server_name.clone(),
         url: inner.url.clone(),
+        issuer: previous.issuer.clone(),
         client_id: previous.client_id.clone(),
         expires_at: compute_expires_at_millis(&token_response),
         token_response: WrappedOAuthTokenResponse(token_response),

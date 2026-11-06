@@ -3579,6 +3579,7 @@ async fn streamable_http_with_oauth_round_trip_impl() -> anyhow::Result<()> {
         return Ok(());
     };
     let server_url = http_server.url().to_string();
+    let expected_issuer = server_url.clone();
 
     // Phase 3: seed an isolated CODEX_HOME with fallback OAuth tokens for this
     // server so the test does not share credentials with other suite cases.
@@ -3629,6 +3630,10 @@ async fn streamable_http_with_oauth_round_trip_impl() -> anyhow::Result<()> {
         .and_then(|store| store.values().next())
         .and_then(Value::as_object)
         .context("fallback OAuth credential should be an object")?;
+    assert_eq!(
+        persisted.get("issuer").and_then(Value::as_str),
+        Some(expected_issuer.as_str())
+    );
     let persisted_access_token = persisted
         .get("access_token")
         .and_then(Value::as_str)
@@ -4173,6 +4178,7 @@ fn write_expired_fallback_oauth_tokens(
         "stub": {
             "server_name": server_name,
             "server_url": server_url,
+            "issuer": server_url,
             "client_id": client_id,
             "access_token": access_token,
             "expires_at": expires_at,

@@ -300,5 +300,6 @@ fn stored_tokens(server_url: &str, access_token: &str) -> StoredOAuthTokens {
             VendorExtraTokenFields::default(),
         )),
         expires_at: None,
+        issuer: None,
     }
 }
