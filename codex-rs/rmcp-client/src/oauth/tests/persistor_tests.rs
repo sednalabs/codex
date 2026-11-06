@@ -89,6 +89,76 @@ impl Subscriber for LockContentionSubscriber {
 }
 
 #[tokio::test(flavor = "current_thread")]
+async fn changed_issuer_requires_reauthorization_before_refresh() -> Result<()> {
+    let (_env, server, mut initial) = test_context().await?;
+    initial.issuer = Some("https://original-issuer.example.test".to_string());
+    Mock::given(method("POST"))
+        .and(path("/oauth/token"))
+        .respond_with(ResponseTemplate::new(500))
+        .expect(0)
+        .mount(&server)
+        .await;
+    save_oauth_tokens_to_file(&initial)?;
+    let persistor = persistor_for(&initial).await?;
+
+    let error = persistor
+        .refresh_if_needed()
+        .await
+        .expect_err("a changed issuer must abort refresh");
+    assert!(is_authentication_required_error(&error));
+    server.verify().await;
+    Ok(())
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn missing_issuer_requires_reauthorization_before_refresh() -> Result<()> {
+    let (_env, server, mut initial) = test_context().await?;
+    initial.issuer = None;
+    Mock::given(method("POST"))
+        .and(path("/oauth/token"))
+        .respond_with(ResponseTemplate::new(500))
+        .expect(0)
+        .mount(&server)
+        .await;
+    save_oauth_tokens_to_file(&initial)?;
+    let persistor = persistor_for(&initial).await?;
+
+    let error = persistor
+        .refresh_if_needed()
+        .await
+        .expect_err("a missing issuer must abort refresh");
+    assert!(is_authentication_required_error(&error));
+    server.verify().await;
+    Ok(())
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn issuerless_newer_credentials_are_not_adopted_before_refresh() -> Result<()> {
+    let (_env, server, initial) = test_context().await?;
+    Mock::given(method("POST"))
+        .and(path("/oauth/token"))
+        .respond_with(ResponseTemplate::new(500))
+        .expect(0)
+        .mount(&server)
+        .await;
+    save_oauth_tokens_to_file(&initial)?;
+    let persistor = persistor_for(&initial).await?;
+
+    let mut latest = initial.clone();
+    latest.issuer = None;
+    latest.expires_at = Some(u64::MAX);
+    save_oauth_tokens_to_file(&latest)?;
+
+    let error = persistor
+        .refresh_if_needed()
+        .await
+        .expect_err("an issuer-less refresh token must not be adopted");
+    assert!(is_authentication_required_error(&error));
+    server.verify().await;
+    Ok(())
+}
+
+#[tokio::test(flavor = "current_thread")]
 async fn concurrent_refreshes_call_provider_once_and_carry_omitted_fields() -> Result<()> {
     let (_env, server, initial) = test_context().await?;
     Mock::given(method("POST"))
