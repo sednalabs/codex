@@ -606,7 +606,7 @@ native-computer-use-tool-registry-targeted:
 
 # Focused native computer-use operator diagnostics slice.
 native-computer-use-doctor-targeted:
-    cargo test --locked -p codex-cli doctor::tests::native_computer_use_check_reports_android_and_desktop_config_files -- --exact --test-threads=1
+    cargo test --locked -p codex-cli --bin codex doctor::tests::native_computer_use_check_reports_android_and_desktop_config_files -- --exact --test-threads=1
 
 # Focused downstream agent-workflow helper sanity slice.
 [no-cd]
