@@ -10,6 +10,7 @@ use crate::tools::hook_names::HookToolName;
 use crate::tools::registry::PostToolUsePayload;
 use crate::tools::tool_runtime_capabilities::UnifiedExecBlockingWaitCapability;
 use crate::tools::tool_runtime_capabilities::registered_tool_runtime_capabilities;
+use crate::unified_exec::HeadTailBuffer;
 use crate::unified_exec::MIN_YIELD_TIME_MS;
 use crate::unified_exec::UnifiedExecError;
 use crate::unified_exec::UnifiedExecProcessManager;
@@ -21,6 +22,7 @@ use codex_shell_command::shell_detect::detect_shell_type;
 use codex_tools::UnifiedExecShellMode;
 use codex_utils_output_truncation::TruncationPolicy;
 use serde::Deserialize;
+use std::num::NonZeroUsize;
 use std::path::PathBuf;
 use tokio_util::sync::CancellationToken;
 
@@ -140,7 +142,8 @@ async fn complete_terminal_wait(
     );
     let max_output_tokens = initial_response.max_output_tokens;
     let mut response = initial_response;
-    let mut raw_output = std::mem::take(&mut response.raw_output);
+    let mut output = TerminalWaitOutput::default();
+    output.record_response(&mut response);
     let mut wall_time = response.wall_time;
 
     while let Some(process_id) = response.process_id {
@@ -160,18 +163,42 @@ async fn complete_terminal_wait(
             }
         }
         wall_time += response.wall_time;
-        raw_output.extend_from_slice(&response.raw_output);
+        output.record_response(&mut response);
     }
 
     response.wall_time = wall_time;
-    response.raw_output = raw_output;
-    let output_text = String::from_utf8_lossy(&response.raw_output);
-    response.original_token_count = Some(approx_token_count(&output_text));
+    output.finish(&mut response);
     Ok(response)
 }
 
-fn approx_token_count(text: &str) -> usize {
-    text.len().div_ceil(APPROX_BYTES_PER_TOKEN)
+/// Keep multi-window waits bounded just like the underlying process collector.
+#[derive(Default)]
+struct TerminalWaitOutput {
+    bytes: HeadTailBuffer,
+    original_tokens: usize,
+    omitted_bytes: usize,
+}
+
+impl TerminalWaitOutput {
+    fn record_response(&mut self, response: &mut ExecCommandToolOutput) {
+        let bytes = std::mem::take(&mut response.raw_output);
+        self.original_tokens = self.original_tokens.saturating_add(
+            response
+                .original_token_count
+                .unwrap_or_else(|| bytes.len().div_ceil(APPROX_BYTES_PER_TOKEN)),
+        );
+        self.omitted_bytes = self.omitted_bytes.saturating_add(
+            response.output_omitted_bytes.map_or(0, NonZeroUsize::get),
+        );
+        self.bytes.push_chunk(bytes);
+    }
+
+    fn finish(self, response: &mut ExecCommandToolOutput) {
+        response.output_omitted_bytes =
+            NonZeroUsize::new(self.omitted_bytes.saturating_add(self.bytes.omitted_bytes()));
+        response.original_token_count = Some(self.original_tokens);
+        response.raw_output = self.bytes.to_bytes();
+    }
 }
 
 fn effective_max_output_tokens(
