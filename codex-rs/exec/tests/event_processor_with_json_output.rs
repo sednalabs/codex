@@ -420,7 +420,7 @@ fn computer_use_started_and_completed_translate_to_thread_events() {
                 status: ApiComputerUseCallStatus::Completed,
                 content_items: Some(vec![
                     ApiComputerUseCallOutputContentItem::InputText {
-                        text: "Browser observation".to_string(),
+                        text: "Android observation".to_string(),
                     },
                     ApiComputerUseCallOutputContentItem::InputImage {
                         image_url: "data:image/png;base64,AAA".to_string(),
