@@ -17,7 +17,6 @@ use codex_app_server_protocol::AuthMode;
 use codex_app_server_protocol::RateLimitReachedType;
 use codex_app_server_protocol::ServerNotification;
 use codex_app_server_protocol::ServerRequest;
-use codex_protocol::ThreadId;
 
 impl App {
     pub(super) fn refresh_mcp_startup_expected_servers_from_config(&mut self) {
