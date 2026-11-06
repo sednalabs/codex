@@ -174,9 +174,8 @@ fn oauth_device_client(
         headers
     };
     build_reqwest_client(
-        Client::builder()
-            .timeout(Duration::from_secs(30))
-            .redirect(reqwest::redirect::Policy::custom(|attempt| {
+        Client::builder().timeout(Duration::from_secs(30)).redirect(
+            reqwest::redirect::Policy::custom(|attempt| {
                 if attempt.previous().len() >= 10 {
                     return attempt.error("OAuth device request exceeded redirect limit");
                 }
@@ -189,7 +188,8 @@ fn oauth_device_client(
                 } else {
                     attempt.stop()
                 }
-            })),
+            }),
+        ),
         &headers,
     )
 }
