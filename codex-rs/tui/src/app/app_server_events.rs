@@ -18,7 +18,6 @@ use codex_app_server_protocol::RateLimitReachedType;
 use codex_app_server_protocol::ServerNotification;
 use codex_app_server_protocol::ServerRequest;
 use codex_protocol::ThreadId;
-use codex_tools::COMPUTER_USE_ADAPTER_BROWSER;
 use std::path::Path;
 use std::path::PathBuf;
 
@@ -203,14 +202,7 @@ impl App {
     ) {
         if let ServerRequest::ComputerUseCall { request_id, params } = &request {
             let request_id = request_id.clone();
-            // Only Browser needs a session home. Android and Desktop have their own
-            // provider configuration and must not be gated by rollout metadata.
-            let browser_codex_home = if params.adapter == COMPUTER_USE_ADAPTER_BROWSER {
-                self.codex_home_for_thread(&params.thread_id).await
-            } else {
-                None
-            };
-            match handle_computer_use(params, browser_codex_home.as_deref()).await {
+            match handle_computer_use(params).await {
                 ComputerUseProviderOutcome::Handled(response) => {
                     let result = match serde_json::to_value(response) {
                         Ok(result) => result,

@@ -3420,25 +3420,12 @@ mod tests {
     }
 
     #[test]
-    fn native_computer_use_check_reports_android_browser_and_desktop_config_files() {
+    fn native_computer_use_check_reports_android_and_desktop_config_files() {
         let temp = tempfile::tempdir().expect("create temp dir");
         let command = std::env::current_exe()
             .expect("current exe")
             .to_string_lossy()
             .into_owned();
-        std::fs::write(
-            temp.path().join("browser-computer-use.json"),
-            serde_json::json!({
-                "providers": [{
-                    "id": "doctor-browser",
-                    "provider": "command",
-                    "backends": ["chrome"],
-                    "command": [command]
-                }]
-            })
-            .to_string(),
-        )
-        .expect("write browser config");
         std::fs::write(
             temp.path().join("android-computer-use.json"),
             serde_json::json!({
@@ -3466,13 +3453,6 @@ mod tests {
         assert_eq!(
             check.summary,
             "native computer-use provider configuration checked"
-        );
-        assert!(
-            check
-                .details
-                .iter()
-                .any(|detail| detail.starts_with("browser provider ids: ")
-                    && detail.contains("doctor-browser"))
         );
         assert!(check.details.iter().any(|detail| {
             detail == "android provider config android-computer-use.json mcp_url: configured"

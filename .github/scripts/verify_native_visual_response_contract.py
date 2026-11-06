@@ -12,7 +12,6 @@ PRODUCTION_SUITE = PACK_ROOT / "suites/rust-computer-use-production.qls"
 
 EXPECTED_PROVIDER_FILES = (
     Path("codex-rs/android-computer-use/src/lib.rs"),
-    Path("codex-rs/browser-computer-use/src/lib.rs"),
 )
 
 EXPECTED_PRODUCTION_QUERIES = (

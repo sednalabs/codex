@@ -84,7 +84,6 @@ NATIVE_VISUAL_RESPONSE_CONTRACT_PATHS = {
     ".github/scripts/verify_native_visual_response_contract.py",
     ".github/scripts/test_verify_native_visual_response_contract.py",
     "codex-rs/android-computer-use/src/lib.rs",
-    "codex-rs/browser-computer-use/src/lib.rs",
 }
 
 NATIVE_VISUAL_RESPONSE_CONTRACT_PREFIXES = (

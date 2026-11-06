@@ -4,7 +4,6 @@ use super::*;
 use crate::agent::role::apply_role_to_config;
 use crate::config::PermissionProfileSnapshot;
 use crate::environment_selection::TurnEnvironmentSnapshot;
-use codex_browser_computer_use::configured_browser_dynamic_tools_for_codex_home;
 use codex_extension_api::ExtensionDataInit;
 use codex_protocol::config_types::MultiAgentMode;
 use codex_protocol::models::ResponseItem;
@@ -18,15 +17,6 @@ const UNPUBLISHED_SPAWN_CLEANUP_MAX_SHUTDOWN_ATTEMPTS: usize = 3;
 const UNPUBLISHED_SPAWN_CLEANUP_RETRY_DELAY: Duration = Duration::from_millis(100);
 
 const AGENT_NAMES: &str = include_str!("../agent_names.txt");
-
-/// Browser tools are session-scoped. Re-derive them from each child config at
-/// every AgentControl lifecycle boundary instead of relying on the ambient
-/// process home or persisted rollout metadata.
-fn configured_browser_dynamic_tools(
-    config: &Config,
-) -> Vec<codex_protocol::dynamic_tools::DynamicToolSpec> {
-    configured_browser_dynamic_tools_for_codex_home(config.codex_home.as_path())
-}
 
 struct SpawnAgentThreadInheritance {
     environments: Option<TurnEnvironmentSnapshot>,
@@ -528,7 +518,7 @@ impl AgentControl {
 
         match state
             .resume_thread_with_history_with_source(ResumeThreadWithHistoryOptions {
-                dynamic_tools: configured_browser_dynamic_tools(&config),
+                dynamic_tools: Vec::new(),
                 config,
                 initial_history,
                 agent_control: self.clone(),
@@ -691,7 +681,7 @@ impl AgentControl {
                     /*forked_from_thread_id*/ None,
                     /*thread_source*/ Some(ThreadSource::Subagent),
                     /*metrics_service_name*/ None,
-                    configured_browser_dynamic_tools(&config),
+                    Vec::new(),
                     inheritance.environments,
                     inheritance.exec_policy,
                     options.environments.clone(),
@@ -1441,7 +1431,7 @@ impl AgentControl {
                 /*thread_source*/ Some(ThreadSource::Subagent),
                 /*parent_thread_id*/ Some(parent_thread_id),
                 /*forked_from_thread_id*/ Some(parent_thread_id),
-                configured_browser_dynamic_tools(&config),
+                Vec::new(),
                 inherited_environments,
                 inherited_exec_policy,
                 options.environments.clone(),
@@ -1625,7 +1615,7 @@ impl AgentControl {
                 agent_control: self.clone(),
                 session_source,
                 parent_thread_id,
-                dynamic_tools: configured_browser_dynamic_tools(&config),
+                dynamic_tools: Vec::new(),
                 inherited_environments,
                 inherited_exec_policy,
             })

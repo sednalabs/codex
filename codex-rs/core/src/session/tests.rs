@@ -431,7 +431,7 @@ fn dynamic_tool_for_merge_test(
         defer_loading: false,
         persist_on_resume,
         capability: browser.then(|| DynamicToolCapability {
-            family: Some(codex_tools::COMPUTER_USE_ADAPTER_BROWSER.to_string()),
+            family: Some("browser".to_string()),
             capability_scope: Some("session".to_string()),
             mutation_class: Some("mutating".to_string()),
             lease_mode: None,
@@ -439,29 +439,35 @@ fn dynamic_tool_for_merge_test(
     }
 }
 
-fn assert_browser_merge_preserves_persistent_tool() {
-    let active_browser = dynamic_tool_for_merge_test(
-        "browser_step",
-        /*persist_on_resume*/ false,
-        /*browser*/ true,
-    );
+fn assert_legacy_browser_declaration_is_not_restored() {
     let persisted_helper = dynamic_tool_for_merge_test(
         "persistent_helper",
         /*persist_on_resume*/ true,
         /*browser*/ false,
     );
-    let stale_browser = dynamic_tool_for_merge_test(
-        "browser_step",
-        /*persist_on_resume*/ true,
-        /*browser*/ true,
-    );
-
     let merged = merge_dynamic_tools(
-        vec![active_browser.clone()],
-        vec![persisted_helper.clone(), stale_browser],
+        vec![],
+        vec![
+            persisted_helper.clone(),
+            dynamic_tool_for_merge_test(
+                "browser_observe",
+                /*persist_on_resume*/ true,
+                /*browser*/ false,
+            ),
+            dynamic_tool_for_merge_test(
+                "browser_step",
+                /*persist_on_resume*/ true,
+                /*browser*/ false,
+            ),
+            dynamic_tool_for_merge_test(
+                "legacy_browser_runtime_tool",
+                /*persist_on_resume*/ true,
+                /*browser*/ true,
+            ),
+        ],
     );
 
-    assert_eq!(merged, vec![active_browser, persisted_helper]);
+    assert_eq!(merged, vec![persisted_helper]);
 }
 
 #[test]
@@ -478,7 +484,12 @@ fn namespaced_browser_named_tool_is_preserved_as_a_persistent_tool() {
         input_schema: json!({"type": "object"}),
         defer_loading: false,
         persist_on_resume: true,
-        capability: None,
+        capability: Some(DynamicToolCapability {
+            family: Some("browser".to_string()),
+            capability_scope: Some("session".to_string()),
+            mutation_class: Some("mutating".to_string()),
+            lease_mode: None,
+        }),
     };
 
     let merged = merge_dynamic_tools(
@@ -490,14 +501,14 @@ fn namespaced_browser_named_tool_is_preserved_as_a_persistent_tool() {
 }
 
 #[test]
-fn resumed_thread_browser_tools_retain_persistent_dynamic_tools() {
-    assert_browser_merge_preserves_persistent_tool();
+fn resumed_thread_drops_legacy_browser_declarations() {
+    assert_legacy_browser_declaration_is_not_restored();
 }
 
 #[test]
-fn forked_thread_browser_tools_retain_persistent_dynamic_tools() {
+fn forked_thread_drops_legacy_browser_declarations() {
     // Resume and fork share the session startup merge seam.
-    assert_browser_merge_preserves_persistent_tool();
+    assert_legacy_browser_declaration_is_not_restored();
 }
 
 #[tokio::test]

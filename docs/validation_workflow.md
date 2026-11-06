@@ -371,24 +371,18 @@ ownership boundary:
   The tool-registry lane is intentionally weighted as a singleton Rust batch
   because it is link-heavy enough to exhaust hosted runner disk when paired
   with another native computer-use lane.
-- `codex exec` native browser advertisement or provider-handling changes
+- `codex exec` native Android/desktop advertisement or provider-handling changes
   should add `codex.exec-native-computer-use-targeted`.
 - Provider configuration diagnostics should add
   `codex.native-computer-use-doctor-targeted`.
 - Android harness, emulator, device, screenshot, UI digest, and input execution
   changes should be validated in the Android runtime provider or consumer app
   that owns that behavior.
-- Browser provider-selection, command-bridge, Playwright-shim, and native-image
-  guard changes inside `codex-rs/browser-computer-use` should use the focused
-  Codex TUI/exec and tool-registry lanes above. Also run `node --check` on the
-  Playwright shim when it changes.
-- Browser provider changes that target realistic editor UX should also be
-  proved on the owning runtime surface with a headed Chrome provider,
-  persistent profile, configured display, and native `inputImage` response.
-- Browser runtime work outside this repo, such as in-app-browser,
-  Chrome-extension, remote-browser, viewport capture, and browser input
-  execution providers, should be validated in the browser provider or client
-  integration that owns that behavior.
+- Browser tool schemas, actions, process lifecycle, and profile behavior are
+  owned by the configured MCP server and should use that server's existing
+  validation and the consumer route that owns its configuration. Codex has no
+  Browser-specific provider lane or adapter; validate Codex image forwarding
+  only when ordinary MCP typed-image plumbing changes.
 - Desktop runtime work outside this repo, such as macOS Screen
   Recording/Accessibility capture, lock-screen handling, app focus, UI digest
   generation, and desktop input execution, should be validated in the desktop

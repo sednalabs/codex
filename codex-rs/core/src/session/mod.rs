@@ -162,9 +162,6 @@ use codex_thread_store::ReadThreadParams;
 use codex_thread_store::ResumeThreadParams;
 use codex_thread_store::ThreadPersistenceMetadata;
 use codex_thread_store::ThreadStore;
-use codex_tools::BROWSER_OBSERVE_TOOL_NAME;
-use codex_tools::BROWSER_STEP_TOOL_NAME;
-use codex_tools::COMPUTER_USE_ADAPTER_BROWSER;
 use codex_tools::ToolName;
 use codex_utils_output_truncation::TruncationPolicy;
 use futures::future::BoxFuture;
@@ -976,7 +973,7 @@ fn merge_dynamic_tools(
         .into_iter()
         .filter(should_restore_dynamic_tool_on_resume)
     {
-        if is_browser_dynamic_tool(&tool)
+        if is_legacy_native_browser_dynamic_tool(&tool)
             || active_tools
                 .iter()
                 .any(|active| active.namespace == tool.namespace && active.name == tool.name)
@@ -988,14 +985,17 @@ fn merge_dynamic_tools(
     active_tools
 }
 
-fn is_browser_dynamic_tool(tool: &DynamicToolSpec) -> bool {
+// Old rollouts can still contain Browser declarations from before Browser moved
+// to the ordinary MCP surface. Drop only those unnamespaced native declarations;
+// namespaced MCP tools with the same names remain ordinary dynamic tools.
+fn is_legacy_native_browser_dynamic_tool(tool: &DynamicToolSpec) -> bool {
     tool.namespace.is_none()
-        && ((tool.name == BROWSER_OBSERVE_TOOL_NAME || tool.name == BROWSER_STEP_TOOL_NAME)
+        && ((tool.name == "browser_observe" || tool.name == "browser_step")
             || tool
                 .capability
                 .as_ref()
                 .and_then(|capability| capability.family.as_deref())
-                == Some(COMPUTER_USE_ADAPTER_BROWSER))
+                == Some("browser"))
 }
 
 fn get_service_tier(
