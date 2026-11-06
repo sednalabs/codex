@@ -353,10 +353,14 @@ async fn install_tokens_in_manager_guard(
     authorization_manager.set_credential_store(store);
     // TODO(stevenlee): Add an RMCP adoption API that atomically updates credentials, client ID,
     // and private current_scopes; this path cannot synchronize RMCP's scope-upgrade state.
-    authorization_manager
+    let adopted = authorization_manager
         .initialize_from_store()
         .await
         .context("failed to adopt refreshed OAuth tokens")?;
+    if !adopted {
+        return Err(AuthError::AuthorizationRequired)
+            .context("OAuth authorization manager rejected credential adoption");
+    }
     Ok(())
 }
 

@@ -159,6 +159,44 @@ async fn issuerless_newer_credentials_are_not_adopted_before_refresh() -> Result
 }
 
 #[tokio::test(flavor = "current_thread")]
+async fn persistence_rejects_newer_credentials_bound_to_another_issuer() -> Result<()> {
+    let (_env, server, initial) = test_context().await?;
+    save_oauth_tokens_to_file(&initial)?;
+    let manager = authorization_manager_for(&initial).await?;
+    let persistor = OAuthPersistor::new(
+        initial.server_name.clone(),
+        initial.url.clone(),
+        manager.clone(),
+        ResolvedOAuthCredentialStore::File,
+        Some(initial.clone()),
+    );
+    let mut pending = initial.clone();
+    pending.token_response.0.set_access_token(AccessToken::new(
+        "pending-access-token".to_string(),
+    ));
+    crate::oauth::install_tokens_in_manager(&manager, &pending).await?;
+
+    let mut newer = initial.clone();
+    newer.issuer = Some("https://different-issuer.example.test".to_string());
+    newer.token_response.0.set_access_token(AccessToken::new(
+        "different-issuer-access-token".to_string(),
+    ));
+    save_oauth_tokens_to_file(&newer)?;
+
+    let error = persistor
+        .persist_if_needed()
+        .await
+        .expect_err("a changed issuer must not be adopted");
+    assert!(is_authentication_required_error(&error));
+    assert_ne!(
+        persistor.access_token_snapshot().await.as_deref(),
+        Some("different-issuer-access-token")
+    );
+    server.verify().await;
+    Ok(())
+}
+
+#[tokio::test(flavor = "current_thread")]
 async fn concurrent_refreshes_call_provider_once_and_carry_omitted_fields() -> Result<()> {
     let (_env, server, initial) = test_context().await?;
     Mock::given(method("POST"))
