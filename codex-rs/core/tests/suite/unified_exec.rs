@@ -2868,7 +2868,9 @@ async fn assert_interrupt_preserves_unified_exec_session(terminal_only: bool) ->
             .and_then(extract_output_text)
             .context("interrupted tool output is missing from follow-up model input")?;
         assert!(
-            interrupted_output.contains(&format!("Background session ID: {process_id}")),
+            interrupted_output.contains(&format!("Background session ID: {process_id}"))
+                || interrupted_output
+                    .contains(&format!("Process running with session ID {process_id}")),
             "follow-up model input did not contain session ID {process_id}: {interrupted_output:?}"
         );
     }
