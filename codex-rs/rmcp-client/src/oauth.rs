@@ -2001,6 +2001,13 @@ mod tests {
         {
             let mut guard = manager.lock().await;
             guard.set_credential_store(store);
+            // Preload synthetic, already-selected metadata: these tests exercise
+            // persistence, not authorization-server discovery.
+            guard.set_metadata(serde_json::from_value(serde_json::json!({
+                "issuer": tokens.issuer.as_deref(),
+                "authorization_endpoint": format!("{}/oauth/authorize", server.uri()),
+                "token_endpoint": format!("{}/oauth/token", server.uri()),
+            }))?);
             guard.initialize_from_store().await?;
         }
         Ok(manager)
