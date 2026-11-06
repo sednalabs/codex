@@ -754,7 +754,10 @@ mod tests {
         };
         assert!(!is_empty_terminal_stdin_call(&call));
         let ResponseInputItem::FunctionCallOutput { output, .. } =
-            ToolCallRuntime::aborted_response(&call, /*secs*/ 1.0, None).into_response()
+            ToolCallRuntime::aborted_response(
+                &call, /*secs*/ 1.0, /*recovery_process_id*/ None,
+            )
+            .into_response()
         else {
             panic!("expected function output");
         };
