@@ -85,6 +85,7 @@ async fn selected_executor_plugin_exposes_its_mcps_only_to_that_thread() -> Resu
         "scopes_supported": ["read", "write"],
         "response_types_supported": ["code"],
         "code_challenge_methods_supported": ["S256"],
+        "authorization_response_iss_parameter_supported": true,
     });
     let http_router = Router::new()
         .route(
@@ -246,7 +247,8 @@ startup_timeout_sec = 10
     callback_url
         .query_pairs_mut()
         .append_pair("code", "executor-test-code")
-        .append_pair("state", &state);
+        .append_pair("state", &state)
+        .append_pair("iss", EXECUTOR_OAUTH_MCP_URL);
     reqwest::Client::builder()
         .no_proxy()
         .build()?
