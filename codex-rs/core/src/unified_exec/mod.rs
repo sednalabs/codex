@@ -48,6 +48,7 @@ use crate::tools::network_approval::DeferredNetworkApproval;
 mod async_watcher;
 mod errors;
 mod head_tail_buffer;
+pub(crate) use head_tail_buffer::HeadTailBuffer;
 mod process;
 mod process_manager;
 mod process_state;
