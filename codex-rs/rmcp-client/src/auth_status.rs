@@ -49,6 +49,7 @@ impl OAuthDiscoveryTimeout {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct StreamableHttpOAuthDiscovery {
+    pub issuer: Option<String>,
     pub authorization_endpoint: Option<String>,
     pub token_endpoint: String,
     pub scopes_supported: Option<Vec<String>>,
@@ -320,6 +321,8 @@ async fn discover_streamable_http_oauth_with_headers_and_http_client(
 #[derive(Debug, Deserialize)]
 struct DeviceOnlyOAuthDiscoveryMetadata {
     #[serde(default)]
+    issuer: Option<String>,
+    #[serde(default)]
     authorization_endpoint: Option<String>,
     #[serde(default)]
     token_endpoint: Option<String>,
@@ -329,6 +332,32 @@ struct DeviceOnlyOAuthDiscoveryMetadata {
     device_authorization_endpoint: Option<String>,
     #[serde(default)]
     grant_types_supported: Option<Vec<String>>,
+}
+
+/// Binds direct device-only discovery to the issuer URL identified by its metadata path.
+fn device_only_issuer_matches(
+    resource_url: &Url,
+    metadata_path: &str,
+    issuer: Option<&str>,
+) -> bool {
+    let Some(issuer) = issuer.and_then(|issuer| Url::parse(issuer).ok()) else {
+        return false;
+    };
+    if !matches!(issuer.scheme(), "http" | "https")
+        || !issuer.username().is_empty()
+        || issuer.password().is_some()
+        || issuer.query().is_some()
+        || issuer.fragment().is_some()
+    {
+        return false;
+    }
+    let mut expected = resource_url.clone();
+    expected.set_query(None);
+    expected.set_fragment(None);
+    if metadata_path == "/.well-known/oauth-authorization-server" {
+        expected.set_path("/");
+    }
+    issuer == expected
 }
 
 fn device_only_discovery_from_metadata(
@@ -341,6 +370,7 @@ fn device_only_discovery_from_metadata(
     let token_endpoint = metadata.token_endpoint?;
 
     Some(StreamableHttpOAuthDiscovery {
+        issuer: metadata.issuer,
         authorization_endpoint: None,
         token_endpoint,
         scopes_supported: normalize_scopes(metadata.scopes_supported),
@@ -370,6 +400,7 @@ fn discovery_from_authorization_metadata(
         });
 
     StreamableHttpOAuthDiscovery {
+        issuer: metadata.issuer,
         authorization_endpoint: Some(metadata.authorization_endpoint),
         token_endpoint: metadata.token_endpoint,
         scopes_supported: normalize_scopes(metadata.scopes_supported),
@@ -422,6 +453,9 @@ async fn discover_device_only_oauth_with_headers(
             Ok(metadata) => metadata,
             Err(_) => continue,
         };
+        if !device_only_issuer_matches(&base_url, &candidate_path, metadata.issuer.as_deref()) {
+            continue;
+        }
         if let Some(discovery) = device_only_discovery_from_metadata(metadata) {
             return Ok(Some(discovery));
         }
@@ -472,6 +506,9 @@ async fn discover_device_only_oauth_with_http_client(
             Ok(metadata) => metadata,
             Err(_) => continue,
         };
+        if !device_only_issuer_matches(&base_url, &candidate_path, metadata.issuer.as_deref()) {
+            continue;
+        }
         if let Some(discovery) = device_only_discovery_from_metadata(metadata) {
             return Ok(Some(discovery));
         }
@@ -539,6 +576,19 @@ fn discovery_paths(base_path: &str) -> Vec<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn device_only_issuer_is_bound_to_the_discovery_location() {
+        let resource = Url::parse("https://mcp.example/mcp").expect("valid resource URL");
+        let scoped = "/.well-known/oauth-authorization-server/mcp";
+        let root = "/.well-known/oauth-authorization-server";
+        assert!(device_only_issuer_matches(&resource, scoped, Some("https://mcp.example/mcp")));
+        assert!(device_only_issuer_matches(&resource, root, Some("https://mcp.example")));
+        assert!(!device_only_issuer_matches(&resource, scoped, None));
+        assert!(!device_only_issuer_matches(&resource, scoped, Some("https://other.example/mcp")));
+        assert!(!device_only_issuer_matches(&resource, scoped, Some("https://mcp.example")));
+        assert!(!device_only_issuer_matches(&resource, scoped, Some("https://user@mcp.example/mcp")));
+    }
     use axum::Router;
     use axum::http::HeaderMap as AxumHeaderMap;
     use axum::http::HeaderValue;
@@ -797,6 +847,7 @@ mod tests {
         assert_eq!(
             discovery,
             StreamableHttpOAuthDiscovery {
+                issuer: Some(server.url.clone()),
                 authorization_endpoint: Some("https://example.com/authorize".to_string()),
                 token_endpoint: "https://example.com/token".to_string(),
                 scopes_supported: Some(vec!["profile".to_string(), "email".to_string()]),
@@ -888,6 +939,7 @@ mod tests {
         assert_eq!(
             discovery,
             StreamableHttpOAuthDiscovery {
+                issuer: Some(server.url.clone()),
                 authorization_endpoint: Some("https://example.com/authorize".to_string()),
                 token_endpoint: "https://example.com/token".to_string(),
                 scopes_supported: None,
@@ -933,6 +985,7 @@ mod tests {
         assert_eq!(
             discovery,
             StreamableHttpOAuthDiscovery {
+                issuer: Some(server.url.trim_end_matches("/mcp").to_string()),
                 authorization_endpoint: Some("https://example.com/authorize".to_string()),
                 token_endpoint: "https://example.com/token".to_string(),
                 scopes_supported: Some(vec!["profile".to_string()]),
@@ -963,6 +1016,7 @@ mod tests {
         assert_eq!(
             discovery,
             StreamableHttpOAuthDiscovery {
+                issuer: Some(server.url.clone()),
                 authorization_endpoint: None,
                 token_endpoint: "https://example.com/token".to_string(),
                 scopes_supported: None,
@@ -1000,6 +1054,7 @@ mod tests {
         assert_eq!(
             discovery,
             StreamableHttpOAuthDiscovery {
+                issuer: Some(server.url.clone()),
                 authorization_endpoint: None,
                 token_endpoint: "https://example.com/token".to_string(),
                 scopes_supported: None,
