@@ -778,6 +778,10 @@ struct FallbackTokenEntry {
     refresh_token: Option<String>,
     #[serde(default)]
     scopes: Vec<String>,
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    executor_owned: bool,
+    #[serde(flatten)]
+    extra: BTreeMap<String, Value>,
 }
 
 fn load_oauth_tokens_from_file(server_name: &str, url: &str) -> Result<Option<StoredOAuthTokens>> {
@@ -788,9 +792,22 @@ fn load_oauth_tokens_from_file(server_name: &str, url: &str) -> Result<Option<St
 
     let key = compute_store_key(server_name, url)?;
 
-    for entry in store.values() {
-        let entry_key = compute_store_key(&entry.server_name, &entry.server_url)?;
-        if entry_key != key {
+    let local_server_name = server_name.strip_prefix("local:").unwrap_or(server_name);
+    for (stored_key, entry) in &store {
+        let matches_credential = if server_name.starts_with("executor:") {
+            stored_key == &key
+                && entry.executor_owned
+                && entry.server_name == server_name
+                && entry.server_url == url
+        } else if entry.executor_owned {
+            false
+        } else {
+            entry.server_url == url
+                && (!server_name.starts_with("local:") || stored_key == &key)
+                && (entry.server_name == local_server_name
+                    || (stored_key == &key && entry.server_name == server_name))
+        };
+        if !matches_credential {
             continue;
         }
 
@@ -836,6 +853,11 @@ fn save_oauth_tokens_to_file(tokens: &StoredOAuthTokens) -> Result<()> {
 fn save_oauth_tokens_to_file_with_lock_held(tokens: &StoredOAuthTokens) -> Result<()> {
     let key = compute_store_key(&tokens.server_name, &tokens.url)?;
     let mut store = read_fallback_file_unlocked()?.unwrap_or_default();
+    let executor_owned = tokens.server_name.starts_with("executor:");
+    if executor_owned && store.get(&key).is_some_and(|entry| !entry.executor_owned) {
+        anyhow::bail!("executor OAuth credential key conflicts with a host-owned credential");
+    }
+    let extra = store.get(&key).map(|entry| entry.extra.clone()).unwrap_or_default();
 
     let token_response = &tokens.token_response.0;
     let expires_at = tokens
@@ -857,6 +879,8 @@ fn save_oauth_tokens_to_file_with_lock_held(tokens: &StoredOAuthTokens) -> Resul
         expires_at,
         refresh_token,
         scopes,
+        executor_owned,
+        extra,
     };
 
     store.insert(key, entry);
@@ -870,6 +894,12 @@ fn delete_oauth_tokens_from_file(key: &str) -> Result<bool> {
         None => return Ok(false),
     };
 
+    if key.starts_with("executor:")
+        && !key.contains('|')
+        && store.get(key).is_some_and(|entry| !entry.executor_owned)
+    {
+        anyhow::bail!("executor OAuth credential key conflicts with a host-owned credential");
+    }
     let removed = store.remove(key).is_some();
 
     if removed {
@@ -920,6 +950,9 @@ fn token_needs_refresh(expires_at: Option<u64>) -> bool {
 }
 
 fn compute_store_key(server_name: &str, server_url: &str) -> Result<String> {
+    let executor_owned = server_name.starts_with("executor:");
+    let enterprise_owned = server_name.starts_with("ema-idp:");
+    let server_name = server_name.strip_prefix("local:").unwrap_or(server_name);
     let mut payload = JsonMap::new();
     payload.insert(
         "type".to_string(),
@@ -927,9 +960,23 @@ fn compute_store_key(server_name: &str, server_url: &str) -> Result<String> {
     );
     payload.insert("url".to_string(), Value::String(server_url.to_string()));
     payload.insert("headers".to_string(), Value::Object(JsonMap::new()));
-
-    let truncated = sha_256_prefix(&Value::Object(payload))?;
-    Ok(format!("{server_name}|{truncated}"))
+    let payload = if enterprise_owned {
+        // The OS keyring is shared across homes. Keep enterprise sessions
+        // isolated by Codex profile as well as authenticated user and workspace.
+        let codex_home = find_codex_home()?;
+        fs::create_dir_all(&codex_home)?;
+        payload.insert(
+            "codex_home".to_string(),
+            serde_json::to_value(codex_home.as_path().canonicalize()?)?,
+        );
+        // Different binaries can enable different serde_json ordering features.
+        serde_json::to_value(payload.into_iter().collect::<BTreeMap<_, _>>())?
+    } else {
+        Value::Object(payload)
+    };
+    let truncated = sha_256_prefix(&payload)?;
+    let separator = if executor_owned { ':' } else { '|' };
+    Ok(format!("{server_name}{separator}{truncated}"))
 }
 
 /// Derive a valid secret-store name from the MCP OAuth store key.
@@ -1992,6 +2039,7 @@ mod tests {
     ) {
         assert_eq!(actual.server_name, expected.server_name);
         assert_eq!(actual.url, expected.url);
+        assert_eq!(actual.issuer, expected.issuer);
         assert_eq!(actual.client_id, expected.client_id);
         assert_eq!(actual.expires_at, expected.expires_at);
         assert_token_response_match_without_expiry(

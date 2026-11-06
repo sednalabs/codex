@@ -49,6 +49,7 @@ const STORE_LOCK_CONTENTION_EVENT_TIMEOUT: Duration = Duration::from_secs(/*secs
 fn assert_tokens_match_without_expiry(actual: &StoredOAuthTokens, expected: &StoredOAuthTokens) {
     assert_eq!(actual.server_name, expected.server_name);
     assert_eq!(actual.url, expected.url);
+    assert_eq!(actual.issuer, expected.issuer);
     assert_eq!(actual.client_id, expected.client_id);
     assert_eq!(actual.expires_at, expected.expires_at);
     assert_token_response_match_without_expiry(&actual.token_response, &expected.token_response);
