@@ -2763,12 +2763,18 @@ async fn assert_interrupt_preserves_unified_exec_session(terminal_only: bool) ->
         args["max_wait_ms"] = json!(3_600_000);
     }
 
-    let responses = vec![sse(vec![
-        ev_response_created("resp-1"),
-        ev_function_call(call_id, "exec_command", &serde_json::to_string(&args)?),
-        ev_completed("resp-1"),
-    ])];
-    mount_sse_sequence(&server, responses).await;
+    let responses = vec![
+        sse(vec![
+            ev_response_created("resp-1"),
+            ev_function_call(call_id, "exec_command", &serde_json::to_string(&args)?),
+            ev_completed("resp-1"),
+        ]),
+        sse(vec![
+            ev_assistant_message("msg-after-interrupt", "continued"),
+            ev_completed("resp-after-interrupt"),
+        ]),
+    ];
+    let request_log = mount_sse_sequence(&server, responses).await;
 
     let session_model = session_configured.model.clone();
     let turn_cwd = cwd.abs();
@@ -2802,7 +2808,7 @@ async fn assert_interrupt_preserves_unified_exec_session(terminal_only: bool) ->
         })
         .await?;
 
-    let _begin_event = wait_for_event_match(&codex, |msg| match msg {
+    let begin_event = wait_for_event_match(&codex, |msg| match msg {
         EventMsg::ExecCommandBegin(ev) if ev.call_id == call_id => Some(ev.clone()),
         _ => None,
     })
@@ -2826,6 +2832,46 @@ async fn assert_interrupt_preserves_unified_exec_session(terminal_only: bool) ->
         process_is_alive(&pid)?,
         "expected unified exec process to remain alive after interrupt"
     );
+
+    if terminal_only {
+        let process_id = begin_event
+            .process_id
+            .as_deref()
+            .context("terminal wait should publish a session ID")?;
+        codex
+            .submit(Op::UserInput {
+                items: vec![UserInput::Text {
+                    text: "continue after interruption".into(),
+                    text_elements: Vec::new(),
+                }],
+                final_output_json_schema: None,
+                responsesapi_client_metadata: None,
+                additional_context: Default::default(),
+                thread_settings: Default::default(),
+            })
+            .await?;
+        wait_for_event(&codex, |event| matches!(event, EventMsg::TurnComplete(_))).await;
+
+        let requests = request_log.requests();
+        let next_request = requests.last().context("missing follow-up model request")?;
+        let body = next_request.body_json();
+        let input = body
+            .get("input")
+            .and_then(Value::as_array)
+            .context("follow-up model request is missing input")?;
+        let interrupted_output = input
+            .iter()
+            .find(|item| {
+                item.get("type").and_then(Value::as_str) == Some("function_call_output")
+                    && item.get("call_id").and_then(Value::as_str) == Some(call_id)
+            })
+            .and_then(extract_output_text)
+            .context("interrupted tool output is missing from follow-up model input")?;
+        assert!(
+            interrupted_output.contains(&format!("Background session ID: {process_id}")),
+            "follow-up model input did not contain the recoverable session ID"
+        );
+    }
 
     codex.submit(Op::CleanBackgroundTerminals).await?;
     wait_for_process_exit(&pid).await?;
