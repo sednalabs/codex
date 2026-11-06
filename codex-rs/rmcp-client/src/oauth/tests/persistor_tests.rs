@@ -605,6 +605,7 @@ async fn wait_for_lock_contention(rx: mpsc::Receiver<()>, expected_count: usize)
 fn expired_tokens(url: &str) -> StoredOAuthTokens {
     let mut tokens = sample_tokens();
     tokens.url = url.to_string();
+    tokens.issuer = Some(url.to_string());
     tokens.expires_at = Some(0);
     tokens
         .token_response

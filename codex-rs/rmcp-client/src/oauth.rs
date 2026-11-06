@@ -17,6 +17,7 @@
 //! If the keyring is not available or fails, we fall back to CODEX_HOME/.credentials.json which is consistent with other coding CLI agents.
 
 mod api_profile;
+mod issuer_binding;
 mod refresh_lock;
 mod refresh_transaction;
 mod resolved_store;
@@ -84,6 +85,8 @@ use tokio::sync::Mutex;
 use codex_utils_home_dir::find_codex_home;
 
 pub use self::api_profile::perform_fixed_ops_api_access_token_with_refresh;
+pub(crate) use self::issuer_binding::validate_authorization_server_endpoints;
+pub(crate) use self::issuer_binding::validate_refresh_token_issuer;
 pub(crate) use self::resolved_store::ResolvedOAuthCredentialStore;
 pub(crate) use self::resolved_store::ResolvedOAuthTokens;
 pub(crate) use self::resolved_store::resolve_oauth_tokens_from_store_policy;
@@ -107,10 +110,27 @@ pub(crate) fn refresh_error_requires_reauthorization(error: &AuthError) -> bool 
 pub struct StoredOAuthTokens {
     pub server_name: String,
     pub url: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub issuer: Option<String>,
     pub client_id: String,
     pub token_response: WrappedOAuthTokenResponse,
     #[serde(default)]
     pub expires_at: Option<u64>,
+}
+
+impl StoredOAuthTokens {
+    pub(crate) fn has_refresh_token(&self) -> bool {
+        self.token_response
+            .0
+            .refresh_token()
+            .is_some_and(|token| !token.secret().trim().is_empty())
+    }
+
+    pub(crate) fn bound_issuer(&self) -> Option<&str> {
+        self.issuer
+            .as_deref()
+            .filter(|issuer| !issuer.trim().is_empty())
+    }
 }
 
 /// Wrap OAuthTokenResponse to allow for partial equality comparison.
@@ -188,9 +208,7 @@ fn oauth_tokens_are_usable(tokens: &StoredOAuthTokens) -> bool {
 
     let token_response = &tokens.token_response.0;
     if token_needs_refresh(tokens.expires_at) {
-        return token_response
-            .refresh_token()
-            .is_some_and(|token| !token.secret().trim().is_empty());
+        return tokens.bound_issuer().is_some() && tokens.has_refresh_token();
     }
 
     !token_response.access_token().secret().trim().is_empty()
@@ -633,6 +651,7 @@ impl OAuthPersistor {
                 let stored = StoredOAuthTokens {
                     server_name: self.inner.server_name.clone(),
                     url: self.inner.url.clone(),
+                    issuer: previous.as_ref().and_then(|tokens| tokens.issuer.clone()),
                     client_id,
                     token_response: new_token_response,
                     expires_at,
@@ -749,6 +768,8 @@ type FallbackFile = BTreeMap<String, FallbackTokenEntry>;
 struct FallbackTokenEntry {
     server_name: String,
     server_url: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    issuer: Option<String>,
     client_id: String,
     access_token: String,
     #[serde(default)]
@@ -791,6 +812,7 @@ fn load_oauth_tokens_from_file(server_name: &str, url: &str) -> Result<Option<St
         let mut stored = StoredOAuthTokens {
             server_name: entry.server_name.clone(),
             url: entry.server_url.clone(),
+            issuer: entry.issuer.clone(),
             client_id: entry.client_id.clone(),
             token_response: WrappedOAuthTokenResponse(token_response),
             expires_at: entry.expires_at,
@@ -829,6 +851,7 @@ fn save_oauth_tokens_to_file_with_lock_held(tokens: &StoredOAuthTokens) -> Resul
     let entry = FallbackTokenEntry {
         server_name: tokens.server_name.clone(),
         server_url: tokens.url.clone(),
+        issuer: tokens.issuer.clone(),
         client_id: tokens.client_id.clone(),
         access_token: token_response.access_token().secret().to_string(),
         expires_at,
@@ -2022,6 +2045,7 @@ mod tests {
         StoredOAuthTokens {
             server_name: "test-server".to_string(),
             url: "https://example.test".to_string(),
+            issuer: Some("https://example.test".to_string()),
             client_id: "client-id".to_string(),
             token_response: WrappedOAuthTokenResponse(response),
             expires_at,

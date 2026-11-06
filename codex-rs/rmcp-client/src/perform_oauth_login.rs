@@ -1265,6 +1265,7 @@ impl OauthLoginHandle {
 struct OauthLoginFlow {
     auth_url: String,
     oauth_state: OAuthState,
+    authorization_server_issuer: Option<String>,
     rx: oneshot::Receiver<CallbackResult>,
     guard: CallbackServerGuard,
     server_name: String,
@@ -1407,7 +1408,7 @@ impl OauthLoginFlow {
         let oauth_http_client = Arc::new(OAuthHttpClientAdapter::new(http_client, default_headers));
 
         let scope_refs: Vec<&str> = scopes.iter().map(String::as_str).collect();
-        let oauth_state = start_authorization(
+        let (oauth_state, authorization_server_issuer) = start_authorization(
             server_url,
             oauth_http_client,
             &scope_refs,
@@ -1426,6 +1427,7 @@ impl OauthLoginFlow {
         Ok(Self {
             auth_url,
             oauth_state,
+            authorization_server_issuer,
             rx,
             guard,
             server_name: server_name.to_string(),
@@ -1492,6 +1494,7 @@ impl OauthLoginFlow {
             let stored = StoredOAuthTokens {
                 server_name: self.server_name.clone(),
                 url: self.server_url.clone(),
+                issuer: self.authorization_server_issuer.clone(),
                 client_id,
                 token_response: WrappedOAuthTokenResponse(credentials),
                 expires_at,
@@ -1538,10 +1541,12 @@ async fn start_authorization(
     scopes: &[&str],
     redirect_uri: &str,
     oauth_client_id: Option<&str>,
-) -> Result<OAuthState> {
+) -> Result<(OAuthState, Option<String>)> {
     let mut auth_manager =
         AuthorizationManager::new_with_oauth_http_client(server_url, http_client).await?;
     let metadata = discover_metadata(&auth_manager).await?;
+    crate::oauth::validate_authorization_server_endpoints(&metadata)?;
+    let issuer = metadata.issuer.clone();
     auth_manager.set_metadata(metadata);
 
     let Some(oauth_client_id) = oauth_client_id.filter(|client_id| !client_id.trim().is_empty())
@@ -1552,7 +1557,7 @@ async fn start_authorization(
         let session = AuthorizationSession::new(auth_manager, request)
             .await
             .map_err(|(_, error)| error)?;
-        return Ok(OAuthState::Session(session));
+        return Ok((OAuthState::Session(session), issuer));
     };
 
     auth_manager.configure_client(
@@ -1561,8 +1566,9 @@ async fn start_authorization(
     )?;
     let auth_url = auth_manager.get_authorization_url(scopes).await?;
 
-    Ok(OAuthState::Session(
-        AuthorizationSession::for_scope_upgrade(auth_manager, auth_url, redirect_uri),
+    Ok((
+        OAuthState::Session(AuthorizationSession::for_scope_upgrade(auth_manager, auth_url, redirect_uri)),
+        issuer,
     ))
 }
 
@@ -1931,7 +1937,7 @@ mod tests {
     #[tokio::test]
     async fn start_authorization_uses_configured_client_id() {
         let base_url = spawn_oauth_metadata_server().await;
-        let oauth_state = start_authorization(
+        let (oauth_state, issuer) = start_authorization(
             &format!("{base_url}/mcp"),
             Arc::new(OAuthHttpClientAdapter::new(
                 Arc::new(RouteAwareHttpClient::new(HttpClientFactory::new(
@@ -1946,6 +1952,7 @@ mod tests {
         .await
         .expect("start oauth authorization");
 
+        assert_eq!(issuer.as_deref(), Some(format!("{base_url}/mcp").as_str()));
         let authorization_url = oauth_state
             .get_authorization_url()
             .await

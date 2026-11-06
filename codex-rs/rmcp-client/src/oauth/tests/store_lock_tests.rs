@@ -99,6 +99,7 @@ fn sample_tokens() -> StoredOAuthTokens {
     StoredOAuthTokens {
         server_name: "test-server".to_string(),
         url: "https://example.test".to_string(),
+        issuer: Some("https://example.test".to_string()),
         client_id: "client-id".to_string(),
         token_response: WrappedOAuthTokenResponse(response),
         expires_at,
