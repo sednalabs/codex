@@ -2719,12 +2719,12 @@ async fn unified_exec_keeps_long_running_session_after_turn_end() -> Result<()> 
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn unified_exec_interrupt_preserves_long_running_session() -> Result<()> {
-    assert_interrupt_preserves_unified_exec_session(false).await
+    assert_interrupt_preserves_unified_exec_session(/*terminal_only*/ false).await
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn terminal_only_wait_interrupt_preserves_long_running_session() -> Result<()> {
-    assert_interrupt_preserves_unified_exec_session(true).await
+    assert_interrupt_preserves_unified_exec_session(/*terminal_only*/ true).await
 }
 
 async fn assert_interrupt_preserves_unified_exec_session(terminal_only: bool) -> Result<()> {

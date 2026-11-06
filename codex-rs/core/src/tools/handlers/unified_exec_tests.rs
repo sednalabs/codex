@@ -71,7 +71,7 @@ fn blocking_wait_window_accepts_long_budget_and_caps_at_two_hours() {
 #[test]
 fn terminal_wait_output_bounds_accumulation_and_reports_omissions() {
     let mut output = TerminalWaitOutput {
-        bytes: HeadTailBuffer::new(8),
+        bytes: HeadTailBuffer::new(/*max_bytes*/ 8),
         ..Default::default()
     };
     let mut response = ExecCommandToolOutput {
