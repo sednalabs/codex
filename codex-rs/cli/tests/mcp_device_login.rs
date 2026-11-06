@@ -176,17 +176,28 @@ async fn device_login_persists_issuer_without_rewriting_unrelated_metadata() -> 
         "executor_owned": true,
         "future_marker": {"kept": true}
     });
-    std::fs::write(&path, serde_json::to_vec(&json!({"unrelated|synthetic": unrelated.clone()}))?)?;
+    std::fs::write(
+        &path,
+        serde_json::to_vec(&json!({"unrelated|synthetic": unrelated.clone()}))?,
+    )?;
 
     let mut command = assert_cmd::Command::new(codex_utils_cargo_bin::cargo_bin("codex")?);
-    let output = command.env("CODEX_HOME", home.path())
+    let output = command
+        .env("CODEX_HOME", home.path())
         .args(["mcp", "login", "--device-auth", "fixture"])
         .timeout(Duration::from_secs(30))
         .output()?;
-    assert!(output.status.success(), "synthetic login failed: {}", String::from_utf8_lossy(&output.stderr));
+    assert!(
+        output.status.success(),
+        "synthetic login failed: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
     let store: serde_json::Value = serde_json::from_slice(&std::fs::read(path)?)?;
     assert_eq!(store["unrelated|synthetic"], unrelated);
-    let created = store.as_object().expect("credential map").values()
+    let created = store
+        .as_object()
+        .expect("credential map")
+        .values()
         .find(|value| value["server_name"] == "fixture")
         .expect("fixture credential");
     assert_eq!(created["issuer"], base);

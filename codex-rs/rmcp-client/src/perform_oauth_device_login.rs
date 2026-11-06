@@ -12,7 +12,6 @@ use reqwest::StatusCode;
 use reqwest::header::HeaderMap;
 use reqwest::header::HeaderValue;
 use reqwest::header::USER_AGENT;
-use url::Url;
 use rmcp::transport::AuthorizationManager;
 use rmcp::transport::auth::OAuthTokenResponse;
 use serde::Deserialize;
@@ -20,6 +19,7 @@ use serde::Serialize;
 use tokio::time::Instant;
 use tokio::time::sleep;
 use tokio::time::timeout_at;
+use url::Url;
 
 use crate::StoredOAuthTokens;
 use crate::WrappedOAuthTokenResponse;
@@ -56,22 +56,33 @@ pub async fn perform_oauth_device_login(
     token_endpoint: &str,
     mut show_authorization_prompt: impl FnMut(DeviceAuthorizationPrompt),
 ) -> Result<()> {
-    anyhow::ensure!(!issuer.trim().is_empty(), "OAuth device login requires issuer-bound metadata");
+    anyhow::ensure!(
+        !issuer.trim().is_empty(),
+        "OAuth device login requires issuer-bound metadata"
+    );
     let default_headers = build_default_headers(http_headers, env_http_headers)?;
     let discovery = crate::auth_status::discover_streamable_http_oauth_with_headers(
         server_url,
         &default_headers,
-    ).await?.ok_or_else(|| anyhow!("OAuth device login requires published authorization metadata"))?;
+    )
+    .await?
+    .ok_or_else(|| anyhow!("OAuth device login requires published authorization metadata"))?;
     anyhow::ensure!(
         discovery.issuer.as_deref() == Some(issuer)
             && discovery.token_endpoint == token_endpoint
-            && discovery.device_authorization_endpoint.as_deref() == Some(device_authorization_endpoint),
+            && discovery.device_authorization_endpoint.as_deref()
+                == Some(device_authorization_endpoint),
         "OAuth device authorization metadata changed before login"
     );
     anyhow::ensure!(
-        discovery.grant_types_supported.as_ref().is_none_or(|grant_types| {
-            grant_types.iter().any(|grant| grant == DEVICE_CODE_GRANT_TYPE)
-        }),
+        discovery
+            .grant_types_supported
+            .as_ref()
+            .is_none_or(|grant_types| {
+                grant_types
+                    .iter()
+                    .any(|grant| grant == DEVICE_CODE_GRANT_TYPE)
+            }),
         "OAuth device authorization grant is not advertised"
     );
     let device_client =
@@ -148,7 +159,11 @@ pub async fn perform_oauth_device_login(
     save_oauth_tokens_locked(server_name, &stored, store_mode, keyring_backend_kind).await
 }
 
-fn oauth_device_client(resource_url: &str, endpoint: &str, default_headers: &HeaderMap) -> Result<Client> {
+fn oauth_device_client(
+    resource_url: &str,
+    endpoint: &str,
+    default_headers: &HeaderMap,
+) -> Result<Client> {
     let resource = validate_oauth_endpoint(resource_url)?;
     let endpoint = validate_oauth_endpoint(endpoint)?;
     let headers = if resource.origin() == endpoint.origin() {
@@ -200,8 +215,11 @@ async fn resolve_device_oauth_client_id(
         server_url,
         crate::auth_status::OAuthDiscoveryTimeout::Capped(Duration::from_secs(30)),
     )?;
-    let auth_manager =
-        AuthorizationManager::new_with_oauth_http_client(server_url, std::sync::Arc::new(oauth_client)).await?;
+    let auth_manager = AuthorizationManager::new_with_oauth_http_client(
+        server_url,
+        std::sync::Arc::new(oauth_client),
+    )
+    .await?;
     let metadata = discover_metadata(&auth_manager).await?;
     anyhow::ensure!(
         metadata.issuer.as_deref() == Some(expected_issuer),
@@ -219,7 +237,8 @@ async fn resolve_device_oauth_client_id(
         })?;
     let supports_refresh_token = metadata_supports_refresh_token(&metadata.additional_fields);
 
-    let registration_client = oauth_device_client(server_url, registration_endpoint, default_headers)?;
+    let registration_client =
+        oauth_device_client(server_url, registration_endpoint, default_headers)?;
     register_device_oauth_client(
         &registration_client,
         registration_endpoint,
@@ -703,7 +722,10 @@ mod tests {
             .mount(&server)
             .await;
         let defaults = build_default_headers(
-            Some(HashMap::from([("x-api-key".to_string(), "synthetic-secret".to_string())])),
+            Some(HashMap::from([(
+                "x-api-key".to_string(),
+                "synthetic-secret".to_string(),
+            )])),
             /*env_http_headers*/ None,
         )?;
         let endpoint = format!("{}/token", server.uri());
@@ -724,7 +746,10 @@ mod tests {
         let destination = MockServer::start().await;
         Mock::given(method("POST"))
             .and(path("/device"))
-            .respond_with(ResponseTemplate::new(307).insert_header("location", format!("{}/other", destination.uri())))
+            .respond_with(
+                ResponseTemplate::new(307)
+                    .insert_header("location", format!("{}/other", destination.uri())),
+            )
             .expect(1)
             .mount(&resource)
             .await;
@@ -735,7 +760,10 @@ mod tests {
             .mount(&destination)
             .await;
         let defaults = build_default_headers(
-            Some(HashMap::from([("x-api-key".to_string(), "synthetic-secret".to_string())])),
+            Some(HashMap::from([(
+                "x-api-key".to_string(),
+                "synthetic-secret".to_string(),
+            )])),
             /*env_http_headers*/ None,
         )?;
         let endpoint = format!("{}/device", resource.uri());

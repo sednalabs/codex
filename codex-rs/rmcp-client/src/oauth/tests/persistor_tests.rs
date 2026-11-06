@@ -171,9 +171,10 @@ async fn persistence_rejects_newer_credentials_bound_to_another_issuer() -> Resu
         Some(initial.clone()),
     );
     let mut pending = initial.clone();
-    pending.token_response.0.set_access_token(AccessToken::new(
-        "pending-access-token".to_string(),
-    ));
+    pending
+        .token_response
+        .0
+        .set_access_token(AccessToken::new("pending-access-token".to_string()));
     crate::oauth::install_tokens_in_manager(&manager, &pending).await?;
 
     let mut newer = initial.clone();

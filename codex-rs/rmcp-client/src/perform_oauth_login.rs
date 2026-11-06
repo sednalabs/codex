@@ -1572,7 +1572,11 @@ async fn start_authorization(
     let auth_url = auth_manager.get_authorization_url(scopes).await?;
 
     Ok((
-        OAuthState::Session(AuthorizationSession::for_scope_upgrade(auth_manager, auth_url, redirect_uri)),
+        OAuthState::Session(AuthorizationSession::for_scope_upgrade(
+            auth_manager,
+            auth_url,
+            redirect_uri,
+        )),
         issuer,
     ))
 }

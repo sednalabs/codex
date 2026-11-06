@@ -280,10 +280,8 @@ pub(crate) async fn discover_streamable_http_oauth_with_headers(
         url,
         OAuthDiscoveryTimeout::Capped(DISCOVERY_TIMEOUT),
     )?;
-    let authorization_manager = AuthorizationManager::new_with_oauth_http_client(
-        url,
-        Arc::new(oauth_http_client),
-    ).await?;
+    let authorization_manager =
+        AuthorizationManager::new_with_oauth_http_client(url, Arc::new(oauth_http_client)).await?;
     match discover_streamable_http_oauth_with_manager(&authorization_manager).await? {
         Some(discovery) => Ok(Some(discovery)),
         // rmcp's standard metadata type requires an authorization endpoint.
@@ -424,7 +422,11 @@ async fn discover_device_only_oauth_with_headers(
             if attempt.previous().len() >= 10 {
                 return attempt.error("OAuth metadata exceeded redirect limit");
             }
-            if attempt.previous().first().is_some_and(|first| first.origin() == attempt.url().origin()) {
+            if attempt
+                .previous()
+                .first()
+                .is_some_and(|first| first.origin() == attempt.url().origin())
+            {
                 attempt.follow()
             } else {
                 attempt.stop()
@@ -484,23 +486,25 @@ async fn discover_device_only_oauth_with_http_client(
             .uri(discovery_url.as_str())
             .header(OAUTH_DISCOVERY_HEADER, OAUTH_DISCOVERY_VERSION)
             .body(Vec::new())?;
-        let response = match adapter.execute_request(
-            request,
-            rmcp::transport::auth::OAuthHttpRedirectPolicy::Follow,
-            /*timeout*/ None,
-        ).await {
+        let response = match adapter
+            .execute_request(
+                request,
+                rmcp::transport::auth::OAuthHttpRedirectPolicy::Follow,
+                /*timeout*/ None,
+            )
+            .await
+        {
             Ok(response) => response,
             Err(_) => continue,
         };
         if response.status().as_u16() != StatusCode::OK.as_u16() {
             continue;
         }
-        let metadata = match serde_json::from_slice::<DeviceOnlyOAuthDiscoveryMetadata>(
-            response.body(),
-        ) {
-            Ok(metadata) => metadata,
-            Err(_) => continue,
-        };
+        let metadata =
+            match serde_json::from_slice::<DeviceOnlyOAuthDiscoveryMetadata>(response.body()) {
+                Ok(metadata) => metadata,
+                Err(_) => continue,
+            };
         if !device_only_issuer_matches(&base_url, &candidate_path, metadata.issuer.as_deref()) {
             continue;
         }
@@ -597,12 +601,32 @@ mod tests {
         let resource = Url::parse("https://mcp.example/mcp").expect("valid resource URL");
         let scoped = "/.well-known/oauth-authorization-server/mcp";
         let root = "/.well-known/oauth-authorization-server";
-        assert!(device_only_issuer_matches(&resource, scoped, Some("https://mcp.example/mcp")));
-        assert!(device_only_issuer_matches(&resource, root, Some("https://mcp.example")));
+        assert!(device_only_issuer_matches(
+            &resource,
+            scoped,
+            Some("https://mcp.example/mcp")
+        ));
+        assert!(device_only_issuer_matches(
+            &resource,
+            root,
+            Some("https://mcp.example")
+        ));
         assert!(!device_only_issuer_matches(&resource, scoped, None));
-        assert!(!device_only_issuer_matches(&resource, scoped, Some("https://other.example/mcp")));
-        assert!(!device_only_issuer_matches(&resource, scoped, Some("https://mcp.example")));
-        assert!(!device_only_issuer_matches(&resource, scoped, Some("https://user@mcp.example/mcp")));
+        assert!(!device_only_issuer_matches(
+            &resource,
+            scoped,
+            Some("https://other.example/mcp")
+        ));
+        assert!(!device_only_issuer_matches(
+            &resource,
+            scoped,
+            Some("https://mcp.example")
+        ));
+        assert!(!device_only_issuer_matches(
+            &resource,
+            scoped,
+            Some("https://user@mcp.example/mcp")
+        ));
     }
 
     struct TestServer {

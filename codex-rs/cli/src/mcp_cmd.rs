@@ -552,7 +552,9 @@ async fn run_login(config_overrides: &CliConfigOverrides, login_args: LoginArgs)
             .issuer
             .as_deref()
             .filter(|issuer| !issuer.trim().is_empty())
-            .ok_or_else(|| anyhow!("OAuth device login requires verified authorization server issuer metadata"))?;
+            .ok_or_else(|| {
+                anyhow!("OAuth device login requires verified authorization server issuer metadata")
+            })?;
 
         perform_oauth_device_login(
             &name,

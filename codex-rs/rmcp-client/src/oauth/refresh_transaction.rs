@@ -399,7 +399,8 @@ pub(super) fn stored_credentials_from_tokens(
         Some(token_response),
         granted_scopes,
         token_received_at,
-    ).with_issuer(tokens.issuer.clone())
+    )
+    .with_issuer(tokens.issuer.clone())
 }
 
 pub(super) fn request_oauth_token_response(tokens: &StoredOAuthTokens) -> OAuthTokenResponse {

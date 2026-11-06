@@ -848,7 +848,10 @@ fn save_oauth_tokens_to_file_with_lock_held(tokens: &StoredOAuthTokens) -> Resul
     if store.get(&key).is_some_and(|entry| entry.executor_owned) {
         anyhow::bail!("host OAuth credential key conflicts with an executor-owned credential");
     }
-    let extra = store.get(&key).map(|entry| entry.extra.clone()).unwrap_or_default();
+    let extra = store
+        .get(&key)
+        .map(|entry| entry.extra.clone())
+        .unwrap_or_default();
 
     let token_response = &tokens.token_response.0;
     let expires_at = tokens
