@@ -68,6 +68,41 @@ fn blocking_wait_window_accepts_long_budget_and_caps_at_two_hours() {
     );
 }
 
+#[test]
+fn terminal_wait_output_bounds_accumulation_and_reports_omissions() {
+    let mut output = TerminalWaitOutput {
+        bytes: HeadTailBuffer::new(/*max_bytes*/ 8),
+        ..Default::default()
+    };
+    let mut response = ExecCommandToolOutput {
+        event_call_id: String::new(),
+        chunk_id: String::new(),
+        wall_time: Default::default(),
+        raw_output: b"abcd".to_vec(),
+        truncation_policy: TEST_TRUNCATION_POLICY,
+        max_output_tokens: None,
+        process_id: Some(1),
+        exit_code: None,
+        original_token_count: Some(1),
+        output_omitted_bytes: None,
+        hook_command: None,
+    };
+
+    output.record_response(&mut response);
+    response.raw_output = b"efghijkl".to_vec();
+    response.original_token_count = Some(2);
+    response.output_omitted_bytes = NonZeroUsize::new(3);
+    output.record_response(&mut response);
+    output.finish(&mut response);
+
+    assert_eq!(response.raw_output, b"abcdijkl");
+    assert_eq!(response.original_token_count, Some(3));
+    assert_eq!(
+        response.output_omitted_bytes.map(NonZeroUsize::get),
+        Some(7)
+    );
+}
+
 async fn invocation_for_payload(
     tool_name: &str,
     call_id: &str,

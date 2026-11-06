@@ -2719,6 +2719,15 @@ async fn unified_exec_keeps_long_running_session_after_turn_end() -> Result<()> 
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn unified_exec_interrupt_preserves_long_running_session() -> Result<()> {
+    assert_interrupt_preserves_unified_exec_session(/*terminal_only*/ false).await
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn terminal_only_wait_interrupt_preserves_long_running_session() -> Result<()> {
+    assert_interrupt_preserves_unified_exec_session(/*terminal_only*/ true).await
+}
+
+async fn assert_interrupt_preserves_unified_exec_session(terminal_only: bool) -> Result<()> {
     skip_if_no_network!(Ok(()));
     skip_if_sandbox!(Ok(()));
     skip_if_host_windows!(Ok(()));
@@ -2744,18 +2753,35 @@ async fn unified_exec_interrupt_preserves_long_running_session() -> Result<()> {
     let pid_path_str = pid_path.to_string_lossy();
 
     let call_id = "uexec-long-running-interrupt";
-    let command = format!("printf '%s' $$ > '{pid_path_str}' && exec sleep 3000");
-    let args = json!({
+    let command = if terminal_only {
+        format!(
+            "printf '%s' $$ > '{pid_path_str}' && sleep 0.4 && printf 'wait-window-marker' && exec sleep 3000"
+        )
+    } else {
+        format!("printf '%s' $$ > '{pid_path_str}' && exec sleep 3000")
+    };
+    let mut args = json!({
         "cmd": command,
-        "yield_time_ms": 30000,
+        "yield_time_ms": if terminal_only { 100 } else { 30000 },
     });
+    if terminal_only {
+        args["wait_until_terminal"] = json!(true);
+        args["max_wait_ms"] = json!(3_600_000);
+        args["heartbeat_interval_ms"] = json!(250);
+    }
 
-    let responses = vec![sse(vec![
+    let mut responses = vec![sse(vec![
         ev_response_created("resp-1"),
         ev_function_call(call_id, "exec_command", &serde_json::to_string(&args)?),
         ev_completed("resp-1"),
     ])];
-    mount_sse_sequence(&server, responses).await;
+    if terminal_only {
+        responses.push(sse(vec![
+            ev_assistant_message("msg-after-interrupt", "continued"),
+            ev_completed("resp-after-interrupt"),
+        ]));
+    }
+    let request_log = mount_sse_sequence(&server, responses).await;
 
     let session_model = session_configured.model.clone();
     let turn_cwd = cwd.abs();
@@ -2789,7 +2815,7 @@ async fn unified_exec_interrupt_preserves_long_running_session() -> Result<()> {
         })
         .await?;
 
-    let _begin_event = wait_for_event_match(&codex, |msg| match msg {
+    let begin_event = wait_for_event_match(&codex, |msg| match msg {
         EventMsg::ExecCommandBegin(ev) if ev.call_id == call_id => Some(ev.clone()),
         _ => None,
     })
@@ -2801,6 +2827,25 @@ async fn unified_exec_interrupt_preserves_long_running_session() -> Result<()> {
         "expected numeric pid, got {pid:?}"
     );
 
+    if terminal_only {
+        // Wait for output produced after the initial yield, then allow a quiet
+        // collection window to finish before interrupting the next window.
+        tokio::time::timeout(
+            Duration::from_secs(10),
+            wait_for_event_match(&codex, |msg| match msg {
+                EventMsg::ExecCommandOutputDelta(ev)
+                    if ev.call_id == call_id
+                        && String::from_utf8_lossy(&ev.chunk).contains("wait-window-marker") =>
+                {
+                    Some(())
+                }
+                _ => None,
+            }),
+        )
+        .await
+        .context("terminal wait did not emit the output marker")?;
+        tokio::time::sleep(Duration::from_secs(1)).await;
+    }
     codex.submit(Op::Interrupt).await?;
     wait_for_event(&codex, |event| matches!(event, EventMsg::TurnAborted(_))).await;
 
@@ -2808,6 +2853,52 @@ async fn unified_exec_interrupt_preserves_long_running_session() -> Result<()> {
         process_is_alive(&pid)?,
         "expected unified exec process to remain alive after interrupt"
     );
+
+    if terminal_only {
+        let process_id = begin_event
+            .process_id
+            .as_deref()
+            .context("terminal wait should publish a session ID")?;
+        codex
+            .submit(Op::UserInput {
+                items: vec![UserInput::Text {
+                    text: "continue after interruption".into(),
+                    text_elements: Vec::new(),
+                }],
+                final_output_json_schema: None,
+                responsesapi_client_metadata: None,
+                additional_context: Default::default(),
+                thread_settings: Default::default(),
+            })
+            .await?;
+        wait_for_event(&codex, |event| matches!(event, EventMsg::TurnComplete(_))).await;
+
+        let requests = request_log.requests();
+        let next_request = requests.last().context("missing follow-up model request")?;
+        let body = next_request.body_json();
+        let input = body
+            .get("input")
+            .and_then(Value::as_array)
+            .context("follow-up model request is missing input")?;
+        let interrupted_output = input
+            .iter()
+            .find(|item| {
+                item.get("type").and_then(Value::as_str) == Some("function_call_output")
+                    && item.get("call_id").and_then(Value::as_str) == Some(call_id)
+            })
+            .and_then(extract_output_text)
+            .context("interrupted tool output is missing from follow-up model input")?;
+        assert!(
+            interrupted_output.contains(&format!("Background session ID: {process_id}"))
+                || interrupted_output
+                    .contains(&format!("Process running with session ID {process_id}")),
+            "follow-up model input did not contain session ID {process_id}: {interrupted_output:?}"
+        );
+        assert!(
+            interrupted_output.contains("wait-window-marker"),
+            "follow-up model input lost output from the preceding wait window: {interrupted_output:?}"
+        );
+    }
 
     codex.submit(Op::CleanBackgroundTerminals).await?;
     wait_for_process_exit(&pid).await?;
