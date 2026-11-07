@@ -1,6 +1,6 @@
 /**
- * @name Android visual computer-use handler missing native-image guard
- * @description Android visual computer-use handlers must return the same response version that passed a body-backed native-image guard before a successful response can exit.
+ * @name Native visual computer-use handler missing native-image guard
+ * @description Retained browser visual computer-use handling must return the same response version that passed a body-backed native-image guard before a successful response can exit.
  * @kind problem
  * @problem.severity error
  * @precision high
