@@ -473,11 +473,10 @@ mod tests {
     use codex_protocol::dynamic_tools::DynamicToolSpec;
     use codex_protocol::models::FunctionCallOutputContentItem;
     use codex_protocol::protocol::EventMsg;
-    use codex_tools::ANDROID_INSTALL_BUILD_FROM_RUN_TOOL_NAME;
-    use codex_tools::ANDROID_OBSERVE_TOOL_NAME;
     use codex_tools::BROWSER_OBSERVE_TOOL_NAME;
-    use codex_tools::COMPUTER_USE_ADAPTER_ANDROID;
     use codex_tools::COMPUTER_USE_ADAPTER_BROWSER;
+    use codex_tools::COMPUTER_USE_ADAPTER_DESKTOP;
+    use codex_tools::DESKTOP_OBSERVE_TOOL_NAME;
     use codex_tools::LoadableToolSpec;
     use codex_tools::ToolName;
     use pretty_assertions::assert_eq;
@@ -505,10 +504,10 @@ mod tests {
     fn computer_use_command_uses_compact_json_arguments() {
         assert_eq!(
             computer_use_command(
-                "android_observe",
+                "desktop_observe",
                 &json!({"scope": "screen_and_ui"}).to_string()
             ),
-            r#"android_observe {"scope":"screen_and_ui"}"#
+            r#"desktop_observe {"scope":"screen_and_ui"}"#
         );
     }
 
@@ -524,31 +523,23 @@ mod tests {
     }
 
     #[test]
-    fn android_handler_uses_android_adapter() {
-        let observe_handler = ComputerUseHandler::from_dynamic_tool(&native_dynamic_tool(
-            ANDROID_OBSERVE_TOOL_NAME,
-            /*defer_loading*/ false,
-        ))
-        .expect("android observe should create a native computer-use handler");
-        let install_handler = ComputerUseHandler::from_dynamic_tool(&native_dynamic_tool(
-            ANDROID_INSTALL_BUILD_FROM_RUN_TOOL_NAME,
-            /*defer_loading*/ false,
-        ))
-        .expect("android install should create a native computer-use handler");
-
-        assert_eq!(observe_handler.adapter, COMPUTER_USE_ADAPTER_ANDROID);
-        assert_eq!(observe_handler.response_timeout, Duration::from_secs(120));
-        assert_eq!(install_handler.adapter, COMPUTER_USE_ADAPTER_ANDROID);
-        assert_eq!(install_handler.response_timeout, Duration::from_secs(300));
+    fn retired_android_tools_are_not_native_computer_use_handlers() {
+        for tool_name in ["android_observe", "android_step", "android_install_build_from_run"] {
+            assert!(ComputerUseHandler::from_dynamic_tool(&native_dynamic_tool(
+                tool_name,
+                /*defer_loading*/ false,
+            ))
+            .is_none());
+        }
     }
 
     #[test]
     fn search_info_uses_native_computer_use_metadata() {
         let observe_handler = ComputerUseHandler::from_dynamic_tool(&native_dynamic_tool(
-            ANDROID_OBSERVE_TOOL_NAME,
+            DESKTOP_OBSERVE_TOOL_NAME,
             /*defer_loading*/ true,
         ))
-        .expect("android observe should create a native computer-use handler");
+        .expect("desktop observe should create a native computer-use handler");
 
         let search_info = observe_handler
             .search_info()
@@ -557,12 +548,12 @@ mod tests {
             search_info
                 .entry
                 .search_text
-                .contains(ANDROID_OBSERVE_TOOL_NAME),
+                .contains(DESKTOP_OBSERVE_TOOL_NAME),
             "search text should include the canonical native tool name: {}",
             search_info.entry.search_text
         );
         assert!(
-            search_info.entry.search_text.contains("android observe"),
+            search_info.entry.search_text.contains("desktop observe"),
             "search text should include the native display name: {}",
             search_info.entry.search_text
         );
@@ -570,7 +561,7 @@ mod tests {
             search_info
                 .entry
                 .search_text
-                .contains("Capture the current Android screen"),
+                .contains("Capture the current desktop app state"),
             "search text should include the canonical native description: {}",
             search_info.entry.search_text
         );
@@ -585,20 +576,20 @@ mod tests {
         let LoadableToolSpec::Function(tool) = search_info.entry.output else {
             panic!("native computer-use search info should expose one function");
         };
-        assert_eq!(tool.name, ANDROID_OBSERVE_TOOL_NAME);
+        assert_eq!(tool.name, DESKTOP_OBSERVE_TOOL_NAME);
         assert_eq!(tool.defer_loading, Some(true));
     }
 
     #[test]
     fn unavailable_response_uses_native_computer_use_content_items() {
         assert_eq!(
-            unavailable_response("no android environment"),
+            unavailable_response("no desktop environment"),
             codex_protocol::computer_use::ComputerUseResponse {
                 content_items: vec![ComputerUseOutputContentItem::InputText {
-                    text: "no android environment".to_string(),
+                    text: "no desktop environment".to_string(),
                 }],
                 success: false,
-                error: Some("no android environment".to_string()),
+                error: Some("no desktop environment".to_string()),
             }
         );
     }
@@ -609,11 +600,11 @@ mod tests {
             computer_use_response_content_for_model(ComputerUseResponse {
                 content_items: Vec::new(),
                 success: false,
-                error: Some("android session disconnected".to_string()),
+                error: Some("desktop session disconnected".to_string()),
             }),
             (
                 vec![FunctionCallOutputContentItem::InputText {
-                    text: "android session disconnected".to_string(),
+                    text: "desktop session disconnected".to_string(),
                 }],
                 false,
             )
@@ -626,7 +617,7 @@ mod tests {
             computer_use_response_content_for_model(ComputerUseResponse {
                 content_items: vec![
                     ComputerUseOutputContentItem::InputText {
-                        text: "Android observation".to_string(),
+                        text: "Desktop observation".to_string(),
                     },
                     ComputerUseOutputContentItem::InputImage {
                         image_url: "data:image/png;base64,AAAA".to_string(),
@@ -639,7 +630,7 @@ mod tests {
             (
                 vec![
                     FunctionCallOutputContentItem::InputText {
-                        text: "Android observation".to_string(),
+                        text: "Desktop observation".to_string(),
                     },
                     FunctionCallOutputContentItem::InputImage {
                         image_url: "data:image/png;base64,AAAA".to_string(),
@@ -749,8 +740,8 @@ mod tests {
             &turn,
             /*environment_id*/ None,
             "call-no-env".to_string(),
-            COMPUTER_USE_ADAPTER_ANDROID.to_string(),
-            ToolName::plain(ANDROID_OBSERVE_TOOL_NAME),
+            COMPUTER_USE_ADAPTER_DESKTOP.to_string(),
+            ToolName::plain(DESKTOP_OBSERVE_TOOL_NAME),
             json!({ "scope": "screen_and_ui" }),
             Duration::from_secs(1),
         )
@@ -772,7 +763,7 @@ mod tests {
         assert_eq!(
             response_event.error.as_deref(),
             Some(
-                "Android computer-use environment is unavailable: no turn environment is selected."
+                "desktop computer-use environment is unavailable: no turn environment is selected."
             )
         );
         assert!(
@@ -794,8 +785,8 @@ mod tests {
             &turn,
             selected_computer_use_environment_id(step_context.as_ref()),
             "call-timeout".to_string(),
-            COMPUTER_USE_ADAPTER_ANDROID.to_string(),
-            ToolName::plain(ANDROID_OBSERVE_TOOL_NAME),
+            COMPUTER_USE_ADAPTER_DESKTOP.to_string(),
+            ToolName::plain(DESKTOP_OBSERVE_TOOL_NAME),
             json!({ "scope": "screen_and_ui" }),
             Duration::from_millis(1),
         )
