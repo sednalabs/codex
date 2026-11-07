@@ -1671,11 +1671,6 @@ fn configured_native_dynamic_tools(
         crate::browser_computer_use_provider::configured_browser_dynamic_tools_for_codex_home(
             codex_home,
         );
-    tools.extend(
-        crate::android_computer_use_provider::configured_android_dynamic_tools_for_codex_home(
-            codex_home,
-        ),
-    );
     tools.extend(crate::desktop_computer_use_provider::configured_desktop_dynamic_tools());
     (!tools.is_empty()).then_some(tools)
 }
@@ -2105,8 +2100,13 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn thread_lifecycle_params_include_configured_native_dynamic_tools() {
+    async fn thread_lifecycle_params_keep_browser_tools_and_ignore_retired_android_config() {
         let temp_dir = tempfile::tempdir().expect("tempdir");
+        std::fs::write(
+            temp_dir.path().join("android-computer-use.json"),
+            r#"{"mcp_url":"https://android-provider.example/mcp"}"#,
+        )
+        .expect("write Android provider config");
         std::fs::write(
             temp_dir.path().join("browser-computer-use.json"),
             r#"{"provider":"playwright"}"#,
@@ -2145,6 +2145,13 @@ mod tests {
 
         assert!(!expected_browser_tools.is_empty());
         assert!(start_tools.starts_with(&expected_browser_tools));
+        for retired_tool in [
+            "android_observe",
+            "android_step",
+            "android_install_build_from_run",
+        ] {
+            assert!(!start_tools.iter().any(|tool| tool.name == retired_tool));
+        }
         assert_eq!(resume.dynamic_tools, Some(start_tools.clone()));
         assert_eq!(fork.dynamic_tools, Some(start_tools));
     }

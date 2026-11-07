@@ -308,7 +308,7 @@ jobs:
               ;;
             codex-rs-rest-b)
               scope_paths=(
-                codex-rs/.config codex-rs/android-computer-use codex-rs/async-utils codex-rs/chatgpt
+                codex-rs/.config codex-rs/async-utils codex-rs/chatgpt
                 codex-rs/cloud-tasks-client codex-rs/code-mode-protocol codex-rs/codex-experimental-api-macros
                 codex-rs/config codex-rs/core-plugins codex-rs/execpolicy codex-rs/feedback codex-rs/hooks
                 codex-rs/login codex-rs/model-provider codex-rs/otel codex-rs/realtime-webrtc codex-rs/rollout
