@@ -18,12 +18,14 @@ import codeql.rust.dataflow.DataFlow
 predicate visualProviderFile(File file) {
   file.getRelativePath() = "codex-rs/android-computer-use/src/lib.rs" or
   file.getRelativePath() = "codex-rs/browser-computer-use/src/lib.rs" or
+  file.getRelativePath() = "codex-rs/tui/src/desktop_computer_use_provider.rs" or
   // Keep the historical fixture path for the existing focused query test.
   file.getRelativePath() = "codex-rs/computer-use-runtime/src/lib.rs"
 }
 
 predicate productionVisualProviderFile(File file) {
-  file.getRelativePath() = "codex-rs/browser-computer-use/src/lib.rs"
+  file.getRelativePath() = "codex-rs/browser-computer-use/src/lib.rs" or
+  file.getRelativePath() = "codex-rs/tui/src/desktop_computer_use_provider.rs"
 }
 
 predicate visualHandler(Function function) {

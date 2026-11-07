@@ -1,7 +1,7 @@
 /**
  * @name Native visual response production coverage witness
  * @id rust/native-visual-response-coverage-witness
- * @description Counts successful visual response exits reached by each production Android or browser handler so an empty or fixture-only analysis cannot masquerade as coverage.
+ * @description Counts successful visual response exits reached by each retained production browser or desktop handler so an empty or fixture-only analysis cannot masquerade as coverage.
  *
  * This is a summary metric rather than an alert.  A production analysis must
  * return one row for every selected handler and a non-zero successful-exit
