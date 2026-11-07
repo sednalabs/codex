@@ -1311,7 +1311,7 @@ fn thread_resume_params_from_config(
 fn configured_native_dynamic_tools(
     config: &Config,
 ) -> Option<Vec<codex_app_server_protocol::DynamicToolSpec>> {
-    let mut tools = codex_browser_computer_use::configured_browser_dynamic_tools_for_codex_home(
+    let tools = codex_browser_computer_use::configured_browser_dynamic_tools_for_codex_home(
         config.codex_home.as_path(),
     );
     (!tools.is_empty()).then_some(tools)
