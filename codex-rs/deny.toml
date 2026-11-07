@@ -240,7 +240,6 @@ deny = [
         # Intended owner.
         "codex-http-client",
         # Temporary migration exceptions.
-        "codex-android-computer-use",
         "codex-api",
         "codex-app-server",
         "codex-core",
