@@ -15,6 +15,8 @@ EXPECTED_PROVIDER_FILES = (
 )
 
 EXPECTED_PRODUCTION_QUERIES = (
+    # Keep the historical query path/identity; production scope is browser-only
+    # after native Android retirement.
     "queries/AndroidVisualToolMissingNativeImageGuard.ql",
     "queries/NativeVisualResponseProductionCoverageMissing.ql",
     "queries/NativeVisualResponseCoverageWitness.ql",

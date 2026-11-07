@@ -23,7 +23,6 @@ predicate visualProviderFile(File file) {
 }
 
 predicate productionVisualProviderFile(File file) {
-  file.getRelativePath() = "codex-rs/android-computer-use/src/lib.rs" or
   file.getRelativePath() = "codex-rs/browser-computer-use/src/lib.rs"
 }
 
