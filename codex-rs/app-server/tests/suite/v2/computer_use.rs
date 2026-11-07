@@ -336,8 +336,7 @@ async fn thread_resume_preserves_history_and_client_supplied_android_named_tool(
 }
 
 #[tokio::test]
-async fn thread_resume_preserves_client_tool_after_replacing_loaded_thread() -> Result<()>
-{
+async fn thread_resume_preserves_client_tool_after_replacing_loaded_thread() -> Result<()> {
     let responses = vec![
         create_final_assistant_message_sse_response("Seeded")?,
         create_final_assistant_message_sse_response("Done")?,
@@ -537,11 +536,7 @@ async fn thread_fork_preserves_client_supplied_android_named_tool() -> Result<()
     let body = bodies
         .last()
         .context("expected a forked turn responses request")?;
-    assert_client_supplied_dynamic_tool(
-        body,
-        "android_step",
-        "client-supplied step description",
-    )?;
+    assert_client_supplied_dynamic_tool(body, "android_step", "client-supplied step description")?;
 
     Ok(())
 }
@@ -611,11 +606,7 @@ async fn paginated_thread_fork_preserves_client_supplied_android_named_tool() ->
     let body = bodies
         .last()
         .context("expected a paginated forked turn responses request")?;
-    assert_client_supplied_dynamic_tool(
-        body,
-        "android_step",
-        "client-supplied step description",
-    )?;
+    assert_client_supplied_dynamic_tool(body, "android_step", "client-supplied step description")?;
 
     Ok(())
 }
@@ -697,8 +688,14 @@ fn assert_client_supplied_dynamic_tool(
     let input_schema = tool
         .get("parameters")
         .context("client-supplied dynamic tool schema should be present")?;
-    assert_eq!(input_schema.get("type").and_then(Value::as_str), Some("object"));
-    assert_eq!(input_schema.get("additionalProperties"), Some(&Value::Bool(false)));
+    assert_eq!(
+        input_schema.get("type").and_then(Value::as_str),
+        Some("object")
+    );
+    assert_eq!(
+        input_schema.get("additionalProperties"),
+        Some(&Value::Bool(false))
+    );
     let parameters = input_schema
         .get("properties")
         .and_then(Value::as_object)
