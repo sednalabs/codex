@@ -524,12 +524,17 @@ mod tests {
 
     #[test]
     fn retired_android_tools_are_not_native_computer_use_handlers() {
-        for tool_name in ["android_observe", "android_step", "android_install_build_from_run"] {
-            assert!(ComputerUseHandler::from_dynamic_tool(&native_dynamic_tool(
-                tool_name,
-                /*defer_loading*/ false,
-            ))
-            .is_none());
+        for tool_name in [
+            "android_observe",
+            "android_step",
+            "android_install_build_from_run",
+        ] {
+            assert!(
+                ComputerUseHandler::from_dynamic_tool(&native_dynamic_tool(
+                    tool_name, /*defer_loading*/ false,
+                ))
+                .is_none()
+            );
         }
     }
 

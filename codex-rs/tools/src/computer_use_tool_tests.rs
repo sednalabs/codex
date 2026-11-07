@@ -50,10 +50,7 @@ fn native_computer_use_provider_registry_declares_adapters_tools_and_backends() 
             .iter()
             .map(|provider| provider.adapter)
             .collect::<Vec<_>>(),
-        vec![
-            COMPUTER_USE_ADAPTER_BROWSER,
-            COMPUTER_USE_ADAPTER_DESKTOP,
-        ]
+        vec![COMPUTER_USE_ADAPTER_BROWSER, COMPUTER_USE_ADAPTER_DESKTOP,]
     );
 
     let (browser, browser_step) =
@@ -76,9 +73,7 @@ fn native_computer_use_provider_registry_declares_adapters_tools_and_backends() 
 fn native_computer_use_registry_does_not_claim_retired_android_tools() {
     assert!(native_computer_use_provider_for_call("android", "android_observe").is_none());
     assert!(native_computer_use_provider_for_call("android", "android_step").is_none());
-    assert!(
-        canonical_native_computer_use_dynamic_tool(&dynamic_tool("android_observe")).is_none()
-    );
+    assert!(canonical_native_computer_use_dynamic_tool(&dynamic_tool("android_observe")).is_none());
 }
 
 #[test]

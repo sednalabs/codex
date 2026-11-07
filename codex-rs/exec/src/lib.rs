@@ -1323,12 +1323,10 @@ enum ExecComputerUseProviderOutcome {
 }
 
 fn exec_computer_use_providers() -> &'static [ExecComputerUseProvider] {
-    static PROVIDERS: [ExecComputerUseProvider; 1] = [
-        ExecComputerUseProvider {
-            adapter: COMPUTER_USE_ADAPTER_BROWSER,
-            handler: ExecComputerUseProviderHandler::Browser,
-        },
-    ];
+    static PROVIDERS: [ExecComputerUseProvider; 1] = [ExecComputerUseProvider {
+        adapter: COMPUTER_USE_ADAPTER_BROWSER,
+        handler: ExecComputerUseProviderHandler::Browser,
+    }];
 
     &PROVIDERS
 }
@@ -2733,10 +2731,7 @@ mod tests {
             /*approvals_reviewer_override*/ None,
         );
 
-        let native_tools = vec![
-            "browser_observe".to_string(),
-            "browser_step".to_string(),
-        ];
+        let native_tools = vec!["browser_observe".to_string(), "browser_step".to_string()];
         assert_eq!(
             start_params
                 .dynamic_tools
