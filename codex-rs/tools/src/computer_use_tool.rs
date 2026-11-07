@@ -1,31 +1,9 @@
 use crate::ResponsesApiTool;
-use crate::android_tool::ANDROID_INSTALL_BUILD_FROM_RUN_TOOL_NAME;
-use crate::android_tool::ANDROID_OBSERVE_TOOL_NAME;
-use crate::android_tool::canonical_android_dynamic_tool;
 use crate::desktop_tool::DESKTOP_OBSERVE_TOOL_NAME;
 use crate::desktop_tool::canonical_desktop_dynamic_tool;
 use codex_protocol::dynamic_tools::DynamicToolSpec;
 
-pub const COMPUTER_USE_ADAPTER_ANDROID: &str = "android";
 pub const COMPUTER_USE_ADAPTER_DESKTOP: &str = "desktop";
-
-const ANDROID_PROVIDER_TOOLS: &[NativeComputerUseProviderTool] = &[
-    NativeComputerUseProviderTool {
-        name: ANDROID_OBSERVE_TOOL_NAME,
-        is_mutating: false,
-        uses_long_timeout: false,
-    },
-    NativeComputerUseProviderTool {
-        name: crate::android_tool::ANDROID_STEP_TOOL_NAME,
-        is_mutating: true,
-        uses_long_timeout: false,
-    },
-    NativeComputerUseProviderTool {
-        name: ANDROID_INSTALL_BUILD_FROM_RUN_TOOL_NAME,
-        is_mutating: true,
-        uses_long_timeout: true,
-    },
-];
 
 const DESKTOP_PROVIDER_TOOLS: &[NativeComputerUseProviderTool] = &[
     NativeComputerUseProviderTool {
@@ -40,14 +18,6 @@ const DESKTOP_PROVIDER_TOOLS: &[NativeComputerUseProviderTool] = &[
     },
 ];
 
-pub const NATIVE_COMPUTER_USE_PROVIDER_ANDROID: NativeComputerUseProvider =
-    NativeComputerUseProvider {
-        adapter: COMPUTER_USE_ADAPTER_ANDROID,
-        tools: ANDROID_PROVIDER_TOOLS,
-        backend_argument: None,
-        backend_hints: &[],
-    };
-
 pub const NATIVE_COMPUTER_USE_PROVIDER_DESKTOP: NativeComputerUseProvider =
     NativeComputerUseProvider {
         adapter: COMPUTER_USE_ADAPTER_DESKTOP,
@@ -57,7 +27,6 @@ pub const NATIVE_COMPUTER_USE_PROVIDER_DESKTOP: NativeComputerUseProvider =
     };
 
 const NATIVE_COMPUTER_USE_PROVIDERS: &[NativeComputerUseProvider] = &[
-    NATIVE_COMPUTER_USE_PROVIDER_ANDROID,
     NATIVE_COMPUTER_USE_PROVIDER_DESKTOP,
 ];
 
@@ -136,11 +105,7 @@ pub fn canonical_native_computer_use_dynamic_tool(
     tool: &DynamicToolSpec,
 ) -> Option<NativeComputerUseTool> {
     let (provider, provider_tool) = native_computer_use_provider_for_tool(&tool.name)?;
-    let output_tool = match provider.adapter {
-        COMPUTER_USE_ADAPTER_ANDROID => canonical_android_dynamic_tool(tool)?,
-        COMPUTER_USE_ADAPTER_DESKTOP => canonical_desktop_dynamic_tool(tool)?,
-        _ => return None,
-    };
+    let output_tool = canonical_desktop_dynamic_tool(tool)?;
 
     Some(NativeComputerUseTool {
         adapter: provider.adapter,

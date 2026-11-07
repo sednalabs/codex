@@ -1,10 +1,7 @@
-use crate::android_computer_use_provider::AndroidComputerUseOutcome;
-use crate::android_computer_use_provider::handle_android_computer_use;
 use crate::desktop_computer_use_provider::DesktopComputerUseOutcome;
 use crate::desktop_computer_use_provider::handle_desktop_computer_use;
 use codex_app_server_protocol::ComputerUseCallParams;
 use codex_app_server_protocol::ComputerUseCallResponse;
-use codex_tools::COMPUTER_USE_ADAPTER_ANDROID;
 use codex_tools::COMPUTER_USE_ADAPTER_DESKTOP;
 use codex_tools::native_computer_use_provider_for_call;
 
@@ -25,11 +22,7 @@ pub(crate) async fn handle_computer_use(
 }
 
 fn computer_use_providers() -> &'static [RegisteredComputerUseProvider] {
-    static PROVIDERS: [RegisteredComputerUseProvider; 2] = [
-        RegisteredComputerUseProvider {
-            adapter: COMPUTER_USE_ADAPTER_ANDROID,
-            handler: ComputerUseProviderHandler::Android,
-        },
+    static PROVIDERS: [RegisteredComputerUseProvider; 1] = [
         RegisteredComputerUseProvider {
             adapter: COMPUTER_USE_ADAPTER_DESKTOP,
             handler: ComputerUseProviderHandler::Desktop,
@@ -47,7 +40,6 @@ struct RegisteredComputerUseProvider {
 
 #[derive(Clone, Copy)]
 enum ComputerUseProviderHandler {
-    Android,
     Desktop,
 }
 
@@ -59,16 +51,6 @@ impl RegisteredComputerUseProvider {
 
     async fn handle(&self, params: &ComputerUseCallParams) -> ComputerUseProviderOutcome {
         match self.handler {
-            ComputerUseProviderHandler::Android => {
-                match handle_android_computer_use(params).await {
-                    AndroidComputerUseOutcome::Handled(response) => {
-                        ComputerUseProviderOutcome::Handled(response)
-                    }
-                    AndroidComputerUseOutcome::Unavailable => {
-                        ComputerUseProviderOutcome::Unavailable
-                    }
-                }
-            }
             ComputerUseProviderHandler::Desktop => {
                 match handle_desktop_computer_use(params).await {
                     DesktopComputerUseOutcome::Handled(response) => {
@@ -98,6 +80,22 @@ mod tests {
             environment_id: Some("env-1".to_string()),
             adapter: "browser".to_string(),
             tool: "browser_private_backend_probe".to_string(),
+            arguments: json!({}),
+        })
+        .await;
+
+        assert!(matches!(outcome, ComputerUseProviderOutcome::Unavailable));
+    }
+
+    #[tokio::test]
+    async fn retired_android_provider_is_not_claimed_by_native_registry() {
+        let outcome = handle_computer_use(&ComputerUseCallParams {
+            thread_id: "thread-1".to_string(),
+            call_id: "call-android-step".to_string(),
+            turn_id: "turn-1".to_string(),
+            environment_id: Some("env-1".to_string()),
+            adapter: "android".to_string(),
+            tool: "android_step".to_string(),
             arguments: json!({}),
         })
         .await;

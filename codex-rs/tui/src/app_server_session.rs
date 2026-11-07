@@ -1564,7 +1564,7 @@ fn thread_start_params_from_config(
         developer_instructions: with_terminal_visualization_instructions(
             config, /*control_instructions*/ None,
         ),
-        dynamic_tools: configured_native_dynamic_tools(config),
+        dynamic_tools: configured_native_dynamic_tools(),
         ..ThreadStartParams::default()
     }
 }
@@ -1617,7 +1617,7 @@ fn thread_resume_params_from_config(
         developer_instructions: with_terminal_visualization_instructions(
             &config, /*control_instructions*/ None,
         ),
-        dynamic_tools: configured_native_dynamic_tools(&config),
+        dynamic_tools: configured_native_dynamic_tools(),
         ..ThreadResumeParams::default()
     }
 }
@@ -1658,20 +1658,13 @@ fn thread_fork_params_from_config(
         ),
         ephemeral: config.ephemeral,
         thread_source: Some(thread_source),
-        dynamic_tools: configured_native_dynamic_tools(&config),
+        dynamic_tools: configured_native_dynamic_tools(),
         ..ThreadForkParams::default()
     }
 }
 
-fn configured_native_dynamic_tools(
-    config: &Config,
-) -> Option<Vec<codex_app_server_protocol::DynamicToolSpec>> {
-    let codex_home = config.codex_home.as_path();
-    let mut tools =
-        crate::android_computer_use_provider::configured_android_dynamic_tools_for_codex_home(
-            codex_home,
-        );
-    tools.extend(crate::desktop_computer_use_provider::configured_desktop_dynamic_tools());
+fn configured_native_dynamic_tools() -> Option<Vec<codex_app_server_protocol::DynamicToolSpec>> {
+    let tools = crate::desktop_computer_use_provider::configured_desktop_dynamic_tools();
     (!tools.is_empty()).then_some(tools)
 }
 
@@ -2100,7 +2093,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn thread_lifecycle_params_include_configured_native_dynamic_tools() {
+    async fn thread_lifecycle_params_ignore_retired_android_runtime_config() {
         let temp_dir = tempfile::tempdir().expect("tempdir");
         std::fs::write(
             temp_dir.path().join("android-computer-use.json"),
@@ -2130,23 +2123,16 @@ mod tests {
             /*remote_cwd_override*/ None,
             ThreadSource::User,
         );
-        let start_tools = start
-            .dynamic_tools
-            .expect("start should include configured native tools");
-
-        assert!(
-            start_tools
-                .iter()
-                .any(|tool| tool.name == "android_observe")
-        );
-        assert!(start_tools.iter().any(|tool| tool.name == "android_step"));
-        assert!(
-            start_tools
-                .iter()
-                .any(|tool| tool.name == "android_install_build_from_run")
-        );
-        assert_eq!(resume.dynamic_tools, Some(start_tools.clone()));
-        assert_eq!(fork.dynamic_tools, Some(start_tools));
+        let start_tools = start.dynamic_tools.clone().unwrap_or_default();
+        for retired_tool in [
+            "android_observe",
+            "android_step",
+            "android_install_build_from_run",
+        ] {
+            assert!(!start_tools.iter().any(|tool| tool.name == retired_tool));
+        }
+        assert_eq!(resume.dynamic_tools, start.dynamic_tools);
+        assert_eq!(fork.dynamic_tools, start.dynamic_tools);
     }
 
     #[test]
