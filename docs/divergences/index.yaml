@@ -3607,6 +3607,69 @@
       "extraction_target": "upstream model-safe MCP JSON-family resource output boundary"
     },
     {
+      "id": "durable-agent-mailbox-v2-candidate",
+      "title": "Disabled-by-default durable native mailbox V2 port candidate",
+      "status": "live",
+      "category": "agent-runtime",
+      "surface_type": "native-mailbox",
+      "surface": [
+        "native V2 work and message lifecycle",
+        "typed send_message receipts",
+        "selection-aware wait_agent tool output"
+      ],
+      "files": [
+        "codex-rs/agent-mailbox/**",
+        "codex-rs/Cargo.toml",
+        "codex-rs/Cargo.lock",
+        "codex-rs/core/Cargo.toml",
+        "codex-rs/features/src/lib.rs",
+        "codex-rs/core/src/agent/control.rs",
+        "codex-rs/core/src/agent/control/lifecycle.rs",
+        "codex-rs/core/src/agent/control/mailbox_v2.rs",
+        "codex-rs/core/src/agent_communication.rs",
+        "codex-rs/core/src/session/mod.rs",
+        "codex-rs/core/src/session/session.rs",
+        "codex-rs/core/src/session/turn.rs",
+        "codex-rs/core/src/session/tests.rs",
+        "codex-rs/core/src/tools/spec_plan.rs",
+        "codex-rs/core/src/tools/handlers/multi_agents_spec.rs",
+        "codex-rs/core/src/tools/handlers/multi_agents_spec_tests.rs",
+        "codex-rs/core/src/tools/handlers/multi_agents_v2/**",
+        "codex-rs/protocol/src/items.rs",
+        "codex-rs/protocol/src/items_mailbox_tests.rs",
+        ".github/validation-named-tests.json"
+      ],
+      "behavior": "Unvalidated port candidate for durable native V2 work, typed message identity, exact reply selection, and additive mailbox wait reports. Both agent_mailbox and agent_mailbox_idle_activation remain under-development and default false. The existing protected intent/origin, queue-only receipt identity, native_event_wait lease, and selected-target completion contracts remain authoritative. Disabled tool schemas retain their prior shape; enabled schemas add kind/reply_to, stable receipt identity, targets/replies_to selection, and a source-shaped mailbox_wait_report.",
+      "upstream_equivalent": false,
+      "introduced_in": {
+        "carry_commit": null,
+        "upstream_commit": null
+      },
+      "guardrail_lane": "codex.core-multi-agent-orchestration-targeted; codex.blocking-waits-core-targeted; validation-lab.yml targeted mailbox/protocol/feature checks (pending)",
+      "tests": [
+        "send_message_mailbox_fields_are_opt_in_and_preserve_protected_receipt",
+        "durable_work_receipts_are_opt_in_for_spawn_and_followup",
+        "wait_agent_tool_v2_mailbox_selectors_preserve_native_wait_contract",
+        "mailbox_wait_report_serializes_exact_selection_and_nullable_wake_identity",
+        "mailbox_wait_report_accepts_source_selection_aliases",
+        "native_retry_dispatch_reopen_and_capture_backpressure_are_safe",
+        "quiet_reply_and_author_dispositions_settle_only_the_exact_request",
+        "new_continuation_binding_requires_native_incarnation"
+      ],
+      "owner": "downstream",
+      "notes": "Non-shippable candidate as of 2026-11-06. Source behavior reference 94aec3f74 and feature introduction 3acdba767 are references, not parity evidence; the port starts from protected 20ed17cf and must not import the broader #995 architecture or weaken #1000 intent/origin behavior. Runtime lifecycle, exact selection, goal continuation, activation, restart/recovery, and hosted proofs remain acceptance work. Listed source tests are present, not reported passed. Hosted formatting, config/protocol schema review and generation where affected, dependency/Bazel lock generation, protected regressions, and exact-final-candidate tests are required before promotion. No local generators or validation runs establish evidence. Preserve the separate explicit-recipient-intent carry; drop or narrow this candidate only after an equivalent upstream durable lifecycle and compatible legacy behavior are proved.",
+      "upstreamability_tier": "neutral-seam",
+      "boundary_type": "runtime-extension-candidate",
+      "hotspot_files": [
+        "codex-rs/core/src/agent/control/lifecycle.rs",
+        "codex-rs/core/src/session/mod.rs",
+        "codex-rs/core/src/session/turn.rs",
+        "codex-rs/core/src/tools/handlers/multi_agents_v2/wait.rs",
+        "codex-rs/core/src/tools/handlers/multi_agents_spec.rs"
+      ],
+      "extraction_target": "upstream durable native collaboration lifecycle with independent legacy intent and scheduling semantics"
+    },
+    {
       "id": "exact-target-wait-mailbox-filter",
       "title": "V2 wait eligibility follows explicit recipient intent, not turn triggers",
       "status": "live",

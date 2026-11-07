@@ -57,6 +57,9 @@ pub(crate) struct Session {
     pub(crate) conversation: Arc<RealtimeConversationManager>,
     pub(crate) active_turn: Mutex<Option<ActiveTurn>>,
     pub(crate) input_queue: InputQueue,
+    /// Serializes durable input acknowledgement with compaction replacement.
+    pub(super) mailbox_history_gate: Mutex<()>,
+    pub(super) mailbox_pending_appends: std::sync::Mutex<HashSet<String>>,
     pub(crate) guardian_review_session: GuardianReviewSessionManager,
     pub(crate) services: SessionServices,
     pub(super) git_enrichment_policy: GitEnrichmentPolicy,
@@ -1224,6 +1227,8 @@ impl Session {
                 conversation: Arc::new(RealtimeConversationManager::new()),
                 active_turn: Mutex::new(None),
                 input_queue: InputQueue::new(),
+                mailbox_history_gate: Mutex::new(()),
+                mailbox_pending_appends: Default::default(),
                 guardian_review_session: GuardianReviewSessionManager::default(),
                 services,
                 git_enrichment_policy,

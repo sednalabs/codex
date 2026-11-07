@@ -41,6 +41,44 @@ decisions.
 
 ## Current Downstream Guardrails
 
+### Durable native mailbox V2 port candidate
+
+- **Non-shippable and unvalidated as of 2026-11-06.** This narrow port uses
+  `94aec3f74` as a behavior reference and `3acdba767` as the feature source,
+  against protected base `20ed17cf`. It is not a source-parity claim and does
+  not adopt the broader PR #995 runtime architecture. Source code and source
+  tests alone are not hosted validation evidence.
+- `agent_mailbox` and `agent_mailbox_idle_activation` are under-development
+  feature flags, both disabled by default. The durable store and native
+  adapter are intended to retain exact work/message identity, canonical
+  admission, outcomes, reply selection, and recovery. Lifecycle completion,
+  native waits, goal continuation, activation, and their cross-restart proofs
+  remain required acceptance work before promotion.
+- Preserve PR #1000's `progress` / `action_required` / `result_ready` intent,
+  notification origin, and independent `trigger_turn` scheduling. Durable
+  message `kind` is a separate classification. Keep protected queue-only
+  receipt identity, the `native_event_wait` lease contract, and existing
+  selected-target `any` / `all` behavior. No receipt proves model admission,
+  acknowledgement, or a new model turn.
+- Feature-enabled schemas add `kind` / `reply_to`, optional durable receipt
+  identity, and exact `targets` / `replies_to` wait selection. The additive
+  `mailbox_wait_report` uses the source camelCase report shape; existing
+  requested/pending IDs and completion reason remain present. Report types
+  are standalone: this increment does not add a canonical-history or
+  app-server `CollabAgentToolCallItem` field.
+- Before promotion, complete the runtime/goal/wait integration and use approved
+  hosted runners for formatting, affected config/protocol schema generation
+  and review, dependency/Bazel lock generation, source tests, protected
+  regressions, and exact-final-candidate evidence. Run `just write-config-schema`
+  on the hosted candidate and review any tracked drift; do not hand-edit
+  generated schema files. Generate app-server schemas only if a public
+  projection actually changes. No local generation or test run was performed
+  for this port surface.
+- Registry ID: `durable-agent-mailbox-v2-candidate`. Preserve the independent
+  `exact-target-wait-mailbox-filter` carry. Drop or narrow the durable carry
+  only when upstream supplies an equivalent proven lifecycle without losing
+  the protected intent, origin, lease, and feature-off contracts.
+
 ### Native waits use explicit recipient intent, not turn scheduling
 
 - Downstream V2 `wait_agent` keeps all inter-agent messages durable and

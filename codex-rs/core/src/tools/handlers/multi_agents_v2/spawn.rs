@@ -7,7 +7,7 @@ use crate::agent_communication::AgentCommunicationContext;
 use crate::agent_communication::AgentCommunicationKind;
 use crate::config::Config;
 use crate::tools::handlers::multi_agents_spec::SpawnAgentToolOptions;
-use crate::tools::handlers::multi_agents_spec::create_spawn_agent_tool_v2;
+use crate::tools::handlers::multi_agents_spec::create_spawn_agent_tool_v2_with_mailbox;
 use crate::tools::handlers::multi_agents_v2::message_tool::message_content;
 use codex_protocol::AgentPath;
 use codex_tools::ToolSpec;
@@ -15,11 +15,16 @@ use codex_tools::ToolSpec;
 #[derive(Default)]
 pub(crate) struct Handler {
     options: SpawnAgentToolOptions,
+    mailbox_enabled: bool,
 }
 
 impl Handler {
     pub(crate) fn new(options: SpawnAgentToolOptions) -> Self {
-        Self { options }
+        Self { options, mailbox_enabled: false }
+    }
+
+    pub(crate) fn new_with_mailbox(options: SpawnAgentToolOptions, mailbox_enabled: bool) -> Self {
+        Self { options, mailbox_enabled }
     }
 }
 
@@ -29,7 +34,7 @@ impl ToolExecutor<ToolInvocation> for Handler {
     }
 
     fn spec(&self) -> ToolSpec {
-        create_spawn_agent_tool_v2(self.options.clone())
+        create_spawn_agent_tool_v2_with_mailbox(self.options.clone(), self.mailbox_enabled)
     }
 
     fn handle(&self, invocation: ToolInvocation) -> codex_tools::ToolExecutorFuture<'_> {
@@ -118,7 +123,23 @@ async fn handle_spawn_agent(
         .get_agent_path()
         .unwrap_or_else(AgentPath::root);
     let communication = communication_from_tool_message(author, new_agent_path.clone(), message);
-    let context = AgentCommunicationContext::new(AgentCommunicationKind::Spawn, session.thread_id);
+    let mailbox_enabled = turn.config.features.enabled(codex_features::Feature::AgentMailbox);
+    if mailbox_enabled {
+        session.services.agent_control.mailbox_v2_open(&turn.config).await.map_err(collab_spawn_error)?;
+        if let Some(work) = session.services.agent_control.mailbox_v2_native_work(session.thread_id, &call_id).await
+            .map_err(collab_spawn_error)?
+        {
+            // Publication remains owned by the protected spawn CAS. Until a
+            // durable publication receipt can reconstruct this exact spawn,
+            // never create a replacement child for an accepted native key.
+            return Err(FunctionCallError::RespondToModel(format!(
+                "spawn call already accepted work {}; retry receipt reconciliation is required before spawning another child",
+                work.id,
+            )));
+        }
+    }
+    let context = AgentCommunicationContext::new(AgentCommunicationKind::Spawn, session.thread_id)
+        .with_native_key(mailbox_enabled.then(|| call_id.clone()));
     let spawned_agent = Box::pin(
         session
             .services
@@ -140,6 +161,12 @@ async fn handle_spawn_agent(
     .await
     .map_err(collab_spawn_error)?;
     let new_thread_id = spawned_agent.thread_id;
+    let work_ref = if mailbox_enabled {
+        session.services.agent_control.mailbox_v2_native_work(session.thread_id, &call_id).await
+            .map_err(collab_spawn_error)?
+    } else {
+        None
+    };
     let agent_snapshot = session
         .services
         .agent_control
@@ -183,6 +210,7 @@ async fn handle_spawn_agent(
     let hide_agent_metadata = turn.config.multi_agent_v2.hide_spawn_agent_metadata;
     if hide_agent_metadata {
         Ok(SpawnAgentResult {
+            work_ref,
             agent_id: None,
             task_name,
             nickname: None,
@@ -198,6 +226,7 @@ async fn handle_spawn_agent(
         })
     } else {
         Ok(SpawnAgentResult {
+            work_ref,
             agent_id: Some(new_thread_id.to_string()),
             task_name,
             nickname,
@@ -344,6 +373,8 @@ fn validate_spawn_agent_expected_reasoning_effort(
 
 #[derive(Debug, Serialize)]
 pub(crate) struct SpawnAgentResult {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    work_ref: Option<codex_agent_mailbox::WorkRef>,
     #[serde(skip_serializing_if = "Option::is_none")]
     agent_id: Option<String>,
     task_name: String,

@@ -79,6 +79,7 @@ const INSPECT_AGENT_TREE_STATE_DB_UNAVAILABLE_MESSAGE: &str = concat!(
 mod execution;
 mod legacy;
 mod lifecycle;
+pub(crate) mod mailbox_v2;
 mod residency;
 mod spawn;
 
@@ -226,6 +227,8 @@ pub(crate) struct AgentControl {
     agent_execution_limiter: Arc<AgentExecutionLimiter>,
     /// Session-scoped state shared by the root thread and every cloned sub-agent control handle.
     rollout_budget: Arc<RolloutBudget>,
+    /// Tree-shared durable custody, separate from resident and cold in-memory queues.
+    mailbox_v2: Arc<tokio::sync::OnceCell<Arc<codex_agent_mailbox::Mailbox>>>,
     #[cfg(test)]
     spawn_test_hooks: Arc<SpawnTestHooks>,
     #[cfg(test)]

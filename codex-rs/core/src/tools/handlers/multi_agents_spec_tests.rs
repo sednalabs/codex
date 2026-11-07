@@ -561,6 +561,96 @@ fn wait_agent_tool_v2_uses_timeout_only_summary_output() {
 }
 
 #[test]
+fn wait_agent_tool_v2_mailbox_selectors_preserve_native_wait_contract() {
+    let ToolSpec::Function(ResponsesApiTool {
+        parameters: legacy_parameters,
+        output_schema: legacy_output_schema,
+        ..
+    }) = create_wait_agent_tool_v2(WaitAgentTimeoutOptions::default())
+    else {
+        panic!("wait_agent should be a function tool");
+    };
+    let ToolSpec::Function(ResponsesApiTool {
+        description,
+        parameters,
+        output_schema,
+        ..
+    }) = create_wait_agent_tool_v2_with_mailbox(
+        WaitAgentTimeoutOptions::default(),
+        /*mailbox_enabled*/ true,
+    )
+    else {
+        panic!("wait_agent should be a function tool");
+    };
+
+    let legacy_properties = legacy_parameters.properties.expect("legacy wait properties");
+    let properties = parameters.properties.expect("mailbox wait properties");
+    assert!(!legacy_properties.contains_key("replies_to"));
+    assert!(properties.contains_key("targets"));
+    assert!(properties.contains_key("replies_to"));
+    for key in ["timeout_ms", "native_event_wait"] {
+        assert_eq!(
+            serde_json::to_value(properties.get(key)).expect("serialize mailbox wait parameter"),
+            serde_json::to_value(legacy_properties.get(key)).expect("serialize legacy wait parameter")
+        );
+    }
+    assert_eq!(
+        properties["return_when"].enum_values,
+        Some(vec![json!("any"), json!("all")])
+    );
+    assert_eq!(parameters.required, legacy_parameters.required);
+    assert!(description.contains("explicit action_required/result_ready"));
+
+    let output_schema = output_schema.expect("mailbox wait output schema");
+    let legacy_output_schema = legacy_output_schema.expect("legacy wait output schema");
+    assert_eq!(output_schema["required"], legacy_output_schema["required"]);
+    let mut output_properties = output_schema["properties"]
+        .as_object()
+        .expect("mailbox wait output properties")
+        .clone();
+    let report = output_properties
+        .remove("mailbox_wait_report")
+        .expect("typed mailbox report");
+    assert_eq!(
+        output_properties,
+        legacy_output_schema["properties"]
+            .as_object()
+            .expect("legacy wait output properties")
+            .clone()
+    );
+    assert_eq!(
+        report["properties"]["completionReason"]["enum"],
+        json!([
+            "result", "reply", "request", "human", "tool", "deadline",
+            "cancel", "interrupted", "subscription_loss", "runtime_fault",
+            "no_matching_work", "already_satisfied", "cycle", "needs_attention", null
+        ])
+    );
+    assert_eq!(
+        report["required"],
+        json!([
+            "requestedTargets", "requestedRepliesTo", "returnWhen", "completed",
+            "pending", "completionReason", "conditionSatisfied", "quietCount",
+            "wakeSender", "wakeRef"
+        ])
+    );
+    assert_eq!(
+        report["properties"]["completed"]["items"],
+        json!({
+            "type": "object",
+            "properties": {
+                "workRef": {"type": ["string", "null"]},
+                "messageId": {"type": ["string", "null"]},
+                "agent": {"type": ["string", "null"]},
+                "status": {"type": "string"}
+            },
+            "required": ["workRef", "messageId", "agent", "status"],
+            "additionalProperties": false
+        })
+    );
+}
+
+#[test]
 fn wait_agent_tool_v2_omits_runtime_fields_without_capability_provider() {
     let ToolSpec::Function(ResponsesApiTool {
         description,
@@ -709,6 +799,138 @@ fn inspect_agent_tree_tool_exposes_scope_and_compact_tree_fields() {
             "direct_child_count",
             "descendant_count"
         ])
+    );
+}
+
+#[test]
+fn durable_work_receipts_are_opt_in_for_spawn_and_followup() {
+    for (legacy, mailbox) in [
+        (
+            create_spawn_agent_tool_v2(SpawnAgentToolOptions::default()),
+            create_spawn_agent_tool_v2_with_mailbox(
+                SpawnAgentToolOptions::default(),
+                /*mailbox_enabled*/ true,
+            ),
+        ),
+        (
+            create_followup_task_tool(),
+            create_followup_task_tool_with_mailbox(/*mailbox_enabled*/ true),
+        ),
+    ] {
+        let ToolSpec::Function(ResponsesApiTool {
+            output_schema: Some(legacy_schema),
+            ..
+        }) = legacy
+        else {
+            panic!("native work tool should have an output schema");
+        };
+        let ToolSpec::Function(ResponsesApiTool {
+            output_schema: Some(mailbox_schema),
+            ..
+        }) = mailbox
+        else {
+            panic!("native work tool should have an output schema");
+        };
+        assert_eq!(mailbox_schema["required"], legacy_schema["required"]);
+        let mut properties = mailbox_schema["properties"]
+            .as_object()
+            .expect("native work output properties")
+            .clone();
+        assert_eq!(
+            properties.remove("work_ref").expect("exact work reference"),
+            json!({
+                "type": ["object", "null"],
+                "properties": {
+                    "id": {"type": "string"},
+                    "issuer": {"type": "string"},
+                    "agent": {"type": "string"},
+                    "submission_id": {"type": "string"}
+                },
+                "required": ["id", "issuer", "agent", "submission_id"],
+                "additionalProperties": false
+            })
+        );
+        assert_eq!(
+            properties,
+            legacy_schema["properties"]
+                .as_object()
+                .expect("legacy work output properties")
+                .clone()
+        );
+    }
+}
+
+#[test]
+fn send_message_mailbox_fields_are_opt_in_and_preserve_protected_receipt() {
+    let ToolSpec::Function(ResponsesApiTool {
+        parameters: legacy_parameters,
+        output_schema: legacy_output_schema,
+        ..
+    }) = create_send_message_tool()
+    else {
+        panic!("send_message should be a function tool");
+    };
+    let ToolSpec::Function(ResponsesApiTool {
+        description,
+        parameters,
+        output_schema,
+        ..
+    }) = create_send_message_tool_with_mailbox(/*mailbox_enabled*/ true)
+    else {
+        panic!("send_message should be a function tool");
+    };
+    let mut properties = parameters.properties.expect("mailbox send properties");
+    let kind = properties.remove("kind").expect("typed message kind");
+    assert_eq!(
+        kind.enum_values,
+        Some(vec![json!("note"), json!("progress"), json!("request"), json!("alert")])
+    );
+    assert!(properties.remove("reply_to").is_some());
+    assert_eq!(
+        serde_json::to_value(properties).expect("serialize mailbox send properties"),
+        serde_json::to_value(legacy_parameters.properties)
+            .expect("serialize legacy send properties")
+    );
+    assert_eq!(parameters.required, legacy_parameters.required);
+    assert!(description.contains("only when that recipient has opted in"));
+
+    let output_schema = output_schema.expect("mailbox send output schema");
+    let legacy_output_schema = legacy_output_schema.expect("legacy send output schema");
+    assert_eq!(output_schema["required"], legacy_output_schema["required"]);
+    let mut output_properties = output_schema["properties"]
+        .as_object()
+        .expect("mailbox send output properties")
+        .clone();
+    for key in ["message_id", "reply_to"] {
+        assert_eq!(
+            output_properties.remove(key).expect("durable identity")["type"],
+            json!(["string", "null"])
+        );
+    }
+    assert_eq!(
+        output_properties.remove("kind").expect("accepted kind")["enum"],
+        json!(["note", "progress", "request", "alert", null])
+    );
+    assert_eq!(
+        output_properties.remove("work_ref").expect("exact work reference"),
+        json!({
+            "type": ["object", "null"],
+            "properties": {
+                "id": {"type": "string"},
+                "issuer": {"type": "string"},
+                "agent": {"type": "string"},
+                "submission_id": {"type": "string"}
+            },
+            "required": ["id", "issuer", "agent", "submission_id"],
+            "additionalProperties": false
+        })
+    );
+    assert_eq!(
+        output_properties,
+        legacy_output_schema["properties"]
+            .as_object()
+            .expect("legacy send output properties")
+            .clone()
     );
 }
 

@@ -25,7 +25,12 @@ impl AgentCommunicationKind {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) struct AgentCommunicationContext {
     kind: AgentCommunicationKind,
-    sender_thread_id: ThreadId,
+    pub(crate) sender_thread_id: ThreadId,
+    pub(crate) native_key: Option<String>,
+    pub(crate) message_kind: Option<codex_agent_mailbox::MessageKind>,
+    pub(crate) reply_to: Option<String>,
+    /// An outcome already accepted atomically by the mailbox store.
+    pub(crate) durable_message_id: Option<String>,
 }
 
 impl AgentCommunicationContext {
@@ -33,7 +38,36 @@ impl AgentCommunicationContext {
         Self {
             kind,
             sender_thread_id,
+            native_key: None,
+            message_kind: None,
+            reply_to: None,
+            durable_message_id: None,
         }
+    }
+
+    pub(crate) fn with_native_key(mut self, key: Option<String>) -> Self {
+        self.native_key = key.filter(|key| !key.trim().is_empty());
+        self
+    }
+
+    pub(crate) fn with_mailbox_message(
+        mut self,
+        kind: Option<codex_agent_mailbox::MessageKind>,
+        reply_to: Option<String>,
+    ) -> Self {
+        self.message_kind = kind;
+        self.reply_to = reply_to;
+        self
+    }
+
+    pub(crate) fn is_native_work(&self) -> bool {
+        self.native_key.is_some()
+            && matches!(self.kind, AgentCommunicationKind::Spawn | AgentCommunicationKind::Followup)
+    }
+
+    pub(crate) fn with_durable_message_id(mut self, id: String) -> Self {
+        self.durable_message_id = Some(id);
+        self
     }
 }
 

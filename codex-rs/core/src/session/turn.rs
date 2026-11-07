@@ -301,6 +301,19 @@ pub(crate) async fn run_turn(
                 .record_step_world_state_if_changed(&world_state, step_context.as_ref())
                 .await;
 
+            // Reconcile SQLite custody before freezing the provider snapshot. The
+            // executing session's captured config remains authoritative even after
+            // a provisional thread handle leaves the public manager registry.
+            if super::mailbox_v2::public_recipient(&turn_context.session_source) {
+                for communication in sess.services.agent_control.mailbox_v2_pending_inputs(
+                    sess.thread_id,
+                    &turn_context.config,
+                    /*include_canonical*/ false,
+                ).await? {
+                    sess.record_inter_agent_communication_checked(&turn_context, communication).await?;
+                }
+            }
+
             // Construct the input that we will send to the model.
             let sampling_request_input: Vec<ResponseItem> = async {
                 sess.clone_history()
@@ -2128,6 +2141,10 @@ async fn try_run_sampling_request(
     prompt: &Prompt,
     cancellation_token: CancellationToken,
 ) -> CodexResult<SamplingRequestResult> {
+    let mailbox_input_ids = prompt.input.iter().filter_map(|item| match item {
+        ResponseItem::AgentMessage { id: Some(id), .. } => Some(id.to_string()),
+        _ => None,
+    }).collect::<Vec<_>>();
     feedback_tags!(
         model = turn_context.model_info.slug.clone(),
         approval_policy = turn_context.approval_policy.value(),
@@ -2225,7 +2242,16 @@ async fn try_run_sampling_request(
         record_turn_ttft_metric(&turn_context, &event).await;
 
         match event {
-            ResponseEvent::Created => {}
+            ResponseEvent::Created => {
+                if super::mailbox_v2::public_recipient(&turn_context.session_source) {
+                    sess.services.agent_control.mailbox_v2_record_admission(
+                        sess.thread_id,
+                        &turn_context.sub_id,
+                        &mailbox_input_ids,
+                        &turn_context.config,
+                    ).await?;
+                }
+            }
             ResponseEvent::OutputItemDone(mut item) => {
                 assign_missing_streamed_response_item_id(&mut item, active_item.as_ref());
                 if let Some((_, mut consumer)) = active_tool_argument_diff_consumer.take()

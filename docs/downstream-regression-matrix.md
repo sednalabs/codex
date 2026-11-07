@@ -70,6 +70,45 @@ with bounded structured HTTP statuses and no message/detail projection.
 Protected package installation and natural first use remain separate acceptance
 steps.
 
+## Durable native mailbox V2 candidate acceptance
+
+This is a **disabled-by-default, non-shippable candidate**, not a passing lane
+or parity claim. Runtime lifecycle, native-wait, goal-continuation, activation,
+and restart/recovery integration must finish before acceptance. Run all
+substantive checks and generators on approved hosted runners against the exact
+final candidate; imported tests and an enabled feature flag are not proof.
+
+- Store coverage: the named-test manifest includes `codex-agent-mailbox`.
+  Required hosted proofs include idempotent accept/retry, dispatch ambiguity,
+  canonical/admission ordering, exact outcome and reply settlement,
+  continuation generation/incarnation binding, activation claims, recovery,
+  progress coalescing, and exact wait-cycle registration/drop behavior.
+- Surface coverage: `send_message_mailbox_fields_are_opt_in_and_preserve_protected_receipt`
+  and `wait_agent_tool_v2_mailbox_selectors_preserve_native_wait_contract`
+  pin additive enabled fields and unchanged disabled/protected fields.
+  `durable_work_receipts_are_opt_in_for_spawn_and_followup` covers exact native
+  work receipts without changing their required identity fields.
+  `mailbox_wait_report_serializes_exact_selection_and_nullable_wake_identity`
+  and `mailbox_wait_report_accepts_source_selection_aliases` pin the source
+  report wire shape. These tests are authored but not executed for this port.
+  `under_development_features_are_disabled_by_default` continues to cover the
+  two opt-in feature defaults.
+- Protected coverage: retain `codex.core-multi-agent-orchestration-targeted`
+  and `codex.blocking-waits-core-targeted`, including explicit recipient intent,
+  unrelated terminal-notification filtering, independent turn scheduling,
+  native lease renewal, leaf target requirements, and cold-runtime identity.
+  Add native integration proofs for the durable branch rather than relying
+  only on store unit tests or schema assertions.
+- Generated outputs: hosted `just write-config-schema` and the relevant
+  protocol/schema checks must determine and review affected tracked output.
+  Do not manually patch generated schemas. If a public app-server projection
+  changes, also run its schema generator and compatibility tests. Hosted
+  dependency/Bazel lock generation and review remain required for the new
+  crate. Formatting and affected checks must then run on the final candidate.
+- No source parity, shipping readiness, or successful hosted validation is
+  asserted here. Record exact candidate SHA and hosted evidence separately
+  before changing that status.
+
 ## Core default path
 
 V2 `wait_agent` wakes on selected-target terminal completion or an explicitly

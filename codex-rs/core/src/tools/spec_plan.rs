@@ -826,7 +826,7 @@ fn add_collaboration_tools(context: &CoreToolPlanContext<'_>, planned_tools: &mu
                 turn_context.config.multi_agent_v2.hide_spawn_agent_metadata;
             planned_tools.add_arc(override_tool_exposure(
                 multi_agent_v2_handler(
-                    SpawnAgentHandlerV2::new(SpawnAgentToolOptions {
+                    SpawnAgentHandlerV2::new_with_mailbox(SpawnAgentToolOptions {
                         available_models: turn_context.available_models.clone(),
                         agent_type_description,
                         expose_agent_type: !turn_context.config.agent_roles.is_empty(),
@@ -837,23 +837,28 @@ fn add_collaboration_tools(context: &CoreToolPlanContext<'_>, planned_tools: &mu
                             .expose_spawn_agent_model_overrides,
                         multi_agent_version: turn_context.multi_agent_version,
                         usage_hint_text: turn_context.config.multi_agent_v2.usage_hint_text.clone(),
-                    }),
+                    }, turn_context.config.features.enabled(Feature::AgentMailbox)),
                     tool_namespace,
                 ),
                 exposure,
             ));
             planned_tools.add_arc(override_tool_exposure(
-                multi_agent_v2_handler(SendMessageHandlerV2, tool_namespace),
+                multi_agent_v2_handler(SendMessageHandlerV2::new(
+                    turn_context.config.features.enabled(Feature::AgentMailbox),
+                ), tool_namespace),
                 exposure,
             ));
             planned_tools.add_arc(override_tool_exposure(
-                multi_agent_v2_handler(FollowupTaskHandlerV2, tool_namespace),
+                multi_agent_v2_handler(FollowupTaskHandlerV2::new(
+                    turn_context.config.features.enabled(Feature::AgentMailbox),
+                ), tool_namespace),
                 exposure,
             ));
             if turn_context.config.multi_agent_v2.wait_agent_enabled {
                 planned_tools.add_arc(override_tool_exposure(
                     multi_agent_v2_handler(
-                        WaitAgentHandlerV2::new(context.wait_agent_timeouts),
+                        WaitAgentHandlerV2::new_with_mailbox(context.wait_agent_timeouts,
+                            turn_context.config.features.enabled(Feature::AgentMailbox)),
                         tool_namespace,
                     ),
                     exposure,

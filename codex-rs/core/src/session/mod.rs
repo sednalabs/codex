@@ -218,6 +218,7 @@ mod config_lock;
 pub(crate) mod context_window;
 mod handlers;
 mod inject;
+mod mailbox_v2;
 pub(crate) mod input_queue;
 mod mcp;
 mod mcp_prewarm;
@@ -1786,6 +1787,18 @@ impl Session {
             .clone()
     }
 
+    /// Native mailbox decisions use the executing recipient's captured config.
+    /// Idle sessions use their effective session configuration.
+    pub(crate) async fn mailbox_v2_config_snapshot(&self) -> Arc<Config> {
+        let active = self.active_turn.lock().await;
+        if let Some(task) = active.as_ref().and_then(|turn| turn.task.as_ref()) {
+            return Arc::clone(&task.turn_context.config);
+        }
+        drop(active);
+        let state = self.state.lock().await;
+        Arc::new(Self::build_effective_session_config(&state.session_configuration))
+    }
+
     pub(crate) async fn user_instructions(&self) -> Option<codex_extension_api::UserInstructions> {
         self.services.agents_md_manager.user_instructions()
     }
@@ -2001,6 +2014,18 @@ impl Session {
 
     /// Persist the event to rollout and send it to clients.
     pub(crate) async fn send_event(&self, turn_context: &TurnContext, msg: EventMsg) {
+        if matches!(msg, EventMsg::TurnStarted(_)) && mailbox_v2::public_recipient(&turn_context.session_source) {
+            match self.services.agent_control.mailbox_v2_open(&turn_context.config).await {
+                Ok(Some(mailbox)) => {
+                    if let Err(error) = mailbox.record_turn_started(self.thread_id, &turn_context.sub_id).await {
+                        mailbox.notify_runtime_fault(self.thread_id);
+                        error!(%error, "failed to register exact mailbox turn");
+                    }
+                }
+                Ok(None) => {}
+                Err(error) => error!(%error, "failed to open mailbox at turn start"),
+            }
+        }
         let legacy_source = msg.clone();
         if let EventMsg::Error(error) = &legacy_source
             && error
@@ -2097,6 +2122,18 @@ impl Session {
                 .get::<crate::agent::goal_notifications::GoalNotificationStore>()
         {
             let _ = store.publish_turn_complete(&token, event.last_agent_message.clone());
+        }
+
+        match self.settle_mailbox_terminal_turn(turn_context, *parent_thread_id, child_agent_path, &status).await {
+            Ok(true) => return,
+            Ok(false) => {}
+            Err(error) => {
+                if let Some(mailbox) = self.services.agent_control.mailbox_v2() {
+                    mailbox.notify_runtime_fault(self.thread_id);
+                }
+                error!(%error, "exact durable terminal settlement failed; original work is retained");
+                return;
+            }
         }
 
         // Only a normal, error-free TurnComplete may be deferred. Aborts and
@@ -3273,8 +3310,34 @@ impl Session {
     pub(crate) async fn record_inter_agent_communication(
         &self,
         turn_context: &TurnContext,
-        mut communication: InterAgentCommunication,
+        communication: InterAgentCommunication,
     ) {
+        if let Err(error) = self
+            .record_inter_agent_communication_checked(turn_context, communication)
+            .await
+        {
+            error!(%error, "failed to record inter-agent communication");
+        }
+    }
+
+    pub(crate) async fn record_inter_agent_communication_checked(
+        &self,
+        turn_context: &TurnContext,
+        mut communication: InterAgentCommunication,
+    ) -> CodexResult<()> {
+        let _mailbox_boundary = self.mailbox_history_gate.lock().await;
+        let durable_id = if mailbox_v2::public_recipient(&turn_context.session_source)
+            && let Some(id) = communication.id.as_ref()
+            && self
+                .services
+                .agent_control
+                .mailbox_v2_input_is_durable(self.thread_id, id.as_str(), &turn_context.config)
+                .await?
+        {
+            Some(id.to_string())
+        } else {
+            None
+        };
         communication.set_turn_id_if_missing(&turn_context.sub_id);
         let response_item = communication.to_model_input_item();
         let items = self.prepare_conversation_items_for_history(
@@ -3282,23 +3345,66 @@ impl Session {
             std::slice::from_ref(&response_item),
         );
         let items = items.as_ref();
-        let response_item = items[0].clone();
-        {
+        let mut response_item = items[0].clone();
+        let already_present = if let Some(id) = durable_id.as_deref() {
+            let state = self.state.lock().await;
+            state.history.raw_items().iter().find(|item| item.id().is_some_and(|item_id| item_id.as_str() == id)).cloned()
+        } else {
+            None
+        };
+        if let Some(existing) = already_present.as_ref() {
+            response_item = existing.clone();
+        } else {
             let mut state = self.state.lock().await;
             state.current_time_reminder.note_recorded_items(items);
             state.record_items(
                 items.iter(),
                 turn_context.model_info.truncation_policy.into(),
             );
+            if let Some(id) = durable_id.as_ref() {
+                self.mailbox_pending_appends
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner)
+                    .insert(id.clone());
+            }
         }
-        self.persist_rollout_items(&[
+        let must_append = already_present.is_none() || durable_id.as_ref().is_some_and(|id| {
+            self.mailbox_pending_appends
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .contains(id)
+        });
+        let rollout_items = [
             RolloutItem::InterAgentCommunicationMetadata {
                 trigger_turn: communication.trigger_turn,
             },
             RolloutItem::ResponseItem(response_item),
-        ])
-        .await;
-        self.send_raw_response_items(turn_context, items).await;
+        ];
+        if durable_id.is_some() {
+            if must_append {
+                self.persist_rollout_items_checked(&rollout_items).await?;
+                if let Some(id) = durable_id.as_ref() {
+                    self.mailbox_pending_appends
+                        .lock()
+                        .unwrap_or_else(std::sync::PoisonError::into_inner)
+                        .remove(id);
+                }
+            }
+            self.flush_rollout().await.map_err(|error| {
+                CodexErr::Fatal(format!("failed to flush durable mailbox input: {error}"))
+            })?;
+            self.services.agent_control.mailbox_v2_confirm_canonical(
+                self.thread_id,
+                durable_id.as_deref().expect("durable branch has an input ID"),
+                &turn_context.config,
+            ).await?;
+        } else if must_append {
+            self.persist_rollout_items(&rollout_items).await;
+        }
+        if already_present.is_none() {
+            self.send_raw_response_items(turn_context, items).await;
+        }
+        Ok(())
     }
 
     async fn maybe_warn_on_server_model_mismatch(
@@ -3373,11 +3479,35 @@ impl Session {
 
     pub(crate) async fn replace_compacted_history(
         &self,
-        items: Vec<ResponseItem>,
+        mut items: Vec<ResponseItem>,
         reference_context_item: Option<TurnContextItem>,
         world_state_baseline: Option<Arc<WorldState>>,
         metadata: CompactedHistoryMetadata,
     ) {
+        let _mailbox_boundary = self.mailbox_history_gate.lock().await;
+        let config = self.mailbox_v2_config_snapshot().await;
+        let pending = match self.services.agent_control.mailbox_v2_pending_inputs(
+            self.thread_id,
+            &config,
+            /*include_canonical*/ true,
+        ).await {
+            Ok(pending) => pending,
+            Err(error) => {
+                error!(%error, "compaction cannot preserve durable mailbox inputs");
+                return;
+            }
+        };
+        let mut preserved_ids = Vec::new();
+        for communication in pending {
+            let Some(id) = communication.id.as_ref() else {
+                error!("durable compaction input has no stable ID");
+                return;
+            };
+            preserved_ids.push(id.to_string());
+            if !items.iter().any(|item| item.id() == Some(id)) {
+                items.push(communication.to_model_input_item());
+            }
+        }
         let items = Self::assign_missing_response_item_ids(Cow::Owned(items)).into_owned();
         let compacted_item = CompactedItem {
             message: metadata.message,
@@ -3402,8 +3532,25 @@ impl Session {
             }
         }
 
-        self.persist_rollout_items(&[RolloutItem::Compacted(compacted_item)])
-            .await;
+        if preserved_ids.is_empty() {
+            self.persist_rollout_items(&[RolloutItem::Compacted(compacted_item)]).await;
+        } else {
+            if let Err(error) = self.persist_rollout_items_checked(&[RolloutItem::Compacted(compacted_item)]).await {
+                error!(%error, "failed to persist compacted durable inputs");
+                return;
+            }
+            if let Err(error) = self.flush_rollout().await {
+                error!(%error, "failed to flush compacted durable inputs");
+                return;
+            }
+            for id in preserved_ids {
+                self.mailbox_pending_appends.lock().unwrap_or_else(std::sync::PoisonError::into_inner).remove(&id);
+                if let Err(error) = self.services.agent_control.mailbox_v2_confirm_canonical(self.thread_id, &id, &config).await {
+                    error!(%error, "failed to acknowledge compacted durable input");
+                    return;
+                }
+            }
+        }
         // Persist the baseline after the replacement history that established it.
         if let Some(world_state_item) = world_state_item {
             self.persist_rollout_items(&[RolloutItem::WorldState(world_state_item)])
@@ -3801,6 +3948,16 @@ impl Session {
         {
             error!("failed to record rollout items: {e:#}");
         }
+    }
+
+    /// Durable mailbox acknowledgements require evidence of append acceptance.
+    async fn persist_rollout_items_checked(&self, items: &[RolloutItem]) -> CodexResult<()> {
+        let live_thread = self.live_thread().ok_or_else(|| {
+            CodexErr::Fatal("durable mailbox input has no canonical rollout writer".to_string())
+        })?;
+        live_thread.append_items(items).await.map_err(|error| {
+            CodexErr::Fatal(format!("failed to append durable mailbox input: {error:#}"))
+        })
     }
 
     pub(crate) async fn clone_history(&self) -> ContextManager {

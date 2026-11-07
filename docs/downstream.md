@@ -840,6 +840,33 @@ User-visible behavior:
 - `list_agents` remains the always-on, cheap live inventory view across both collaboration surfaces rather than being hidden behind `MultiAgentV2`; it exposes `has_active_subagents` / `active_subagent_count` plus nested visibility/status metadata so callers retain nested-agent live visibility without dumping full trees.
 - `inspect_agent_tree` is the intentionally richer downstream observability surface, separate from `list_agents`: it inspects the current subtree or a target path, can toggle `live` versus `stale` descendant visibility, can filter to selected branches with `agent_roots`, and returns compact tree rows with bounded depth and row limits. Live rows include effective model and reasoning configuration; stale rows leave those fields null because configuration snapshots are not persisted. These fields are configuration evidence, not provider-usage proof.
 - V2 `send_message` returns a queue-acceptance receipt with the canonical target and, when its runtime is already loaded, its effective model, provider, reasoning effort, and service tier. Those configuration fields are null for a cold or evicted target so receipt generation does not activate it. `handoff_state: queued` does not claim that the target agent acknowledged or completed the work.
+- Durable mailbox V2 is an unvalidated, non-shippable port candidate. Both
+  `features.agent_mailbox` and `features.agent_mailbox_idle_activation` default
+  to false. Its enabled tool surface adds `send_message.kind` (`note`,
+  `progress`, `request`, or `alert`) and exact `reply_to` identity while keeping
+  the existing `intent` and `interrupt` fields independent. Optional receipt
+  fields are `message_id`, `kind`, `reply_to`, and nullable structured
+  `work_ref` (`id`, `issuer`, `agent`, `submission_id`); acceptance is not model
+  acknowledgement. Enabled spawn/follow-up outputs also expose optional exact
+  `work_ref` receipts. Enabled waits accept exact work IDs in `targets` and exact
+  request IDs in `replies_to`, retaining `return_when` and `native_event_wait`.
+  Their optional `mailbox_wait_report` adds completed/pending selections and
+  a durable wake cause without replacing the protected output fields or
+  changing the canonical history item. Feature-off schemas remain unchanged.
+  Do not enable this candidate for production until lifecycle, goal, wait,
+  activation, recovery, generated-output review, and exact-candidate hosted
+  proofs are complete; see [candidate acceptance](downstream-regression-matrix.md#durable-native-mailbox-v2-candidate-acceptance).
+  Current source blockers are concrete: an external goal mutation cannot yet
+  atomically settle the frozen exact continuation selection after an idle
+  child turn; keyed provisional spawn delivery is rejected before durable
+  acceptance until custody can share the protected publication decision, and
+  a repeated accepted spawn key fails closed instead of reconstructing its
+  original publication receipt; and a cold parent keeps
+  outcome custody in SQLite without reload-driven idle activation. Native
+  dispatch/activation interruption requires explicit reconciliation, rather
+  than an automatic resend. Durable queue-only sends currently reload cold
+  recipients to validate recipient configuration, unlike the ordinary
+  feature-off queue-only path. None of these paths has hosted acceptance proof.
 - `wait_agent` supports `return_when=any|all` and returns `requested_ids`, `pending_ids`, `completion_reason`, and `timed_out`. Those completion fields are tool-output-only; canonical transcript items retain identities and status snapshots without duplicating timeout, mailbox, or pending outcome state. In the v2 surface, callers may omit `targets` when they intentionally want to wait only for current-turn input activity, such as mailbox delivery or user steering, or timeout.
 - When V2 reaches its resident-thread capacity, it may evict the least-recently
   used quiescent child after a clean shutdown. Completed and errored identities

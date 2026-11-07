@@ -2603,7 +2603,7 @@ async fn multi_agent_v2_spawn_returns_path_and_send_message_accepts_relative_pat
             )
     }));
 
-    let output = SendMessageHandlerV2
+    let output = SendMessageHandlerV2::default()
         .handle(invocation(
             session.clone(),
             turn.clone(),
@@ -2661,7 +2661,7 @@ async fn multi_agent_v2_spawn_returns_path_and_send_message_accepts_relative_pat
             codex_protocol::protocol::AgentMessageIntent::ResultReady,
         ),
     ] {
-        let output = SendMessageHandlerV2
+        let output = SendMessageHandlerV2::default()
             .handle(invocation(
                 session.clone(),
                 turn.clone(),
@@ -2745,7 +2745,7 @@ async fn multi_agent_v2_send_message_keeps_cold_target_unloaded() {
         .expect("child thread should be loaded before removal");
     assert!(Arc::ptr_eq(&removed_thread, &child_thread));
 
-    let output = SendMessageHandlerV2
+    let output = SendMessageHandlerV2::default()
         .handle(invocation(
             session,
             turn,
@@ -2956,7 +2956,7 @@ async fn multi_agent_v2_send_message_accepts_root_target_from_child() {
         agent_role: None,
     });
 
-    let output = SendMessageHandlerV2
+    let output = SendMessageHandlerV2::default()
         .handle(invocation(
             Arc::new(session),
             Arc::new(turn),
@@ -3039,7 +3039,7 @@ async fn multi_agent_v2_followup_task_rejects_root_target_from_child() {
         agent_role: None,
     });
 
-    let Err(err) = FollowupTaskHandlerV2
+    let Err(err) = FollowupTaskHandlerV2::default()
         .handle(invocation(
             Arc::new(session),
             Arc::new(turn),
@@ -3428,7 +3428,7 @@ async fn multi_agent_v2_send_message_rejects_message_and_legacy_items_together()
         })),
     );
 
-    let Err(err) = SendMessageHandlerV2.handle(invocation).await else {
+    let Err(err) = SendMessageHandlerV2::default().handle(invocation).await else {
         panic!("message and legacy items should be rejected together");
     };
     let FunctionCallError::RespondToModel(message) = err else {
@@ -3453,7 +3453,7 @@ async fn multi_agent_v2_send_message_rejects_empty_legacy_items_before_target_lo
         })),
     );
 
-    let Err(err) = SendMessageHandlerV2.handle(invocation).await else {
+    let Err(err) = SendMessageHandlerV2::default().handle(invocation).await else {
         panic!("empty legacy items should be rejected");
     };
     assert_eq!(
@@ -3475,7 +3475,7 @@ async fn multi_agent_v2_send_message_rejects_null_payload_before_target_lookup()
         })),
     );
 
-    let Err(err) = SendMessageHandlerV2.handle(invocation).await else {
+    let Err(err) = SendMessageHandlerV2::default().handle(invocation).await else {
         panic!("an explicit null message should be rejected");
     };
     assert_eq!(
@@ -3536,7 +3536,7 @@ async fn multi_agent_v2_send_message_rejects_non_text_items() {
         })),
     );
 
-    let Err(err) = SendMessageHandlerV2.handle(invocation).await else {
+    let Err(err) = SendMessageHandlerV2::default().handle(invocation).await else {
         panic!("non-text items should be rejected in v2");
     };
     let FunctionCallError::RespondToModel(message) = err else {
@@ -3600,7 +3600,7 @@ async fn multi_agent_v2_send_message_interrupts_target_when_requested() {
         })),
     );
 
-    SendMessageHandlerV2
+    SendMessageHandlerV2::default()
         .handle(invocation)
         .await
         .expect("send_message should accept interrupt");
@@ -3694,7 +3694,7 @@ async fn multi_agent_v2_followup_task_completion_notifies_parent_on_every_turn()
         )
         .await;
 
-    let followup_output = FollowupTaskHandlerV2
+    let followup_output = FollowupTaskHandlerV2::default()
         .handle(invocation(
             session,
             turn,
@@ -3845,7 +3845,7 @@ async fn multi_agent_v2_followup_task_rejects_unexpected_model_without_sending()
         .await
         .expect("worker should resolve");
 
-    let err = FollowupTaskHandlerV2
+    let err = FollowupTaskHandlerV2::default()
         .handle(invocation(
             session,
             turn,
@@ -3919,7 +3919,7 @@ async fn multi_agent_v2_followup_task_rejects_legacy_items_field() {
         })),
     );
 
-    let Err(err) = FollowupTaskHandlerV2.handle(invocation).await else {
+    let Err(err) = FollowupTaskHandlerV2::default().handle(invocation).await else {
         panic!("legacy items field should be rejected in v2");
     };
     let FunctionCallError::RespondToModel(message) = err else {

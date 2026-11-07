@@ -105,6 +105,13 @@ pub fn create_spawn_agent_tool_v1(options: SpawnAgentToolOptions) -> ToolSpec {
 }
 
 pub fn create_spawn_agent_tool_v2(options: SpawnAgentToolOptions) -> ToolSpec {
+    create_spawn_agent_tool_v2_with_mailbox(options, /*mailbox_enabled*/ false)
+}
+
+pub fn create_spawn_agent_tool_v2_with_mailbox(
+    options: SpawnAgentToolOptions,
+    mailbox_enabled: bool,
+) -> ToolSpec {
     let available_models_description = options.expose_spawn_agent_model_overrides.then(|| {
         spawn_agent_models_description(&options.available_models, options.multi_agent_version)
     });
@@ -144,8 +151,9 @@ pub fn create_spawn_agent_tool_v2(options: SpawnAgentToolOptions) -> ToolSpec {
             Some(vec!["task_name".to_string(), "message".to_string()]),
             Some(false.into()),
         ),
-        output_schema: Some(spawn_agent_output_schema_v2(
-            options.hide_agent_type_model_reasoning,
+        output_schema: Some(with_mailbox_work_ref_output_schema(
+            spawn_agent_output_schema_v2(options.hide_agent_type_model_reasoning),
+            mailbox_enabled,
         )),
     })
 }
@@ -189,7 +197,11 @@ pub fn create_send_input_tool_v1() -> ToolSpec {
 }
 
 pub fn create_send_message_tool() -> ToolSpec {
-    let properties = BTreeMap::from([
+    create_send_message_tool_with_mailbox(/*mailbox_enabled*/ false)
+}
+
+pub fn create_send_message_tool_with_mailbox(mailbox_enabled: bool) -> ToolSpec {
+    let mut properties = BTreeMap::from([
         (
             "target".to_string(),
             JsonSchema::string(Some(
@@ -226,10 +238,36 @@ pub fn create_send_message_tool() -> ToolSpec {
         ),
     ]);
 
+    let mut description = "Send a text message to an existing agent. Intent defaults to progress; action_required and result_ready can wake the directly addressed recipient's native wait without starting a new model turn. Use `interrupt=true` to stop the current task before queueing the message. The receipt's effective_* identity fields describe the recipient agent named by target, never the sending agent."
+        .to_string();
+    if mailbox_enabled {
+        properties.extend([
+            (
+                "kind".to_string(),
+                JsonSchema::string_enum(
+                    vec![json!("note"), json!("progress"), json!("request"), json!("alert")],
+                    Some(
+                        "Durable mailbox classification, independent of intent. Defaults to note; request and alert messages are actionable."
+                            .to_string(),
+                    ),
+                ),
+            ),
+            (
+                "reply_to".to_string(),
+                JsonSchema::string(Some(
+                    "Exact stable message_id returned when sending the request being answered."
+                        .to_string(),
+                )),
+            ),
+        ]);
+        description.push_str(
+            " Durable sends return stable message identity. Request, alert, or reply messages may activate an idle recipient only when that recipient has opted in to mailbox idle activation.",
+        );
+    }
+
     ToolSpec::Function(ResponsesApiTool {
         name: "send_message".to_string(),
-        description: "Send a text message to an existing agent. Intent defaults to progress; action_required and result_ready can wake the directly addressed recipient's native wait without starting a new model turn. Use `interrupt=true` to stop the current task before queueing the message. The receipt's effective_* identity fields describe the recipient agent named by target, never the sending agent."
-            .to_string(),
+        description,
         strict: false,
         defer_loading: None,
         parameters: JsonSchema::object(
@@ -237,11 +275,15 @@ pub fn create_send_message_tool() -> ToolSpec {
             Some(vec!["target".to_string(), "message".to_string()]),
             Some(false.into()),
         ),
-        output_schema: Some(send_message_output_schema()),
+        output_schema: Some(send_message_output_schema_with_mailbox(mailbox_enabled)),
     })
 }
 
 pub fn create_followup_task_tool() -> ToolSpec {
+    create_followup_task_tool_with_mailbox(/*mailbox_enabled*/ false)
+}
+
+pub fn create_followup_task_tool_with_mailbox(mailbox_enabled: bool) -> ToolSpec {
     let properties = BTreeMap::from([
         (
             "target".to_string(),
@@ -273,7 +315,10 @@ pub fn create_followup_task_tool() -> ToolSpec {
         strict: false,
         defer_loading: None,
         parameters: JsonSchema::object(properties, Some(vec!["target".to_string(), "message".to_string()]), Some(false.into())),
-        output_schema: Some(followup_task_output_schema()),
+        output_schema: Some(with_mailbox_work_ref_output_schema(
+            followup_task_output_schema(),
+            mailbox_enabled,
+        )),
     })
 }
 
@@ -319,17 +364,46 @@ pub fn create_wait_agent_tool_v2(options: WaitAgentTimeoutOptions) -> ToolSpec {
     create_wait_agent_tool_v2_with_capabilities(options, registered_tool_runtime_capabilities())
 }
 
+pub fn create_wait_agent_tool_v2_with_mailbox(
+    options: WaitAgentTimeoutOptions,
+    mailbox_enabled: bool,
+) -> ToolSpec {
+    create_wait_agent_tool_v2_with_capabilities_and_mailbox(
+        options,
+        registered_tool_runtime_capabilities(),
+        mailbox_enabled,
+    )
+}
+
 fn create_wait_agent_tool_v2_with_capabilities(
     options: WaitAgentTimeoutOptions,
     capabilities: ToolRuntimeCapabilities,
 ) -> ToolSpec {
+    create_wait_agent_tool_v2_with_capabilities_and_mailbox(
+        options,
+        capabilities,
+        /*mailbox_enabled*/ false,
+    )
+}
+
+fn create_wait_agent_tool_v2_with_capabilities_and_mailbox(
+    options: WaitAgentTimeoutOptions,
+    capabilities: ToolRuntimeCapabilities,
+    mailbox_enabled: bool,
+) -> ToolSpec {
+    let description = if mailbox_enabled {
+        "Wait on selected durable work references, replies, or currently issued work. Targets may be agent ids, task-path references, or exact work reference ids; replies_to contains exact request message ids. return_when=any completes when any selected item is ready, and return_when=all waits for all selected items. Quiet notes and progress remain pending without waking early. Explicit requests, alerts, replies, selected completion, and explicit action_required/result_ready messages can end the wait. The mailbox_wait_report describes completed and pending selections, the wake cause, and still-quiet notifications. Native event waits keep their lease semantics. Only waits without any durable selectors are restricted to root or orchestrator agents; exact reply-only selections are also allowed for leaf agents."
+            .to_string()
+    } else {
+        wait_agent_v2_description(capabilities.wait_agent.is_some())
+    };
     ToolSpec::Function(ResponsesApiTool {
         name: "wait_agent".to_string(),
-        description: wait_agent_v2_description(capabilities.wait_agent.is_some()),
+        description,
         strict: false,
         defer_loading: None,
-        parameters: wait_agent_tool_parameters_v2(options, capabilities),
-        output_schema: Some(wait_output_schema_v2(capabilities)),
+        parameters: wait_agent_tool_parameters_v2(options, capabilities, mailbox_enabled),
+        output_schema: Some(wait_output_schema_v2(capabilities, mailbox_enabled)),
     })
 }
 
@@ -698,6 +772,64 @@ fn send_message_output_schema() -> Value {
     })
 }
 
+fn mailbox_work_ref_output_schema() -> Value {
+    json!({
+        "type": ["object", "null"],
+        "properties": {
+            "id": {"type": "string"},
+            "issuer": {"type": "string"},
+            "agent": {"type": "string"},
+            "submission_id": {"type": "string"}
+        },
+        "required": ["id", "issuer", "agent", "submission_id"],
+        "additionalProperties": false
+    })
+}
+
+fn with_mailbox_work_ref_output_schema(mut schema: Value, mailbox_enabled: bool) -> Value {
+    if mailbox_enabled {
+        schema["properties"]
+            .as_object_mut()
+            .expect("native work output properties")
+            .insert("work_ref".to_string(), mailbox_work_ref_output_schema());
+    }
+    schema
+}
+
+fn send_message_output_schema_with_mailbox(mailbox_enabled: bool) -> Value {
+    let mut schema = send_message_output_schema();
+    if mailbox_enabled {
+        let properties = schema["properties"]
+            .as_object_mut()
+            .expect("send_message output properties");
+        properties.extend([
+            (
+                "message_id".to_string(),
+                json!({
+                    "type": ["string", "null"],
+                    "description": "Stable durable message identity; use a request's message_id for reply_to or replies_to."
+                }),
+            ),
+            (
+                "work_ref".to_string(),
+                mailbox_work_ref_output_schema(),
+            ),
+            (
+                "reply_to".to_string(),
+                json!({"type": ["string", "null"]}),
+            ),
+            (
+                "kind".to_string(),
+                json!({
+                    "type": ["string", "null"],
+                    "enum": ["note", "progress", "request", "alert", null]
+                }),
+            ),
+        ]);
+    }
+    schema
+}
+
 fn list_agents_output_schema(capabilities: ToolRuntimeCapabilities) -> Value {
     let include_active_descendants = capabilities
         .subagent_inventory
@@ -896,7 +1028,10 @@ fn wait_output_schema_v1() -> Value {
     })
 }
 
-fn wait_output_schema_v2(capabilities: ToolRuntimeCapabilities) -> Value {
+fn wait_output_schema_v2(
+    capabilities: ToolRuntimeCapabilities,
+    mailbox_enabled: bool,
+) -> Value {
     let wait_capability = capabilities.wait_agent;
     let include_pending_ids = wait_capability.is_some_and(|capability| capability.pending_ids);
     let include_completion_reason =
@@ -957,10 +1092,63 @@ fn wait_output_schema_v2(capabilities: ToolRuntimeCapabilities) -> Value {
         required.push("completion_reason".to_string());
     }
 
+    if mailbox_enabled {
+        properties.insert(
+            "mailbox_wait_report".to_string(),
+            mailbox_wait_report_output_schema(),
+        );
+    }
+
     json!({
         "type": "object",
         "properties": properties,
         "required": required,
+        "additionalProperties": false
+    })
+}
+
+fn mailbox_wait_report_output_schema() -> Value {
+    json!({
+        "type": "object",
+        "description": "Resolved exact mailbox selection and terminal wait cause. Present for native durable-mailbox waits.",
+        "properties": {
+            "requestedTargets": {"type": "array", "items": {"type": "string"}},
+            "requestedRepliesTo": {"type": "array", "items": {"type": "string"}},
+            "returnWhen": {"type": "string", "enum": ["any", "all"]},
+            "completed": {"type": "array", "items": mailbox_wait_selection_item_output_schema()},
+            "pending": {"type": "array", "items": mailbox_wait_selection_item_output_schema()},
+            "completionReason": {
+                "type": ["string", "null"],
+                "enum": [
+                    "result", "reply", "request", "human", "tool", "deadline",
+                    "cancel", "interrupted", "subscription_loss", "runtime_fault",
+                    "no_matching_work", "already_satisfied", "cycle", "needs_attention", null
+                ]
+            },
+            "conditionSatisfied": {"type": "boolean"},
+            "quietCount": {"type": "integer", "minimum": 0},
+            "wakeSender": {"type": ["string", "null"]},
+            "wakeRef": {"type": ["string", "null"]}
+        },
+        "required": [
+            "requestedTargets", "requestedRepliesTo", "returnWhen", "completed",
+            "pending", "completionReason", "conditionSatisfied", "quietCount",
+            "wakeSender", "wakeRef"
+        ],
+        "additionalProperties": false
+    })
+}
+
+fn mailbox_wait_selection_item_output_schema() -> Value {
+    json!({
+        "type": "object",
+        "properties": {
+            "workRef": {"type": ["string", "null"]},
+            "messageId": {"type": ["string", "null"]},
+            "agent": {"type": ["string", "null"]},
+            "status": {"type": "string"}
+        },
+        "required": ["workRef", "messageId", "agent", "status"],
         "additionalProperties": false
     })
 }
@@ -1336,6 +1524,7 @@ fn wait_agent_tool_parameters_v1(options: WaitAgentTimeoutOptions) -> JsonSchema
 fn wait_agent_tool_parameters_v2(
     options: WaitAgentTimeoutOptions,
     capabilities: ToolRuntimeCapabilities,
+    mailbox_enabled: bool,
 ) -> JsonSchema {
     let mut properties = BTreeMap::from([
         (
@@ -1357,9 +1546,30 @@ fn wait_agent_tool_parameters_v2(
         ),
     ]);
 
-    if capabilities
-        .wait_agent
-        .is_some_and(|capability| capability.return_when)
+    if mailbox_enabled {
+        properties.insert(
+            "targets".to_string(),
+            JsonSchema::array(
+                JsonSchema::string(/*description*/ None),
+                Some(
+                    "Optional agent ids, task-path references, or exact durable work reference ids to join. Omit both targets and replies_to to join currently issued work. Native event waits without durable selectors remain restricted to root or orchestrator agents."
+                        .to_string(),
+                ),
+            ),
+        );
+        properties.insert(
+            "replies_to".to_string(),
+            JsonSchema::array(
+                JsonSchema::string(/*description*/ None),
+                Some("Optional exact request message ids whose replies to join.".to_string()),
+            ),
+        );
+    }
+
+    if mailbox_enabled
+        || capabilities
+            .wait_agent
+            .is_some_and(|capability| capability.return_when)
     {
         properties.insert(
             "return_when".to_string(),
@@ -1368,7 +1578,13 @@ fn wait_agent_tool_parameters_v2(
                     serde_json::Value::String("any".to_string()),
                     serde_json::Value::String("all".to_string()),
                 ],
-                Some("Whether the wait completes when any requested agent reaches terminal status or only after all requested agents are terminal.".to_string()),
+                Some(if mailbox_enabled {
+                    "Return when any selected work item or reply is ready, or wait until all selected items are ready. Defaults to any."
+                        .to_string()
+                } else {
+                    "Whether the wait completes when any requested agent reaches terminal status or only after all requested agents are terminal."
+                        .to_string()
+                }),
             ),
         );
     }

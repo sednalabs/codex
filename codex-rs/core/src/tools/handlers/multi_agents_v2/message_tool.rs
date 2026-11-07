@@ -54,7 +54,9 @@ pub(crate) struct SendMessageArgs {
     #[serde(default)]
     pub(crate) interrupt: bool,
     #[serde(default)]
-    pub(crate) intent: AgentMessageIntent,
+    pub(crate) intent: Option<AgentMessageIntent>,
+    pub(crate) kind: Option<codex_agent_mailbox::MessageKind>,
+    pub(crate) reply_to: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -69,13 +71,15 @@ pub(crate) enum SendMessagePayload {
 impl SendMessageArgs {
     pub(crate) fn into_parts(
         self,
-    ) -> Result<(String, String, bool, AgentMessageIntent), FunctionCallError> {
+    ) -> Result<(String, String, bool, AgentMessageIntent, Option<codex_agent_mailbox::MessageKind>, Option<String>), FunctionCallError> {
         let Self {
             target,
             message,
             items,
             interrupt,
             intent,
+            kind,
+            reply_to,
         } = self;
         let message = match (message.0, items.0) {
             (Some(_), Some(_)) => Err(FunctionCallError::RespondToModel(
@@ -87,7 +91,18 @@ impl SendMessageArgs {
                 "missing field `message`".to_string(),
             )),
         }?;
-        Ok((target, message, interrupt, intent))
+        // An explicit progress intent remains quiet, even with a typed request
+        // kind. Infer only when the caller omitted the existing intent field.
+        let intent = intent.unwrap_or_else(|| {
+            if matches!(kind, Some(codex_agent_mailbox::MessageKind::Request | codex_agent_mailbox::MessageKind::Alert)) {
+                AgentMessageIntent::ActionRequired
+            } else if reply_to.is_some() {
+                AgentMessageIntent::ResultReady
+            } else {
+                AgentMessageIntent::Progress
+            }
+        });
+        Ok((target, message, interrupt, intent, kind, reply_to))
     }
 }
 
@@ -140,6 +155,8 @@ pub(crate) struct AssignTaskArgs {
 
 #[derive(Debug, Serialize)]
 struct FollowupTaskResult {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    work_ref: Option<codex_agent_mailbox::WorkRef>,
     task_name: String,
     recipient_task_name: String,
     effective_identity_scope: &'static str,
@@ -151,6 +168,12 @@ struct FollowupTaskResult {
 
 #[derive(Debug, Serialize)]
 struct SendMessageReceipt {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    message_id: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    kind: Option<codex_agent_mailbox::MessageKind>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    reply_to: Option<String>,
     task_name: String,
     recipient_task_name: String,
     effective_identity_scope: &'static str,
@@ -187,6 +210,8 @@ pub(crate) async fn handle_message_string_tool(
         /*interrupt*/ false,
         expected_model,
         AgentMessageIntent::Progress,
+        /*message_kind*/ None,
+        /*reply_to*/ None,
     )
     .await
 }
@@ -228,6 +253,8 @@ pub(crate) fn handle_message_submission(
     interrupt: bool,
     expected_model: Option<String>,
     intent: AgentMessageIntent,
+    message_kind: Option<codex_agent_mailbox::MessageKind>,
+    reply_to: Option<String>,
 ) -> BoxFuture<'static, Result<FunctionToolOutput, FunctionCallError>> {
     Box::pin(handle_message_submission_inner(
         invocation,
@@ -237,6 +264,8 @@ pub(crate) fn handle_message_submission(
         interrupt,
         expected_model,
         intent,
+        message_kind,
+        reply_to,
     ))
 }
 
@@ -248,6 +277,8 @@ async fn handle_message_submission_inner(
     interrupt: bool,
     expected_model: Option<String>,
     intent: AgentMessageIntent,
+    message_kind: Option<codex_agent_mailbox::MessageKind>,
+    reply_to: Option<String>,
 ) -> Result<FunctionToolOutput, FunctionCallError> {
     let ToolInvocation {
         session,
@@ -257,6 +288,16 @@ async fn handle_message_submission_inner(
         ..
     } = invocation;
     let _ = payload;
+    let mailbox_enabled = turn.config.features.enabled(codex_features::Feature::AgentMailbox);
+    if !mailbox_enabled && (message_kind.is_some() || reply_to.is_some()) {
+        return Err(FunctionCallError::RespondToModel(
+            "typed message kinds and replies require agent_mailbox".to_string(),
+        ));
+    }
+    if mailbox_enabled {
+        session.services.agent_control.mailbox_v2_open(&turn.config).await
+            .map_err(collab_spawn_error)?;
+    }
     let receiver_thread_id = resolve_agent_target(&session, &turn, &target).await?;
     let receiver_agent = session
         .services
@@ -277,6 +318,12 @@ async fn handle_message_submission_inner(
         FunctionCallError::RespondToModel("target agent is missing an agent_path".to_string())
     })?;
     let delivery = match mode {
+        MessageDeliveryMode::QueueOnly if mailbox_enabled => {
+            let resume_config = build_agent_resume_config(turn.as_ref())?;
+            session.services.agent_control
+                .prepare_v2_agent_delivery_with_reload(resume_config, receiver_thread_id)
+                .await
+        }
         MessageDeliveryMode::QueueOnly => {
             session
                 .services
@@ -328,17 +375,25 @@ async fn handle_message_submission_inner(
         .unwrap_or_else(AgentPath::root);
     let mut communication =
         communication_from_tool_message(author, receiver_agent_path.clone(), message);
-    communication.intent = (!intent.is_progress()).then_some(intent);
+    communication.intent = (!intent.is_progress() || message_kind.is_some() || reply_to.is_some()).then_some(intent);
     let kind = match mode {
         MessageDeliveryMode::QueueOnly => AgentCommunicationKind::Message,
         MessageDeliveryMode::TriggerTurn => AgentCommunicationKind::Followup,
     };
-    let context = AgentCommunicationContext::new(kind, session.thread_id);
+    let context = AgentCommunicationContext::new(kind, session.thread_id)
+        .with_native_key(mailbox_enabled.then(|| call_id.clone()))
+        .with_mailbox_message(message_kind, reply_to.clone());
     let result = delivery
         .send(mode.apply(communication), context, interrupt)
         .await
         .map_err(|err| collab_agent_error(receiver_thread_id, err));
-    result?;
+    let submission_id = result?;
+    let work_ref = if mailbox_enabled && mode == MessageDeliveryMode::TriggerTurn {
+        session.services.agent_control.mailbox_v2_native_work(session.thread_id, &call_id).await
+            .map_err(collab_spawn_error)?
+    } else {
+        None
+    };
     emit_sub_agent_activity(
         &session,
         &turn,
@@ -356,6 +411,9 @@ async fn handle_message_submission_inner(
     let output = match mode {
         MessageDeliveryMode::QueueOnly => {
             let receipt = SendMessageReceipt {
+                message_id: mailbox_enabled.then_some(submission_id),
+                kind: mailbox_enabled.then_some(message_kind.unwrap_or_default()),
+                reply_to,
                 task_name: receiver_agent_path.to_string(),
                 recipient_task_name: receiver_agent_path.to_string(),
                 effective_identity_scope: "recipient",
@@ -382,6 +440,7 @@ async fn handle_message_submission_inner(
             })?;
             tool_output_json_text(
                 &FollowupTaskResult {
+                    work_ref,
                     task_name: receiver_agent_path.to_string(),
                     recipient_task_name: receiver_agent_path.to_string(),
                     effective_identity_scope: "recipient",
@@ -414,6 +473,8 @@ pub(crate) async fn handle_message_items_tool(
         interrupt,
         /*expected_model*/ None,
         AgentMessageIntent::Progress,
+        /*message_kind*/ None,
+        /*reply_to*/ None,
     )
     .await
 }

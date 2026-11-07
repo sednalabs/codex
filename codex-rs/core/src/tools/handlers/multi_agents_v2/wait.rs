@@ -8,7 +8,7 @@ use crate::session::session::Session;
 use crate::session::turn_context::TurnContext;
 use crate::tools::context::FunctionToolOutput;
 use crate::tools::handlers::multi_agents_spec::WaitAgentTimeoutOptions;
-use crate::tools::handlers::multi_agents_spec::create_wait_agent_tool_v2;
+use crate::tools::handlers::multi_agents_spec::create_wait_agent_tool_v2_with_mailbox;
 use crate::tools::tool_runtime_capabilities::ToolRuntimeCapabilities;
 use crate::tools::tool_runtime_capabilities::registered_tool_runtime_capabilities;
 use codex_protocol::AgentPath;
@@ -38,14 +38,22 @@ use std::time::UNIX_EPOCH;
 use tokio::sync::watch::Receiver;
 use tokio::time::Instant;
 
+#[path = "wait_mailbox_v2.rs"]
+mod wait_mailbox_v2;
+
 #[derive(Default)]
 pub(crate) struct Handler {
     options: WaitAgentTimeoutOptions,
+    mailbox_enabled: bool,
 }
 
 impl Handler {
     pub(crate) fn new(options: WaitAgentTimeoutOptions) -> Self {
-        Self { options }
+        Self::new_with_mailbox(options, false)
+    }
+
+    pub(crate) fn new_with_mailbox(options: WaitAgentTimeoutOptions, mailbox_enabled: bool) -> Self {
+        Self { options, mailbox_enabled }
     }
 }
 
@@ -140,7 +148,7 @@ impl ToolExecutor<ToolInvocation> for Handler {
     }
 
     fn spec(&self) -> ToolSpec {
-        create_wait_agent_tool_v2(self.options)
+        create_wait_agent_tool_v2_with_mailbox(self.options, self.mailbox_enabled)
     }
 
     fn handle(&self, invocation: ToolInvocation) -> codex_tools::ToolExecutorFuture<'_> {
@@ -158,6 +166,7 @@ impl Handler {
             turn,
             payload,
             call_id,
+            cancellation_token,
             ..
         } = invocation;
         let arguments = function_arguments(payload)?;
@@ -173,6 +182,7 @@ impl Handler {
         }
         if args.native_event_wait
             && args.targets.is_empty()
+            && args.replies_to.as_ref().is_none_or(Vec::is_empty)
             && !targetless_native_wait_allowed(&turn.session_source)
         {
             return Err(FunctionCallError::RespondToModel(
@@ -187,6 +197,26 @@ impl Handler {
             .services
             .agent_control
             .register_session_root(session.thread_id, turn.parent_thread_id);
+        // The active turn's config, rather than the cached schema registration,
+        // decides whether durable custody is available for this invocation.
+        if let Some(mailbox) = session.services.agent_control.mailbox_v2_open(&turn.config)
+            .await.map_err(wait_mailbox_v2::mailbox_error)?
+        {
+            let timeout_ms = resolve_wait_timeout_ms(
+                args.timeout_ms,
+                turn.config.multi_agent_v2.min_wait_timeout_ms,
+                turn.config.multi_agent_v2.max_wait_timeout_ms,
+                turn.config.multi_agent_v2.default_wait_timeout_ms,
+            )?;
+            return wait_mailbox_v2::handle(
+                session, turn, call_id, args, mailbox, timeout_ms, cancellation_token,
+            ).await;
+        }
+        if args.replies_to.is_some() || args.targets.iter().any(|target| target.starts_with("work_")) {
+            return Err(FunctionCallError::RespondToModel(
+                "durable work/reply joins require native V2 agent_mailbox to be enabled".to_string(),
+            ));
+        }
         let current_agent_path = turn.session_source.get_agent_path().or_else(|| {
             session
                 .services
@@ -472,6 +502,8 @@ struct WaitArgs {
     #[serde(default)]
     #[serde(alias = "ids")]
     targets: Vec<String>,
+    #[serde(default)]
+    replies_to: Option<Vec<String>>,
     timeout_ms: Option<i64>,
     #[serde(default)]
     return_when: ReturnWhen,
@@ -501,6 +533,8 @@ pub(crate) struct WaitAgentResult {
     /// unknown unless an authoritative provider boundary supplied evidence.
     #[serde(default)]
     pub(crate) wake_provenance: WakeProvenance,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) mailbox_wait_report: Option<codex_protocol::items::MailboxWaitReport>,
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize, PartialEq, Eq)]
@@ -585,6 +619,19 @@ async fn mailbox_snapshot(
     target_set_relation: String,
     wake_source: WakeSource,
 ) -> MailboxSnapshot {
+    mailbox_snapshot_with_exclusions(
+        session, wait_id, receiver_thread_ids, target_set_relation, wake_source, &HashSet::new(),
+    ).await
+}
+
+async fn mailbox_snapshot_with_exclusions(
+    session: &Session,
+    wait_id: &str,
+    receiver_thread_ids: &[ThreadId],
+    target_set_relation: String,
+    wake_source: WakeSource,
+    ignored_causal_ids: &HashSet<String>,
+) -> MailboxSnapshot {
     let mut entries = session.input_queue.snapshot_mailbox_communications().await;
     entries.extend(
         session
@@ -609,7 +656,15 @@ async fn mailbox_snapshot(
                 .iter()
                 .map(|(communication, _, _)| communication)
                 .collect::<Vec<_>>();
-            causal_mailbox_index(&actionable).and_then(|index| entries.get(index).cloned())
+            let causal_index = if ignored_causal_ids.is_empty() {
+                causal_mailbox_index(&actionable)
+            } else {
+                actionable.iter().position(|communication| {
+                    mailbox_entry_is_causal(communication)
+                        && !communication.id.as_ref().is_some_and(|id| ignored_causal_ids.contains(id.as_str()))
+                })
+            };
+            causal_index.and_then(|index| entries.get(index).cloned())
         })
         .flatten();
     let target_set_relation = match wake_source {
@@ -916,6 +971,7 @@ impl WaitAgentResult {
             timed_out: matches!(completion_reason, CollabWaitingCompletionReason::Timeout),
             wake_notifications: (!notifications.is_empty()).then_some(notifications),
             wake_provenance,
+            mailbox_wait_report: None,
         }
     }
 
@@ -939,6 +995,9 @@ impl WaitAgentResult {
             output.insert("wake_notifications".to_string(), json!(notifications));
         }
         output.insert("wake_provenance".to_string(), json!(self.wake_provenance));
+        if let Some(report) = &self.mailbox_wait_report {
+            output.insert("mailbox_wait_report".to_string(), json!(report));
+        }
         JsonValue::Object(output)
     }
 

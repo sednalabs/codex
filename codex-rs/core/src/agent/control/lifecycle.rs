@@ -217,10 +217,10 @@ impl PreparedV2AgentDelivery {
 
     fn record_submission(
         &self,
+        submission_id: String,
         communication: &InterAgentCommunication,
         context: &AgentCommunicationContext,
     ) -> String {
-        let submission_id = new_submission_id();
         let op = Op::InterAgentCommunication {
             communication: communication.clone(),
         };
@@ -256,11 +256,21 @@ impl PreparedV2AgentDelivery {
 
     pub(super) fn send_after_capacity_check(
         mut self,
-        communication: InterAgentCommunication,
+        mut communication: InterAgentCommunication,
         context: AgentCommunicationContext,
         interrupt: bool,
     ) -> futures::future::BoxFuture<'static, CodexResult<String>> {
         Box::pin(async move {
+            if !self.metadata_is_published && context.native_key.is_some() {
+                // The protected spawn CAS has not published this child. A
+                // durable work row would otherwise expose a cancellation-owned
+                // child through issued-work queries before publication wins.
+                // Keep this candidate fail-closed until custody and publication
+                // have one recoverable decision/receipt.
+                return Err(CodexErr::UnsupportedOperation(
+                    "durable spawn custody is blocked pending publication reconciliation".to_string(),
+                ));
+            }
             if self.metadata_is_published
                 && !self
                     .control
@@ -284,21 +294,53 @@ impl PreparedV2AgentDelivery {
                     if !thread.is_running() {
                         return Err(CodexErr::InternalAgentDied);
                     }
+                    let config = thread.session.mailbox_v2_config_snapshot().await;
+                    let accepted = self
+                        .control
+                        .mailbox_v2_accept_delivery(
+                            self.agent_id,
+                            &config,
+                            &mut communication,
+                            &context,
+                            new_submission_id(),
+                        )
+                        .await?;
+                    if accepted.already_dispatched {
+                        return Ok(accepted.submission_id);
+                    }
+                    if communication.trigger_turn {
+                        self.lifecycle.invalidate_terminal_idle_unload();
+                    }
                     if interrupt {
                         self.state
                             .record_submitted_op(self.agent_id, &Op::Interrupt);
                         thread.session.interrupt_task().await;
                     }
-                    let submission_id = self.record_submission(&communication, &context);
+                    let submission_id = self.record_submission(
+                        accepted.submission_id,
+                        &communication,
+                        &context,
+                    );
                     let send = crate::session::inter_agent_communication;
                     send(&thread.session, submission_id.clone(), communication).await;
+                    if let Some(envelope) = accepted.activation {
+                        self.control.mailbox_v2_finish_activation(&envelope).await?;
+                    }
+                    if let Some(work) = accepted.work {
+                        self.control.mailbox_v2_finish_dispatch(&work).await?;
+                    }
                     return Ok(submission_id);
                 }
             }
             if communication.trigger_turn {
                 return Err(CodexErr::ThreadNotFound(self.agent_id));
             }
-            let submission_id = self.record_submission(&communication, &context);
+            if context.native_key.is_some() || context.durable_message_id.is_some() {
+                // The caller must load a cold recipient to validate its captured config.
+                // Never claim durable acceptance by falling back to volatile cold mail.
+                return Err(CodexErr::ThreadNotFound(self.agent_id));
+            }
+            let submission_id = self.record_submission(new_submission_id(), &communication, &context);
             let sequence = self.lifecycle.next_cold_mailbox_sequence();
             self.lifecycle.push_cold_mail(ColdMailboxItem {
                 receive_id: Some(submission_id.clone()),
