@@ -113,7 +113,7 @@ mod tests {
                 tool: "android_step".to_string(),
                 arguments: json!({}),
             },
-            None,
+            /*browser_codex_home*/ None,
         )
         .await;
 
