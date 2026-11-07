@@ -52,9 +52,9 @@ const DEFAULT_READ_TIMEOUT: Duration = Duration::from_secs(60);
 const DEFAULT_READ_TIMEOUT: Duration = Duration::from_secs(10);
 
 #[tokio::test]
-async fn computer_use_call_round_trip_sends_client_response_to_model() -> Result<()> {
+async fn desktop_computer_use_call_round_trip_preserves_typed_image_output() -> Result<()> {
     let call_id = "computer-use-call-1";
-    let tool_name = "android_observe";
+    let tool_name = "desktop_observe";
     let tool_args = json!({ "scope": "screen_and_ui" });
     let tool_call_arguments = serde_json::to_string(&tool_args)?;
 
@@ -78,23 +78,28 @@ async fn computer_use_call_round_trip_sends_client_response_to_model() -> Result
         .await?;
     timeout(DEFAULT_READ_TIMEOUT, mcp.initialize()).await??;
 
-    let android_tool = DynamicToolSpec {
+    let desktop_tool = DynamicToolSpec {
         namespace: None,
         name: tool_name.to_string(),
-        description: "Observe Android".to_string(),
+        description: "Capture the current desktop app state as a model-visible screenshot, optionally with a compact accessibility/UI digest.".to_string(),
         input_schema: json!({
             "type": "object",
             "properties": {},
             "additionalProperties": false,
         }),
         defer_loading: false,
-        persist_on_resume: true,
-        capability: Some(android_capability("read_only", "shared_read")),
+        persist_on_resume: false,
+        capability: Some(DynamicToolCapability {
+            family: Some("desktop".to_string()),
+            capability_scope: Some("session".to_string()),
+            mutation_class: Some("non_mutating".to_string()),
+            lease_mode: None,
+        }),
     };
 
     let thread_req = mcp
         .send_thread_start_request(ThreadStartParams {
-            dynamic_tools: Some(vec![android_tool]),
+            dynamic_tools: Some(vec![desktop_tool]),
             ..Default::default()
         })
         .await?;
@@ -110,7 +115,7 @@ async fn computer_use_call_round_trip_sends_client_response_to_model() -> Result
         .send_turn_start_request(TurnStartParams {
             thread_id: thread_id.clone(),
             input: vec![V2UserInput::Text {
-                text: "Observe Android".to_string(),
+                text: "Observe desktop".to_string(),
                 text_elements: Vec::new(),
             }],
             ..Default::default()
@@ -147,7 +152,7 @@ async fn computer_use_call_round_trip_sends_client_response_to_model() -> Result
         environment_id.as_deref(),
         Some(codex_exec_server::LOCAL_ENVIRONMENT_ID)
     );
-    assert_eq!(adapter, "android");
+    assert_eq!(adapter, "desktop");
     assert_eq!(tool, tool_name);
     assert_eq!(arguments, tool_args);
     assert_eq!(status, ComputerUseCallStatus::InProgress);
@@ -171,7 +176,7 @@ async fn computer_use_call_round_trip_sends_client_response_to_model() -> Result
         turn_id: turn_id.clone(),
         call_id: call_id.to_string(),
         environment_id: Some(codex_exec_server::LOCAL_ENVIRONMENT_ID.to_string()),
-        adapter: "android".to_string(),
+        adapter: "desktop".to_string(),
         tool: tool_name.to_string(),
         arguments: tool_args.clone(),
     };
@@ -179,7 +184,7 @@ async fn computer_use_call_round_trip_sends_client_response_to_model() -> Result
 
     let response_items = vec![
         ComputerUseCallOutputContentItem::InputText {
-            text: "Settings screen visible".to_string(),
+            text: "Desktop screen visible".to_string(),
         },
         ComputerUseCallOutputContentItem::InputImage {
             image_url: TINY_PNG_DATA_URL.to_string(),
@@ -217,7 +222,7 @@ async fn computer_use_call_round_trip_sends_client_response_to_model() -> Result
         environment_id.as_deref(),
         Some(codex_exec_server::LOCAL_ENVIRONMENT_ID)
     );
-    assert_eq!(adapter, "android");
+    assert_eq!(adapter, "desktop");
     assert_eq!(tool, tool_name);
     assert_eq!(arguments, tool_args);
     assert_eq!(status, ComputerUseCallStatus::Completed);
@@ -239,7 +244,7 @@ async fn computer_use_call_round_trip_sends_client_response_to_model() -> Result
         .context("expected function_call_output in follow-up request")?;
     let expected_payload = FunctionCallOutputPayload::from_content_items(vec![
         FunctionCallOutputContentItem::InputText {
-            text: "Settings screen visible".to_string(),
+            text: "Desktop screen visible".to_string(),
         },
         FunctionCallOutputContentItem::InputImage {
             image_url: TINY_PNG_DATA_URL.to_string(),
