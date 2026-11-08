@@ -286,7 +286,7 @@ assert_matches = "1.5.0"
 async-channel = "2.3.1"
 async-io = "2.6.0"
 async-stream = "0.3.6"
-aws-config = "1"
+aws-config = "1.13.0"
 aws-credential-types = "1"
 aws-sigv4 = "1"
 aws-types = "1"
@@ -491,7 +491,7 @@ zip = { version = "9.0.4", default-features = false, features = [
     "xz",
     "zstd",
 ] }
-zstd = "0.13"
+zstd = "0.13.4"
 
 wiremock = "0.6"
 zeroize = "1.8.2"
@@ -583,6 +583,7 @@ opt-level = 0
 # Uncomment to debug local changes.
 # ratatui = { path = "../../ratatui" }
 i18n-config = { git = "https://github.com/kellpossible/cargo-i18n", rev = "2ce7b1dfe9a8cc224288bf50cbc2a67a6de863c4" }
+loom = { git = "https://github.com/tokio-rs/loom", rev = "b810b4aecd96e872dbca67c2d3ed8731ac6eeb49" }
 tokio-tungstenite = { git = "https://github.com/openai-oss-forks/tokio-tungstenite", rev = "0e5b2d73aa18dd9f0a50ee9ff199d5aef7594186" }
 tungstenite = { git = "https://github.com/openai-oss-forks/tungstenite-rs", rev = "4fffad30fe373adbdcffab9545e9e9bf4f2fc19f" }
 
