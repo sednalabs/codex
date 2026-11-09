@@ -30,7 +30,11 @@ files identical to the corresponding refreshed upstream migrations. Synthetic
 schemas and ledgers through 39, 45 and 62 match upstream, and the source
 version 45 checksum begins `a7fadc8c`, matching the separately recorded
 workstation observation. This does not identify OCI's actual ledger or prove
-that either actual schema has no other history.
+that either actual schema has no other history. Both recorded source trees
+also contain the same eight thread-history migration files as upstream. A
+synthetic history fixture applies the later migrations to earlier schema and
+checks that fabricated turn, item and projection records survive; it is not
+a copy of any real session.
 
 The capacity retry draft retries the selected model on `ServerOverloaded`,
 honors the server deadline, and uses capped backoff. It also covers local and

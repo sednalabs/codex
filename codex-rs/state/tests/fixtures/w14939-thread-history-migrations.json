@@ -1,0 +1,48 @@
+{
+  "source_commits": [
+    "1dea691446732a0ab03836f40f932387d9b1e087",
+    "e03a40398272ee4b0e6cdb694e390498c86ac7d9"
+  ],
+  "migrations": [
+    {
+      "filename": "0001_thread_history.sql",
+      "sha384": "2ad9a4ab17df511fb73f03337133de94a172dc0a1f5729b5ef61fe106db03d1a43bdb5978b0cb7d7bc74071d3ca34a92",
+      "sql": "CREATE TABLE thread_turns (\n    thread_id TEXT NOT NULL,\n    turn_id TEXT NOT NULL,\n    rollout_ordinal INTEGER NOT NULL,\n    status TEXT NOT NULL,\n    error_json TEXT,\n    started_at INTEGER,\n    completed_at INTEGER,\n    duration_ms INTEGER,\n    first_user_item_id TEXT,\n    final_agent_item_id TEXT,\n    PRIMARY KEY (thread_id, turn_id)\n);\n\nCREATE UNIQUE INDEX idx_thread_turns_page\n    ON thread_turns(thread_id, rollout_ordinal);\n\nCREATE TABLE thread_items (\n    thread_id TEXT NOT NULL,\n    turn_id TEXT NOT NULL,\n    item_id TEXT NOT NULL,\n    rollout_ordinal INTEGER NOT NULL,\n    created_at_ms INTEGER NOT NULL,\n    item_json TEXT NOT NULL,\n    PRIMARY KEY (thread_id, turn_id, item_id)\n);\n\nCREATE UNIQUE INDEX idx_thread_items_page\n    ON thread_items(thread_id, rollout_ordinal);\n\nCREATE INDEX idx_thread_items_by_turn_page\n    ON thread_items(thread_id, turn_id, rollout_ordinal);\n\nCREATE TABLE thread_history_projection_state (\n    thread_id TEXT PRIMARY KEY,\n    next_rollout_byte_offset INTEGER NOT NULL,\n    next_rollout_ordinal INTEGER NOT NULL\n);\n"
+    },
+    {
+      "filename": "0002_thread_items_item_type.sql",
+      "sha384": "ae61dbc1a6422530aa93914dbcac363a0238b86ae1a9d77eb041c75330e1283a0fcf93a043deeefcd6fd2c4037694bc4",
+      "sql": "ALTER TABLE thread_items ADD COLUMN item_type TEXT NOT NULL DEFAULT '';\n\nUPDATE thread_items\nSET item_type = json_extract(item_json, '$.type')\nWHERE item_type = '';\n\nCREATE INDEX idx_thread_items_user_messages\n    ON thread_items(thread_id, rollout_ordinal)\n    WHERE item_type = 'userMessage';\n"
+    },
+    {
+      "filename": "0003_turn_rollout_positions.sql",
+      "sha384": "a51da2a11df7760d8f8cab221e82b36ce8c0a30f16d44f3602e7f0fbc622ca72f1c3e3ecf22a194e12c2222bdcb51afe",
+      "sql": "ALTER TABLE thread_turns ADD COLUMN rollout_byte_offset INTEGER;\nALTER TABLE thread_turns ADD COLUMN rollout_end_ordinal INTEGER;\nALTER TABLE thread_turns ADD COLUMN rollout_end_byte_offset INTEGER;\n"
+    },
+    {
+      "filename": "0004_thread_items_updated_at_ordinal.sql",
+      "sha384": "65f33b171bd3aafe9d24728b2ca6a5c720a3ab54aed472998f8acf7489f0d35b2dfd12258a2d17be993bf17098b5e50c",
+      "sql": "ALTER TABLE thread_items ADD COLUMN updated_at_ordinal INTEGER NOT NULL DEFAULT 0;\n\n-- As of this migration, existing projected items originate from exactly one ItemCompleted rollout\n-- event, so their creation ordinal is also their update ordinal.\nUPDATE thread_items\nSET updated_at_ordinal = rollout_ordinal;\n\n-- Older writers can still append items with the zero default after this migration. Incremental\n-- replay excludes those items until a newer writer projects an update for them.\n-- Keep this index non-unique so mixed-version writers can continue to persist history.\nCREATE INDEX idx_thread_items_updated_page\n    ON thread_items(thread_id, updated_at_ordinal);\n\nCREATE INDEX idx_thread_items_by_turn_updated_page\n    ON thread_items(thread_id, turn_id, updated_at_ordinal);\n"
+    },
+    {
+      "filename": "0005_thread_realtime_items.sql",
+      "sha384": "2fdad8e361dc1f828afacf10bd2eb1f511b02deef7fa234a9c412d0211de126d1cfad54b175c9c3a9731548f9084b437",
+      "sql": "CREATE TABLE thread_realtime_items (\n    thread_id TEXT NOT NULL,\n    item_id TEXT NOT NULL,\n    rollout_ordinal INTEGER NOT NULL,\n    created_at_ms INTEGER NOT NULL,\n    item_type TEXT NOT NULL,\n    item_json TEXT NOT NULL,\n    PRIMARY KEY (thread_id, item_id)\n);\n\nCREATE UNIQUE INDEX idx_thread_realtime_items_page\n    ON thread_realtime_items(thread_id, rollout_ordinal);\n\nCREATE INDEX idx_thread_realtime_items_boundary\n    ON thread_realtime_items(thread_id, rollout_ordinal)\n    WHERE item_type IN ('realtime_session_started', 'realtime_session_closed');\n\nCREATE TRIGGER thread_realtime_items_projection_cleanup\n    AFTER DELETE ON thread_history_projection_state\nBEGIN\n    DELETE FROM thread_realtime_items WHERE thread_id = OLD.thread_id;\nEND;\n"
+    },
+    {
+      "filename": "0006_thread_turn_ends.sql",
+      "sha384": "02ed82d375adb58b5c0c09e0154f3331d507cea7af446d12324e5653cdba9a91f84afd38cf2a29f33030614689deb9de",
+      "sql": "CREATE INDEX idx_thread_turns_end_page\n    ON thread_turns(thread_id, rollout_end_ordinal, turn_id)\n    WHERE rollout_end_ordinal IS NOT NULL;\n"
+    },
+    {
+      "filename": "0007_thread_item_lifecycle_timestamps.sql",
+      "sha384": "9334adb4cda792116a47b69a19e3840ae3806b08773ef1794043fe0aa72891360acb1a0a8431084d53c568482c5fdd20",
+      "sql": "ALTER TABLE thread_items ADD COLUMN started_at_ms INTEGER;\nALTER TABLE thread_items ADD COLUMN completed_at_ms INTEGER;\n"
+    },
+    {
+      "filename": "0008_thread_turn_root.sql",
+      "sha384": "94635cd58535adb1679f4ad07a9d14231b69004405fa88a22db1b6a7e5feac8b6b66ad97ea16fce464b99bff5b3548d3",
+      "sql": "ALTER TABLE thread_turns ADD COLUMN root_turn_id TEXT;\n"
+    }
+  ]
+}
