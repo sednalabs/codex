@@ -1569,27 +1569,27 @@ mod tests {
 
         assert!(mailbox_entry_is_causal(
             &target_action,
-            /* exact_target_wait */ true
+            /*exact_target_wait*/ true
         ));
         assert!(mailbox_entry_is_causal(
             &sibling_action,
-            /* exact_target_wait */ true
+            /*exact_target_wait*/ true
         ));
         assert!(!mailbox_entry_is_causal(
             &sibling_turn_trigger,
-            /* exact_target_wait */ true
+            /*exact_target_wait*/ true
         ));
         assert!(!mailbox_entry_is_causal(
             &queued_progress,
-            /* exact_target_wait */ true
+            /*exact_target_wait*/ true
         ));
         assert!(mailbox_entry_is_causal(
             &generated_terminal_handoff,
-            /* exact_target_wait */ false
+            /*exact_target_wait*/ false
         ));
         assert!(!mailbox_entry_is_causal(
             &generated_terminal_handoff,
-            /* exact_target_wait */ true
+            /*exact_target_wait*/ true
         ));
     }
 
@@ -1628,15 +1628,15 @@ mod tests {
         let entries = vec![&target_terminal, &sibling_action, &later_action];
 
         assert_eq!(
-            causal_mailbox_index(&entries, /* exact_target_wait */ true),
+            causal_mailbox_index(&entries, /*exact_target_wait*/ true),
             Some(1)
         );
         assert_eq!(
-            causal_mailbox_index(&[&target_terminal], /* exact_target_wait */ true),
+            causal_mailbox_index(&[&target_terminal], /*exact_target_wait*/ true),
             None
         );
         assert_eq!(
-            causal_mailbox_index(&[&target_terminal], /* exact_target_wait */ false),
+            causal_mailbox_index(&[&target_terminal], /*exact_target_wait*/ false),
             Some(0)
         );
     }
