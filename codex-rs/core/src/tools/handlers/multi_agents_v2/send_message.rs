@@ -43,6 +43,7 @@ impl Handler {
             MessageDeliveryMode::QueueOnly,
             args.target,
             args.message,
+            args.intent,
             analytics,
         )
         .await

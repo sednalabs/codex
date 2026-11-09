@@ -1,0 +1,315 @@
+{
+  "source_commit": "e03a40398272ee4b0e6cdb694e390498c86ac7d9",
+  "migrations": [
+    {
+      "filename": "0001_threads.sql",
+      "sha384": "627ef19164c9bb298a0cd99945981c9b7bda3d9e6cf12eb35145e3b1d3bf7cf8740f0dbaa0b475185fc2993397078049",
+      "sql": "CREATE TABLE threads (\n    id TEXT PRIMARY KEY,\n    rollout_path TEXT NOT NULL,\n    created_at INTEGER NOT NULL,\n    updated_at INTEGER NOT NULL,\n    source TEXT NOT NULL,\n    model_provider TEXT NOT NULL,\n    cwd TEXT NOT NULL,\n    title TEXT NOT NULL,\n    sandbox_policy TEXT NOT NULL,\n    approval_mode TEXT NOT NULL,\n    tokens_used INTEGER NOT NULL DEFAULT 0,\n    has_user_event INTEGER NOT NULL DEFAULT 0,\n    archived INTEGER NOT NULL DEFAULT 0,\n    archived_at INTEGER,\n    git_sha TEXT,\n    git_branch TEXT,\n    git_origin_url TEXT\n);\n\nCREATE INDEX idx_threads_created_at ON threads(created_at DESC, id DESC);\nCREATE INDEX idx_threads_updated_at ON threads(updated_at DESC, id DESC);\nCREATE INDEX idx_threads_archived ON threads(archived);\nCREATE INDEX idx_threads_source ON threads(source);\nCREATE INDEX idx_threads_provider ON threads(model_provider);\n"
+    },
+    {
+      "filename": "0002_logs.sql",
+      "sha384": "521b72cbc04c7d03b1e4aef8dc0fdee672f1f7f5881385a55a0e937e4ebe87a3f67bca4d3f6b59afbc9a7ca723c82856",
+      "sql": "CREATE TABLE logs (\n    id INTEGER PRIMARY KEY AUTOINCREMENT,\n    ts INTEGER NOT NULL,\n    ts_nanos INTEGER NOT NULL,\n    level TEXT NOT NULL,\n    target TEXT NOT NULL,\n    message TEXT,\n    module_path TEXT,\n    file TEXT,\n    line INTEGER\n);\n\nCREATE INDEX idx_logs_ts ON logs(ts DESC, ts_nanos DESC, id DESC);\n"
+    },
+    {
+      "filename": "0003_logs_thread_id.sql",
+      "sha384": "e58a2862bdb66d3274e60144a26dc9d68bbefff834cd29b82b740f38fcf95862934f412665d985715167839e8f0eb377",
+      "sql": "ALTER TABLE logs ADD COLUMN thread_id TEXT;\n\nCREATE INDEX idx_logs_thread_id ON logs(thread_id);\n"
+    },
+    {
+      "filename": "0004_thread_dynamic_tools.sql",
+      "sha384": "8adc251366e4c7e5ea78b620ac71f4c4bdfb8f048bf9f2fd7204226cfba54c8e83fc9d83fc1ec334bc683bb7f6d0d8a8",
+      "sql": "CREATE TABLE thread_dynamic_tools (\n    thread_id TEXT NOT NULL,\n    position INTEGER NOT NULL,\n    name TEXT NOT NULL,\n    description TEXT NOT NULL,\n    input_schema TEXT NOT NULL,\n    PRIMARY KEY(thread_id, position),\n    FOREIGN KEY(thread_id) REFERENCES threads(id) ON DELETE CASCADE\n);\n\nCREATE INDEX idx_thread_dynamic_tools_thread ON thread_dynamic_tools(thread_id);\n"
+    },
+    {
+      "filename": "0005_threads_cli_version.sql",
+      "sha384": "1ac64f85e083e5b49b974bf498fc39c630f0032057fb4bf4cb31708619fac5a80189f261cf3e38dafd92dc406e73c220",
+      "sql": "ALTER TABLE threads ADD COLUMN cli_version TEXT NOT NULL DEFAULT '';\n"
+    },
+    {
+      "filename": "0006_memories.sql",
+      "sha384": "a203fc4b597e1420bffdc4e00e214798b21cf7fc921d8bd6f089c75248fb6a4b4942c97a1f8e0271eca8cf3b3e5e7a80",
+      "sql": "CREATE TABLE stage1_outputs (\n    thread_id TEXT PRIMARY KEY,\n    source_updated_at INTEGER NOT NULL,\n    raw_memory TEXT NOT NULL,\n    rollout_summary TEXT NOT NULL,\n    generated_at INTEGER NOT NULL,\n    FOREIGN KEY(thread_id) REFERENCES threads(id) ON DELETE CASCADE\n);\n\nCREATE INDEX idx_stage1_outputs_source_updated_at\n    ON stage1_outputs(source_updated_at DESC, thread_id DESC);\n\nCREATE TABLE jobs (\n    kind TEXT NOT NULL,\n    job_key TEXT NOT NULL,\n    status TEXT NOT NULL,\n    worker_id TEXT,\n    ownership_token TEXT,\n    started_at INTEGER,\n    finished_at INTEGER,\n    lease_until INTEGER,\n    retry_at INTEGER,\n    retry_remaining INTEGER NOT NULL,\n    last_error TEXT,\n    input_watermark INTEGER,\n    last_success_watermark INTEGER,\n    PRIMARY KEY (kind, job_key)\n);\n\nCREATE INDEX idx_jobs_kind_status_retry_lease\n    ON jobs(kind, status, retry_at, lease_until);\n"
+    },
+    {
+      "filename": "0007_threads_first_user_message.sql",
+      "sha384": "7e35a464df6d4c82694de50865ba3fe9104f9e1385a33be7d633ab4b8d6cf60b7f369fe083d31251fd77b75fa2d61f82",
+      "sql": "ALTER TABLE threads ADD COLUMN first_user_message TEXT NOT NULL DEFAULT '';\n\nUPDATE threads\nSET first_user_message = title\nWHERE first_user_message = '' AND has_user_event = 1 AND title <> '';\n"
+    },
+    {
+      "filename": "0008_backfill_state.sql",
+      "sha384": "aa3f287f7a448554e7af01f259f0871ce90ace1a7d4b8ebbd74c87ae57c3e21119f7eec8b9c2e9f4a9e76e63a0f0b60a",
+      "sql": "CREATE TABLE backfill_state (\n    id INTEGER PRIMARY KEY CHECK (id = 1),\n    status TEXT NOT NULL,\n    last_watermark TEXT,\n    last_success_at INTEGER,\n    updated_at INTEGER NOT NULL\n);\n\nINSERT INTO backfill_state (id, status, last_watermark, last_success_at, updated_at)\nVALUES (\n    1,\n    'pending',\n    NULL,\n    NULL,\n    CAST(strftime('%s', 'now') AS INTEGER)\n)\nON CONFLICT(id) DO NOTHING;\n"
+    },
+    {
+      "filename": "0009_stage1_outputs_rollout_slug.sql",
+      "sha384": "8b469360777e6dd6c21d3f0eb93481251846b0a50e0a44eb0dbee4a0a32b7206768a5d83a5fcec30c6fd2e43d755ff1b",
+      "sql": "ALTER TABLE stage1_outputs\nADD COLUMN rollout_slug TEXT;\n"
+    },
+    {
+      "filename": "0010_logs_process_id.sql",
+      "sha384": "8adaf1365f8e5deeba68bdeee9fd83b094a87bdab364d95ab5c714f7b8bd95dc3b38576871470312154c9d41e8f10f93",
+      "sql": "ALTER TABLE logs ADD COLUMN process_uuid TEXT;\n\nCREATE INDEX idx_logs_process_uuid ON logs(process_uuid);\n"
+    },
+    {
+      "filename": "0011_logs_partition_prune_indexes.sql",
+      "sha384": "31ececbd07f04452d0dc5127d824ed183056b9900a31aa739387a4aef232016d975110829814841fb6bf3fd23634b799",
+      "sql": "CREATE INDEX idx_logs_thread_id_ts ON logs(thread_id, ts DESC, ts_nanos DESC, id DESC);\n\nCREATE INDEX idx_logs_process_uuid_threadless_ts ON logs(process_uuid, ts DESC, ts_nanos DESC, id DESC)\nWHERE thread_id IS NULL;\n"
+    },
+    {
+      "filename": "0012_logs_estimated_bytes.sql",
+      "sha384": "0012a213ed25f2cf806c2530c487ebb00b4f102f5960d1a852154a0f77d25c9e9f7df29550faeb30ebaff15a26c7d604",
+      "sql": "ALTER TABLE logs ADD COLUMN estimated_bytes INTEGER NOT NULL DEFAULT 0;\n\nUPDATE logs\nSET estimated_bytes =\n    LENGTH(CAST(COALESCE(message, '') AS BLOB))\n    + LENGTH(CAST(level AS BLOB))\n    + LENGTH(CAST(target AS BLOB))\n    + LENGTH(CAST(COALESCE(module_path, '') AS BLOB))\n    + LENGTH(CAST(COALESCE(file, '') AS BLOB));\n"
+    },
+    {
+      "filename": "0013_threads_agent_nickname.sql",
+      "sha384": "05526a0900a8430523a9a05932ea61302fce20782b245498565c1b9a2dfd10cf5c49932089b496ae23af44f6c5f76af4",
+      "sql": "ALTER TABLE threads ADD COLUMN agent_nickname TEXT;\nALTER TABLE threads ADD COLUMN agent_role TEXT;\n"
+    },
+    {
+      "filename": "0014_agent_jobs.sql",
+      "sha384": "4d2fbb2442c5c5c7c47b4254b5b8dc2c52129f65c4a952a79f1ec5c40fb07483326429ce5acdbd372bc9262352cb6277",
+      "sql": "CREATE TABLE agent_jobs (\n    id TEXT PRIMARY KEY,\n    name TEXT NOT NULL,\n    status TEXT NOT NULL,\n    instruction TEXT NOT NULL,\n    output_schema_json TEXT,\n    input_headers_json TEXT NOT NULL,\n    input_csv_path TEXT NOT NULL,\n    output_csv_path TEXT NOT NULL,\n    auto_export INTEGER NOT NULL DEFAULT 1,\n    created_at INTEGER NOT NULL,\n    updated_at INTEGER NOT NULL,\n    started_at INTEGER,\n    completed_at INTEGER,\n    last_error TEXT\n);\n\nCREATE TABLE agent_job_items (\n    job_id TEXT NOT NULL,\n    item_id TEXT NOT NULL,\n    row_index INTEGER NOT NULL,\n    source_id TEXT,\n    row_json TEXT NOT NULL,\n    status TEXT NOT NULL,\n    assigned_thread_id TEXT,\n    attempt_count INTEGER NOT NULL DEFAULT 0,\n    result_json TEXT,\n    last_error TEXT,\n    created_at INTEGER NOT NULL,\n    updated_at INTEGER NOT NULL,\n    completed_at INTEGER,\n    reported_at INTEGER,\n    PRIMARY KEY (job_id, item_id),\n    FOREIGN KEY(job_id) REFERENCES agent_jobs(id) ON DELETE CASCADE\n);\n\nCREATE INDEX idx_agent_jobs_status ON agent_jobs(status, updated_at DESC);\nCREATE INDEX idx_agent_job_items_status ON agent_job_items(job_id, status, row_index ASC);\n"
+    },
+    {
+      "filename": "0015_agent_jobs_max_runtime_seconds.sql",
+      "sha384": "0eece6db59c948faa6608526af440a9f53f5a982d27f3e866cd9f1401c2e59bc61f8381b5a1c9744acb232f50db493e5",
+      "sql": "ALTER TABLE agent_jobs\nADD COLUMN max_runtime_seconds INTEGER;\n"
+    },
+    {
+      "filename": "0016_memory_usage.sql",
+      "sha384": "4768f743e981293735c6e07b0282ec8ace98af720059d68555b17979d28c94b0c893a97a950d5e32758bc6d92d8fe6ff",
+      "sql": "ALTER TABLE stage1_outputs ADD COLUMN usage_count INTEGER;\nALTER TABLE stage1_outputs ADD COLUMN last_usage INTEGER;\n"
+    },
+    {
+      "filename": "0017_phase2_selection_flag.sql",
+      "sha384": "4cbdb2edfebf6040858ffc193cffa36e6b3fbf508f8418ad073081bbfcf59d53d423b6eb4c0ded206ab4d4c1a0efed94",
+      "sql": "ALTER TABLE stage1_outputs\nADD COLUMN selected_for_phase2 INTEGER NOT NULL DEFAULT 0;\n"
+    },
+    {
+      "filename": "0018_phase2_selection_snapshot.sql",
+      "sha384": "a4363003bc44f0a4ae1eed53b536b7175f97863ea6881a059dc6642e70e2921576204697cec2345f560e65ff7fbf4455",
+      "sql": "ALTER TABLE stage1_outputs\nADD COLUMN selected_for_phase2_source_updated_at INTEGER;\nALTER TABLE threads ADD COLUMN memory_mode TEXT NOT NULL DEFAULT 'enabled';\n"
+    },
+    {
+      "filename": "0019_thread_dynamic_tools_defer_loading.sql",
+      "sha384": "3884c02f080f0184e92b620f870dfbb840a8ec5dfce2fe6455dd8197fcd27d7dd86e63ad6ec7c4091a1161d9ed199f8d",
+      "sql": "ALTER TABLE thread_dynamic_tools\nADD COLUMN defer_loading INTEGER NOT NULL DEFAULT 0;\n"
+    },
+    {
+      "filename": "0020_threads_model_reasoning_effort.sql",
+      "sha384": "07673f4859f740134569ab9606760d8173ed6df92da47c86fbd0ceeb333e18ab7ac91d525ab8c11503c42164fd4167ae",
+      "sql": "ALTER TABLE threads ADD COLUMN model TEXT;\nALTER TABLE threads ADD COLUMN reasoning_effort TEXT;\n"
+    },
+    {
+      "filename": "0021_thread_spawn_edges.sql",
+      "sha384": "ea1aebe4f5a1d56c8effcc15f705c272275dd8adfeb01bc97d3f7b283474a3b8c2b0c8c69de55786e8bda17cae6f4de7",
+      "sql": "CREATE TABLE thread_spawn_edges (\n    parent_thread_id TEXT NOT NULL,\n    child_thread_id TEXT NOT NULL PRIMARY KEY,\n    status TEXT NOT NULL\n);\n\nCREATE INDEX idx_thread_spawn_edges_parent_status\n    ON thread_spawn_edges(parent_thread_id, status);\n"
+    },
+    {
+      "filename": "0022_threads_agent_path.sql",
+      "sha384": "160fe01b757dd06f9573b9030952d021f2b148732bea5fc5f5ae09e9227f3f83ca676695edaf8502669fcb546119dc94",
+      "sql": "ALTER TABLE threads ADD COLUMN agent_path TEXT;\n"
+    },
+    {
+      "filename": "0023_drop_logs.sql",
+      "sha384": "e6c748a9a18286e4c773ffe0dad659f16fb7e5b7b032235815991c405f2d32c068f3edde920d0fcf589b687bffcfee2e",
+      "sql": "PRAGMA auto_vacuum = INCREMENTAL;\n\nDROP TABLE IF EXISTS logs;\n"
+    },
+    {
+      "filename": "0024_remote_control_enrollments.sql",
+      "sha384": "e92aa526b1f36e26f6221c04a671f07b27de2e7a5112d93a8c3af816a87846e7804d5fbad689e61cf4ec91fd79d3bd8a",
+      "sql": "CREATE TABLE remote_control_enrollments (\n    websocket_url TEXT NOT NULL,\n    account_id TEXT NOT NULL,\n    app_server_client_name TEXT NOT NULL,\n    server_id TEXT NOT NULL,\n    environment_id TEXT NOT NULL,\n    server_name TEXT NOT NULL,\n    updated_at INTEGER NOT NULL,\n    PRIMARY KEY (websocket_url, account_id, app_server_client_name)\n);\n"
+    },
+    {
+      "filename": "0025_thread_timestamps_millis.sql",
+      "sha384": "d6fb51d79941b93c3278fe2a8a0c6fa882407b7b716e32d72329f0b7b60c181a42f49e56cd552315efb0402a111ede12",
+      "sql": "ALTER TABLE threads ADD COLUMN created_at_ms INTEGER;\nALTER TABLE threads ADD COLUMN updated_at_ms INTEGER;\n\nCREATE TEMP TABLE thread_timestamp_migration AS\nSELECT\n    id,\n    CASE\n        WHEN created_at < 1577836800000 THEN created_at * 1000\n        ELSE created_at\n    END AS created_at_base_ms,\n    CASE\n        WHEN updated_at < 1577836800000 THEN updated_at * 1000\n        ELSE updated_at\n    END AS updated_at_base_ms\nFROM threads;\n\nWITH RECURSIVE\nordered_created AS (\n    SELECT\n        id,\n        created_at_base_ms,\n        ROW_NUMBER() OVER (ORDER BY created_at_base_ms, id) AS row_number\n    FROM thread_timestamp_migration\n),\nassigned_created(row_number, id, created_at_ms) AS (\n    SELECT row_number, id, created_at_base_ms\n    FROM ordered_created\n    WHERE row_number = 1\n    UNION ALL\n    SELECT\n        ordered_created.row_number,\n        ordered_created.id,\n        MAX(ordered_created.created_at_base_ms, assigned_created.created_at_ms + 1)\n    FROM ordered_created\n    JOIN assigned_created ON ordered_created.row_number = assigned_created.row_number + 1\n)\nUPDATE threads\nSET created_at_ms = (\n    SELECT created_at_ms\n    FROM assigned_created\n    WHERE assigned_created.id = threads.id\n);\n\nWITH RECURSIVE\nordered_updated AS (\n    SELECT\n        id,\n        updated_at_base_ms,\n        ROW_NUMBER() OVER (ORDER BY updated_at_base_ms, id) AS row_number\n    FROM thread_timestamp_migration\n),\nassigned_updated(row_number, id, updated_at_ms) AS (\n    SELECT row_number, id, updated_at_base_ms\n    FROM ordered_updated\n    WHERE row_number = 1\n    UNION ALL\n    SELECT\n        ordered_updated.row_number,\n        ordered_updated.id,\n        MAX(ordered_updated.updated_at_base_ms, assigned_updated.updated_at_ms + 1)\n    FROM ordered_updated\n    JOIN assigned_updated ON ordered_updated.row_number = assigned_updated.row_number + 1\n)\nUPDATE threads\nSET updated_at_ms = (\n    SELECT updated_at_ms\n    FROM assigned_updated\n    WHERE assigned_updated.id = threads.id\n);\n\nDROP TABLE thread_timestamp_migration;\n\nCREATE TRIGGER threads_created_at_ms_after_insert\nAFTER INSERT ON threads\nWHEN NEW.created_at_ms IS NULL\nBEGIN\n    UPDATE threads\n    SET created_at_ms = NEW.created_at * 1000\n    WHERE id = NEW.id;\nEND;\n\nCREATE TRIGGER threads_updated_at_ms_after_insert\nAFTER INSERT ON threads\nWHEN NEW.updated_at_ms IS NULL\nBEGIN\n    UPDATE threads\n    SET updated_at_ms = NEW.updated_at * 1000\n    WHERE id = NEW.id;\nEND;\n\nCREATE TRIGGER threads_created_at_ms_after_update\nAFTER UPDATE OF created_at ON threads\nWHEN NEW.created_at != OLD.created_at\n AND NEW.created_at_ms IS OLD.created_at_ms\nBEGIN\n    UPDATE threads\n    SET created_at_ms = NEW.created_at * 1000\n    WHERE id = NEW.id;\nEND;\n\nCREATE TRIGGER threads_updated_at_ms_after_update\nAFTER UPDATE OF updated_at ON threads\nWHEN NEW.updated_at != OLD.updated_at\n AND NEW.updated_at_ms IS OLD.updated_at_ms\nBEGIN\n    UPDATE threads\n    SET updated_at_ms = NEW.updated_at * 1000\n    WHERE id = NEW.id;\nEND;\n\nCREATE INDEX idx_threads_created_at_ms ON threads(created_at_ms DESC, id DESC);\nCREATE INDEX idx_threads_updated_at_ms ON threads(updated_at_ms DESC, id DESC);\n"
+    },
+    {
+      "filename": "0026_thread_dynamic_tools_namespace.sql",
+      "sha384": "6c62a325d3b9ca8e424eacb9e3890d8d9de57c3725e2d1fa30c3743ae779fca2969387174359dfb26e4920791ae7e831",
+      "sql": "ALTER TABLE thread_dynamic_tools\nADD COLUMN namespace TEXT;\n"
+    },
+    {
+      "filename": "0027_threads_cwd_sort_indexes.sql",
+      "sha384": "d84dca6a039e004c0c7d06c5a16c2ccc363137537f3dd9898f50bb013ce9067140761b87d58ca742d769d35976863fc3",
+      "sql": "CREATE INDEX idx_threads_archived_cwd_created_at_ms ON threads(archived, cwd, created_at_ms DESC, id DESC);\nCREATE INDEX idx_threads_archived_cwd_updated_at_ms ON threads(archived, cwd, updated_at_ms DESC, id DESC);\n"
+    },
+    {
+      "filename": "0028_device_key_bindings.sql",
+      "sha384": "ef44adaa291e40dfe6b74e3cd259711adae13f01c5594b177d08e2d2041a67ed3813feecf049662aaed0f636bd3f4ac3",
+      "sql": "CREATE TABLE device_key_bindings (\n    key_id TEXT PRIMARY KEY NOT NULL,\n    account_user_id TEXT NOT NULL,\n    client_id TEXT NOT NULL,\n    created_at INTEGER NOT NULL,\n    updated_at INTEGER NOT NULL\n);\n"
+    },
+    {
+      "filename": "0029_thread_goals.sql",
+      "sha384": "e9ec76f97dbf41ce4949de324a2a26538c2025c0ac4f272b77a852970fb14b7ec970d6978a765f91ae171dce9c0e4149",
+      "sql": "CREATE TABLE thread_goals (\n    thread_id TEXT PRIMARY KEY NOT NULL REFERENCES threads(id) ON DELETE CASCADE,\n    goal_id TEXT NOT NULL,\n    objective TEXT NOT NULL,\n    status TEXT NOT NULL CHECK(status IN ('active', 'paused', 'budget_limited', 'complete')),\n    token_budget INTEGER,\n    tokens_used INTEGER NOT NULL DEFAULT 0,\n    time_used_seconds INTEGER NOT NULL DEFAULT 0,\n    created_at_ms INTEGER NOT NULL,\n    updated_at_ms INTEGER NOT NULL\n);\n"
+    },
+    {
+      "filename": "0030_threads_thread_source.sql",
+      "sha384": "80c1cdacd4520b42b18b960164912685591a7ee041645f35609a2ee2792eb474b7b0b758366556982d8cde2acb583672",
+      "sql": "ALTER TABLE threads ADD COLUMN thread_source TEXT;\n"
+    },
+    {
+      "filename": "0031_drop_device_key_bindings.sql",
+      "sha384": "943675a9b3dc92d0b2731ae7d2fe324ff1a40b6366b9d5d8b4cb47ca885c08beb6ebb1d776a5a47c878b4094dde70ea0",
+      "sql": "DROP TABLE IF EXISTS device_key_bindings;\n"
+    },
+    {
+      "filename": "0032_threads_preview.sql",
+      "sha384": "3c01d615c5e3aba0fd858b7168e73881598d7d33a0ecc41527bdf6595a199d1aec2ff9f3b3000a57241c500d81b34259",
+      "sql": "ALTER TABLE threads ADD COLUMN preview TEXT NOT NULL DEFAULT '';\n\nUPDATE threads\nSET preview = first_user_message\nWHERE preview = '' AND first_user_message <> '';\n\nUPDATE threads\nSET preview = (\n    SELECT thread_goals.objective\n    FROM thread_goals\n    WHERE thread_goals.thread_id = threads.id\n)\nWHERE preview = ''\n    AND EXISTS (\n        SELECT 1\n        FROM thread_goals\n        WHERE thread_goals.thread_id = threads.id\n            AND thread_goals.objective <> ''\n    );\n"
+    },
+    {
+      "filename": "0033_thread_goal_stopped_statuses.sql",
+      "sha384": "4904aae354e3d8ce32ac21d2ae579fd708446ae1dfb2649fc9dd22dc9279b91a2bbb02e6f01b3e0abd1088177bf2f030",
+      "sql": "PRAGMA foreign_keys=OFF;\n\nCREATE TABLE thread_goals_new (\n    thread_id TEXT PRIMARY KEY NOT NULL REFERENCES threads(id) ON DELETE CASCADE,\n    goal_id TEXT NOT NULL,\n    objective TEXT NOT NULL,\n    status TEXT NOT NULL CHECK(status IN (\n        'active',\n        'paused',\n        'blocked',\n        'usage_limited',\n        'budget_limited',\n        'complete'\n    )),\n    token_budget INTEGER,\n    tokens_used INTEGER NOT NULL DEFAULT 0,\n    time_used_seconds INTEGER NOT NULL DEFAULT 0,\n    created_at_ms INTEGER NOT NULL,\n    updated_at_ms INTEGER NOT NULL\n);\n\nINSERT INTO thread_goals_new (\n    thread_id,\n    goal_id,\n    objective,\n    status,\n    token_budget,\n    tokens_used,\n    time_used_seconds,\n    created_at_ms,\n    updated_at_ms\n)\nSELECT\n    thread_id,\n    goal_id,\n    objective,\n    status,\n    token_budget,\n    tokens_used,\n    time_used_seconds,\n    created_at_ms,\n    updated_at_ms\nFROM thread_goals;\n\nDROP TABLE thread_goals;\nALTER TABLE thread_goals_new RENAME TO thread_goals;\n\nPRAGMA foreign_keys=ON;\n"
+    },
+    {
+      "filename": "0034_drop_thread_goals.sql",
+      "sha384": "d6fea739c76ebdef35a23f06e54efb5904d7987fb6b663db1ebc98eb9b192305f454932bfbaa2231aedca6209903a5f3",
+      "sql": "DROP TABLE IF EXISTS thread_goals;\n"
+    },
+    {
+      "filename": "0035_drop_memory_tables.sql",
+      "sha384": "d7b56acb07c96858bdc7ca4c53db51eb71c6a19ef2c524ff68c2660a6fe0d23211a6d39cb905f01c42ffb7c8ee913bbc",
+      "sql": "DROP TABLE IF EXISTS jobs;\nDROP TABLE IF EXISTS stage1_outputs;\n"
+    },
+    {
+      "filename": "0036_threads_visible_sort_indexes.sql",
+      "sha384": "6381f7bb4c36be41c6106b8523ea6c68f5a00273a5522155b7b84bad26d152436f3375df7097ce3abf2421aec32641ed",
+      "sql": "CREATE INDEX idx_threads_visible_created_at_ms\n    ON threads(archived, created_at_ms DESC)\n    WHERE preview <> '';\n\nCREATE INDEX idx_threads_visible_updated_at_ms\n    ON threads(archived, updated_at_ms DESC)\n    WHERE preview <> '';\n"
+    },
+    {
+      "filename": "0037_remote_control_enrollments_enabled.sql",
+      "sha384": "f6a5ab0db36bb9e45ab5285b56090fb453df0a4d4d8d62eace234f0b557f4203c6c455fc67bd7d6e72623c3979ec9405",
+      "sql": "ALTER TABLE remote_control_enrollments\nADD COLUMN remote_control_enabled INTEGER;\n"
+    },
+    {
+      "filename": "0038_external_agent_config_imports.sql",
+      "sha384": "e7778522cbe529f5e2ba179b502aee8e5c21272ad820e672ab0a565f7edc9bd0f29171ccf9815c0acc0f89eae0a2b1fc",
+      "sql": "CREATE TABLE external_agent_config_imports (\n    import_id TEXT PRIMARY KEY,\n    completed_at_ms INTEGER NOT NULL,\n    successes TEXT NOT NULL,\n    failures TEXT NOT NULL\n);\n"
+    },
+    {
+      "filename": "0039_threads_recency_at.sql",
+      "sha384": "c217b3d14c08c23603f485af11452ee2b68f65fa8dbaf215f33f53b608c092be8738de3f63d6a38f120edea5af247c17",
+      "sql": "ALTER TABLE threads ADD COLUMN recency_at INTEGER NOT NULL DEFAULT 0;\nALTER TABLE threads ADD COLUMN recency_at_ms INTEGER NOT NULL DEFAULT 0;\n\nUPDATE threads\nSET recency_at = updated_at,\n    recency_at_ms = updated_at_ms;\n\n-- Older binaries can open databases migrated by newer binaries. Seed recency\n-- when one of those binaries inserts a thread without the new columns.\nCREATE TRIGGER threads_recency_at_after_insert\nAFTER INSERT ON threads\nWHEN NEW.recency_at_ms = 0\nBEGIN\n    UPDATE threads\n    SET recency_at = NEW.updated_at,\n        recency_at_ms = COALESCE(NEW.updated_at_ms, NEW.updated_at * 1000)\n    WHERE id = NEW.id;\nEND;\n\nCREATE INDEX idx_threads_recency_at_ms\n    ON threads(recency_at_ms DESC, id DESC);\n\nCREATE INDEX idx_threads_archived_cwd_recency_at_ms\n    ON threads(archived, cwd, recency_at_ms DESC, id DESC);\n\nCREATE INDEX idx_threads_visible_recency_at_ms\n    ON threads(archived, recency_at_ms DESC, id DESC)\n    WHERE preview <> '';\n"
+    },
+    {
+      "filename": "0040_threads_history_mode.sql",
+      "sha384": "a7a99674f90a43184e43d66595c4f1da50ae8715a5bfcb1579a2b7b10668335d7f7ab6b6f2d7a7a379272773d803a914",
+      "sql": "ALTER TABLE threads ADD COLUMN history_mode TEXT NOT NULL DEFAULT 'legacy';\n"
+    },
+    {
+      "filename": "0041_threads_name.sql",
+      "sha384": "0dc734dbe4cbcc5ad5a8bbc2fdc1cf770ddea3cb53eb36c55a4da6fa2e8be4cc8e68672f43ac953e727e415e45c50a78",
+      "sql": "ALTER TABLE threads ADD COLUMN name TEXT;\n"
+    },
+    {
+      "filename": "0042_drop_agent_jobs.sql",
+      "sha384": "cfdc4fd47328d1b67c0c7555125de4fb4add5b3b57fd31ac1987e4d8b0c99b1f5418db9ee7ec2158aed8a2e3dfcfd636",
+      "sql": "DROP TABLE IF EXISTS agent_job_items;\nDROP TABLE IF EXISTS agent_jobs;\n"
+    },
+    {
+      "filename": "0043_threads_is_pinned.sql",
+      "sha384": "605128e722bd2521c7e979e9961c16706435e442b3e3a8efa36f6b16c42e3833090906d9a62fde097a109b78e29da830",
+      "sql": "ALTER TABLE threads ADD COLUMN is_pinned INTEGER NOT NULL DEFAULT 0;\n\nCREATE INDEX idx_threads_pinned_recency_at_ms\n    ON threads(archived, recency_at_ms DESC, id DESC)\n    WHERE is_pinned = 1 AND preview <> '';\n"
+    },
+    {
+      "filename": "0044_external_agent_config_imports_provider_id.sql",
+      "sha384": "5d29223bd1cafe456a4af992a545e8ec420b71331eb12a7427e26512b8a44117d9445b83562f095b3a5a0f11c4f091d2",
+      "sql": "ALTER TABLE external_agent_config_imports\nADD COLUMN provider_id TEXT;\n"
+    },
+    {
+      "filename": "0045_threads_section.sql",
+      "sha384": "a7fadc8caea8b6abeb108f588a91b8e5d1c9e2645ce990f2251b9f0234e6e53d78fc854f1c88c7217cc143016539d691",
+      "sql": "CREATE TABLE thread_sections (\n    id TEXT PRIMARY KEY,\n    name TEXT NOT NULL\n);\n\nINSERT INTO thread_sections (id, name)\nVALUES ('01984de2-8f74-7c91-a3b2-5c5e937cf318', 'Pinned');\n\nALTER TABLE threads ADD COLUMN thread_section_id TEXT\n    REFERENCES thread_sections(id) ON DELETE SET NULL;\n\nCREATE INDEX idx_threads_section_recency_at_ms\n    ON threads(archived, thread_section_id, recency_at_ms DESC, id DESC)\n    WHERE thread_section_id IS NOT NULL AND preview <> '';\n"
+    },
+    {
+      "filename": "0046_threads_section_order.sql",
+      "sha384": "63addf6115c3fb1a22a886108ce6ebff5cd8408f219606dc2f8396836418e56d5be2a6de7b0df877119a28096ee67d22",
+      "sql": "ALTER TABLE threads ADD COLUMN section_position INTEGER;\nALTER TABLE threads ADD COLUMN section_entered_at_ms INTEGER;\n\nUPDATE threads\nSET section_position = ranked.position,\n    section_entered_at_ms = threads.recency_at_ms\nFROM (\n    SELECT id,\n           ROW_NUMBER() OVER (\n               PARTITION BY thread_section_id\n               ORDER BY recency_at_ms DESC, id DESC\n           ) * 1000000 AS position\n    FROM threads\n    WHERE thread_section_id IS NOT NULL\n) AS ranked\nWHERE threads.id = ranked.id;\n\nCREATE INDEX idx_threads_section_position\n    ON threads(archived, thread_section_id, section_position ASC, id ASC)\n    WHERE thread_section_id IS NOT NULL AND preview <> '';\n"
+    },
+    {
+      "filename": "0047_rollout_migration_state.sql",
+      "sha384": "1ae117e4ab40813de2b6cfed521585a5396a8dcb7277923d539ed111f5e76424787131ef1de353be5dd78e8228f204cc",
+      "sql": "CREATE TABLE rollout_migration_state (\n    migration_id TEXT PRIMARY KEY,\n    last_checked_thread_created_at INTEGER,\n    last_checked_thread_id TEXT,\n    updated_at INTEGER NOT NULL\n);\n\nCREATE TABLE rollout_migration_skipped_rollouts (\n    migration_id TEXT NOT NULL,\n    rollout_path TEXT NOT NULL,\n    rollout_size_bytes INTEGER NOT NULL,\n    rollout_modified_at_ns INTEGER NOT NULL,\n    skip_reason TEXT NOT NULL,\n    skipped_at INTEGER NOT NULL,\n    PRIMARY KEY (migration_id, rollout_path)\n);\n"
+    },
+    {
+      "filename": "0048_thread_section_appearance.sql",
+      "sha384": "9d298333f7523010502044685009ffe1ed18c3fed7f01fb200d62252f90ab0d897ccf05e478f90150b941ea6c0bd459c",
+      "sql": "ALTER TABLE thread_sections ADD COLUMN appearance TEXT;\n"
+    },
+    {
+      "filename": "0049_projects.sql",
+      "sha384": "faf45c392bb8572062bbd52f9702966cf62e3d195a1633f54cfe1b7dcb5865a3f951dc75c975179dc9a0ee639f7426a7",
+      "sql": "CREATE TABLE projects (\n    id TEXT PRIMARY KEY,\n    name TEXT NOT NULL,\n    metadata TEXT NOT NULL DEFAULT '{}',\n    position INTEGER NOT NULL,\n    created_at_ms INTEGER NOT NULL,\n    updated_at_ms INTEGER NOT NULL\n);\n\nCREATE TABLE project_roots (\n    project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,\n    position INTEGER NOT NULL,\n    path TEXT NOT NULL,\n    PRIMARY KEY (project_id, position)\n);\n\nCREATE TABLE project_idempotency_keys (\n    key TEXT PRIMARY KEY,\n    project_id TEXT NOT NULL,\n    created_at_ms INTEGER NOT NULL\n);\n\nALTER TABLE threads ADD COLUMN project_id TEXT\n    REFERENCES projects(id) ON DELETE SET NULL;\n\nCREATE INDEX idx_projects_position\n    ON projects(position ASC, id ASC);\nCREATE INDEX idx_threads_project_id\n    ON threads(project_id, archived, created_at_ms DESC, id DESC)\n    WHERE project_id IS NOT NULL;\n"
+    },
+    {
+      "filename": "0050_threads_section_empty_preview_indexes.sql",
+      "sha384": "d2802e96f5fc1900fc6d3d595f040ebca8d25310ae9d1499a12b91f1635617adf5d2b4a93d0807203a22f4a6d4edb77e",
+      "sql": "DROP INDEX idx_threads_section_recency_at_ms;\nDROP INDEX idx_threads_section_position;\n\nCREATE INDEX idx_threads_section_recency_at_ms\n    ON threads(archived, thread_section_id, recency_at_ms DESC, id DESC)\n    WHERE thread_section_id IS NOT NULL;\n\nCREATE INDEX idx_threads_section_position\n    ON threads(archived, thread_section_id, section_position ASC, id ASC)\n    WHERE thread_section_id IS NOT NULL;\n"
+    },
+    {
+      "filename": "0051_thread_artifacts.sql",
+      "sha384": "23360a03a7fc307c3fd5bb8b432b66034dd8f8695cdba698b45278c20dd712c1af476b884e192237d80baa08a5f29505",
+      "sql": "CREATE TABLE thread_artifacts (\n    id TEXT PRIMARY KEY,\n    thread_id TEXT NOT NULL REFERENCES threads(id) ON DELETE CASCADE,\n    artifact_type TEXT NOT NULL,\n    identity_key TEXT NOT NULL,\n    payload TEXT NOT NULL,\n    created_at INTEGER NOT NULL,\n    UNIQUE (thread_id, artifact_type, identity_key)\n);\n\nCREATE INDEX idx_thread_artifacts_thread_created_id\n    ON thread_artifacts(thread_id, created_at, id);\n"
+    },
+    {
+      "filename": "0052_projects_recency.sql",
+      "sha384": "071e96313d402e4c3d156f620f3f62b4a468da00ce30a47574d2594623e5e954f3ec2f1e54f043a8e4b602643e868b7d",
+      "sql": "CREATE INDEX idx_threads_project_recency\n    ON threads(project_id, recency_at_ms DESC)\n    WHERE archived = 0 AND project_id IS NOT NULL;\n"
+    },
+    {
+      "filename": "0053_threads_originator.sql",
+      "sha384": "e86ef7ccbcc891b1af27f6aedb26bfe36d79c9d405e48f302eb053cb57ff9b24dbeb0479b48b18e2076efb6bfc4a9287",
+      "sql": "ALTER TABLE threads ADD COLUMN originator TEXT;\n"
+    },
+    {
+      "filename": "0054_threads_daybreak_enabled.sql",
+      "sha384": "e62a9977d99c7eabf36b67b183d86443d062b0aa8d018c42d1299821de4bf59182e16494ab874fd2d4081ef510e759f1",
+      "sql": "ALTER TABLE threads ADD COLUMN daybreak_enabled BOOLEAN;\n"
+    },
+    {
+      "filename": "0055_thread_attachments.sql",
+      "sha384": "6daadc5527b3f57fa360c5d93199282ba54a42b7598558a9765bd6dcf11f555150fe678ed8163abb2e1861cb51d196c3",
+      "sql": "ALTER TABLE thread_artifacts RENAME TO thread_attachments;\nALTER TABLE thread_attachments RENAME COLUMN artifact_type TO attachment_type;\n\nDROP INDEX idx_thread_artifacts_thread_created_id;\nCREATE INDEX idx_thread_attachments_thread_created_id\n    ON thread_attachments(thread_id, created_at, id);\n"
+    },
+    {
+      "filename": "0056_threads_creator_identity.sql",
+      "sha384": "5de44fac5505249be66fcd640e9ac3d36550854c0db1272eb52cbb6c3d18b207db4cb782686d81089e77ebb57f6819b1",
+      "sql": "ALTER TABLE threads ADD COLUMN creator_user_id TEXT;\nALTER TABLE threads ADD COLUMN creator_account_id TEXT;\n"
+    },
+    {
+      "filename": "0057_cleanup_guardian_thread_metadata.sql",
+      "sha384": "729562c57bfa8b43d5ae3476c99cef6e81a54709a74283057ce8d2d6f55cf8eae2594fdb7cff4238ebe1e481e7c049e6",
+      "sql": "-- Guardian prompts are synthetic review context, not user-authored messages.\n-- Keep the SQLite projection small; rollout JSONL remains canonical.\n-- Legacy automatic titles were empty or copied first_user_message; preserve a\n-- different non-empty title because it may have been set explicitly.\nUPDATE threads\nSET title = CASE\n        WHEN trim(title) = '' OR trim(title) = trim(first_user_message)\n            THEN 'Guardian review'\n        ELSE title\n    END,\n    name = CASE\n        WHEN trim(COALESCE(name, '')) != ''\n            THEN name\n        WHEN trim(title) != ''\n            AND trim(title) != trim(COALESCE(first_user_message, ''))\n            THEN title\n        ELSE 'Guardian review'\n    END,\n    preview = 'Approval review',\n    first_user_message = ''\nWHERE source = '{\"subagent\":{\"other\":\"guardian\"}}';\n"
+    },
+    {
+      "filename": "0058_threads_archive_sort_indexes.sql",
+      "sha384": "68467af3ce1ff09777c3f7167d522e11d88586fbb80a1588c631cf643a7d4985b221a6c8e8623997b37d44605b7e1091",
+      "sql": "-- Archived listings include empty previews and cannot use the visible-only indexes.\nCREATE INDEX idx_threads_archive_created_at_ms\n    ON threads(archived, created_at_ms DESC, id DESC)\n    WHERE archived = 1;\n\nCREATE INDEX idx_threads_archive_updated_at_ms\n    ON threads(archived, updated_at_ms DESC, id DESC)\n    WHERE archived = 1;\n\nCREATE INDEX idx_threads_archive_recency_at_ms\n    ON threads(archived, recency_at_ms DESC, id DESC)\n    WHERE archived = 1;\n"
+    },
+    {
+      "filename": "0059_thread_attachment_reverse_lookup.sql",
+      "sha384": "4297dffb4fb308f0c665e4d126b7d2a96db7be48eb2e13c7e1245a5d95c4df4e66d64e79ad00fec26b0910436703090c",
+      "sql": "CREATE INDEX idx_thread_attachments_identity_thread\n    ON thread_attachments(attachment_type, identity_key, thread_id);\n"
+    },
+    {
+      "filename": "0060_guardian_review_feedback.sql",
+      "sha384": "d7f0cf0a69fa71999affcd48cc74b2d0a2637b8bbda73bd5819547ccdb15543a75d239311fa07fcf699be9bcbc1874a8",
+      "sql": "CREATE TABLE guardian_review_feedback (\n    id TEXT PRIMARY KEY NOT NULL,\n    thread_id TEXT NOT NULL REFERENCES threads(id) ON DELETE CASCADE,\n    record BLOB NOT NULL\n);\n"
+    },
+    {
+      "filename": "0061_thread_read_state.sql",
+      "sha384": "4a8337048bb958a21fd5272c1bd670605c84d4063534270d3e41cdc5c5a2e865f0fe6ae3c336ded873877ee2ea10f2e0",
+      "sql": "-- Independent of rebuildable thread metadata: only actual thread deletion removes receipts.\n-- NULL means read; the empty string means manually unread from the start, even when empty.\nCREATE TABLE thread_read_receipts (\n    thread_id TEXT PRIMARY KEY NOT NULL,\n    first_unread_turn TEXT,\n    revision TEXT NOT NULL,\n    last_published_turn TEXT\n);\n"
+    },
+    {
+      "filename": "0062_threads_attached_parent.sql",
+      "sha384": "dab8b7c8390f9c764d5d64733da39fa0b79ad4f67931fa15263c1129143c1717bc252930b1a5668ad119c50844950304",
+      "sql": "ALTER TABLE threads ADD COLUMN attached_thread_parent_id TEXT;\n\nCREATE INDEX idx_threads_attached_parent ON threads(attached_thread_parent_id)\n    WHERE attached_thread_parent_id IS NOT NULL;\n"
+    }
+  ]
+}

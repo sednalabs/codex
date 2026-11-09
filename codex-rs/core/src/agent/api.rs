@@ -18,6 +18,7 @@ use codex_protocol::AgentPath;
 use codex_protocol::SessionId;
 use codex_protocol::ThreadId;
 use codex_protocol::error::Result;
+use codex_protocol::protocol::AgentMessageIntent;
 use codex_protocol::protocol::AgentStatus;
 use codex_protocol::protocol::CodexErrorInfo;
 use codex_protocol::protocol::MultiAgentVersion;
@@ -27,6 +28,7 @@ use codex_protocol::turn_input::TurnStartOptions;
 use codex_protocol::user_input::UserInput;
 use codex_rollout_trace::ThreadTraceContext;
 use futures::future::BoxFuture;
+use futures::stream::BoxStream;
 
 // Keep dynamic dispatch a compile-time property of the contract.
 const _: Option<&dyn AgentControl> = None;
@@ -75,6 +77,19 @@ pub trait AgentControl: Send + Sync {
     /// Observe whether unread mail is available. Subscribe before the first read so
     /// arrivals cannot be missed; notifications do not consume mail or start a turn.
     fn watch_mailbox(&self, agent: ThreadId) -> tokio::sync::watch::Receiver<bool>;
+
+    /// Observe a target's status without treating an unloaded agent as complete.
+    /// Backends without a status stream reject targeted waits explicitly.
+    fn subscribe_status(
+        &self,
+        _agent: ThreadId,
+    ) -> BoxFuture<'_, Result<BoxStream<'static, Result<AgentInfo>>>> {
+        Box::pin(async {
+            Err(codex_protocol::error::CodexErr::UnsupportedOperation(
+                "targeted agent waits are unavailable for this backend".to_string(),
+            ))
+        })
+    }
 
     /// Load a recorded V2 child through its live immediate parent, without sending input.
     /// Implementations validate ownership and restore the child under the parent's current
@@ -203,6 +218,7 @@ pub enum AgentInput {
     Message {
         message: AgentMessage,
         mode: MessageDeliveryMode,
+        intent: Option<AgentMessageIntent>,
     },
 }
 

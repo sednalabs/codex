@@ -12,6 +12,8 @@ use crate::session_prefix::format_guardian_interruption_message;
 use crate::session_prefix::format_inter_agent_completion_message;
 use codex_protocol::AgentPath;
 use codex_protocol::items::SubAgentActivityItem;
+use codex_protocol::protocol::AgentCommunicationOrigin;
+use codex_protocol::protocol::AgentMessageIntent;
 use codex_protocol::protocol::AgentStatus;
 use codex_protocol::protocol::CodexErrorInfo;
 use codex_protocol::protocol::InterAgentCommunication;
@@ -109,13 +111,15 @@ impl LocalAgentControl {
         // `communication` owns the message. Keep a second copy only when the
         // recorder will actually need it after parent delivery succeeds.
         let trace_message = trace.is_enabled().then(|| message.clone());
-        let communication = InterAgentCommunication::new(
+        let mut communication = InterAgentCommunication::new(
             child_agent_path.clone(),
             parent_agent_path,
             Vec::new(),
             message,
             /*trigger_turn*/ false,
         );
+        communication.intent = Some(AgentMessageIntent::ResultReady);
+        communication.origin = Some(AgentCommunicationOrigin::Result);
         let context =
             AgentCommunicationContext::new(AgentCommunicationKind::Result, outcome.thread_id);
         let delivery = self

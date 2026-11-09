@@ -69,7 +69,11 @@ impl AgentControl for LocalAgentControl {
             } = request;
             let input = match input {
                 AgentInput::UserInput(input) => SpawnInitialInput::UserInput(input),
-                AgentInput::Message { message, mode } => {
+                AgentInput::Message {
+                    message,
+                    mode,
+                    intent,
+                } => {
                     if mode != MessageDeliveryMode::TriggerTurn {
                         return Err(CodexErr::InvalidRequest(
                             "spawn input must start the child turn".to_string(),
@@ -87,8 +91,10 @@ impl AgentControl for LocalAgentControl {
                         .ok_or_else(|| {
                             CodexErr::InvalidRequest("spawn input needs a child path".to_string())
                         })?;
+                    let mut communication = message.into_communication(author, recipient, mode);
+                    communication.intent = intent;
                     SpawnInitialInput::InterAgentCommunication(
-                        message.into_communication(author, recipient, mode),
+                        communication,
                         AgentCommunicationContext::new(AgentCommunicationKind::Spawn, caller),
                     )
                 }
@@ -119,7 +125,11 @@ impl AgentControl for LocalAgentControl {
                     let submission_id = self.send_input(target, input, start_options).await?;
                     (receiver.unwrap_or_default(), submission_id)
                 }
-                AgentInput::Message { message, mode } => {
+                AgentInput::Message {
+                    message,
+                    mode,
+                    intent,
+                } => {
                     let receiver = self.runtime.ensure_agent_known(target)?;
                     let author = self
                         .runtime
@@ -151,7 +161,8 @@ impl AgentControl for LocalAgentControl {
                     } else {
                         None
                     };
-                    let communication = message.into_communication(author, receiver_path, mode);
+                    let mut communication = message.into_communication(author, receiver_path, mode);
+                    communication.intent = intent;
                     let kind = match mode {
                         MessageDeliveryMode::QueueOnly => {
                             start_options.parent_turn_id = None;
@@ -184,6 +195,13 @@ impl AgentControl for LocalAgentControl {
 
     fn watch_mailbox(&self, agent: ThreadId) -> tokio::sync::watch::Receiver<bool> {
         self.runtime.mailboxes.watch(agent)
+    }
+
+    fn subscribe_status(
+        &self,
+        agent: ThreadId,
+    ) -> BoxFuture<'_, Result<futures::stream::BoxStream<'static, Result<AgentInfo>>>> {
+        Box::pin(async move { LocalAgentControl::subscribe_status(self, agent).await })
     }
 
     fn ensure_child_loaded(&self, parent: ThreadId, child: ThreadId) -> BoxFuture<'_, Result<()>> {

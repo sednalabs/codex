@@ -25,7 +25,6 @@ use codex_protocol::openai_models::ModelServiceTier;
 use codex_protocol::openai_models::ModelsResponse;
 use codex_protocol::openai_models::ReasoningEffort;
 use codex_protocol::protocol::AskForApproval;
-use codex_protocol::protocol::CodexErrorInfo;
 use codex_protocol::protocol::EventMsg;
 use codex_protocol::protocol::HookEventName;
 use codex_protocol::protocol::HookRunStatus;
@@ -73,6 +72,7 @@ use serde_json::json;
 use std::fs;
 use std::path::Path;
 use std::sync::Arc;
+use std::time::Duration;
 use tempfile::TempDir;
 use wiremock::MockServer;
 // --- Test helpers -----------------------------------------------------------
@@ -3373,10 +3373,9 @@ async fn pre_sampling_compact_falls_back_after_previous_model_stream_retries_are
     );
 }
 
-/// Both compaction models keep the configured retry budget when the server supplies advice,
-/// including the selected model's final attempt.
+/// The previous model falls back; the selected model keeps retrying capacity.
 #[test_case::test_case(2; "selected_model_recovers")]
-#[test_case::test_case(3; "selected_model_exhausts_retries")]
+#[test_case::test_case(3; "selected_model_recovers_after_budget")]
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn pre_sampling_compact_advised_errors_fall_back_then_retry_on_selected_model(
     selected_model_failures: usize,
@@ -3409,15 +3408,13 @@ async fn pre_sampling_compact_advised_errors_fall_back_then_retry_on_selected_mo
         overload.clone(),
     ];
     responses.extend(vec![overload; selected_model_failures]);
-    if selected_model_failures < 3 {
-        responses.extend([
-            sse_response(remote_v2_compaction_response()),
-            sse_response(sse(vec![
-                ev_assistant_message("m3", "after switch"),
-                ev_completed_with_tokens("r3", /*total_tokens*/ 100),
-            ])),
-        ]);
-    }
+    responses.extend([
+        sse_response(remote_v2_compaction_response()),
+        sse_response(sse(vec![
+            ev_assistant_message("m3", "after switch"),
+            ev_completed_with_tokens("r3", /*total_tokens*/ 100),
+        ])),
+    ]);
     let request_log = mount_response_sequence(&server, responses).await;
     let mut model_provider = openai_model_provider(&server);
     model_provider.request_max_retries = Some(0);
@@ -3452,25 +3449,7 @@ async fn pre_sampling_compact_advised_errors_fall_back_then_retry_on_selected_mo
         ))
         .await
         .expect("submit selected-model turn");
-    if selected_model_failures < 3 {
-        assert_compaction_uses_turn_lifecycle_id(&test.codex).await;
-    } else {
-        let mut errors = Vec::new();
-        loop {
-            match wait_for_event(&test.codex, |_| true).await {
-                EventMsg::Error(error) => errors.push(error.codex_error_info),
-                EventMsg::TurnComplete(event) => {
-                    assert_eq!(
-                        event.error.and_then(|error| error.codex_error_info),
-                        Some(CodexErrorInfo::ServerOverloaded)
-                    );
-                    break;
-                }
-                _ => {}
-            }
-        }
-        assert_eq!(errors, vec![Some(CodexErrorInfo::ServerOverloaded)]);
-    }
+    assert_compaction_uses_turn_lifecycle_id(&test.codex).await;
     let actual_models = request_log
         .requests()
         .iter()
@@ -3486,29 +3465,121 @@ async fn pre_sampling_compact_advised_errors_fall_back_then_retry_on_selected_mo
         previous_model, // Old-model compaction attempt and retries.
         previous_model,
         previous_model,
-        selected_model, // Selected-model compaction attempt and retries.
-        selected_model,
-        selected_model,
     ];
-    if selected_model_failures < 3 {
-        expected_models.push(selected_model); // Sampling after compaction succeeds.
-    }
+    expected_models.extend(vec![selected_model; selected_model_failures + 2]); // Compaction failures, success, sampling.
     assert_eq!(actual_models, expected_models);
 }
 
-/// Manual compaction keeps the configured retry limit even when the server supplies advice.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn manual_local_compact_retries_selected_model_capacity() {
+    skip_if_no_network!();
+    let server = start_mock_server().await;
+    let overload = wiremock::ResponseTemplate::new(503)
+        .set_body_json(json!({"error": {"code": "server_is_overloaded"}}));
+    let request_log = mount_response_sequence(
+        &server,
+        vec![
+            overload.clone(),
+            overload,
+            sse_response(sse(vec![
+                ev_assistant_message("summary", SUMMARY_TEXT),
+                ev_completed("compacted"),
+            ])),
+        ],
+    )
+    .await;
+    let mut provider = non_openai_model_provider(&server);
+    provider.request_max_retries = Some(0);
+    provider.stream_max_retries = Some(0);
+    let test = test_codex()
+        .with_config(move |config| config.model_provider = provider)
+        .build_with_auto_env(&server)
+        .await
+        .expect("build codex");
+    test.codex.submit(Op::Compact).await.expect("run compact");
+    let mut notices = 0;
+    tokio::time::timeout(Duration::from_secs(10), async {
+        loop {
+            match wait_for_event(&test.codex, |_| true).await {
+                EventMsg::StreamError(error) if error.message.starts_with("Model at capacity;") => {
+                    notices += 1
+                }
+                EventMsg::Error(error) => panic!("unexpected compact error: {error:?}"),
+                EventMsg::TurnComplete(event) => {
+                    assert_eq!(event.error, None);
+                    break;
+                }
+                _ => {}
+            }
+        }
+    })
+    .await
+    .expect("local compaction should recover");
+    assert_eq!(notices, 2);
+    assert_eq!(request_log.requests().len(), 3);
+}
+
+#[test_case::test_case(false; "local")]
+#[test_case::test_case(true; "remote_v2")]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn manual_compact_capacity_wait_is_interruptible(remote: bool) {
+    skip_if_no_network!();
+    let server = start_mock_server().await;
+    let request_log = mount_response_sequence(
+        &server,
+        vec![
+            wiremock::ResponseTemplate::new(503)
+                .insert_header("Retry-After", "30")
+                .set_body_json(json!({"error": {"code": "server_is_overloaded"}})),
+        ],
+    )
+    .await;
+    let mut provider = if remote {
+        openai_model_provider(&server)
+    } else {
+        non_openai_model_provider(&server)
+    };
+    provider.request_max_retries = Some(0);
+    provider.stream_max_retries = Some(0);
+    let test = test_codex()
+        .with_auth(CodexAuth::create_dummy_chatgpt_auth_for_testing())
+        .with_config(move |config| config.model_provider = provider)
+        .build_with_auto_env(&server)
+        .await
+        .expect("build codex");
+    test.codex.submit(Op::Compact).await.expect("run compact");
+    tokio::time::timeout(Duration::from_secs(10), wait_for_event(&test.codex, |event| {
+        matches!(event, EventMsg::StreamError(error) if error.message.starts_with("Model at capacity;"))
+    })).await.expect("capacity wait should begin");
+    test.codex
+        .submit(Op::Interrupt)
+        .await
+        .expect("interrupt compact");
+    tokio::time::timeout(
+        Duration::from_secs(5),
+        wait_for_event(&test.codex, |event| {
+            matches!(event, EventMsg::TurnAborted(_))
+        }),
+    )
+    .await
+    .expect("interrupt should end compact");
+    assert_eq!(request_log.requests().len(), 1);
+}
+
+/// Manual compaction keeps retrying selected-model capacity after the ordinary budget.
 #[test_case::test_case(0; "no_retries")]
 #[test_case::test_case(2; "two_retries")]
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn manual_remote_compact_advice_respects_retry_limit(max_retries: u64) {
+async fn manual_remote_compact_capacity_recovers_after_retry_limit(max_retries: u64) {
     skip_if_no_network!();
 
     let server = start_mock_server().await;
     let overload = wiremock::ResponseTemplate::new(/*s*/ 503)
         .insert_header("Retry-After", "0")
         .set_body_json(json!({ "error": { "code": "server_is_overloaded" } }));
-    let request_log =
-        mount_response_sequence(&server, vec![overload; (max_retries + 1) as usize]).await;
+    let mut responses = vec![overload; (max_retries + 1) as usize];
+    responses.push(sse_response(remote_v2_compaction_response()));
+    let request_log = mount_response_sequence(&server, responses).await;
     let mut model_provider = openai_model_provider(&server);
     model_provider.request_max_retries = Some(0);
     model_provider.stream_max_retries = Some(max_retries);
@@ -3531,21 +3602,19 @@ async fn manual_remote_compact_advice_respects_retry_limit(max_retries: u64) {
             EventMsg::Error(error) => errors.push(error.codex_error_info),
             EventMsg::StreamError(error) => reconnect_messages.push(error.message),
             EventMsg::TurnComplete(event) => {
-                assert_eq!(
-                    event.error.and_then(|error| error.codex_error_info),
-                    Some(CodexErrorInfo::ServerOverloaded)
-                );
+                assert_eq!(event.error, None);
                 break;
             }
             _ => {}
         }
     }
-    assert_eq!(errors, vec![Some(CodexErrorInfo::ServerOverloaded)]);
-    assert_eq!(
-        reconnect_messages,
-        (1..=max_retries)
-            .map(|retry| format!("Reconnecting... {retry}/{max_retries}"))
-            .collect::<Vec<_>>()
+    assert!(errors.is_empty());
+    assert_eq!(reconnect_messages.len(), max_retries as usize + 1);
+    assert!(
+        reconnect_messages
+            .last()
+            .unwrap()
+            .starts_with("Model at capacity;")
     );
     let models = request_log
         .requests()
@@ -3557,7 +3626,7 @@ async fn manual_remote_compact_advice_respects_retry_limit(max_retries: u64) {
                 .to_string()
         })
         .collect::<Vec<_>>();
-    assert_eq!(models, vec!["gpt-5.4"; (max_retries + 1) as usize]);
+    assert_eq!(models, vec!["gpt-5.4"; (max_retries + 2) as usize]);
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]

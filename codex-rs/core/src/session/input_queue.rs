@@ -7,6 +7,7 @@ use codex_diagnostics::GaugeGuard;
 use codex_history::ResponseItemEnvelope;
 use codex_protocol::ThreadId;
 use codex_protocol::models::ResponseItem;
+use codex_protocol::protocol::AgentCommunicationOrigin;
 use codex_protocol::turn_input::TurnStartOptions;
 use codex_protocol::user_input::UserInput;
 use serde::Deserialize;
@@ -165,6 +166,51 @@ impl InputQueue {
 
     pub(crate) fn notify_mailbox(&self) {
         self.activity_tx.send_replace(InputQueueActivity::Mailbox);
+    }
+
+    /// Subscribe before inspecting pending work so an arrival cannot be missed.
+    pub(crate) fn subscribe_wait_updates(&self) -> watch::Receiver<InputQueueActivity> {
+        self.activity_tx.subscribe()
+    }
+
+    /// Inspect actionable mail without consuming it. Exact-target waits use
+    /// target status subscriptions for generated completions; other actionable
+    /// messages can interrupt either kind of wait.
+    pub(crate) async fn actionable_wait_activity(
+        &self,
+        active_turn: &Mutex<Option<ActiveTurn>>,
+        sub_id: &str,
+        exact_target_wait: bool,
+    ) -> Option<InputQueueActivity> {
+        if let Some(turn_state) = self.turn_state_for_sub_id(active_turn, sub_id).await {
+            let turn_state = turn_state.lock().await;
+            let queue = &turn_state.pending_input;
+            if queue.notified_activity == Some(InputQueueActivity::Steer) {
+                return Some(InputQueueActivity::Steer);
+            }
+            let activity = queue
+                .items
+                .iter()
+                .filter_map(|input| match input {
+                    TurnInput::InterAgentCommunication(message) => {
+                        wait_eligible_communication(message, exact_target_wait)
+                            .then_some(InputQueueActivity::Mailbox)
+                    }
+                    TurnInput::UserInput { .. }
+                    | TurnInput::FunctionCallOutput(_)
+                    | TurnInput::ResponseItem(_) => Some(InputQueueActivity::Steer),
+                })
+                .max();
+            if activity.is_some() {
+                return activity;
+            }
+        }
+        let mut pending = self.mailbox_pending_mails.lock().await;
+        self.read_mailbox(&mut pending);
+        pending
+            .iter()
+            .any(|mail| wait_eligible_communication(&mail.communication, exact_target_wait))
+            .then_some(InputQueueActivity::Mailbox)
     }
 
     fn read_mailbox(&self, pending: &mut VecDeque<PendingMailboxCommunication>) {
@@ -498,6 +544,14 @@ impl InputQueue {
     }
 }
 
+fn wait_eligible_communication(
+    communication: &codex_protocol::protocol::InterAgentCommunication,
+    exact_target_wait: bool,
+) -> bool {
+    communication.resolved_intent().wakes_native_wait()
+        && (!exact_target_wait || communication.origin != Some(AgentCommunicationOrigin::Result))
+}
+
 impl TurnInputQueue {
     fn has_user_input(&self) -> bool {
         self.items
@@ -608,6 +662,80 @@ mod tests {
             content.to_string(),
             trigger_turn,
         )
+    }
+
+    #[tokio::test]
+    async fn actionable_wait_keeps_progress_queued_and_observes_actionable_mail() {
+        use codex_protocol::protocol::AgentMessageIntent;
+        let queue = InputQueue::new();
+        let active = Mutex::new(None);
+        let mut updates = queue.subscribe_wait_updates();
+        let progress = make_mail(
+            AgentPath::root(),
+            AgentPath::root().join("worker").unwrap(),
+            "progress",
+            /*trigger_turn*/ false,
+        );
+        queue
+            .enqueue_mailbox_communication(progress.into(), Default::default())
+            .await;
+        updates.changed().await.unwrap();
+        assert_eq!(
+            queue.actionable_wait_activity(&active, "turn", false).await,
+            None
+        );
+
+        let mut actionable = make_mail(
+            AgentPath::root(),
+            AgentPath::root().join("worker").unwrap(),
+            "decision",
+            /*trigger_turn*/ false,
+        );
+        actionable.intent = Some(AgentMessageIntent::ActionRequired);
+        queue
+            .enqueue_mailbox_communication(actionable.into(), Default::default())
+            .await;
+        updates.changed().await.unwrap();
+        assert_eq!(
+            queue.actionable_wait_activity(&active, "turn", false).await,
+            Some(InputQueueActivity::Mailbox)
+        );
+        let pending = queue.drain_mailbox().await;
+        assert_eq!(
+            pending
+                .iter()
+                .map(|item| item.communication.content.as_str())
+                .collect::<Vec<_>>(),
+            vec!["progress", "decision"]
+        );
+    }
+
+    #[tokio::test]
+    async fn exact_target_wait_ignores_generated_completion_mail() {
+        use codex_protocol::protocol::AgentCommunicationOrigin;
+        use codex_protocol::protocol::AgentMessageIntent;
+        let queue = InputQueue::new();
+        let active = Mutex::new(None);
+        let mut completion = make_mail(
+            AgentPath::root().join("worker").unwrap(),
+            AgentPath::root(),
+            "result",
+            /*trigger_turn*/ false,
+        );
+        completion.intent = Some(AgentMessageIntent::ResultReady);
+        completion.origin = Some(AgentCommunicationOrigin::Result);
+        queue
+            .enqueue_mailbox_communication(completion.into(), Default::default())
+            .await;
+        assert_eq!(
+            queue.actionable_wait_activity(&active, "turn", true).await,
+            None
+        );
+        assert_eq!(
+            queue.actionable_wait_activity(&active, "turn", false).await,
+            Some(InputQueueActivity::Mailbox)
+        );
+        assert_eq!(queue.drain_mailbox().await.len(), 1);
     }
 
     #[tokio::test]

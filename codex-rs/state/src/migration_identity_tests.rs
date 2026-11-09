@@ -89,6 +89,73 @@ async fn fork_history_conflicts_reject_without_semantic_changes() {
 }
 
 #[tokio::test]
+async fn recorded_source_prefixes_migrate_without_losing_witness() {
+    for fixture in [
+        include_str!("../tests/fixtures/w14939-oci-source-migrations.json"),
+        include_str!("../tests/fixtures/w14939-workstation-source-migrations.json"),
+    ] {
+        let fixture: Value = serde_json::from_str(fixture).unwrap();
+        for through in [39_i64, 45, 62] {
+            let sqlite_home = crate::runtime::test_support::unique_temp_dir();
+            tokio::fs::create_dir_all(&sqlite_home).await.unwrap();
+            let _cleanup = scopeguard::guard(sqlite_home.clone(), |home| {
+                let _ = std::fs::remove_dir_all(home);
+            });
+            let sqlite = crate::SqliteConfig::new_for_testing(sqlite_home.as_path().abs());
+            let pool = sqlite
+                .open_read_write_pool(&sqlite.state_db_path())
+                .await
+                .unwrap();
+            sqlx::raw_sql("CREATE TABLE _sqlx_migrations (version BIGINT PRIMARY KEY, description TEXT NOT NULL, installed_on TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP, success BOOLEAN NOT NULL, checksum BLOB NOT NULL, execution_time BIGINT NOT NULL)")
+                .execute(&pool).await.unwrap();
+            for migration in fixture["migrations"].as_array().unwrap() {
+                let filename = migration["filename"].as_str().unwrap();
+                let version: i64 = filename.split('_').next().unwrap().parse().unwrap();
+                if version > through {
+                    break;
+                }
+                sqlx::raw_sql(sqlx::AssertSqlSafe(migration["sql"].as_str().unwrap()))
+                    .execute(&pool)
+                    .await
+                    .unwrap();
+                let checksum: Vec<u8> = migration["sha384"]
+                    .as_str()
+                    .unwrap()
+                    .as_bytes()
+                    .chunks_exact(2)
+                    .map(|pair| u8::from_str_radix(std::str::from_utf8(pair).unwrap(), 16).unwrap())
+                    .collect();
+                let description = filename
+                    .trim_end_matches(".sql")
+                    .split_once('_')
+                    .unwrap()
+                    .1
+                    .replace('_', " ");
+                sqlx::query("INSERT INTO _sqlx_migrations (version, description, success, checksum, execution_time) VALUES (?, ?, 1, ?, 0)")
+                    .bind(version).bind(description).bind(checksum).execute(&pool).await.unwrap();
+            }
+            sqlx::query("INSERT INTO threads (id, rollout_path, created_at, updated_at, source, model_provider, cwd, title, sandbox_policy, approval_mode) VALUES ('synthetic-thread', '/synthetic', 1, 2, 'cli', 'test', '/synthetic', 'preserve-me', 'read-only', 'never')")
+                .execute(&pool).await.unwrap();
+            let before: Ledger = sqlx::query_as("SELECT version, description, success, checksum, execution_time FROM _sqlx_migrations ORDER BY version").fetch_all(&pool).await.unwrap();
+            pool.close().await;
+            let pool = sqlite
+                .open_state_db(&STATE_MIGRATOR, /*telemetry_override*/ None)
+                .await
+                .unwrap();
+            let after: Ledger = sqlx::query_as("SELECT version, description, success, checksum, execution_time FROM _sqlx_migrations WHERE version <= ? ORDER BY version").bind(through).fetch_all(&pool).await.unwrap();
+            assert_eq!(after, before);
+            let witness: String =
+                sqlx::query_scalar("SELECT title FROM threads WHERE id = 'synthetic-thread'")
+                    .fetch_one(&pool)
+                    .await
+                    .unwrap();
+            assert_eq!(witness, "preserve-me");
+            pool.close().await;
+        }
+    }
+}
+
+#[tokio::test]
 async fn individual_fork_identities_39_and_45_are_not_upstream_identities() {
     let fixture: Value = serde_json::from_str(include_str!(
         "../tests/fixtures/w14939-sedna-migrations.json"

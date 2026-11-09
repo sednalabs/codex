@@ -1008,9 +1008,41 @@ pub struct InterAgentCommunication {
     #[ts(optional)]
     pub internal_chat_message_metadata_passthrough: Option<InternalChatMessageMetadataPassthrough>,
     pub trigger_turn: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub intent: Option<AgentMessageIntent>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub origin: Option<AgentCommunicationOrigin>,
+}
+
+/// Sender intent is independent of whether the recipient starts a turn.
+#[derive(Debug, Clone, Copy, Default, Serialize, Deserialize, PartialEq, Eq, JsonSchema, TS)]
+#[serde(rename_all = "snake_case")]
+pub enum AgentMessageIntent {
+    #[default]
+    Progress,
+    ActionRequired,
+    ResultReady,
+}
+
+impl AgentMessageIntent {
+    pub const fn wakes_native_wait(self) -> bool {
+        matches!(self, Self::ActionRequired | Self::ResultReady)
+    }
+}
+
+/// Identifies a generated completion independently of sender-supplied intent.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, JsonSchema, TS)]
+#[serde(rename_all = "snake_case")]
+pub enum AgentCommunicationOrigin {
+    Result,
 }
 
 impl InterAgentCommunication {
+    pub fn resolved_intent(&self) -> AgentMessageIntent {
+        self.intent.unwrap_or_default()
+    }
     pub fn new(
         author: AgentPath,
         recipient: AgentPath,
@@ -1027,6 +1059,8 @@ impl InterAgentCommunication {
             encrypted_content: None,
             internal_chat_message_metadata_passthrough: None,
             trigger_turn,
+            intent: None,
+            origin: None,
         }
     }
 
@@ -1046,6 +1080,8 @@ impl InterAgentCommunication {
             encrypted_content: Some(encrypted_content),
             internal_chat_message_metadata_passthrough: None,
             trigger_turn,
+            intent: None,
+            origin: None,
         }
     }
 
@@ -5118,6 +5154,33 @@ mod tests {
     }
 
     #[test]
+    fn inter_agent_communication_intent_is_backward_compatible() {
+        let legacy = InterAgentCommunication::new(
+            AgentPath::root(),
+            AgentPath::root().join("worker").expect("recipient path"),
+            Vec::new(),
+            "progress".to_string(),
+            false,
+        );
+        let encoded = serde_json::to_value(&legacy).expect("serialize legacy message");
+        assert!(encoded.get("intent").is_none());
+        let decoded: InterAgentCommunication =
+            serde_json::from_value(encoded).expect("read legacy message");
+        assert_eq!(decoded.resolved_intent(), AgentMessageIntent::Progress);
+        assert!(!decoded.resolved_intent().wakes_native_wait());
+
+        let explicit = InterAgentCommunication {
+            intent: Some(AgentMessageIntent::ActionRequired),
+            ..legacy
+        };
+        let encoded = serde_json::to_value(&explicit).expect("serialize actionable message");
+        assert_eq!(encoded["intent"], "action_required");
+        let decoded: InterAgentCommunication =
+            serde_json::from_value(encoded).expect("read actionable message");
+        assert!(decoded.resolved_intent().wakes_native_wait());
+    }
+
+    #[test]
     fn inter_agent_communication_response_input_item_preserves_commentary_phase() {
         let mut communication = InterAgentCommunication {
             id: Some(ResponseItemId::with_suffix("amsg", "1")),
@@ -5128,6 +5191,8 @@ mod tests {
             encrypted_content: None,
             internal_chat_message_metadata_passthrough: None,
             trigger_turn: true,
+            intent: None,
+            origin: None,
         };
         communication.set_turn_id_if_missing("turn-1");
         let mut serialized_communication = communication.clone();
