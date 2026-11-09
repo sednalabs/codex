@@ -11,6 +11,7 @@
 )]
 
 use crate::DbTelemetry;
+use crate::migrations::THREAD_HISTORY_MIGRATOR;
 use crate::migrations::repair_legacy_recency_migration_version;
 use crate::migrations::validate_migration_identities;
 use crate::runtime::recovery::RuntimeDbInitError;
@@ -426,7 +427,7 @@ impl SqliteConfig {
                     DbKind::ThreadHistory => {
                         validate_migration_identities(
                             &mut transaction,
-                            migrator,
+                            &THREAD_HISTORY_MIGRATOR,
                             "thread history",
                             false,
                         )

@@ -2579,8 +2579,13 @@ async fn guardian_review_surfaces_responses_api_errors_in_rejection_reason() -> 
     Ok(())
 }
 
+#[test_case::test_case("flex_unavailable", 2; "guardian_session_retry")]
+#[test_case::test_case("server_is_overloaded", 1; "capacity_stream_retry")]
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn guardian_review_retries_transient_session_failure_then_approves() -> anyhow::Result<()> {
+async fn guardian_review_retries_transient_failure_then_approves(
+    code: &str,
+    expected_review_attempts: i64,
+) -> anyhow::Result<()> {
     skip_if_no_network!(Ok(()));
 
     let server = start_mock_server().await;
@@ -2594,11 +2599,7 @@ async fn guardian_review_retries_transient_session_failure_then_approves() -> an
     let request_log = mount_sse_sequence(
         &server,
         vec![
-            sse_failed(
-                "resp-session-failure",
-                "server_is_overloaded",
-                "temporary reviewer overload",
-            ),
+            sse_failed("resp-session-failure", code, "temporary reviewer overload"),
             sse(vec![
                 ev_response_created("resp-approved"),
                 ev_assistant_message("msg-approved", &approval),
@@ -2625,7 +2626,7 @@ async fn guardian_review_retries_transient_session_failure_then_approves() -> an
     };
     assert_eq!(assessment.outcome, GuardianAssessmentOutcome::Allow);
     assert_eq!(assessment.rationale, "retry succeeded");
-    assert_eq!(metadata.attempt_count, 2);
+    assert_eq!(metadata.attempt_count, expected_review_attempts);
     assert!(matches!(
         metadata.guardian_session_kind,
         Some(codex_analytics::GuardianReviewSessionKind::TrunkReused)
