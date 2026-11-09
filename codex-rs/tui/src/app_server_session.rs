@@ -1564,7 +1564,7 @@ fn thread_start_params_from_config(
         developer_instructions: with_terminal_visualization_instructions(
             config, /*control_instructions*/ None,
         ),
-        dynamic_tools: configured_native_dynamic_tools(config),
+        dynamic_tools: configured_native_dynamic_tools(),
         ..ThreadStartParams::default()
     }
 }
@@ -1617,7 +1617,7 @@ fn thread_resume_params_from_config(
         developer_instructions: with_terminal_visualization_instructions(
             &config, /*control_instructions*/ None,
         ),
-        dynamic_tools: configured_native_dynamic_tools(&config),
+        dynamic_tools: configured_native_dynamic_tools(),
         ..ThreadResumeParams::default()
     }
 }
@@ -1658,14 +1658,12 @@ fn thread_fork_params_from_config(
         ),
         ephemeral: config.ephemeral,
         thread_source: Some(thread_source),
-        dynamic_tools: configured_native_dynamic_tools(&config),
+        dynamic_tools: configured_native_dynamic_tools(),
         ..ThreadForkParams::default()
     }
 }
 
-fn configured_native_dynamic_tools(
-    config: &Config,
-) -> Option<Vec<codex_app_server_protocol::DynamicToolSpec>> {
+fn configured_native_dynamic_tools() -> Option<Vec<codex_app_server_protocol::DynamicToolSpec>> {
     let tools = crate::desktop_computer_use_provider::configured_desktop_dynamic_tools();
     (!tools.is_empty()).then_some(tools)
 }
@@ -2129,7 +2127,7 @@ mod tests {
             /*remote_cwd_override*/ None,
             ThreadSource::User,
         );
-        let start_tools = start.dynamic_tools.unwrap_or_default();
+        let start_tools = start.dynamic_tools.clone().unwrap_or_default();
         for retired_tool in [
             "browser_observe",
             "browser_step",
@@ -2139,8 +2137,8 @@ mod tests {
         ] {
             assert!(!start_tools.iter().any(|tool| tool.name == retired_tool));
         }
-        assert_eq!(resume.dynamic_tools, Some(start_tools.clone()));
-        assert_eq!(fork.dynamic_tools, Some(start_tools));
+        assert_eq!(resume.dynamic_tools, start.dynamic_tools.clone());
+        assert_eq!(fork.dynamic_tools, start.dynamic_tools);
     }
 
     #[test]

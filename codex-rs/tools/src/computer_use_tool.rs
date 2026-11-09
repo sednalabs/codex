@@ -26,9 +26,8 @@ pub const NATIVE_COMPUTER_USE_PROVIDER_DESKTOP: NativeComputerUseProvider =
         backend_hints: &[],
     };
 
-const NATIVE_COMPUTER_USE_PROVIDERS: &[NativeComputerUseProvider] = &[
-    NATIVE_COMPUTER_USE_PROVIDER_DESKTOP,
-];
+const NATIVE_COMPUTER_USE_PROVIDERS: &[NativeComputerUseProvider] =
+    &[NATIVE_COMPUTER_USE_PROVIDER_DESKTOP];
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct NativeComputerUseProviderTool {

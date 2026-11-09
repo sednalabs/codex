@@ -22,12 +22,10 @@ pub(crate) async fn handle_computer_use(
 }
 
 fn computer_use_providers() -> &'static [RegisteredComputerUseProvider] {
-    static PROVIDERS: [RegisteredComputerUseProvider; 1] = [
-        RegisteredComputerUseProvider {
-            adapter: COMPUTER_USE_ADAPTER_DESKTOP,
-            handler: ComputerUseProviderHandler::Desktop,
-        },
-    ];
+    static PROVIDERS: [RegisteredComputerUseProvider; 1] = [RegisteredComputerUseProvider {
+        adapter: COMPUTER_USE_ADAPTER_DESKTOP,
+        handler: ComputerUseProviderHandler::Desktop,
+    }];
 
     &PROVIDERS
 }
@@ -74,17 +72,15 @@ mod tests {
 
     #[tokio::test]
     async fn retired_android_provider_is_not_claimed_by_native_registry() {
-        let outcome = handle_computer_use(
-            &ComputerUseCallParams {
-                thread_id: "thread-1".to_string(),
-                call_id: "call-android-step".to_string(),
-                turn_id: "turn-1".to_string(),
-                environment_id: Some("env-1".to_string()),
-                adapter: "android".to_string(),
-                tool: "android_step".to_string(),
-                arguments: json!({}),
-            },
-        )
+        let outcome = handle_computer_use(&ComputerUseCallParams {
+            thread_id: "thread-1".to_string(),
+            call_id: "call-android-step".to_string(),
+            turn_id: "turn-1".to_string(),
+            environment_id: Some("env-1".to_string()),
+            adapter: "android".to_string(),
+            tool: "android_step".to_string(),
+            arguments: json!({}),
+        })
         .await;
 
         assert!(matches!(outcome, ComputerUseProviderOutcome::Unavailable));
@@ -92,17 +88,15 @@ mod tests {
 
     #[tokio::test]
     async fn retired_browser_provider_is_not_claimed_by_native_registry() {
-        let outcome = handle_computer_use(
-            &ComputerUseCallParams {
-                thread_id: "thread-1".to_string(),
-                call_id: "call-browser-observe".to_string(),
-                turn_id: "turn-1".to_string(),
-                environment_id: Some("env-1".to_string()),
-                adapter: "browser".to_string(),
-                tool: "browser_observe".to_string(),
-                arguments: json!({"scope": "viewport_and_page"}),
-            },
-        )
+        let outcome = handle_computer_use(&ComputerUseCallParams {
+            thread_id: "thread-1".to_string(),
+            call_id: "call-browser-observe".to_string(),
+            turn_id: "turn-1".to_string(),
+            environment_id: Some("env-1".to_string()),
+            adapter: "browser".to_string(),
+            tool: "browser_observe".to_string(),
+            arguments: json!({"scope": "viewport_and_page"}),
+        })
         .await;
 
         assert!(matches!(outcome, ComputerUseProviderOutcome::Unavailable));
@@ -110,17 +104,15 @@ mod tests {
 
     #[tokio::test]
     async fn unknown_computer_use_tool_is_not_claimed_by_provider_registry() {
-        let outcome = handle_computer_use(
-            &ComputerUseCallParams {
-                thread_id: "thread-1".to_string(),
-                call_id: "call-unknown".to_string(),
-                turn_id: "turn-1".to_string(),
-                environment_id: Some("env-1".to_string()),
-                adapter: "other".to_string(),
-                tool: "private_probe".to_string(),
-                arguments: json!({}),
-            },
-        )
+        let outcome = handle_computer_use(&ComputerUseCallParams {
+            thread_id: "thread-1".to_string(),
+            call_id: "call-unknown".to_string(),
+            turn_id: "turn-1".to_string(),
+            environment_id: Some("env-1".to_string()),
+            adapter: "other".to_string(),
+            tool: "private_probe".to_string(),
+            arguments: json!({}),
+        })
         .await;
 
         assert!(matches!(outcome, ComputerUseProviderOutcome::Unavailable));
@@ -128,17 +120,15 @@ mod tests {
 
     #[tokio::test]
     async fn desktop_provider_requires_configured_command() {
-        let outcome = handle_computer_use(
-            &ComputerUseCallParams {
-                thread_id: "thread-1".to_string(),
-                call_id: "call-desktop-observe".to_string(),
-                turn_id: "turn-1".to_string(),
-                environment_id: Some("env-1".to_string()),
-                adapter: "desktop".to_string(),
-                tool: "desktop_observe".to_string(),
-                arguments: json!({"scope": "screen_and_ui"}),
-            },
-        )
+        let outcome = handle_computer_use(&ComputerUseCallParams {
+            thread_id: "thread-1".to_string(),
+            call_id: "call-desktop-observe".to_string(),
+            turn_id: "turn-1".to_string(),
+            environment_id: Some("env-1".to_string()),
+            adapter: "desktop".to_string(),
+            tool: "desktop_observe".to_string(),
+            arguments: json!({"scope": "screen_and_ui"}),
+        })
         .await;
 
         assert!(matches!(outcome, ComputerUseProviderOutcome::Unavailable));

@@ -62,22 +62,15 @@ fn native_computer_use_registry_does_not_claim_retired_android_tools() {
 fn native_computer_use_registry_does_not_claim_retired_browser_tools() {
     assert!(native_computer_use_provider_for_call("browser", "browser_observe").is_none());
     assert!(native_computer_use_provider_for_call("browser", "browser_step").is_none());
-    assert!(
-        canonical_native_computer_use_dynamic_tool(&dynamic_tool("browser_observe")).is_none()
-    );
-    assert!(
-        canonical_native_computer_use_dynamic_tool(&dynamic_tool("browser_step")).is_none()
-    );
+    assert!(canonical_native_computer_use_dynamic_tool(&dynamic_tool("browser_observe")).is_none());
+    assert!(canonical_native_computer_use_dynamic_tool(&dynamic_tool("browser_step")).is_none());
 }
 
 #[test]
 fn native_computer_use_provider_registry_does_not_claim_unknown_tools() {
     assert!(
-        native_computer_use_provider_for_call(
-            "browser",
-            "browser_private_backend_probe",
-        )
-        .is_none()
+        native_computer_use_provider_for_call("browser", "browser_private_backend_probe",)
+            .is_none()
     );
     assert!(
         canonical_native_computer_use_dynamic_tool(&dynamic_tool("browser_private_backend_probe"))
