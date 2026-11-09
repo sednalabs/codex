@@ -10,6 +10,7 @@ use crate::context::ContextualUserFragment;
 use crate::session::session::Session;
 use crate::session::step_context::StepContext;
 use crate::session::turn_context::TurnContext;
+use crate::util::backoff;
 use codex_client::RetryOperation;
 use codex_features::Feature;
 use codex_http_client::RetryAfter;
@@ -22,6 +23,8 @@ use tracing::warn;
 
 const INITIAL_CONNECTION_RETRY_DELAY: Duration = Duration::from_secs(5);
 const MAX_CONNECTION_RETRY_DELAY: Duration = Duration::from_secs(60);
+const MAX_CAPACITY_RETRY_DELAY: Duration = Duration::from_secs(60);
+const MAX_CAPACITY_BACKOFF_ATTEMPT: u64 = 10;
 
 #[derive(Debug, Clone, Copy)]
 pub(crate) enum ResponsesStreamRequest {
@@ -33,6 +36,7 @@ pub(crate) struct ResponsesStreamRetryState {
     retries: u64,
     connection_retries: u64,
     connection_retry_delay: Duration,
+    capacity_retries: u64,
 }
 
 impl Default for ResponsesStreamRetryState {
@@ -41,6 +45,7 @@ impl Default for ResponsesStreamRetryState {
             retries: 0,
             connection_retries: 0,
             connection_retry_delay: INITIAL_CONNECTION_RETRY_DELAY,
+            capacity_retries: 0,
         }
     }
 }
@@ -85,6 +90,37 @@ pub(crate) async fn handle_response_stream_error(
         ResponsesStreamRequest::Sampling => RetryOperation::Sampling,
         ResponsesStreamRequest::RemoteCompactionV2 => RetryOperation::RemoteCompactionV2,
     };
+    // Capacity is distinct from a rate limit or a transport failure. Retry the
+    // selected model without consuming the ordinary stream retry budget.
+    // The sampling caller cancels this future when the turn is interrupted.
+    if matches!(request, ResponsesStreamRequest::Sampling)
+        && matches!(err.details(), CodexErrorDetails::ServerOverloaded)
+    {
+        retry_state.capacity_retries = retry_state.capacity_retries.saturating_add(1);
+        let attempt = retry_state.capacity_retries;
+        let delay =
+            backoff(attempt.min(MAX_CAPACITY_BACKOFF_ATTEMPT)).min(MAX_CAPACITY_RETRY_DELAY);
+        let now = Instant::now();
+        let retry_at = err
+            .retry_after()
+            .map(RetryAfter::deadline)
+            .unwrap_or(now + delay)
+            .max(now + delay);
+        let wait = retry_at.saturating_duration_since(now);
+        warn!(turn_id = %turn_context.sub_id, attempt, ?wait, "model at capacity; retrying sampling request");
+        sess.notify_stream_error(
+            turn_context,
+            format!(
+                "Model at capacity; retrying in {}s (attempt {attempt})",
+                wait.as_secs().max(1)
+            ),
+            err,
+        )
+        .await;
+        codex_client::record_retry!(attempt, wait, operation);
+        tokio::time::sleep_until(retry_at).await;
+        return Ok(());
+    }
     let retry_count = retry_state.retries.saturating_add(1);
     let Some(delay) = err.retry_delay(retry_count) else {
         return Err(err);

@@ -1,8 +1,7 @@
 use std::borrow::Cow;
 
-use crate::sqlite::SqliteWriteQueryExt;
 use sqlx::migrate::Migrator;
-use sqlx_sqlite::SqlitePool;
+use sqlx_sqlite::SqliteConnection;
 
 pub(crate) static STATE_MIGRATOR: Migrator = sqlx_macros::migrate!("./migrations");
 pub(crate) static LOGS_MIGRATOR: Migrator = sqlx_macros::migrate!("./logs_migrations");
@@ -30,6 +29,8 @@ fn runtime_migrator(base: &'static Migrator) -> Migrator {
 }
 
 pub(crate) fn runtime_state_migrator() -> Migrator {
+    // State additionally validates the entire known ledger before migration;
+    // unknown newer identities are rejected rather than treated as compatible.
     runtime_migrator(&STATE_MIGRATOR)
 }
 
@@ -56,7 +57,7 @@ pub(crate) fn runtime_thread_history_migrator() -> Migrator {
 }
 
 pub(crate) async fn repair_legacy_recency_migration_version(
-    pool: &SqlitePool,
+    connection: &mut SqliteConnection,
     migrator: &Migrator,
 ) -> anyhow::Result<()> {
     let Some(recency_migration) = migrator
@@ -69,7 +70,7 @@ pub(crate) async fn repair_legacy_recency_migration_version(
     let migrations_table_exists = sqlx::query_scalar::<_, i64>(
         "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = '_sqlx_migrations'",
     )
-    .fetch_optional(pool)
+    .fetch_optional(&mut *connection)
     .await?
     .is_some();
     if !migrations_table_exists {
@@ -90,7 +91,7 @@ WHERE version = ?
     .bind(38_i64)
     .bind(recency_migration.checksum.as_ref())
     .bind(recency_migration.version)
-    .fetch_optional(pool)
+    .fetch_optional(&mut *connection)
     .await?
     .is_some();
     if !legacy_recency_needs_repair {
@@ -113,11 +114,76 @@ WHERE version = ?
     .bind(38_i64)
     .bind(recency_migration.checksum.as_ref())
     .bind(recency_migration.version)
-    .execute_with_busy_retry(pool)
+    .execute(&mut *connection)
     .await?;
+    Ok(())
+}
+
+/// Reject identities we cannot relate to the embedded state migration history.
+/// Validate the entire ledger before the legacy recency rekey can write to it.
+pub(crate) async fn validate_state_migration_identities(
+    connection: &mut SqliteConnection,
+    migrator: &Migrator,
+) -> anyhow::Result<()> {
+    let exists = sqlx::query_scalar::<_, i64>(
+        "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = '_sqlx_migrations'",
+    )
+    .fetch_optional(&mut *connection)
+    .await?
+    .is_some();
+    let applied = if exists {
+        sqlx::query_as::<_, (i64, String, bool, Vec<u8>)>(
+            "SELECT version, description, success, checksum FROM _sqlx_migrations ORDER BY version",
+        )
+        .fetch_all(&mut *connection)
+        .await?
+    } else {
+        Vec::new()
+    };
+    if applied.is_empty() {
+        let objects = sqlx::query_scalar::<_, i64>(
+            "SELECT COUNT(*) FROM sqlite_master WHERE name NOT LIKE 'sqlite_%' AND name != '_sqlx_migrations'",
+        )
+        .fetch_one(&mut *connection)
+        .await?;
+        anyhow::ensure!(
+            objects == 0,
+            "state schema exists without a recognized migration history"
+        );
+        return Ok(());
+    }
+    let legacy_recency = migrator.migrations.iter().find(|m| m.version == 39);
+    for (index, (version, description, success, checksum)) in applied.iter().enumerate() {
+        anyhow::ensure!(*success, "state migration {version} was not successful");
+        let migration = migrator.migrations.get(index);
+        anyhow::ensure!(
+            migration.is_some_and(|m| m.version == *version),
+            "unrecognized or incomplete state migration history at version {version}"
+        );
+        if *version == 38
+            && index + 1 == applied.len()
+            && legacy_recency.is_some_and(|m| {
+                m.description.as_ref() == description.as_str()
+                    && m.checksum.as_ref() == checksum.as_slice()
+            })
+        {
+            continue;
+        }
+        anyhow::ensure!(
+            migration.is_some_and(|m| {
+                m.description.as_ref() == description.as_str()
+                    && m.checksum.as_ref() == checksum.as_slice()
+            }),
+            "unrecognized state migration identity at version {version}"
+        );
+    }
     Ok(())
 }
 
 #[cfg(test)]
 #[path = "migrations_tests.rs"]
 mod tests;
+
+#[cfg(test)]
+#[path = "migration_identity_tests.rs"]
+mod identity_tests;
