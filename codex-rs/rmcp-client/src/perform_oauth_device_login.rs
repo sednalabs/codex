@@ -224,7 +224,16 @@ fn provider_error(response: &oauth2::HttpResponse) -> anyhow::Error {
     let error = serde_json::from_slice::<Body>(response.body())
         .ok()
         .map(|body| body.error)
-        .filter(|s| s.len() <= 64 && s.bytes().all(|b| b.is_ascii_lowercase() || b == b'_'))
+        .filter(|s| {
+            matches!(
+                s.as_str(),
+                "invalid_request"
+                    | "authorization_pending"
+                    | "slow_down"
+                    | "expired_token"
+                    | "access_denied"
+            )
+        })
         .unwrap_or_else(|| format!("http_{}", response.status().as_u16()));
     anyhow::Error::new(ProviderError(error))
 }
@@ -545,6 +554,11 @@ mod tests {
         let message = provider_error(&response).to_string();
         assert!(!message.contains("secret"));
         assert!(message.contains("http_400"));
+        let response = oauth2::http::Response::builder()
+            .status(400)
+            .body(br#"{"error":"topsecret"}"#.to_vec())
+            .unwrap();
+        assert!(!provider_error(&response).to_string().contains("topsecret"));
         let response = oauth2::http::Response::builder()
             .status(400)
             .body(br#"{"error":"authorization_pending"}"#.to_vec())
