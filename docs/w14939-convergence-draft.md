@@ -43,12 +43,18 @@ mailbox changes and are not hosted package validation.
 The mailbox draft adds optional intent and completion origin fields, keeps
 progress messages quiet during native waits, and supports targeted any/all
 completion waits. Its protocol compatibility test passed locally; the core
-implementation is still being compiled and tested. It does not yet establish
-full Sedna mailbox compatibility, including structured receipts and all
-native wait and mailbox persistence behavior.
+implementation passed focused local queue and wait tests, including targeted
+all-completion filtering. It does not yet establish full Sedna mailbox
+compatibility, including structured receipts and all native wait and mailbox
+persistence behavior.
 
-MCP device-code login with issuer and endpoint security checks, full
-session-history compatibility, hosted validation, packaging and consumer
+An MCP device-login draft uses upstream's routed and bounded OAuth HTTP
+adapter, issuer-bound advertised discovery, public-client registration,
+PKCE fallback, device polling and locked token storage. The rmcp-client library
+compiled locally; the CLI and device tests have not been compiled or run.
+Device requests currently reject redirects, including same-origin redirects;
+device-only scope discovery and refresh compatibility still need assessment.
+Full session-history compatibility, hosted validation, packaging and consumer
 acceptance remain unfinished. The owner has been asked only for non-sensitive
 migration identity and schema metadata. Do not install or run this draft
 against a user profile.

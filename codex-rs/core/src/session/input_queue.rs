@@ -196,9 +196,11 @@ impl InputQueue {
                         wait_eligible_communication(message, exact_target_wait)
                             .then_some(InputQueueActivity::Mailbox)
                     }
-                    TurnInput::UserInput { .. }
-                    | TurnInput::FunctionCallOutput(_)
-                    | TurnInput::ResponseItem(_) => Some(InputQueueActivity::Steer),
+                    TurnInput::UserInput { .. } | TurnInput::FunctionCallOutput(_) => {
+                        Some(InputQueueActivity::Steer)
+                    }
+                    // Passive response items must remain quiet.
+                    TurnInput::ResponseItem(_) => None,
                 })
                 .max();
             if activity.is_some() {
