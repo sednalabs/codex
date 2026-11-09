@@ -324,6 +324,7 @@ allow-git = [
     "https://github.com/nornagon/ratatui",
     "https://github.com/openai-oss-forks/tokio-tungstenite",
     "https://github.com/openai-oss-forks/tungstenite-rs",
+    "https://github.com/tokio-rs/loom",
 ]
 
 [sources.allow-org]
