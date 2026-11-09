@@ -232,10 +232,10 @@ mod thread_processor_behavior_tests {
     }
 
     #[test]
-    fn capability_bearing_native_dynamic_tool_requires_thread_reload() {
+    fn capability_bearing_desktop_dynamic_tool_requires_thread_reload() {
         let mut tool = dynamic_tool(
             /*namespace*/ None,
-            "android_observe",
+            "desktop_observe",
             json!({"type": "object", "properties": {}}),
             /*defer_loading*/ false,
         );

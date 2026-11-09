@@ -301,9 +301,9 @@ two-line git-attribution fixture carry is now upstream-equivalent and historical
 Upstream `7fd7a2f9a2` enables the complete code-mode integration suite in Linux
 and macOS Bazel CI while keeping two narrow Windows exclusions. This strengthens
 hosted proof of Code Mode dynamic-tool compatibility and the generic MCP image
-helper contract; it adds no runtime capability. Upstream `bbfc3f0152` canonicalizes
-Guardian review cwd reuse through `PathUri` without changing model, provider,
-reasoning, permission, or reviewer selection.
+helper contract; it adds no runtime capability. Upstream `bbfc3f0152`
+canonicalizes Guardian review cwd reuse through `PathUri` without changing
+model, provider, reasoning, permission, or reviewer selection.
 
 Upstream `12c115d558` shares raw Responses tool JSON and compares incremental
 WebSocket prefixes in place. The merged tree retains downstream response-model
@@ -564,7 +564,9 @@ Supporting docs:
 - [`downstream-divergence-tracking.md`](downstream-divergence-tracking.md) documents the registry and generation workflow for keeping these notes current as the fork grows.
 - [`sedna-docs-governance.md`](sedna-docs-governance.md) defines authority, freshness, and the manual-versus-generated boundary.
 - [`generated/upstream-status.md`](generated/upstream-status.md) and [`generated/upstream-gaps.md`](generated/upstream-gaps.md) are the current-state receipts; [`upstream-sync/2026-07-28.md`](upstream-sync/2026-07-28.md) records the bounded harvest decisions.
-- [`native-computer-use.md`](native-computer-use.md) documents the current Desktop adapter, ordinary Browser/Android MCP boundaries, and historical Android adapter details.
+- [`native-computer-use.md`](native-computer-use.md) documents the current
+  Desktop adapter, ordinary Browser/Android MCP boundaries, and historical
+  Android adapter details.
 
 ### Core + protocol: blocking wait for unified exec, stable wait output, and compaction turn-count metadata
 
@@ -642,13 +644,21 @@ Why:
 
 Browser MCP boundary:
 
-- Browser tasks use a separately configured MCP server; Codex does not install or launch a browser provider and does not auto-advertise `browser_observe` or `browser_step`.
+- Browser tasks use a separately configured MCP server; Codex does not install
+  or launch a browser provider and does not auto-advertise `browser_observe` or
+  `browser_step`.
 - Android tools supplied by an MCP server remain ordinary MCP tools; Codex no
   longer promotes the former bare `android_*` tools or reads the retired
   Android bridge configuration. This does not claim live Android provider
   adoption.
-- MCP image blocks use Codex's normal typed image-output path. A Code Mode caller must explicitly pass a returned image block to `image(...)` rather than stringify it.
-- This is not a claim that a standalone server reproduces the former combined step-plus-screenshot schema, in-process inspection summaries, or profile continuity. The accepted default is a temporary isolated server-owned profile. Existing native profiles and cookies are left untouched and are not migrated or read.
+- MCP image blocks use Codex's normal typed image-output path. A Code Mode
+  caller must explicitly pass a returned image block to `image(...)` rather
+  than stringify it.
+- This is not a claim that a standalone server reproduces the former combined
+  step-plus-screenshot schema, in-process inspection summaries, or profile
+  continuity. The accepted default is a temporary isolated server-owned
+  profile. Existing native profiles and cookies are left untouched and are not
+  migrated or read.
 
 User-visible behavior:
 
@@ -679,9 +689,9 @@ User-visible behavior:
   and records `ThreadItem::ComputerUseCall` start/completion items.
 - The active TUI session renders live native Desktop computer-use items with a
   compact label such as `Used computer`; these transient app-server projections
-  are not persisted into thread snapshots or replayed after resume. `codex
-  exec` exposes no native computer-use provider; ordinary MCP tools remain
-  available through their normal MCP route.
+  are not persisted into thread snapshots or replayed after resume.
+  `codex exec` exposes no native computer-use provider; ordinary MCP tools
+  remain available through their normal MCP route.
 - Responses can include `inputText` and `inputImage` content items plus `success` and optional `error`.
 - Android and Browser MCP images use the ordinary MCP typed-image path.
   Provider artifact paths are diagnostics, not instructions for the model to

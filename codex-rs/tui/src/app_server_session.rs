@@ -2137,7 +2137,7 @@ mod tests {
         ] {
             assert!(!start_tools.iter().any(|tool| tool.name == retired_tool));
         }
-        assert_eq!(resume.dynamic_tools, start.dynamic_tools.clone());
+        assert_eq!(resume.dynamic_tools, start.dynamic_tools);
         assert_eq!(fork.dynamic_tools, start.dynamic_tools);
     }
 
