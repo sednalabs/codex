@@ -7,7 +7,7 @@ fixture source is `97f6c6b811cbda5aa618356e6761c541da2b5032`.
 The state startup preflight requires a known successful migration prefix. It
 checks all identities before repairing the historical upstream recency-38
 record, with the repair and normal migration in one transaction. This rejects
-unknown newer state migration IDs, including IDs that upstream's
+unknown newer state and thread-history migration IDs, including IDs that upstream's
 `ignore_missing` behavior would otherwise tolerate. It does not bridge Sedna
 history or establish that a schema matches its ledger. The affected source is
 `state/src/migrations.rs` and `state/src/sqlite.rs`; the owner is w14939. The
@@ -34,7 +34,9 @@ that either actual schema has no other history. Both recorded source trees
 also contain the same eight thread-history migration files as upstream. A
 synthetic history fixture applies the later migrations to earlier schema and
 checks that fabricated turn, item and projection records survive; it is not
-a copy of any real session.
+a copy of any real session. A subsequent untested Rust draft additionally
+checks thread-history prefixes and refuses unknown ledger identities before
+opening that database.
 
 The capacity retry draft retries the selected model on `ServerOverloaded`,
 honors the server deadline, and uses capped backoff. It also covers local and
