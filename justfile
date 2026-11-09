@@ -203,3 +203,7 @@ log *args:
 [windows]
 log *args:
     $forwarded_args = @($args | Select-Object -Skip 1); if ($forwarded_args.Count -gt 0 -and $forwarded_args[0] -eq "--") { $forwarded_args = @($forwarded_args | Select-Object -Skip 1) }; cargo run -p codex-cli --bin logs_client -- @forwarded_args
+
+# Diagnostic of the existing full core target; not a candidate package.
+core-subagent-surface-targeted:
+    RUST_MIN_STACK=8388608 cargo test --locked -p codex-core --lib -- --test-threads=1
