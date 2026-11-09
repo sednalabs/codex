@@ -325,7 +325,7 @@ impl InputQueue {
     pub(crate) async fn snapshot_mailbox_communications(
         &self,
     ) -> Vec<(InterAgentCommunication, u64, u64)> {
-        self.snapshot_mailbox_communications_for_wait(/* exact_target_wait */ false)
+        self.snapshot_mailbox_communications_for_wait(/*exact_target_wait*/ false)
             .await
     }
 
@@ -379,7 +379,7 @@ impl InputQueue {
     ) -> Vec<(InterAgentCommunication, u64, u64)> {
         self.snapshot_pending_mailbox_communications_for_wait(
             active_turn,
-            /* exact_target_wait */ false,
+            /*exact_target_wait*/ false,
         )
         .await
     }
@@ -533,7 +533,7 @@ impl InputQueue {
         &self,
         active_turn: &Mutex<Option<ActiveTurn>>,
     ) -> bool {
-        self.has_pending_wait_input_for_wait(active_turn, /* exact_target_wait */ false)
+        self.has_pending_wait_input_for_wait(active_turn, /*exact_target_wait*/ false)
             .await
     }
 
@@ -620,7 +620,7 @@ impl InputQueue {
             return pending_activity;
         }
         if self
-            .has_actionable_wait_mailbox_items_for_wait(/* exact_target_wait */ false)
+            .has_actionable_wait_mailbox_items_for_wait(/*exact_target_wait*/ false)
             .await
         {
             return Some(InputQueueActivity::Mailbox);
@@ -1253,7 +1253,7 @@ mod tests {
         assert!(input_queue.has_pending_wait_input(&active_turn).await);
         assert!(
             !input_queue
-                .has_pending_wait_input_for_wait(&active_turn, /* exact_target_wait */ true)
+                .has_pending_wait_input_for_wait(&active_turn, /*exact_target_wait*/ true)
                 .await,
             "an automatic terminal handoff must not satisfy an exact-target wait"
         );
@@ -1272,12 +1272,12 @@ mod tests {
 
         assert!(
             input_queue
-                .has_pending_wait_input_for_wait(&active_turn, /* exact_target_wait */ true)
+                .has_pending_wait_input_for_wait(&active_turn, /*exact_target_wait*/ true)
                 .await,
             "an explicitly addressed result remains eligible outside the target set"
         );
         let snapshot = input_queue
-            .snapshot_mailbox_communications_for_wait(/* exact_target_wait */ true)
+            .snapshot_mailbox_communications_for_wait(/*exact_target_wait*/ true)
             .await;
         assert_eq!(snapshot.len(), 2);
         assert_eq!(snapshot[0].0.origin, Some(AgentCommunicationOrigin::Result));
