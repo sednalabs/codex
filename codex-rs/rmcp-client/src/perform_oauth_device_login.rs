@@ -232,6 +232,10 @@ fn provider_error(response: &oauth2::HttpResponse) -> anyhow::Error {
                     | "slow_down"
                     | "expired_token"
                     | "access_denied"
+                    | "invalid_scope"
+                    | "invalid_client"
+                    | "unauthorized_client"
+                    | "unsupported_grant_type"
             )
         })
         .unwrap_or_else(|| format!("http_{}", response.status().as_u16()));
