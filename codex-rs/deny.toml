@@ -324,6 +324,9 @@ allow-git = [
     "https://github.com/openai-oss-forks/tokio-tungstenite",
     "https://github.com/openai-oss-forks/tungstenite-rs",
     "https://github.com/tokio-rs/loom",
+    # TEMPORARY: SQLx upstream commit 10462fa allows patched libsqlite3-sys 0.39.x.
+    # Remove this URL when the manifest returns to a released SQLx 0.9.x crate.
+    "https://github.com/transact-rs/sqlx",
 ]
 
 [sources.allow-org]
