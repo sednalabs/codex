@@ -234,6 +234,7 @@ async fn application_network_mcp_login_denies_even_an_allowed_mcp_server() -> an
             super::LoginArgs {
                 name: "policy-probe".to_string(),
                 no_browser: true,
+                device_auth: false,
                 scopes: Vec::new(),
                 oauth_client_registration: None,
             },
@@ -343,4 +344,19 @@ async fn application_network_loader_rejects_malformed_managed_policy() -> anyhow
         "{message}"
     );
     Ok(())
+}
+
+#[test]
+fn mcp_login_accepts_device_auth_flag() {
+    let cli = McpCli::try_parse_from(["mcp", "login", "--device-auth", "server"])
+        .expect("parse device login");
+    let McpSubcommand::Login(args) = cli.subcommand else {
+        panic!("expected login");
+    };
+    assert!(args.device_auth);
+    assert!(!args.no_browser);
+    assert!(
+        McpCli::try_parse_from(["mcp", "login", "--device-auth", "--no-browser", "server"])
+            .is_err()
+    );
 }

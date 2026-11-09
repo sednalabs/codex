@@ -40,6 +40,7 @@ use codex_rmcp_client::OAuthDiscoveryTimeout;
 use codex_rmcp_client::StreamableHttpRedirectMode;
 use codex_rmcp_client::delete_enterprise_oauth_tokens;
 use codex_rmcp_client::delete_oauth_tokens;
+use codex_rmcp_client::perform_oauth_device_login;
 use codex_rmcp_client::resolve_mcp_oauth_callback_url;
 use codex_utils_cli::CliConfigOverrides;
 use codex_utils_cli::format_env_display;
@@ -216,6 +217,10 @@ pub struct LoginArgs {
     /// Print the authorization URL and accept the callback URL without opening a browser.
     #[arg(long)]
     pub no_browser: bool,
+
+    /// Use OAuth device authorization for headless login.
+    #[arg(long, conflicts_with = "no_browser")]
+    pub device_auth: bool,
 
     /// Comma-separated list of OAuth scopes to request.
     #[arg(long, value_delimiter = ',', value_name = "SCOPE,SCOPE")]
@@ -546,6 +551,7 @@ async fn run_login(config: &Config, login_args: LoginArgs) -> Result<()> {
     let LoginArgs {
         name,
         no_browser,
+        device_auth,
         scopes,
         oauth_client_registration,
     } = login_args;
@@ -595,6 +601,39 @@ async fn run_login(config: &Config, login_args: LoginArgs) -> Result<()> {
     let resolved_scopes =
         resolve_oauth_scopes(explicit_scopes, server.scopes.clone(), discovered_scopes);
     let credential_name = server.oauth_credential_name(&name);
+    if device_auth {
+        if server
+            .oauth
+            .as_ref()
+            .is_some_and(|oauth| oauth.client_secret.is_some())
+        {
+            bail!("OAuth device login currently supports public clients only");
+        }
+        if matches!(client_registration, McpOAuthClientRegistration::Cimd) {
+            bail!("OAuth device login does not support CIMD client registration");
+        }
+        perform_oauth_device_login(
+            credential_name.as_ref(),
+            &url,
+            config.mcp_oauth_credentials_store_mode,
+            config.auth_keyring_backend_kind(),
+            http_headers,
+            env_http_headers,
+            &resolved_scopes.scopes,
+            server.oauth_client_id(),
+            server.oauth_resource.as_deref(),
+            http_client,
+            |prompt| {
+                println!(
+                    "Open {} and enter code {}",
+                    prompt.verification_uri, prompt.user_code
+                );
+            },
+        )
+        .await?;
+        println!("Successfully logged in to MCP server '{name}'.");
+        return Ok(());
+    }
     let callback_url =
         resolve_oauth_callback(server, &url, config.mcp_oauth_callback_url.as_deref())?;
 
