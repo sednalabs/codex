@@ -52,9 +52,9 @@ const DEFAULT_READ_TIMEOUT: Duration = Duration::from_secs(60);
 const DEFAULT_READ_TIMEOUT: Duration = Duration::from_secs(10);
 
 #[tokio::test]
-async fn computer_use_call_round_trip_sends_client_response_to_model() -> Result<()> {
+async fn desktop_computer_use_call_round_trip_preserves_typed_image_output() -> Result<()> {
     let call_id = "computer-use-call-1";
-    let tool_name = "android_observe";
+    let tool_name = "desktop_observe";
     let tool_args = json!({ "scope": "screen_and_ui" });
     let tool_call_arguments = serde_json::to_string(&tool_args)?;
 
@@ -78,23 +78,28 @@ async fn computer_use_call_round_trip_sends_client_response_to_model() -> Result
         .await?;
     timeout(DEFAULT_READ_TIMEOUT, mcp.initialize()).await??;
 
-    let android_tool = DynamicToolSpec {
+    let desktop_tool = DynamicToolSpec {
         namespace: None,
         name: tool_name.to_string(),
-        description: "Observe Android".to_string(),
+        description: "Capture the current desktop app state as a model-visible screenshot, optionally with a compact accessibility/UI digest.".to_string(),
         input_schema: json!({
             "type": "object",
             "properties": {},
             "additionalProperties": false,
         }),
         defer_loading: false,
-        persist_on_resume: true,
-        capability: Some(android_capability("read_only", "shared_read")),
+        persist_on_resume: false,
+        capability: Some(DynamicToolCapability {
+            family: Some("desktop".to_string()),
+            capability_scope: Some("session".to_string()),
+            mutation_class: Some("non_mutating".to_string()),
+            lease_mode: None,
+        }),
     };
 
     let thread_req = mcp
         .send_thread_start_request(ThreadStartParams {
-            dynamic_tools: Some(vec![android_tool]),
+            dynamic_tools: Some(vec![desktop_tool]),
             ..Default::default()
         })
         .await?;
@@ -110,7 +115,7 @@ async fn computer_use_call_round_trip_sends_client_response_to_model() -> Result
         .send_turn_start_request(TurnStartParams {
             thread_id: thread_id.clone(),
             input: vec![V2UserInput::Text {
-                text: "Observe Android".to_string(),
+                text: "Observe desktop".to_string(),
                 text_elements: Vec::new(),
             }],
             ..Default::default()
@@ -147,7 +152,7 @@ async fn computer_use_call_round_trip_sends_client_response_to_model() -> Result
         environment_id.as_deref(),
         Some(codex_exec_server::LOCAL_ENVIRONMENT_ID)
     );
-    assert_eq!(adapter, "android");
+    assert_eq!(adapter, "desktop");
     assert_eq!(tool, tool_name);
     assert_eq!(arguments, tool_args);
     assert_eq!(status, ComputerUseCallStatus::InProgress);
@@ -171,7 +176,7 @@ async fn computer_use_call_round_trip_sends_client_response_to_model() -> Result
         turn_id: turn_id.clone(),
         call_id: call_id.to_string(),
         environment_id: Some(codex_exec_server::LOCAL_ENVIRONMENT_ID.to_string()),
-        adapter: "android".to_string(),
+        adapter: "desktop".to_string(),
         tool: tool_name.to_string(),
         arguments: tool_args.clone(),
     };
@@ -179,7 +184,7 @@ async fn computer_use_call_round_trip_sends_client_response_to_model() -> Result
 
     let response_items = vec![
         ComputerUseCallOutputContentItem::InputText {
-            text: "Settings screen visible".to_string(),
+            text: "Desktop screen visible".to_string(),
         },
         ComputerUseCallOutputContentItem::InputImage {
             image_url: TINY_PNG_DATA_URL.to_string(),
@@ -217,7 +222,7 @@ async fn computer_use_call_round_trip_sends_client_response_to_model() -> Result
         environment_id.as_deref(),
         Some(codex_exec_server::LOCAL_ENVIRONMENT_ID)
     );
-    assert_eq!(adapter, "android");
+    assert_eq!(adapter, "desktop");
     assert_eq!(tool, tool_name);
     assert_eq!(arguments, tool_args);
     assert_eq!(status, ComputerUseCallStatus::Completed);
@@ -239,7 +244,7 @@ async fn computer_use_call_round_trip_sends_client_response_to_model() -> Result
         .context("expected function_call_output in follow-up request")?;
     let expected_payload = FunctionCallOutputPayload::from_content_items(vec![
         FunctionCallOutputContentItem::InputText {
-            text: "Settings screen visible".to_string(),
+            text: "Desktop screen visible".to_string(),
         },
         FunctionCallOutputContentItem::InputImage {
             image_url: TINY_PNG_DATA_URL.to_string(),
@@ -252,7 +257,7 @@ async fn computer_use_call_round_trip_sends_client_response_to_model() -> Result
 }
 
 #[tokio::test]
-async fn thread_resume_injects_native_android_tools_into_model_requests() -> Result<()> {
+async fn thread_resume_preserves_history_and_client_supplied_android_named_tool() -> Result<()> {
     let responses = vec![create_final_assistant_message_sse_response("Done")?];
     let server = create_mock_responses_server_sequence_unchecked(responses).await;
 
@@ -318,14 +323,25 @@ async fn thread_resume_injects_native_android_tools_into_model_requests() -> Res
     let body = bodies
         .last()
         .context("expected a resumed turn responses request")?;
-    assert_native_android_tool(body, "android_observe")?;
+    let serialized_input = body
+        .get("input")
+        .context("expected resumed history in the model request")?
+        .to_string();
+    assert!(
+        serialized_input.contains("Resume this thread"),
+        "thread resume should preserve the supplied historical message"
+    );
+    assert_client_supplied_dynamic_tool(
+        body,
+        "android_observe",
+        "client-supplied observe description",
+    )?;
 
     Ok(())
 }
 
 #[tokio::test]
-async fn thread_resume_replaces_loaded_thread_when_native_android_tools_are_requested() -> Result<()>
-{
+async fn thread_resume_preserves_client_tool_after_replacing_loaded_thread() -> Result<()> {
     let responses = vec![
         create_final_assistant_message_sse_response("Seeded")?,
         create_final_assistant_message_sse_response("Done")?,
@@ -416,13 +432,25 @@ async fn thread_resume_replaces_loaded_thread_when_native_android_tools_are_requ
     let body = bodies
         .last()
         .context("expected a resumed turn responses request after replacing the loaded thread")?;
-    assert_native_android_tool(body, "android_observe")?;
+    let serialized_input = body
+        .get("input")
+        .context("expected loaded history in the resumed model request")?
+        .to_string();
+    assert!(
+        serialized_input.contains("Seed rollout storage"),
+        "resuming the loaded thread should preserve its prior user message"
+    );
+    assert_client_supplied_dynamic_tool(
+        body,
+        "android_observe",
+        "client-supplied observe description",
+    )?;
 
     Ok(())
 }
 
 #[tokio::test]
-async fn thread_fork_injects_native_android_tools_into_model_requests() -> Result<()> {
+async fn thread_fork_preserves_client_supplied_android_named_tool() -> Result<()> {
     let responses = vec![
         create_final_assistant_message_sse_response("Seeded")?,
         create_final_assistant_message_sse_response("Done")?,
@@ -513,13 +541,13 @@ async fn thread_fork_injects_native_android_tools_into_model_requests() -> Resul
     let body = bodies
         .last()
         .context("expected a forked turn responses request")?;
-    assert_native_android_tool(body, "android_step")?;
+    assert_client_supplied_dynamic_tool(body, "android_step", "client-supplied step description")?;
 
     Ok(())
 }
 
 #[tokio::test]
-async fn paginated_thread_fork_injects_native_android_tools_into_model_requests() -> Result<()> {
+async fn paginated_thread_fork_preserves_client_supplied_android_named_tool() -> Result<()> {
     let server = create_mock_responses_server_sequence_unchecked(vec![
         create_final_assistant_message_sse_response("Done")?,
     ])
@@ -583,7 +611,7 @@ async fn paginated_thread_fork_injects_native_android_tools_into_model_requests(
     let body = bodies
         .last()
         .context("expected a paginated forked turn responses request")?;
-    assert_native_android_tool(body, "android_step")?;
+    assert_client_supplied_dynamic_tool(body, "android_step", "client-supplied step description")?;
 
     Ok(())
 }
@@ -649,45 +677,46 @@ fn android_capability(mutation_class: &str, lease_mode: &str) -> DynamicToolCapa
     }
 }
 
-fn assert_native_android_tool(body: &Value, name: &str) -> Result<()> {
-    let tool = find_tool(body, name).with_context(|| {
-        format!("expected native Android tool `{name}` to be injected into request")
-    })?;
+fn assert_client_supplied_dynamic_tool(
+    body: &Value,
+    name: &str,
+    expected_description: &str,
+) -> Result<()> {
+    let tool = find_tool(body, name)
+        .with_context(|| format!("expected client-supplied dynamic tool `{name}` in request"))?;
     assert_eq!(tool.get("type").and_then(Value::as_str), Some("function"));
     let description = tool
         .get("description")
         .and_then(Value::as_str)
-        .context("native Android tool description should be present")?;
-    let parameters = tool
+        .context("client-supplied dynamic tool description should be present")?;
+    assert_eq!(description, expected_description);
+    let input_schema = tool
         .get("parameters")
-        .and_then(|parameters| parameters.get("properties"))
-        .and_then(Value::as_object)
-        .context("native Android tool parameters should include object properties")?;
-    assert!(
-        !parameters.contains_key("clientOnly"),
-        "native Android tools should use the canonical schema, not the client-supplied dynamic schema"
+        .context("client-supplied dynamic tool schema should be present")?;
+    assert_eq!(
+        input_schema.get("type").and_then(Value::as_str),
+        Some("object")
     );
-
-    match name {
-        "android_observe" => {
-            assert_eq!(
-                description,
-                "Capture the current Android screen as a model-visible screenshot, optionally with a compact UI digest."
-            );
-            assert!(parameters.contains_key("scope"));
-            assert!(parameters.contains_key("prompt"));
-        }
-        "android_step" => {
-            assert_eq!(
-                description,
-                "Perform one or more bounded Android actions, then return a fresh post-action screenshot, summary, and current view metadata."
-            );
-            assert!(parameters.contains_key("action"));
-            assert!(parameters.contains_key("actions"));
-            assert!(parameters.contains_key("view"));
-        }
-        other => panic!("unexpected Android tool name: {other}"),
-    }
+    assert_eq!(
+        input_schema.get("additionalProperties"),
+        Some(&Value::Bool(false))
+    );
+    let parameters = input_schema
+        .get("properties")
+        .and_then(Value::as_object)
+        .context("client-supplied dynamic tool should include object properties")?;
+    assert!(
+        parameters.contains_key("clientOnly"),
+        "Android-named caller tools should retain the caller's schema, not claim a native provider"
+    );
+    assert_eq!(parameters.len(), 1, "caller-supplied tool schema changed");
+    assert_eq!(
+        parameters
+            .get("clientOnly")
+            .and_then(|property| property.get("type"))
+            .and_then(Value::as_str),
+        Some("string")
+    );
 
     Ok(())
 }

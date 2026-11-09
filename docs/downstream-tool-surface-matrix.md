@@ -21,6 +21,11 @@ See [`generated/upstream-status.md`](generated/upstream-status.md) for the exact
 current comparison receipt; treat the review SHAs above as a point-in-time
 comparison rather than permanent branch state.
 
+This dated surface snapshot predates the native Android adapter retirement on
+current `main` and the Browser retirement in this candidate. Its Android
+provider rows are historical and do not describe current Codex support;
+Android and Browser tools use ordinary MCP servers with server-owned lifecycle.
+
 Browser comparison boundary:
 
 - The `upstream/main` column describes the stock open-source CLI/app-server,

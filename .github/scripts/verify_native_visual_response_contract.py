@@ -11,10 +11,12 @@ PACK_ROOT = Path(".github/codeql/rust-computer-use-contract")
 PRODUCTION_SUITE = PACK_ROOT / "suites/rust-computer-use-production.qls"
 
 EXPECTED_PROVIDER_FILES = (
-    Path("codex-rs/android-computer-use/src/lib.rs"),
+    Path("codex-rs/tui/src/desktop_computer_use_provider.rs"),
 )
 
 EXPECTED_PRODUCTION_QUERIES = (
+    # Keep the historical query path/identity; native visual production coverage
+    # now binds the retained desktop provider after Browser and Android retirement.
     "queries/AndroidVisualToolMissingNativeImageGuard.ql",
     "queries/NativeVisualResponseProductionCoverageMissing.ql",
     "queries/NativeVisualResponseCoverageWitness.ql",

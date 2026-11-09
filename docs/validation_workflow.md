@@ -371,13 +371,13 @@ ownership boundary:
   The tool-registry lane is intentionally weighted as a singleton Rust batch
   because it is link-heavy enough to exhaust hosted runner disk when paired
   with another native computer-use lane.
-- `codex exec` native Android/desktop advertisement or provider-handling changes
+- `codex exec` native Desktop advertisement or provider-handling changes
   should add `codex.exec-native-computer-use-targeted`.
 - Provider configuration diagnostics should add
   `codex.native-computer-use-doctor-targeted`.
 - Android harness, emulator, device, screenshot, UI digest, and input execution
-  changes should be validated in the Android runtime provider or consumer app
-  that owns that behavior.
+  changes belong to the ordinary MCP runtime provider or consumer app that
+  owns that behavior, not a Codex-native provider bridge.
 - Browser tool schemas, actions, process lifecycle, and profile behavior are
   owned by the configured MCP server and should use that server's existing
   validation and the consumer route that owns its configuration. Codex has no

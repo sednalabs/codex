@@ -564,7 +564,7 @@ Supporting docs:
 - [`downstream-divergence-tracking.md`](downstream-divergence-tracking.md) documents the registry and generation workflow for keeping these notes current as the fork grows.
 - [`sedna-docs-governance.md`](sedna-docs-governance.md) defines authority, freshness, and the manual-versus-generated boundary.
 - [`generated/upstream-status.md`](generated/upstream-status.md) and [`generated/upstream-gaps.md`](generated/upstream-gaps.md) are the current-state receipts; [`upstream-sync/2026-07-28.md`](upstream-sync/2026-07-28.md) records the bounded harvest decisions.
-- [`native-computer-use.md`](native-computer-use.md) documents current Android/Desktop adapter contracts, the ordinary Browser MCP boundary, and historical app-server, TUI, rollout, and validation context.
+- [`native-computer-use.md`](native-computer-use.md) documents the current Desktop adapter, ordinary Browser/Android MCP boundaries, and historical Android adapter details.
 
 ### Core + protocol: blocking wait for unified exec, stable wait output, and compaction turn-count metadata
 
@@ -627,25 +627,34 @@ User-visible behavior:
 - Large output still intentionally retains only its head and tail, with an
   explicit marker for omitted middle bytes.
 
-### Core + app-server: native computer-use adapter bridge
+### Core + app-server: native Desktop computer-use adapter
 
 Why:
 
-- Preserve native computer-use as a Codex-owned transcript and tool contract for Android and Desktop while keeping Browser on the ordinary MCP surface.
-- Let runtime providers supply Android or Desktop capability while Codex owns the canonical model-facing schemas, adapter dispatch, protocol events, app-server requests, live TUI projection, and rollout-trace runtime boundaries. Computer-use events remain transient rather than thread-snapshot state.
-- Keep Solar Gravity Lab positioned as a proving and consumer app rather than the generic owner of Codex Android tooling. Browser servers own their tools, browser process, and profile lifecycle through normal MCP connections.
+- Keep the Codex-native computer-use adapter for Desktop. Browser and Android
+  capabilities remain ordinary MCP tools whose servers own their tools,
+  provider processes, and profile/device lifecycle; Codex does not register a
+  Browser or Android adapter.
+- The Desktop adapter owns its canonical model-facing schema, dispatch,
+  protocol events, app-server requests, live TUI projection, and rollout-trace
+  boundaries. Computer-use events remain transient rather than thread-snapshot
+  state.
 
 Browser MCP boundary:
 
 - Browser tasks use a separately configured MCP server; Codex does not install or launch a browser provider and does not auto-advertise `browser_observe` or `browser_step`.
+- Android tools supplied by an MCP server remain ordinary MCP tools; Codex no
+  longer promotes the former bare `android_*` tools or reads the retired
+  Android bridge configuration. This does not claim live Android provider
+  adoption.
 - MCP image blocks use Codex's normal typed image-output path. A Code Mode caller must explicitly pass a returned image block to `image(...)` rather than stringify it.
 - This is not a claim that a standalone server reproduces the former combined step-plus-screenshot schema, in-process inspection summaries, or profile continuity. The accepted default is a temporary isolated server-owned profile. Existing native profiles and cookies are left untouched and are not migrated or read.
 
 User-visible behavior:
 
-- Bare `android_observe`, `android_step`, and `android_install_build_from_run` dynamic tools are promoted to canonical Codex function tools and handled by `ToolHandlerKind::ComputerUse`.
 - Bare `desktop_observe` and `desktop_step` dynamic tools are promoted to canonical Codex function tools with adapter `desktop`; the TUI routes them to an operator-configured command provider for independent macOS Screen Recording/Accessibility-style runtimes or future native desktop providers.
-- Namespaced Android-like and desktop-like tools remain normal dynamic tools; Browser MCP tools remain ordinary MCP tools.
+- Android and Browser MCP tools remain ordinary MCP tools; namespaced dynamic
+  tools are not promoted by the native computer-use registry.
 - App-server `dynamicTools` accepts deferred bare native tools for
   `tool_search`, while still rejecting deferred bare ordinary dynamic tools.
   A capability-bearing native tool requests a full loaded-thread reload so the
@@ -663,31 +672,24 @@ User-visible behavior:
   namespace representation. Cargo and Bazel locks must be regenerated from the
   merged graph so Symphonia resolves to the dependency version actually
   selected downstream; parent lock entries are not safe to union mechanically.
-- `android_observe` is non-mutating; `android_step` is mutating and supports both compatibility single-action fields and preferred batched `actions[]`, including atomic two-to-five-pointer `multi_touch` input that never degrades to sequential single-touch calls; `android_install_build_from_run` is mutating and maps provider-side artifact installation into the same native transcript path.
-- The Android adapter remains the MCP-backed reference runtime provider; reuse
-  `android-emulator-mcp` or a successor when it exposes the current Android MCP
-  contract, and keep harness-specific translation in the provider rather than
-  in hot Codex core paths.
-- Android provider behavior should absorb emulator-QA discipline without
-  pushing shell recipes into Codex core: explicit device serial/readiness,
-  UIAutomator-style hierarchy capture, selector-to-bounds targeting, screenshot
-  and hierarchy receipts, log/performance artifacts for focused debugging, and
-  post-failure observations that help agents recover from partially completed
-  mutating actions.
+- Android device actions and provider behavior belong to the selected ordinary
+  MCP server; no Codex-native Android action schema, provider bridge, or live
+  device adoption is part of this carry.
 - App-server API v2 sends `item/computerUse/call` requests to capable clients
   and records `ThreadItem::ComputerUseCall` start/completion items.
-- The active TUI session renders live native computer-use items with compact
-  adapter-specific labels such as `Used computer` and `Used Android emulator`;
-  these transient app-server projections are not persisted into thread
-  snapshots or replayed after resume. Exec JSON/human output projects the same
-  calls as compact computer-use events without embedding screenshot bytes in
-  transcript text.
+- The active TUI session renders live native Desktop computer-use items with a
+  compact label such as `Used computer`; these transient app-server projections
+  are not persisted into thread snapshots or replayed after resume. `codex
+  exec` exposes no native computer-use provider; ordinary MCP tools remain
+  available through their normal MCP route.
 - Responses can include `inputText` and `inputImage` content items plus `success` and optional `error`.
-- Android screenshots are model-facing only when returned as native image content. Browser MCP images use the ordinary MCP typed-image path. Provider artifact paths are diagnostics, not instructions for the model to fetch local files.
-- For MCP-backed Android providers, `structuredContent` is parsed for state and UI metadata without dropping `content[]` image entries. The native bridge must preserve both channels so JSON summaries never preempt the screenshot pixels.
+- Android and Browser MCP images use the ordinary MCP typed-image path.
+  Provider artifact paths are diagnostics, not instructions for the model to
+  fetch local files.
 - Computer-use events remain transient in every history mode; live rollout tracing maps them to tool-runtime start/end events without persisting them into thread snapshots.
 - See [`native-computer-use.md`](native-computer-use.md) for the full contract and validation guidance.
-- See [`native-computer-use-contracts.md`](native-computer-use-contracts.md) for Android and desktop provider contracts.
+- See [`native-computer-use-contracts.md`](native-computer-use-contracts.md)
+  for the current Desktop provider contract and historical Android notes.
 
 ### Usage ledger: first-party local `usage.sqlite`
 

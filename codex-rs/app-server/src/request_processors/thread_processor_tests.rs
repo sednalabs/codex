@@ -199,15 +199,15 @@ mod thread_processor_behavior_tests {
     }
 
     #[test]
-    fn validate_dynamic_tools_accepts_deferred_bare_native_computer_use_tool() {
+    fn validate_dynamic_tools_accepts_deferred_bare_browser_computer_use_tool() {
         let tools = vec![dynamic_tool(
             /*namespace*/ None,
-            "android_observe",
+            "browser_observe",
             json!({"type": "object", "properties": {}}),
             /*defer_loading*/ true,
         )];
 
-        validate_dynamic_tools(&tools).expect("deferred native computer-use tool is valid");
+        validate_dynamic_tools(&tools).expect("deferred native Browser tool is valid");
     }
 
     #[test]

@@ -1,10 +1,7 @@
-use super::COMPUTER_USE_ADAPTER_ANDROID;
 use super::COMPUTER_USE_ADAPTER_DESKTOP;
 use super::canonical_native_computer_use_dynamic_tool;
 use super::native_computer_use_provider_for_call;
 use super::native_computer_use_provider_registry;
-use crate::ANDROID_INSTALL_BUILD_FROM_RUN_TOOL_NAME;
-use crate::ANDROID_OBSERVE_TOOL_NAME;
 use crate::DESKTOP_OBSERVE_TOOL_NAME;
 use crate::DESKTOP_STEP_TOOL_NAME;
 use codex_protocol::dynamic_tools::DynamicToolSpec;
@@ -21,16 +18,6 @@ fn dynamic_tool(name: &str) -> DynamicToolSpec {
         persist_on_resume: true,
         capability: None,
     }
-}
-
-#[test]
-fn native_computer_use_registry_classifies_android_tools() {
-    let android =
-        canonical_native_computer_use_dynamic_tool(&dynamic_tool(ANDROID_OBSERVE_TOOL_NAME))
-            .expect("android observe should be native computer-use");
-
-    assert_eq!(android.adapter, COMPUTER_USE_ADAPTER_ANDROID);
-    assert!(!android.is_mutating);
 }
 
 #[test]
@@ -52,17 +39,8 @@ fn native_computer_use_provider_registry_declares_adapters_tools_and_backends() 
             .iter()
             .map(|provider| provider.adapter)
             .collect::<Vec<_>>(),
-        vec![COMPUTER_USE_ADAPTER_ANDROID, COMPUTER_USE_ADAPTER_DESKTOP]
+        vec![COMPUTER_USE_ADAPTER_DESKTOP]
     );
-
-    let (android, android_install) = native_computer_use_provider_for_call(
-        COMPUTER_USE_ADAPTER_ANDROID,
-        ANDROID_INSTALL_BUILD_FROM_RUN_TOOL_NAME,
-    )
-    .expect("android install tool should be declared");
-    assert_eq!(android.backend_argument, None);
-    assert!(android_install.is_mutating);
-    assert!(android_install.uses_long_timeout);
 
     let (desktop, desktop_observe) = native_computer_use_provider_for_call(
         COMPUTER_USE_ADAPTER_DESKTOP,
@@ -74,8 +52,35 @@ fn native_computer_use_provider_registry_declares_adapters_tools_and_backends() 
 }
 
 #[test]
-fn native_computer_use_provider_registry_does_not_claim_retired_browser_tools() {
+fn native_computer_use_registry_does_not_claim_retired_android_tools() {
+    assert!(native_computer_use_provider_for_call("android", "android_observe").is_none());
+    assert!(native_computer_use_provider_for_call("android", "android_step").is_none());
+    assert!(canonical_native_computer_use_dynamic_tool(&dynamic_tool("android_observe")).is_none());
+}
+
+#[test]
+fn native_computer_use_registry_does_not_claim_retired_browser_tools() {
     assert!(native_computer_use_provider_for_call("browser", "browser_observe").is_none());
     assert!(native_computer_use_provider_for_call("browser", "browser_step").is_none());
-    assert!(canonical_native_computer_use_dynamic_tool(&dynamic_tool("browser_step")).is_none());
+    assert!(
+        canonical_native_computer_use_dynamic_tool(&dynamic_tool("browser_observe")).is_none()
+    );
+    assert!(
+        canonical_native_computer_use_dynamic_tool(&dynamic_tool("browser_step")).is_none()
+    );
+}
+
+#[test]
+fn native_computer_use_provider_registry_does_not_claim_unknown_tools() {
+    assert!(
+        native_computer_use_provider_for_call(
+            "browser",
+            "browser_private_backend_probe",
+        )
+        .is_none()
+    );
+    assert!(
+        canonical_native_computer_use_dynamic_tool(&dynamic_tool("browser_private_backend_probe"))
+            .is_none()
+    );
 }

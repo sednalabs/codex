@@ -1,9 +1,11 @@
 # Native Computer-Use Provider Contracts
 
-This document defines provider-facing interoperability contracts for native
-Android and desktop computer-use runtimes. Later sections explicitly marked
-historical describe the retired Browser shell and Chrome-extension carry;
-current Browser MCP servers use their own ordinary MCP tools and lifecycle.
+This document defines the current provider-facing contract for the native
+Desktop computer-use adapter. Android and Browser capabilities use ordinary
+MCP servers with server-owned tools and lifecycle; Android-specific adapter
+details retained below are historical and do not describe current Codex TUI or
+`codex exec` integration. Later sections explicitly marked historical also
+describe the retired Browser shell and Chrome-extension carry.
 
 Native providers implement these contracts behind the configured MCP or
 desktop command-provider seams while Codex owns the canonical transcript and
@@ -201,17 +203,17 @@ requirements.
 
 ## Validation Expectations
 
-Provider-independent Codex changes for remaining native adapters are covered
+Provider-independent Codex changes for the remaining native adapter are covered
 by:
 
-- canonical tool schema tests for Android and desktop tools
+- canonical tool schema tests for desktop tools
 - TUI provider bridge tests for command-provider JSON round trips and native
   image enforcement
 - app-server computer-use round-trip tests
 - downstream docs and divergence registry checks
 
-Browser MCP behavior is tested by the configured MCP server and its consumer.
-Remaining native runtime-provider implementations need provider-side tests:
+Browser and Android MCP behavior is tested by each configured server and its
+consumer. Native Desktop runtime-provider implementations need provider-side tests:
 
 - permission-state transitions
 - screenshot capture with native image output

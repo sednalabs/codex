@@ -4,12 +4,14 @@ This document describes the first-party computer-use surface in the Sedna
 Codex fork. It is intentionally scoped to Codex-owned protocol, transcript,
 tool-registry, app-server, TUI, rollout, and validation behavior.
 
-Native runtime backends are supplied by external providers. Android is the
-MCP-backed provider and uses a shared provider bridge for TUI and `codex exec`.
-Browser work uses a separately configured Browser MCP server through ordinary
-MCP tools; Codex no longer registers a native Browser adapter or local browser
-provider bridge. Desktop is a registered adapter for independent macOS Screen
-Recording/Accessibility-style runtimes and future native desktop providers.
+The current Codex-native adapter is Desktop in the TUI. Browser and Android
+capabilities remain available through independently configured ordinary MCP
+servers; Codex does not register Browser or Android providers, promote their
+tool names, or read their former adapter-specific configuration. `codex exec`
+does not expose a native computer-use provider. The Android adapter details
+below are historical design notes, not current behavior or a claim of live
+provider adoption. Existing Android profiles and data are not read, migrated,
+or changed by this retirement.
 
 ## Ownership Boundaries
 
@@ -20,17 +22,17 @@ Recording/Accessibility-style runtimes and future native desktop providers.
 - Runtime providers own backend/session lifecycle, screenshots or viewport
   capture, UI digest generation, input execution, launch/navigation behavior,
   and any emulator, physical-device, browser, or desktop setup.
-- Solar Gravity Lab can consume and prove the Android flow, but it is not the
-  generic owner of Codex computer-use tooling.
-- Android MCP or app-specific repositories may provide runtime capability, but
-  they should not redefine Codex's transcript or app-server protocol shape.
+- Android MCP or app-specific repositories may provide runtime capability
+  through ordinary MCP configuration; that does not make them Codex-native or
+  claim live provider adoption.
 
 ## Model-Facing Tools
 
-Codex promotes a small set of bare dynamic tool names to native computer-use
-handlers. Namespaced tools remain ordinary dynamic tools.
+Codex currently promotes the bare Desktop tool names to native computer-use
+handlers. Browser and Android MCP tools, including bare names, remain ordinary
+MCP tools; namespaced dynamic tools are not promoted.
 
-### Android
+### Retired Android adapter (historical)
 
 - `android_observe`: captures the current Android screen as model-visible
   image output, optionally paired with a compact UI digest.
@@ -40,12 +42,12 @@ handlers. Namespaced tools remain ordinary dynamic tools.
   artifact into the active Android session, optionally launches it, then
   returns a fresh post-install observation when available.
 
-The existing Android adapter remains the reference MCP-backed runtime provider,
-not a throwaway prototype. It already demonstrates the split this fork should
-keep: Codex owns canonical tool schemas, transcript events, and native image
-delivery; the Android provider owns emulator/device sessions, `adb`/
+The former Android adapter used the split described in these historical notes:
+Codex owned canonical tool schemas, transcript events, and native image
+delivery, while its provider owned emulator/device sessions, `adb`/
 UIAutomator-style capture, screenshot artifacts, UI digests, input execution,
-and provider-side build installation.
+and provider-side build installation. That Codex adapter has been removed;
+standalone Android MCP servers own their tools and lifecycle.
 
 Android providers should internalize the practical emulator-QA discipline that
 agents otherwise have to rediscover by hand: choose an explicit device serial,
@@ -72,9 +74,9 @@ screenshot artifact into native model-visible image output. A provider that
 only returns text, UI digests, or host-local artifact paths is not sufficient
 for native computer use. If a provider needs a different internal harness,
 adapt it inside the provider or through a thin provider-side compatibility
-layer rather than changing Codex hot core paths. Android stays on its native
-adapter seam; Browser MCP servers own their separate tool and process
-lifecycles and are not registered as native computer-use providers.
+layer rather than changing Codex hot core paths. Android and Browser MCP
+servers own their separate tools and process lifecycles and are not registered
+as native computer-use providers.
 
 The `multi_touch` Android step action sends two to five complete pointer paths
 to `android.input.multi_touch` as one atomic provider call. Codex validates the
@@ -84,7 +86,8 @@ fails with an explicit operator-facing message. It must never be approximated
 with sequential taps or swipes because that changes the gesture's ownership
 and timing semantics.
 
-Local Android bridge configuration lives in
+Former local Android bridge configuration (historical; no longer read by
+Codex) lived in
 `~/.codex/android-computer-use.json`; the legacy
 `~/.codex/android-dynamic-tools.json` and
 `~/.codex/solarlab-android-dynamic-tools.json` names are still accepted while
@@ -97,8 +100,9 @@ provider calls. When `launch_app` omits a package, the bridge uses
 default package so an explicit package does not accidentally inherit the wrong
 activity.
 
-When an Android action fails, the native bridge should return the action error
-with a fresh post-failure observation when the provider can still capture one:
+Under the former adapter contract, an Android action failure returned the
+action error with a fresh post-failure observation when the provider could
+still capture one:
 current screenshot, compact UI digest or selector candidates, and any completed
 action summaries. This keeps agents from blindly replaying mutating input after
 a partially completed flow. If
@@ -106,8 +110,8 @@ post-failure screenshot capture is unavailable, the response must say that the
 current state is unproven and instruct the agent to recover with
 `android_observe` before making visual claims.
 
-When the Android provider itself is temporarily unreachable, including hosted
-provider tunnel failures surfaced as HTTP 530, Codex returns a failed
+The former adapter also classified an unreachable Android provider, including
+hosted provider tunnel failures surfaced as HTTP 530, as a failed
 computer-use response labeled `Android provider unavailable` with
 `retryability: retry_same_request`. That classification is an operator hint:
 the tool call did not prove anything about the Android screen, and retrying the
@@ -348,7 +352,7 @@ model to fetch local files. If screenshot inlining fails, the response may
 include a concise diagnostic that names the provider artifact involved; that is
 an error breadcrumb, not the normal contract.
 
-`codex doctor` includes read-only Android and desktop computer-use checks. It
+`codex doctor` includes read-only Desktop computer-use checks. It
 does not launch browsers, connect to user profiles, start emulators, call
 Android MCP servers, start desktop providers, or repair configuration.
 
@@ -415,10 +419,10 @@ provider responsibilities.
 Native desktop providers implement the interface described in
 [`native-computer-use-contracts.md`](native-computer-use-contracts.md) behind
 the command-provider seam. Browser MCP servers use the ordinary MCP interface.
-Codex owns the canonical Android and desktop schemas, transcript events,
+Codex currently owns the canonical Desktop schema, transcript events,
 lifecycle propagation, and native image-output contract; runtime providers
-own environment-specific capability and permissions. Browser MCP schemas and
-lifecycle remain server-owned.
+own environment-specific capability and permissions. Android and Browser MCP
+schemas, routing, and lifecycle remain server-owned.
 
 These tools are installed from dynamic thread tools supplied through app-server
 thread start, resume, or fork requests. When the tool has no namespace and the
@@ -426,21 +430,19 @@ name matches one of the native tool names above, Codex replaces the provider's
 ad hoc schema with its canonical first-party function schema and registers the
 handler as `ComputerUse`.
 
-Namespaced tools are not promoted. For example, `codex_app.android_observe`
-remains a normal dynamic tool. Browser MCP tools likewise remain ordinary MCP
-tools and are not promoted by the native computer-use registry.
+Android and Browser MCP tools remain ordinary MCP tools and are not promoted
+by the native computer-use registry. Namespaced tools are also not promoted.
 
-Observe tools are treated as non-mutating. Step and install tools are treated
-as mutating. Android install receives a longer response timeout than ordinary
-observe/step calls because it may need to download an artifact, install an APK,
-launch it, and verify foreground state.
+Desktop observe tools are treated as non-mutating and Desktop step tools as
+mutating. The former Android install timeout policy is historical; Android MCP
+servers manage their own operation timeouts.
 
 ## Provider Capability and Manifest Integration
 
 Runtime providers advertise support by adding dynamic tools to the thread.
 `DynamicToolSpec` carries optional capability metadata:
 
-- `family`, such as `android` or `desktop`
+- `family`, such as `desktop` (or a value supplied by an ordinary MCP tool)
 - `capabilityScope`, such as `environment`
 - `mutationClass`, such as `mutating`
 - `leaseMode`, such as `exclusive_write`
@@ -454,8 +456,8 @@ names are selected.
 When capability metadata is present, app-server validates and forwards it as
 part of the dynamic tool contract. That metadata describes runtime capability;
 it does not replace the Codex-owned native schema or transcript behavior for
-bare `android_observe`, `android_step`, `android_install_build_from_run`,
-`desktop_observe`, or `desktop_step`.
+bare `desktop_observe` or `desktop_step`. Android tool names are no longer
+promoted.
 
 Deferred tool search also treats bare native dynamic tools as computer-use
 candidates, so deferred discovery loads the canonical Codex tool definition
@@ -464,8 +466,7 @@ rather than the provider's raw dynamic schema.
 ## Runtime Flow
 
 1. A thread is started, resumed, or forked with `dynamicTools` containing bare
-   native computer-use tools such as `android_observe`, `android_step`,
-   `android_install_build_from_run`, `desktop_observe`, or `desktop_step`.
+   native Desktop tools such as `desktop_observe` or `desktop_step`.
 2. The tool registry promotes those names to canonical Codex function tools and
    registers `ToolHandlerKind::ComputerUse`.
 3. When the model calls one of those tools, `codex-core` emits a
@@ -479,11 +480,9 @@ rather than the provider's raw dynamic schema.
    observations, screenshots or browser viewports should be returned as
    `inputImage` data URLs or another Codex-supported image reference, not as
    model-facing local artifact paths.
-   When the Android provider is reached through an MCP-style `tools/call`
-   bridge, Codex treats `structuredContent` and `content[]` as complementary:
-   `structuredContent` supplies state, artifacts, and UI digests, while
-   `content[]` image entries supply the model-visible pixels. A provider must
-   not rely on `structuredContent` alone for visual computer-use output.
+   Android providers using ordinary MCP should return MCP image content when
+   model-visible pixels are required. Their provider-specific state and
+   artifact contract remains outside the retired Codex Android adapter.
 6. Codex submits the response back into the active turn, emits
    `ComputerUseCallResponse`, and passes the resulting content to the model as
    function-call output.
@@ -530,19 +529,18 @@ events. Thread reads and resumed sessions therefore do not reconstruct earlier
 `ThreadItem::ComputerUseCall` items. The TUI renders live computer-use cells,
 including fallback messaging when the active TUI session has no native
 computer-use provider for the request. Completed calls use adapter-specific
-transcript labels such as `Used computer` or `Used Android emulator`; in-flight
+transcript labels such as `Used computer`; in-flight
 calls use the matching `Using ...` label. The visible
 transcript summarizes text output and records native screenshots as `<native
 screenshot>` without embedding screenshot data into transcript text.
 
-For CLI/TUI sessions, configured local Android and desktop providers advertise
-the bare native dynamic tools at thread start, resume, and fork time.
-Android configuration advertises `android_observe`, `android_step`, and
-`android_install_build_from_run`; desktop command-provider configuration
-advertises `desktop_observe` and `desktop_step`. The advertised tools are
-session-scoped and are not persisted blindly across resumes; each new CLI or
-TUI session re-checks local provider configuration before exposing native
-computer use to the model.
+For TUI sessions, configured local Desktop providers advertise the bare native
+dynamic tools at thread start, resume, and fork time. Desktop command-provider
+configuration advertises `desktop_observe` and `desktop_step`. The advertised
+tools are session-scoped and are not persisted blindly across resumes; each
+new TUI session re-checks local provider configuration before exposing native
+computer use to the model. This native advertisement is a TUI feature; exec
+does not advertise a native provider.
 Thread-spawned agents inherit the parent thread's advertised dynamic tools for
 the remaining native adapters. Browser MCP tools remain ordinary MCP tools and
 follow the MCP server's own connection and profile-isolation behavior.
@@ -566,7 +564,7 @@ tool-runtime start and end boundaries:
 - Successful responses map to completed execution status.
 - Failed responses map to failed execution status.
 
-This keeps native Android calls visible in the same trace vocabulary as exec,
+This keeps native Desktop calls visible in the same trace vocabulary as exec,
 patch, MCP, and collaboration tool runtimes without adding separate core hooks.
 
 ## Validation
@@ -611,14 +609,13 @@ The focused lanes are:
 - `codex.tui-native-computer-use-targeted`: native request/response events
   render as transcript-visible computer-use cells and can be inserted into the
   live `Ctrl+T` transcript overlay.
-- `codex.exec-native-computer-use-targeted`: configured Android
-  dynamic-tool advertisement, provider request handling, and compact
-  computer-use event projection in `codex exec`.
-- `codex.native-computer-use-tool-registry-targeted`: canonical Android and
-  desktop schema conversion, adapter classification, duplicate handling,
+- `codex.exec-native-computer-use-targeted`: the `codex exec` boundary for
+  retired native providers; ordinary MCP tools remain on the MCP path.
+- `codex.native-computer-use-tool-registry-targeted`: canonical Desktop
+  schema conversion, adapter classification, duplicate handling,
   deferred tool search, and core timeout cleanup.
 - `codex.native-computer-use-doctor-targeted`: `codex doctor` reporting for
-  Android and desktop provider configuration.
+  Desktop provider configuration.
 - `codex.app-server-protocol-test`: protocol schema and thread-history
   projection coverage.
 - Hosted CodeQL Rust contract checks cover native-image guard dominance,
@@ -639,16 +636,15 @@ just native-computer-use-tool-registry-targeted
 just native-computer-use-doctor-targeted
 ```
 
-Browser MCP runtime behavior is validated by its configured server and the
-consumer that owns its configuration. The Codex computer-use lanes cover the
-remaining Android/Desktop native adapters and ordinary MCP image plumbing.
+Browser and Android MCP runtime behavior is validated by each configured
+server and its consumer. The Codex computer-use lanes cover the Desktop native
+adapter and ordinary MCP image plumbing.
 
 ## Primary Files
 
 - `codex-rs/protocol/src/computer_use.rs`
 - `codex-rs/protocol/src/protocol.rs`
 - `codex-rs/protocol/src/dynamic_tools.rs`
-- `codex-rs/tools/src/android_tool.rs`
 - `codex-rs/tools/src/computer_use_tool.rs`
 - `codex-rs/tools/src/desktop_tool.rs`
 - `codex-rs/core/src/tools/handlers/computer_use.rs`
@@ -659,8 +655,6 @@ remaining Android/Desktop native adapters and ordinary MCP image plumbing.
 - `codex-rs/app-server-protocol/src/protocol/common.rs`
 - `codex-rs/app-server-protocol/src/protocol/v2/item.rs`
 - `codex-rs/app-server-protocol/src/protocol/thread_history.rs`
-- `codex-rs/android-computer-use/src/lib.rs`
-- `codex-rs/tui/src/android_computer_use_provider.rs`
 - `codex-rs/tui/src/computer_use_provider.rs`
 - `codex-rs/tui/src/desktop_computer_use_provider.rs`
 - `codex-rs/exec/src/lib.rs`
@@ -672,7 +666,6 @@ remaining Android/Desktop native adapters and ordinary MCP image plumbing.
 - `codex-rs/rollout/src/policy.rs`
 - `codex-rs/rollout-trace/src/protocol_event.rs`
 - `codex-rs/app-server/tests/suite/v2/computer_use.rs`
-- `codex-rs/tools/src/android_tool_tests.rs`
 - `codex-rs/tools/src/computer_use_tool_tests.rs`
 - `codex-rs/tools/src/desktop_tool_tests.rs`
 - `.github/validation-lanes.json`
