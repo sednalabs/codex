@@ -2627,10 +2627,17 @@ async fn guardian_review_retries_transient_failure_then_approves(
     assert_eq!(assessment.outcome, GuardianAssessmentOutcome::Allow);
     assert_eq!(assessment.rationale, "retry succeeded");
     assert_eq!(metadata.attempt_count, expected_review_attempts);
-    assert!(matches!(
-        metadata.guardian_session_kind,
-        Some(codex_analytics::GuardianReviewSessionKind::TrunkReused)
-    ));
+    if expected_review_attempts == 1 {
+        assert!(matches!(
+            metadata.guardian_session_kind,
+            Some(codex_analytics::GuardianReviewSessionKind::TrunkNew)
+        ));
+    } else {
+        assert!(matches!(
+            metadata.guardian_session_kind,
+            Some(codex_analytics::GuardianReviewSessionKind::TrunkReused)
+        ));
+    }
     assert_eq!(request_log.requests().len(), 2);
     Ok(())
 }
