@@ -4,6 +4,7 @@ use std::sync::Arc;
 use std::time::Instant;
 
 use crate::Prompt;
+use crate::capacity_retry::wait_for_capacity;
 use crate::client::ModelClientSession;
 use crate::client_common::ResponseEvent;
 use crate::compact_pending_input::is_retained_pending_mail;
@@ -293,6 +294,7 @@ async fn run_compact_task_inner_impl(
 
     let max_retries = turn_context.provider.info().stream_max_retries();
     let mut retries = 0;
+    let mut capacity_retries: u64 = 0;
     // Reuse one client session so turn-scoped state (sticky routing and websocket incremental
     // request tracking) survives retries within this compact turn.
     let mut client_session = sess.services.model_client.new_session();
@@ -343,6 +345,10 @@ async fn run_compact_task_inner_impl(
         match attempt_result {
             Ok(response) => {
                 break response;
+            }
+            Err(err) if matches!(err.details(), CodexErrorDetails::ServerOverloaded) => {
+                capacity_retries = capacity_retries.saturating_add(1);
+                wait_for_capacity(&sess, &turn_context, err, capacity_retries, "compaction").await;
             }
             Err(e) if matches!(e.details(), CodexErrorDetails::ContextWindowExceeded) => {
                 if turn_input_len > 1 {

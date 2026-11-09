@@ -12,6 +12,7 @@ use crate::agent::api::SendRequest;
 use crate::agent::child_config::build_agent_resume_config;
 use crate::agent::types::MessageDeliveryMode;
 use crate::tools::context::FunctionToolOutput;
+use codex_protocol::protocol::AgentMessageIntent;
 
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -19,6 +20,8 @@ use crate::tools::context::FunctionToolOutput;
 pub(crate) struct SendMessageArgs {
     pub(crate) target: String,
     pub(crate) message: String,
+    #[serde(default)]
+    pub(crate) intent: Option<AgentMessageIntent>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -44,6 +47,7 @@ pub(super) async fn handle_message_string_tool(
     mode: MessageDeliveryMode,
     target: String,
     message: String,
+    intent: Option<AgentMessageIntent>,
     analytics: &mut ToolCallAnalytics,
 ) -> Result<FunctionToolOutput, FunctionCallError> {
     let message = message_content(message)?;
@@ -68,6 +72,7 @@ pub(super) async fn handle_message_string_tool(
             input: AgentInput::Message {
                 message: agent_message_from_tool(message, &source),
                 mode,
+                intent,
             },
             start_options: TurnStartOptions {
                 parent_turn_id: (mode == MessageDeliveryMode::TriggerTurn)

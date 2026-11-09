@@ -1,11 +1,17 @@
 use super::*;
+use crate::agent::api::AgentControl;
+use crate::agent::status::is_final;
+use crate::session::InputQueueActivity;
 use crate::thread_input::InputWaitOutcome as WaitOutcome;
-use crate::thread_input::subscribe_input_activity;
-use crate::thread_input::wait_for_activity;
 use crate::tools::handlers::multi_agents_spec::WaitAgentTimeoutOptions;
 use crate::tools::handlers::multi_agents_spec::create_wait_agent_tool_v2;
+use codex_protocol::ThreadId;
 use codex_tools::ToolSpec;
+use futures::StreamExt;
+use futures::stream::FuturesUnordered;
 use std::collections::HashMap;
+use std::collections::HashSet;
+use std::sync::Arc;
 use std::time::Duration;
 use tokio::time::Instant;
 
@@ -65,8 +71,18 @@ impl Handler {
             None => default_timeout_ms,
         };
 
-        let (activity_rx, pending_activity) =
-            subscribe_input_activity(&session, &turn.sub_id).await;
+        let mut receiver_thread_ids = Vec::with_capacity(args.targets.len());
+        let mut seen = HashSet::new();
+        for target in &args.targets {
+            let id = resolve_agent_target(&session, &turn, target).await?;
+            if !seen.insert(id) {
+                return Err(FunctionCallError::RespondToModel(
+                    "targets must resolve to unique agents".to_string(),
+                ));
+            }
+            receiver_thread_ids.push(id);
+        }
+        let activity_rx = session.input_queue.subscribe_wait_updates();
 
         session
             .emit_turn_item_started(
@@ -76,7 +92,7 @@ impl Handler {
                     tool: CollabAgentTool::Wait,
                     status: CollabAgentToolCallStatus::InProgress,
                     sender_thread_id: session.thread_id,
-                    receiver_thread_ids: Vec::new(),
+                    receiver_thread_ids: receiver_thread_ids.clone(),
                     receiver_agents: Vec::new(),
                     prompt: None,
                     model: None,
@@ -89,10 +105,16 @@ impl Handler {
         let wait_started = Instant::now();
         let outcome = tokio::time::timeout(
             Duration::from_millis(timeout_ms as u64),
-            wait_for_activity(activity_rx, pending_activity),
+            wait_for_actionable_activity(
+                &session,
+                &turn.sub_id,
+                activity_rx,
+                &receiver_thread_ids,
+                args.return_when,
+            ),
         )
         .await
-        .unwrap_or(WaitOutcome::TimedOut);
+        .unwrap_or(Ok(WaitOutcome::TimedOut))?;
         // A completed wait may wake for a message, user input, or its timeout.
         // Dropped waits do not have an observed outcome and are not included.
         turn.session_telemetry.record_duration(
@@ -117,7 +139,7 @@ impl Handler {
                     tool: CollabAgentTool::Wait,
                     status: CollabAgentToolCallStatus::Completed,
                     sender_thread_id: session.thread_id,
-                    receiver_thread_ids: Vec::new(),
+                    receiver_thread_ids,
                     receiver_agents: Vec::new(),
                     prompt: None,
                     model: None,
@@ -140,7 +162,84 @@ impl CoreToolRuntime for Handler {
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct WaitArgs {
+    #[serde(default)]
+    targets: Vec<String>,
     timeout_ms: Option<i64>,
+    #[serde(default)]
+    return_when: ReturnWhen,
+}
+
+#[derive(Clone, Copy, Debug, Default, Deserialize)]
+#[serde(rename_all = "snake_case")]
+enum ReturnWhen {
+    #[default]
+    Any,
+    All,
+}
+
+async fn wait_for_target_completion(
+    control: Arc<dyn AgentControl>,
+    id: ThreadId,
+) -> Result<ThreadId, FunctionCallError> {
+    let mut updates = control.subscribe_status(id).await.map_err(|error| {
+        FunctionCallError::RespondToModel(format!("cannot observe target {id}: {error}"))
+    })?;
+    while let Some(update) = updates.next().await {
+        let update = update.map_err(|error| {
+            FunctionCallError::RespondToModel(format!("cannot observe target {id}: {error}"))
+        })?;
+        if update.status().is_some_and(is_final) {
+            return Ok(id);
+        }
+    }
+    Err(FunctionCallError::RespondToModel(format!(
+        "status observation ended for target {id}"
+    )))
+}
+
+async fn wait_for_actionable_activity(
+    session: &Arc<crate::session::session::Session>,
+    turn_id: &str,
+    mut activity: tokio::sync::watch::Receiver<InputQueueActivity>,
+    targets: &[ThreadId],
+    return_when: ReturnWhen,
+) -> Result<WaitOutcome, FunctionCallError> {
+    let mut completions = FuturesUnordered::new();
+    for id in targets {
+        completions.push(wait_for_target_completion(
+            Arc::clone(&session.services.agent_control),
+            *id,
+        ));
+    }
+    let mut completed = HashSet::new();
+    loop {
+        if let Some(activity) = session
+            .input_queue
+            .actionable_wait_activity(&session.active_turn, turn_id, !targets.is_empty())
+            .await
+        {
+            return Ok(match activity {
+                InputQueueActivity::Mailbox => WaitOutcome::MailboxActivity,
+                InputQueueActivity::Steer => WaitOutcome::Steered,
+            });
+        }
+        tokio::select! {
+            result = completions.next(), if !completions.is_empty() => {
+                if let Some(result) = result {
+                    completed.insert(result?);
+                    if matches!(return_when, ReturnWhen::Any) || completed.len() == targets.len() {
+                        return Ok(WaitOutcome::MailboxActivity);
+                    }
+                }
+            }
+            changed = activity.changed() => {
+                if changed.is_err() {
+                    return Ok(WaitOutcome::TimedOut);
+                }
+                activity.borrow_and_update();
+            }
+        }
+    }
 }
 
 #[derive(Debug, Deserialize, Serialize, PartialEq, Eq)]

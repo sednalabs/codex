@@ -1182,6 +1182,7 @@ async fn cancelled_v2_send_finishes_reload_registration() {
         input: AgentInput::Message {
             message: AgentMessage::Plaintext(message.to_string()),
             mode: MessageDeliveryMode::TriggerTurn,
+            intent: None,
         },
         start_options: Default::default(),
     };
@@ -1851,6 +1852,7 @@ async fn cold_resume_with_thread_instructions_preserves_lazy_v2_child_inheritanc
                 input: crate::AgentInput::Message {
                     message: AgentMessage::Plaintext("hello after resume".to_string()),
                     mode: MessageDeliveryMode::QueueOnly,
+                    intent: None,
                 },
                 start_options: TurnStartOptions {
                     root_turn_id: turn.turn_metadata_state.root_turn_id(),
@@ -2000,6 +2002,7 @@ async fn v2_reload_preserves_shared_instructions_after_root_unloads(
             input: crate::AgentInput::Message {
                 message: AgentMessage::Plaintext("wake the unloaded target".to_string()),
                 mode: MessageDeliveryMode::QueueOnly,
+                intent: None,
             },
             start_options: TurnStartOptions {
                 root_turn_id: sender_turn.turn_metadata_state.root_turn_id(),
@@ -2172,6 +2175,7 @@ async fn v2_spawn_resolves_reported_effort_without_changing_child_selection(
             input: AgentInput::Message {
                 message: AgentMessage::Plaintext("child task".to_string()),
                 mode: MessageDeliveryMode::TriggerTurn,
+                intent: None,
             },
             source,
             options: SpawnAgentOptions {
