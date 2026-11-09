@@ -17,6 +17,7 @@ UPSTREAM_MIGRATIONS = HERE.parent.parent / "migrations"
 SEDNA = json.loads((HERE / "w14939-sedna-migrations.json").read_text())
 SOURCES = {name: json.loads((HERE / f"w14939-{name}-migrations.json").read_text())
            for name in ("oci-source", "workstation-source")}
+THREAD_HISTORY = json.loads((HERE / "w14939-thread-history-migrations.json").read_text())
 
 
 def entries(source):
@@ -83,6 +84,32 @@ class MigrationHistories(unittest.TestCase):
                 self.assertEqual(by_version[39]["filename"], "0039_threads_recency_at.sql")
                 self.assertEqual(by_version[45]["filename"], "0045_threads_section.sql")
                 self.assertTrue(by_version[45]["sha384"].startswith("a7fadc8c"))
+
+    def test_recorded_thread_history_schemas_and_rows_survive_migrations(self):
+        self.assertEqual(THREAD_HISTORY["source_commits"], [
+            "1dea691446732a0ab03836f40f932387d9b1e087",
+            "e03a40398272ee4b0e6cdb694e390498c86ac7d9",
+        ])
+        entries = THREAD_HISTORY["migrations"]
+        self.assertEqual(len(entries), 8)
+        for entry in entries:
+            sql = entry["sql"].encode()
+            self.assertEqual(hashlib.sha384(sql).hexdigest(), entry["sha384"])
+            self.assertEqual(sql, (HERE.parent.parent / "thread_history_migrations" / entry["filename"]).read_bytes())
+        for through in (4, 8):
+            with self.subTest(through=through):
+                db = sqlite3.connect(":memory:")
+                for entry in entries[:through]:
+                    db.executescript(entry["sql"])
+                db.execute("INSERT INTO thread_turns (thread_id, turn_id, rollout_ordinal, status) VALUES ('synthetic-thread', 'turn-1', 10, 'completed')")
+                db.execute("INSERT INTO thread_items (thread_id, turn_id, item_id, rollout_ordinal, updated_at_ordinal, created_at_ms, item_type, item_json) VALUES ('synthetic-thread', 'turn-1', 'item-1', 11, 11, 1000, 'userMessage', '{\"text\":\"preserve-me\"}')")
+                db.execute("INSERT INTO thread_history_projection_state VALUES ('synthetic-thread', 200, 12)")
+                for entry in entries[through:]:
+                    db.executescript(entry["sql"])
+                self.assertEqual(db.execute("SELECT turn_id, status FROM thread_turns").fetchone(), ("turn-1", "completed"))
+                self.assertEqual(db.execute("SELECT item_id, item_json FROM thread_items").fetchone(), ("item-1", '{"text":"preserve-me"}'))
+                self.assertEqual(db.execute("SELECT next_rollout_byte_offset, next_rollout_ordinal FROM thread_history_projection_state").fetchone(), (200, 12))
+                db.close()
 
     def test_collision_histories_and_schema_effects(self):
         self.assertEqual(SEDNA["source_commit"], "97f6c6b811cbda5aa618356e6761c541da2b5032")
