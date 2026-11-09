@@ -12,7 +12,7 @@
 
 use crate::DbTelemetry;
 use crate::migrations::repair_legacy_recency_migration_version;
-use crate::migrations::validate_state_migration_identities;
+use crate::migrations::validate_migration_identities;
 use crate::runtime::recovery::RuntimeDbInitError;
 use crate::telemetry;
 use crate::telemetry::DbKind;
@@ -417,9 +417,22 @@ impl SqliteConfig {
             // A current schema needs only a read lock, including when opened on NFS.
             retry_on_busy(|| async {
                 let mut transaction = pool.begin().await?;
-                if matches!(spec.kind, DbKind::State) {
-                    validate_state_migration_identities(&mut transaction, migrator).await?;
-                    repair_legacy_recency_migration_version(&mut transaction, migrator).await?;
+                match spec.kind {
+                    DbKind::State => {
+                        validate_migration_identities(&mut transaction, migrator, "state", true)
+                            .await?;
+                        repair_legacy_recency_migration_version(&mut transaction, migrator).await?;
+                    }
+                    DbKind::ThreadHistory => {
+                        validate_migration_identities(
+                            &mut transaction,
+                            migrator,
+                            "thread history",
+                            false,
+                        )
+                        .await?;
+                    }
+                    _ => {}
                 }
                 if let Err(error) = migrator
                     .run_direct(/*target*/ None, &mut *transaction, /*skip*/ false)

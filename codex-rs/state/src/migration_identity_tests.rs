@@ -1,4 +1,5 @@
 use super::STATE_MIGRATOR;
+use super::THREAD_HISTORY_MIGRATOR;
 use codex_utils_absolute_path::test_support::PathExt;
 use pretty_assertions::assert_eq;
 use serde_json::Value;
@@ -8,6 +9,67 @@ use sqlx::migrate::Migrator;
 
 type Ledger = Vec<(i64, String, bool, Vec<u8>, i64)>;
 type Schema = Vec<(String, String, Option<String>)>;
+
+#[tokio::test]
+async fn thread_history_prefixes_upgrade_and_unknown_identities_fail_closed() {
+    for through in [4_i64, 8] {
+        let home = tempfile::TempDir::new().unwrap();
+        let sqlite = crate::SqliteConfig::new_for_testing(home.path().abs());
+        let prefix = Migrator::with_migrations(
+            THREAD_HISTORY_MIGRATOR
+                .migrations
+                .iter()
+                .filter(|migration| migration.version <= through)
+                .cloned()
+                .collect(),
+        );
+        let pool = sqlite
+            .open_thread_history_db(&prefix, /*telemetry_override*/ None)
+            .await
+            .unwrap();
+        sqlx::query("INSERT INTO thread_turns (thread_id, turn_id, rollout_ordinal, status) VALUES ('synthetic-thread', 'turn-1', 10, 'completed')")
+            .execute(&pool).await.unwrap();
+        sqlx::query("INSERT INTO thread_items (thread_id, turn_id, item_id, rollout_ordinal, created_at_ms, item_type, item_json) VALUES ('synthetic-thread', 'turn-1', 'item-1', 11, 1000, 'userMessage', '{\"text\":\"preserve-me\"}')")
+            .execute(&pool).await.unwrap();
+        pool.close().await;
+
+        let pool = sqlite
+            .open_thread_history_db(&THREAD_HISTORY_MIGRATOR, /*telemetry_override*/ None)
+            .await
+            .unwrap();
+        let witness: String =
+            sqlx::query_scalar("SELECT item_json FROM thread_items WHERE item_id = 'item-1'")
+                .fetch_one(&pool)
+                .await
+                .unwrap();
+        assert_eq!(witness, "{\"text\":\"preserve-me\"}");
+        sqlx::query("INSERT INTO _sqlx_migrations (version, description, success, checksum, execution_time) VALUES (9999, 'unknown', 1, x'01', 0)")
+            .execute(&pool).await.unwrap();
+        let before: Ledger = sqlx::query_as("SELECT version, description, success, checksum, execution_time FROM _sqlx_migrations ORDER BY version")
+            .fetch_all(&pool).await.unwrap();
+        pool.close().await;
+
+        let error = sqlite
+            .open_thread_history_db(&THREAD_HISTORY_MIGRATOR, /*telemetry_override*/ None)
+            .await
+            .unwrap_err();
+        assert!(format!("{error:#}").contains("thread history migration history at version 9999"));
+        let pool = sqlite
+            .open_read_write_pool(&sqlite.thread_history_db_path())
+            .await
+            .unwrap();
+        let after: Ledger = sqlx::query_as("SELECT version, description, success, checksum, execution_time FROM _sqlx_migrations ORDER BY version")
+            .fetch_all(&pool).await.unwrap();
+        assert_eq!(after, before);
+        let witness: String =
+            sqlx::query_scalar("SELECT item_json FROM thread_items WHERE item_id = 'item-1'")
+                .fetch_one(&pool)
+                .await
+                .unwrap();
+        assert_eq!(witness, "{\"text\":\"preserve-me\"}");
+        pool.close().await;
+    }
+}
 
 async fn snapshot(pool: &SqlitePool) -> (Ledger, Schema, String) {
     let ledger = sqlx::query_as("SELECT version, description, success, checksum, execution_time FROM _sqlx_migrations ORDER BY version")
