@@ -346,9 +346,10 @@ keyring = { version = "3.6", default-features = false }
 landlock = "0.4.7"
 lazy_static = "1"
 libc = "0.2.182"
-# Keep SQLx's bundled SQLite on a version containing the WAL-reset corruption fix:
+# Keep bundled SQLite past the WAL-reset fix and RUSTSEC-2026-0459.
 # https://www.sqlite.org/wal.html#the_wal_reset_bug
-libsqlite3-sys = { version = "0.37", default-features = false }
+# https://rustsec.org/advisories/RUSTSEC-2026-0459.html
+libsqlite3-sys = { version = "0.39", default-features = false }
 log = "0.4"
 lru = "0.16.3"
 maplit = "1.0.2"
@@ -416,17 +417,6 @@ symphonia = { version = "0.6.0", default-features = false, features = [
     "wav",
 ] }
 socket2 = "0.6.1"
-sqlx = { version = "0.9.0", default-features = false, features = [
-    "chrono",
-    "json",
-    "macros",
-    "migrate",
-    "runtime-tokio",
-    "tls-rustls",
-    "sqlite-bundled",
-    "time",
-    "uuid",
-] }
 starlark = { version = "0.14.2", default-features = false }
 strum = "0.28.0"
 strum_macros = "0.28.0"
@@ -491,6 +481,27 @@ zstd = "0.13.4"
 
 wiremock = "0.6"
 zeroize = "1.8.2"
+
+# TEMPORARY SECURITY PIN: released SQLx 0.9.0 caps libsqlite3-sys below 0.38.0.
+# Upstream PR #4502 permits patched 0.39.x; remove this pin when the first
+# released SQLx 0.9.x contains that fix.
+# https://github.com/transact-rs/sqlx/commit/10462fa4414c6c7f1ed1d39bb31678e3b726878c
+[workspace.dependencies.sqlx]
+version = "0.9.0"
+git = "https://github.com/transact-rs/sqlx"
+rev = "10462fa4414c6c7f1ed1d39bb31678e3b726878c"
+default-features = false
+features = [
+    "chrono",
+    "json",
+    "macros",
+    "migrate",
+    "runtime-tokio",
+    "tls-rustls",
+    "sqlite-bundled",
+    "time",
+    "uuid",
+]
 
 [workspace.lints]
 rust = {}
