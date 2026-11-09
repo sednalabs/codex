@@ -2967,7 +2967,6 @@ dependencies = [
  "codex-otel",
  "codex-protocol",
  "codex-runtime-proof",
- "codex-tools",
  "codex-utils-absolute-path",
  "codex-utils-cargo-bin",
  "codex-utils-cli",
