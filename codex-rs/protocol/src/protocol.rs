@@ -1096,6 +1096,7 @@ impl InterAgentCommunication {
         let mut communication = self.clone();
         communication.id = None;
         communication.internal_chat_message_metadata_passthrough = None;
+        communication.origin = None;
         ResponseInputItem::Message {
             role: "assistant".to_string(),
             content: vec![ContentItem::OutputText {
@@ -5191,13 +5192,14 @@ mod tests {
             encrypted_content: None,
             internal_chat_message_metadata_passthrough: None,
             trigger_turn: true,
-            intent: None,
-            origin: None,
+            intent: Some(AgentMessageIntent::ResultReady),
+            origin: Some(AgentCommunicationOrigin::Result),
         };
         communication.set_turn_id_if_missing("turn-1");
         let mut serialized_communication = communication.clone();
         serialized_communication.id = None;
         serialized_communication.internal_chat_message_metadata_passthrough = None;
+        serialized_communication.origin = None;
 
         assert_eq!(
             communication.to_response_input_item(),

@@ -43,6 +43,7 @@ pub async fn perform_oauth_device_login(
     http_headers: Option<HashMap<String, String>>,
     env_http_headers: Option<HashMap<String, String>>,
     scopes: &[String],
+    use_metadata_scopes: bool,
     client_id: Option<&str>,
     resource: Option<&str>,
     http_client: Arc<dyn HttpClient>,
@@ -62,6 +63,21 @@ pub async fn perform_oauth_device_login(
         )?,
     );
     let metadata = discover_device_metadata(server_url, client.clone()).await?;
+    let discovered_scopes = if use_metadata_scopes && scopes.is_empty() {
+        metadata.scopes_supported.as_ref().map(|values| {
+            let mut normalized = Vec::new();
+            for value in values {
+                let value = value.trim();
+                if !value.is_empty() && !normalized.iter().any(|existing| existing == value) {
+                    normalized.push(value.to_string());
+                }
+            }
+            normalized
+        })
+    } else {
+        None
+    };
+    let scopes = discovered_scopes.as_deref().unwrap_or(scopes);
     let client_id = match client_id.map(str::trim).filter(|s| !s.is_empty()) {
         Some(id) => id.to_string(),
         None => {
@@ -300,11 +316,14 @@ fn prompt(details: &DeviceCode, show: &mut impl FnMut(DeviceAuthorizationPrompt)
     {
         bail!("invalid device verification URI");
     }
-    if details.device_code.is_empty() || details.user_code.is_empty() {
-        bail!("device authorization response has an empty code");
+    if details.device_code.is_empty()
+        || details.user_code.is_empty()
+        || details.user_code.chars().any(char::is_control)
+    {
+        bail!("device authorization response has an invalid code");
     }
     show(DeviceAuthorizationPrompt {
-        verification_uri: uri.clone(),
+        verification_uri: parsed.to_string(),
         user_code: details.user_code.clone(),
     });
     Ok(())
