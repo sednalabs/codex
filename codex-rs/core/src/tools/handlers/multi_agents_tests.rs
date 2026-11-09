@@ -3083,6 +3083,77 @@ async fn multi_agent_v2_wait_agent_accepts_timeout_only_argument() {
 }
 
 #[tokio::test]
+async fn multi_agent_v2_native_wait_renews_until_actionable_mail() {
+    let (session, mut turn) = make_session_and_context().await;
+    let mut config = (*turn.config).clone();
+    config.features.enable(Feature::MultiAgentV2).unwrap();
+    config.multi_agent_v2.min_wait_timeout_ms = 10;
+    config.multi_agent_v2.max_wait_timeout_ms = 1_000;
+    config.multi_agent_v2.default_wait_timeout_ms = 10;
+    set_turn_config(&mut turn, config);
+    let session = Arc::new(session);
+    let turn = Arc::new(turn);
+    let mut waiting = tokio::spawn({
+        let session = session.clone();
+        let turn = turn.clone();
+        async move {
+            WaitAgentHandlerV2::default()
+                .handle(invocation(
+                    session,
+                    turn,
+                    "wait_agent",
+                    function_payload(json!({"native_event_wait": true, "timeout_ms": 10})),
+                ))
+                .await
+        }
+    });
+    let author = AgentPath::root().join("worker").unwrap();
+    session
+        .input_queue
+        .enqueue_mailbox_communication(
+            InterAgentCommunication::new(
+                author.clone(),
+                AgentPath::root(),
+                Vec::new(),
+                "progress".into(),
+                false,
+            )
+            .into(),
+            Default::default(),
+        )
+        .await;
+    assert!(
+        timeout(Duration::from_millis(60), &mut waiting)
+            .await
+            .is_err()
+    );
+    session
+        .input_queue
+        .enqueue_mailbox_communication(
+            actionable_communication(
+                author,
+                AgentPath::root(),
+                Vec::new(),
+                "decision".into(),
+                false,
+            )
+            .into(),
+            Default::default(),
+        )
+        .await;
+    let output = timeout(Duration::from_secs(2), waiting)
+        .await
+        .unwrap()
+        .unwrap()
+        .unwrap();
+    let (content, _) = expect_text_output(output);
+    let result: crate::tools::handlers::multi_agents_v2::wait::WaitAgentResult =
+        serde_json::from_str(&content).unwrap();
+    assert!(!result.timed_out);
+    assert_eq!(session.input_queue.drain_mailbox().await.len(), 2);
+}
+
+#[tokio::test]
 async fn multi_agent_v2_targeted_all_wait_ignores_other_completions() {
     use codex_protocol::protocol::AgentCommunicationOrigin;
     use codex_protocol::protocol::AgentMessageIntent;

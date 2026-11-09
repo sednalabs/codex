@@ -347,6 +347,7 @@ fn wait_agent_tool_v2_accepts_targeted_waits() {
         .expect("wait_agent should use object params");
     assert!(properties.contains_key("targets"));
     assert!(properties.contains_key("return_when"));
+    assert!(properties.contains_key("native_event_wait"));
     assert!(properties.contains_key("timeout_ms"));
     assert!(description.contains("Progress mail remains queued"));
     assert_eq!(

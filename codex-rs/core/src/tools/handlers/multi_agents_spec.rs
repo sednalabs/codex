@@ -944,6 +944,13 @@ fn wait_agent_tool_parameters_v2(options: WaitAgentTimeoutOptions) -> JsonSchema
             ),
         ),
         (
+            "native_event_wait".to_string(),
+            JsonSchema::boolean(Some(
+                "Keep waiting across internal timeout leases until actionable input or completion."
+                    .to_string(),
+            )),
+        ),
+        (
             "timeout_ms".to_string(),
             JsonSchema::number(Some(format!(
                 "Timeout in milliseconds. Defaults to {}, min {}, max {}.",
