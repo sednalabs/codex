@@ -11,13 +11,13 @@ use codex_config::types::AuthKeyringBackendKind;
 use codex_config::types::OAuthCredentialsStoreMode;
 use codex_exec_server::HttpClient;
 use oauth2::PkceCodeChallenge;
-use rmcp::transport::auth::OAuthHttpRedirectPolicy;
 use rmcp::transport::auth::OAuthTokenResponse;
 use serde::Deserialize;
 use serde::Serialize;
 use tokio::time::Instant;
 use url::Url;
 
+use crate::device_oauth_http::execute_same_origin;
 use crate::device_oauth_metadata::discover_device_metadata;
 use crate::http_client_adapter::StreamableHttpRedirectMode;
 use crate::oauth::StoredOAuthTokens;
@@ -197,15 +197,7 @@ async fn post(
         .uri(endpoint)
         .header("content-type", content_type)
         .body(body)?;
-    // Never follow redirects carrying a device code, verifier, or client metadata.
-    client
-        .execute_request(
-            request,
-            OAuthHttpRedirectPolicy::Stop,
-            Some(Duration::from_secs(30)),
-        )
-        .await
-        .map_err(|e| anyhow!("OAuth device HTTP request failed: {e}"))
+    execute_same_origin(client, request, Duration::from_secs(30)).await
 }
 
 fn form(items: &[(&str, String)]) -> Vec<u8> {
@@ -431,6 +423,61 @@ async fn poll_token(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test]
+    async fn device_post_follows_same_origin_redirects() {
+        use codex_exec_server::RouteAwareHttpClient;
+        use codex_http_client::HttpClientFactory;
+        use codex_http_client::OutboundProxyPolicy;
+        use wiremock::Mock;
+        use wiremock::MockServer;
+        use wiremock::ResponseTemplate;
+        use wiremock::matchers::body_string;
+        use wiremock::matchers::header;
+        use wiremock::matchers::method;
+        use wiremock::matchers::path;
+
+        let provider = MockServer::start().await;
+        let request_body = "synthetic-device-request";
+        Mock::given(method("POST"))
+            .and(path("/device"))
+            .and(header("x-api-key", "synthetic-secret"))
+            .and(body_string(request_body))
+            .respond_with(ResponseTemplate::new(307).insert_header("location", "/redirected"))
+            .expect(1)
+            .mount(&provider)
+            .await;
+        Mock::given(method("POST"))
+            .and(path("/redirected"))
+            .and(header("x-api-key", "synthetic-secret"))
+            .and(body_string(request_body))
+            .respond_with(ResponseTemplate::new(200))
+            .expect(1)
+            .mount(&provider)
+            .await;
+        let mut headers = http::HeaderMap::new();
+        headers.insert("x-api-key", "synthetic-secret".parse().unwrap());
+        let client = OAuthHttpClientAdapter::new_with_redirect_mode(
+            Arc::new(RouteAwareHttpClient::new(HttpClientFactory::new(
+                OutboundProxyPolicy::ReqwestDefault,
+            ))),
+            headers,
+            &format!("{}/mcp", provider.uri()),
+            true,
+            StreamableHttpRedirectMode::Legacy,
+        )
+        .unwrap();
+        let response = post(
+            &client,
+            &format!("{}/device", provider.uri()),
+            "application/x-www-form-urlencoded",
+            request_body.as_bytes().to_vec(),
+        )
+        .await
+        .unwrap();
+        assert_eq!(response.status(), http::StatusCode::OK);
+        provider.verify().await;
+    }
 
     #[tokio::test]
     async fn device_requests_do_not_follow_redirects_with_codes() {
