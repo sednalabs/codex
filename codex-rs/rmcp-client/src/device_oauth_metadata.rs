@@ -25,6 +25,7 @@ pub(crate) struct DeviceMetadata {
     pub device_authorization_endpoint: String,
     pub registration_endpoint: Option<String>,
     pub grant_types_supported: Option<Vec<String>>,
+    pub scopes_supported: Option<Vec<String>>,
     #[serde(default)]
     authorization_endpoint: Option<String>,
 }
@@ -187,6 +188,51 @@ mod tests {
         ));
     }
 
+    #[tokio::test]
+    async fn device_only_metadata_requires_the_exact_discovery_issuer() {
+        use codex_exec_server::RouteAwareHttpClient;
+        use codex_http_client::HttpClientFactory;
+        use codex_http_client::OutboundProxyPolicy;
+        use wiremock::Mock;
+        use wiremock::MockServer;
+        use wiremock::ResponseTemplate;
+        use wiremock::matchers::method;
+        use wiremock::matchers::path;
+        let server = MockServer::start().await;
+        let resource = format!("{}/mcp", server.uri());
+        let metadata = serde_json::json!({
+            "issuer": resource,
+            "device_authorization_endpoint": format!("{}/device", server.uri()),
+            "token_endpoint": format!("{}/token", server.uri()),
+            "grant_types_supported": [DEVICE_GRANT],
+        });
+        Mock::given(method("GET"))
+            .and(path("/.well-known/oauth-authorization-server/mcp"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(metadata))
+            .mount(&server)
+            .await;
+        let adapter = Arc::new(
+            OAuthHttpClientAdapter::new_with_redirect_mode(
+                Arc::new(RouteAwareHttpClient::new(HttpClientFactory::new(
+                    OutboundProxyPolicy::ReqwestDefault,
+                ))),
+                Default::default(),
+                &resource,
+                false,
+                crate::http_client_adapter::StreamableHttpRedirectMode::Legacy,
+            )
+            .unwrap(),
+        );
+        let metadata = discover_device_metadata(&resource, adapter)
+            .await
+            .expect("device-only metadata");
+        assert_eq!(metadata.issuer, resource);
+        assert_eq!(
+            metadata.device_authorization_endpoint,
+            format!("{}/device", server.uri())
+        );
+    }
+
     #[test]
     fn invalid_endpoints_and_unadvertised_grants_fail_closed() {
         let mut metadata = DeviceMetadata {
@@ -195,6 +241,7 @@ mod tests {
             device_authorization_endpoint: "https://example.test/device".into(),
             registration_endpoint: None,
             grant_types_supported: None,
+            scopes_supported: None,
             authorization_endpoint: None,
         };
         assert!(metadata.validate().is_ok());
