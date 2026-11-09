@@ -598,6 +598,8 @@ async fn run_login(config: &Config, login_args: LoginArgs) -> Result<()> {
     } else {
         None
     };
+    let use_device_metadata_scopes =
+        explicit_scopes.is_none() && server.scopes.is_none() && discovered_scopes.is_none();
     let resolved_scopes =
         resolve_oauth_scopes(explicit_scopes, server.scopes.clone(), discovered_scopes);
     let credential_name = server.oauth_credential_name(&name);
@@ -620,6 +622,7 @@ async fn run_login(config: &Config, login_args: LoginArgs) -> Result<()> {
             http_headers,
             env_http_headers,
             &resolved_scopes.scopes,
+            use_device_metadata_scopes,
             server.oauth_client_id(),
             server.oauth_resource.as_deref(),
             http_client,
