@@ -114,6 +114,14 @@
       "execution_argv": ["cargo", "test", "--locked", "-p", "codex-protocol", "--lib", "--", "--test-threads=1"]
     },
     {
+      "package": "codex-thread-store",
+      "target_kind": "lib",
+      "target": "",
+      "profiles": ["rust_minimal"],
+      "inventory_argv": ["cargo", "test", "--locked", "-p", "codex-thread-store", "--lib", "--", "--list"],
+      "execution_argv": ["cargo", "test", "--locked", "-p", "codex-thread-store", "--lib", "--", "--test-threads=1"]
+    },
+    {
       "package": "codex-tui",
       "target_kind": "lib",
       "target": "",
