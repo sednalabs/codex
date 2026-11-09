@@ -36,6 +36,7 @@ pub struct McpOAuthLoginConfig {
     pub env_http_headers: Option<HashMap<String, String>>,
     pub discovered_scopes: Option<Vec<String>>,
     pub callback_mode: McpOAuthCallbackMode,
+    pub device_auth_only: bool,
 }
 
 #[derive(Debug)]
@@ -116,6 +117,7 @@ pub async fn oauth_login_support(
         Ok(Some(discovery)) => {
             config.discovered_scopes = discovery.scopes_supported;
             config.callback_mode = discovery.callback_mode;
+            config.device_auth_only = discovery.device_auth_only;
             McpOAuthLoginSupport::Supported(config)
         }
         Ok(None) => McpOAuthLoginSupport::Unsupported,
@@ -143,6 +145,7 @@ fn oauth_login_candidate(transport: &McpServerTransportConfig) -> Option<McpOAut
         env_http_headers: env_http_headers.clone(),
         discovered_scopes: None,
         callback_mode: McpOAuthCallbackMode::CallbackSpecific,
+        device_auth_only: false,
     })
 }
 

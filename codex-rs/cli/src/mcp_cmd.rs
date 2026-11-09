@@ -404,8 +404,13 @@ async fn run_add(config: &Config, add_args: AddArgs) -> Result<()> {
 
     // DCR and CIMD register their callbacks during login; only an existing
     // client ID has a redirect that must be persisted with the MCP server.
+    let device_auth_only = matches!(
+        &login_support,
+        McpOAuthLoginSupport::Supported(oauth_config) if oauth_config.device_auth_only
+    );
     let callback_url = oauth_client_id
         .as_ref()
+        .filter(|_| !device_auth_only)
         .map(|_| {
             let McpServerTransportConfig::StreamableHttp { url, .. } = &transport else {
                 bail!("OAuth client IDs require a streamable HTTP MCP server");
@@ -466,6 +471,12 @@ async fn run_add(config: &Config, add_args: AddArgs) -> Result<()> {
     }
     match login_support {
         McpOAuthLoginSupport::Supported(oauth_config) => {
+            if oauth_config.device_auth_only {
+                println!(
+                    "Detected OAuth device authorization support. Run `codex mcp login --device-auth {name}` to login."
+                );
+                return Ok(());
+            }
             println!("Detected OAuth support. Starting OAuth flow…");
             let resolved_scopes = resolve_oauth_scopes(
                 /*explicit_scopes*/ None,
