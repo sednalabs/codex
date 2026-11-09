@@ -56,8 +56,9 @@ An MCP device-login draft uses upstream's routed and bounded OAuth HTTP
 adapter, issuer-bound advertised discovery, public-client registration,
 PKCE fallback, device polling and locked token storage. The rmcp-client library
 compiled locally before the refresh; the CLI and device tests have not been compiled or run locally.
-Device requests currently reject redirects, including same-origin redirects;
-device-only metadata scopes and refresh compatibility still need tests.
+Device-only discovery and the `mcp add` hint are included in a subsequent
+untested draft. Device requests currently reject redirects, including same-origin
+redirects; device-only refresh compatibility still needs assessment.
 Full session-history compatibility, hosted validation, packaging and consumer
 acceptance remain unfinished. The owner has been asked only for non-sensitive
 migration identity and schema metadata. Do not install or run this draft

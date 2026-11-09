@@ -105,7 +105,7 @@ pub(crate) async fn discover_device_metadata(
     resource: &str,
     client: Arc<OAuthHttpClientAdapter>,
 ) -> Result<DeviceMetadata> {
-    let resource_url = checked_endpoint(resource)?;
+    checked_endpoint(resource)?;
     let manager_client: Arc<dyn OAuthHttpClient> = client.clone();
     let manager =
         AuthorizationManager::new_with_oauth_http_client(resource, manager_client).await?;
@@ -119,40 +119,54 @@ pub(crate) async fn discover_device_metadata(
             Ok(discovery)
         }
         Ok(_) | Err(AuthError::NoAuthorizationSupport) => {
-            for path in discovery_paths(resource_url.path()) {
-                let mut url = resource_url.clone();
-                url.set_path(&path);
-                url.set_query(None);
-                let request = oauth2::http::Request::builder()
-                    .uri(url.as_str())
-                    .header("MCP-Protocol-Version", "2024-11-05")
-                    .body(Vec::new())?;
-                let response = match client
-                    .execute_request(
-                        request,
-                        OAuthHttpRedirectPolicy::Stop,
-                        Some(Duration::from_secs(5)),
-                    )
-                    .await
-                {
-                    Ok(response) if response.status().is_success() => response,
-                    _ => continue,
-                };
-                let metadata: DeviceMetadata = match serde_json::from_slice(response.body()) {
-                    Ok(metadata) => metadata,
-                    Err(_) => continue,
-                };
-                if metadata.authorization_endpoint.is_none()
-                    && device_only_issuer_matches(resource, &path, &metadata.issuer)
-                {
-                    metadata.validate()?;
-                    return Ok(metadata);
-                }
-            }
-            bail!("no issuer-bound OAuth device metadata was discovered")
+            discover_device_only_metadata(resource, &client)
+                .await?
+                .ok_or_else(|| {
+                    anyhow::anyhow!("no issuer-bound OAuth device metadata was discovered")
+                })
         }
         Err(error) => Err(error.into()),
     }
+}
+
+/// Narrow fallback for servers whose metadata omits the browser authorization endpoint.
+/// A missing or mismatched issuer is never treated as discovered support.
+pub(crate) async fn discover_device_only_metadata(
+    resource: &str,
+    client: &OAuthHttpClientAdapter,
+) -> Result<Option<DeviceMetadata>> {
+    let resource_url = checked_endpoint(resource)?;
+    for path in discovery_paths(resource_url.path()) {
+        let mut url = resource_url.clone();
+        url.set_path(&path);
+        url.set_query(None);
+        let request = oauth2::http::Request::builder()
+            .uri(url.as_str())
+            .header("MCP-Protocol-Version", "2024-11-05")
+            .body(Vec::new())?;
+        let response = match client
+            .execute_request(
+                request,
+                OAuthHttpRedirectPolicy::Stop,
+                Some(Duration::from_secs(5)),
+            )
+            .await
+        {
+            Ok(response) if response.status().is_success() => response,
+            _ => continue,
+        };
+        let metadata: DeviceMetadata = match serde_json::from_slice(response.body()) {
+            Ok(metadata) => metadata,
+            Err(_) => continue,
+        };
+        if metadata.authorization_endpoint.is_none()
+            && device_only_issuer_matches(resource, &path, &metadata.issuer)
+        {
+            metadata.validate()?;
+            return Ok(Some(metadata));
+        }
+    }
+    Ok(None)
 }
 
 #[cfg(test)]
