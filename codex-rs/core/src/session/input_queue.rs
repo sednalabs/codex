@@ -504,16 +504,19 @@ impl InputQueue {
             .any(|entry| entry.communication.trigger_turn)
     }
 
-    /// Returns whether a mailbox message carries an explicit action/result
-    /// signal for a native wait. This is independent of trigger-turn scheduling
-    /// and does not inspect or decrypt the message payload.
-    pub(crate) async fn has_actionable_wait_mailbox_items(&self) -> bool {
+    /// Returns whether the mailbox contains a communication eligible to wake
+    /// this native wait. This is independent of trigger-turn scheduling and
+    /// does not inspect or decrypt the message payload.
+    pub(crate) async fn has_actionable_wait_mailbox_items_for_wait(
+        &self,
+        exact_target_wait: bool,
+    ) -> bool {
         self.mailbox
             .lock()
             .await
             .entries
             .iter()
-            .any(|entry| is_actionable_wait_communication(&entry.communication))
+            .any(|entry| is_wait_eligible_communication(&entry.communication, exact_target_wait))
     }
 
     /// This predicate supports both exact-target and targetless waits.
@@ -563,9 +566,9 @@ impl InputQueue {
             }
         };
         pending_turn_input
-            || self.mailbox.lock().await.entries.iter().any(|entry| {
-                is_wait_eligible_communication(&entry.communication, exact_target_wait)
-            })
+            || self
+                .has_actionable_wait_mailbox_items_for_wait(exact_target_wait)
+                .await
     }
 
     /// Returns the activity class for input that is already pending when a
@@ -616,7 +619,10 @@ impl InputQueue {
         if pending_activity.is_some() {
             return pending_activity;
         }
-        if self.has_actionable_wait_mailbox_items().await {
+        if self
+            .has_actionable_wait_mailbox_items_for_wait(/* exact_target_wait */ false)
+            .await
+        {
             return Some(InputQueueActivity::Mailbox);
         }
         None
