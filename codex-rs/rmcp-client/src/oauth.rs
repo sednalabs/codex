@@ -876,6 +876,8 @@ struct FallbackTokenEntry {
     // Legacy host entries omit this marker, so executor lookups fail closed.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     executor_owned: bool,
+    #[serde(flatten)]
+    extra: BTreeMap<String, Value>,
 }
 
 fn load_oauth_tokens_from_file(server_name: &str, url: &str) -> Result<Option<StoredOAuthTokens>> {
@@ -963,6 +965,10 @@ fn save_oauth_tokens_to_file_with_lock_held(tokens: &StoredOAuthTokens) -> Resul
         anyhow::bail!("executor OAuth credential key conflicts with a host-owned credential");
     }
 
+    let extra = store
+        .get(&key)
+        .map(|entry| entry.extra.clone())
+        .unwrap_or_default();
     let token_response = &tokens.token_response.0;
     let expires_at = tokens
         .expires_at
@@ -984,6 +990,7 @@ fn save_oauth_tokens_to_file_with_lock_held(tokens: &StoredOAuthTokens) -> Resul
         refresh_token,
         scopes,
         executor_owned,
+        extra,
     };
 
     store.insert(key, entry);
