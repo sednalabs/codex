@@ -44,9 +44,9 @@ The mailbox draft adds optional intent and completion origin fields, keeps
 progress messages quiet during native waits, and supports targeted any/all
 completion waits. Its protocol compatibility test passed locally; the core
 implementation passed focused local queue and wait tests, including targeted
-all-completion filtering. It does not yet establish full Sedna mailbox
-compatibility, including structured receipts and all native wait and mailbox
-persistence behavior.
+all-completion filtering. A subsequent draft adds native event waits and
+lease renewal; those changes remain untested. Full Sedna mailbox compatibility,
+including structured receipts and mailbox persistence, is not established.
 
 An MCP device-login draft uses upstream's routed and bounded OAuth HTTP
 adapter, issuer-bound advertised discovery, public-client registration,
