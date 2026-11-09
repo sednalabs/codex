@@ -18,7 +18,7 @@ fn build_response() -> Response {
 // missing-image response.  Call-site name matching alone must not trust it.
 fn require_native_image_for_visual_response(_response: &mut Response, _message: &str) {}
 
-fn observe() -> ProviderResult {
+fn handle_with_provider() -> ProviderResult {
     let mut response = build_response();
     require_native_image_for_visual_response(&mut response, "missing image");
     Ok(response)

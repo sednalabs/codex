@@ -1968,22 +1968,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "codex-android-computer-use"
-version = "0.0.0"
-dependencies = [
- "base64 0.22.1",
- "codex-app-server-protocol",
- "codex-protocol",
- "codex-tools",
- "codex-utils-home-dir",
- "reqwest 0.13.4",
- "serde",
- "serde_json",
- "tempfile",
- "tokio",
-]
-
-[[package]]
 name = "codex-ansi-escape"
 version = "0.0.0"
 dependencies = [
@@ -2986,7 +2970,6 @@ dependencies = [
  "anyhow",
  "assert_cmd",
  "clap",
- "codex-android-computer-use",
  "codex-app-server-client",
  "codex-app-server-protocol",
  "codex-apply-patch",
@@ -4339,7 +4322,6 @@ dependencies = [
  "base64 0.22.1",
  "chrono",
  "clap",
- "codex-android-computer-use",
  "codex-ansi-escape",
  "codex-app-server-client",
  "codex-app-server-protocol",
