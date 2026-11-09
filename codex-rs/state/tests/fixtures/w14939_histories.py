@@ -15,11 +15,15 @@ import unittest
 HERE = Path(__file__).resolve().parent
 UPSTREAM_MIGRATIONS = HERE.parent.parent / "migrations"
 SEDNA = json.loads((HERE / "w14939-sedna-migrations.json").read_text())
+SOURCES = {name: json.loads((HERE / f"w14939-{name}-migrations.json").read_text())
+           for name in ("oci-source", "workstation-source")}
 
 
 def entries(source):
     if source == "sedna":
         return SEDNA["migrations"]
+    if source in SOURCES:
+        return SOURCES[source]["migrations"]
     return [
         {"filename": path.name, "sha384": hashlib.sha384(path.read_bytes()).hexdigest(),
          "sql": path.read_text()}
@@ -56,6 +60,30 @@ def history(source, through):
 
 
 class MigrationHistories(unittest.TestCase):
+    def test_recorded_source_lineages_are_upstream_prefixes(self):
+        expected = {
+            "oci-source": "1dea691446732a0ab03836f40f932387d9b1e087",
+            "workstation-source": "e03a40398272ee4b0e6cdb694e390498c86ac7d9",
+        }
+        for source, commit in expected.items():
+            with self.subTest(source=source):
+                self.assertEqual(SOURCES[source]["source_commit"], commit)
+                self.assertEqual(len(entries(source)), 62)
+                for through in (39, 45, 62):
+                    actual = history(source, through)
+                    upstream = history("upstream", through)
+                    query = "SELECT version, description, success, checksum FROM _sqlx_migrations ORDER BY version"
+                    self.assertEqual(actual.execute(query).fetchall(), upstream.execute(query).fetchall())
+                    schema_query = "SELECT type, name, sql FROM sqlite_master ORDER BY type, name"
+                    self.assertEqual(actual.execute(schema_query).fetchall(), upstream.execute(schema_query).fetchall())
+                    self.assertEqual(actual.execute("SELECT title FROM threads WHERE id = 'synthetic-thread'").fetchone(), ("preserve-me",))
+                    actual.close()
+                    upstream.close()
+                by_version = {int(m["filename"].split("_")[0]): m for m in entries(source)}
+                self.assertEqual(by_version[39]["filename"], "0039_threads_recency_at.sql")
+                self.assertEqual(by_version[45]["filename"], "0045_threads_section.sql")
+                self.assertTrue(by_version[45]["sha384"].startswith("a7fadc8c"))
+
     def test_collision_histories_and_schema_effects(self):
         self.assertEqual(SEDNA["source_commit"], "97f6c6b811cbda5aa618356e6761c541da2b5032")
         expected_fork = {

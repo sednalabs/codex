@@ -108,6 +108,7 @@ pub(crate) async fn spawn(
         input: AgentInput::Message {
             message,
             mode: MessageDeliveryMode::TriggerTurn,
+            intent: None,
         },
         source: settings.source,
         options: settings.options,

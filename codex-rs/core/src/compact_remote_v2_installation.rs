@@ -3,6 +3,7 @@
 //! Prepared prefixes are validated by the history replacement primitive before mutation.
 
 use super::*;
+use crate::capacity_retry::wait_for_capacity;
 use crate::compact::build_compaction_replacement_history;
 use crate::context::world_state::split_prefix_updates;
 use crate::context_manager::updates::merge_world_state_updates;
@@ -123,13 +124,19 @@ async fn build_and_install_compaction(
             )),
         )
     } else {
-        let attempt = run_remote_compact_v2_attempt(
+        let may_fallback = should_retry_with_current_model(
+            &CodexErr::ServerOverloaded,
+            turn_context,
+            &replacement_step_context.turn,
+        );
+        let attempt = run_foreground_capacity_attempt(
             sess,
             step_context,
             &compaction_trace,
             compaction_metadata,
             analytics_details,
-            RemoteCompactV2AttemptInput::Foreground(client_session.as_deref_mut()),
+            client_session.as_deref_mut(),
+            /*retry_capacity*/ !may_fallback,
         )
         .await;
         let (attempt, compaction_turn_context) = match attempt {
@@ -148,13 +155,14 @@ async fn build_and_install_compaction(
                         fallback_turn_context.model_info().slug.as_str(),
                         fallback_turn_context.provider.info().name.as_str(),
                     );
-                let fallback_result = run_remote_compact_v2_attempt(
+                let fallback_result = run_foreground_capacity_attempt(
                     sess,
                     replacement_step_context,
                     &fallback_compaction_trace,
                     compaction_metadata,
                     analytics_details,
-                    RemoteCompactV2AttemptInput::Foreground(client_session),
+                    client_session,
+                    /*retry_capacity*/ true,
                 )
                 .await;
                 record_model_fallback(
@@ -288,6 +296,49 @@ async fn build_and_install_compaction(
     sess.emit_turn_item_completed(compaction_turn_context, compaction_item)
         .await;
     Ok(true)
+}
+
+/// Retry only the selected model; an eligible previous model must return its
+/// failure to the existing current-model fallback first.
+#[allow(clippy::too_many_arguments)]
+async fn run_foreground_capacity_attempt(
+    sess: &Arc<Session>,
+    step_context: &Arc<StepContext>,
+    compaction_trace: &codex_rollout_trace::CompactionTraceContext,
+    compaction_metadata: CompactionTurnMetadata,
+    analytics_details: &mut CompactionAnalyticsDetails,
+    mut client_session: Option<&mut ModelClientSession>,
+    retry_capacity: bool,
+) -> CodexResult<RemoteCompactV2Attempt> {
+    let mut capacity_retries: u64 = 0;
+    loop {
+        let result = run_remote_compact_v2_attempt(
+            sess,
+            step_context,
+            compaction_trace,
+            compaction_metadata,
+            analytics_details,
+            RemoteCompactV2AttemptInput::Foreground(client_session.as_deref_mut()),
+        )
+        .await;
+        match result {
+            Err(error)
+                if retry_capacity
+                    && matches!(error.details(), CodexErrorDetails::ServerOverloaded) =>
+            {
+                capacity_retries = capacity_retries.saturating_add(1);
+                wait_for_capacity(
+                    sess,
+                    &step_context.turn,
+                    error,
+                    capacity_retries,
+                    "remote compaction",
+                )
+                .await;
+            }
+            result => return result,
+        }
+    }
 }
 
 async fn reviewer_compaction_hash(sess: &Session, turn_context: &TurnContext) -> Option<String> {

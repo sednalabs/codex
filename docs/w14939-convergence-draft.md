@@ -23,13 +23,32 @@ fixture test checks the reconstructed histories; the Rust tests exercise
 startup rejection and semantic preimages. Neither is
 proof of a successful historical upgrade or package acceptance.
 
-The sampling retry draft retries the selected model on `ServerOverloaded`,
-honors a server deadline and otherwise uses capped backoff. It does not yet
-cover all compaction paths, and it conflicts with upstream tests that expect
-terminal overloads. Cancellation, ordinary bounded rate-limit handling and
-no-tool-replay behavior need exact-candidate integration coverage.
+Two additional public-source snapshots reproduce the migration SQL of OCI
+package source `1dea691446732a0ab03836f40f932387d9b1e087` and workstation
+source `e03a40398272ee4b0e6cdb694e390498c86ac7d9`. Each has 62 migration
+files identical to the corresponding refreshed upstream migrations. Synthetic
+schemas and ledgers through 39, 45 and 62 match upstream, and the source
+version 45 checksum begins `a7fadc8c`, matching the separately recorded
+workstation observation. This does not identify OCI's actual ledger or prove
+that either actual schema has no other history.
 
-Mailbox intent and targeted wake behavior, MCP device-code login with its
-issuer and endpoint security checks, full session-history compatibility,
-hosted validation, packaging and consumer acceptance remain unfinished. Do
-not install or run this draft against a user profile.
+The capacity retry draft retries the selected model on `ServerOverloaded`,
+honors the server deadline, and uses capped backoff. It also covers local and
+remote v2 compaction, retaining the prior-model fallback. The focused retry
+group passed 40 tests locally, including cancellation, bounded ordinary rate
+limits, transport fallback, and a tool-output replay witness. Focused local
+and remote compaction tests also passed. These results precede the current
+mailbox changes and are not hosted package validation.
+
+The mailbox draft adds optional intent and completion origin fields, keeps
+progress messages quiet during native waits, and supports targeted any/all
+completion waits. Its protocol compatibility test passed locally; the core
+implementation is still being compiled and tested. It does not yet establish
+full Sedna mailbox compatibility, including structured receipts and all
+native wait and mailbox persistence behavior.
+
+MCP device-code login with issuer and endpoint security checks, full
+session-history compatibility, hosted validation, packaging and consumer
+acceptance remain unfinished. The owner has been asked only for non-sensitive
+migration identity and schema metadata. Do not install or run this draft
+against a user profile.

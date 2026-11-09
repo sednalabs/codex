@@ -4,13 +4,13 @@
 
 use std::time::Duration;
 
+use crate::capacity_retry::retry_deadline as capacity_retry_deadline;
 use crate::client::ModelClientSession;
 use crate::context::ContentFilterGuidance;
 use crate::context::ContextualUserFragment;
 use crate::session::session::Session;
 use crate::session::step_context::StepContext;
 use crate::session::turn_context::TurnContext;
-use crate::util::backoff;
 use codex_client::RetryOperation;
 use codex_features::Feature;
 use codex_http_client::RetryAfter;
@@ -23,8 +23,6 @@ use tracing::warn;
 
 const INITIAL_CONNECTION_RETRY_DELAY: Duration = Duration::from_secs(5);
 const MAX_CONNECTION_RETRY_DELAY: Duration = Duration::from_secs(60);
-const MAX_CAPACITY_RETRY_DELAY: Duration = Duration::from_secs(60);
-const MAX_CAPACITY_BACKOFF_ATTEMPT: u64 = 10;
 
 #[derive(Debug, Clone, Copy)]
 pub(crate) enum ResponsesStreamRequest {
@@ -96,27 +94,38 @@ pub(crate) async fn handle_response_stream_error(
     if matches!(request, ResponsesStreamRequest::Sampling)
         && matches!(err.details(), CodexErrorDetails::ServerOverloaded)
     {
+        // Preserve upstream's transport fallback after at least one capacity
+        // retry. Otherwise a WebSocket-specific overload could never reach HTTP.
+        let fallback = retry_state.capacity_retries >= max_retries.max(1)
+            && client_session.try_switch_fallback_transport(
+                &turn_context.session_telemetry,
+                turn_context.model_info(),
+            );
         retry_state.capacity_retries = retry_state.capacity_retries.saturating_add(1);
         let attempt = retry_state.capacity_retries;
-        let delay =
-            backoff(attempt.min(MAX_CAPACITY_BACKOFF_ATTEMPT)).min(MAX_CAPACITY_RETRY_DELAY);
         let now = Instant::now();
-        let retry_at = err
-            .retry_after()
-            .map(RetryAfter::deadline)
-            .unwrap_or(now + delay)
-            .max(now + delay);
+        let retry_at = capacity_retry_deadline(&err, attempt);
         let wait = retry_at.saturating_duration_since(now);
         warn!(turn_id = %turn_context.sub_id, attempt, ?wait, "model at capacity; retrying sampling request");
-        sess.notify_stream_error(
-            turn_context,
-            format!(
-                "Model at capacity; retrying in {}s (attempt {attempt})",
-                wait.as_secs().max(1)
-            ),
-            err,
-        )
-        .await;
+        if fallback {
+            sess.send_event(
+                turn_context,
+                EventMsg::Warning(WarningEvent {
+                    message: format!("Falling back from WebSockets to HTTPS transport. {err:#}"),
+                }),
+            )
+            .await;
+        } else {
+            sess.notify_stream_error(
+                turn_context,
+                format!(
+                    "Model at capacity; retrying in {}s (attempt {attempt})",
+                    wait.as_secs().max(1)
+                ),
+                err,
+            )
+            .await;
+        }
         codex_client::record_retry!(attempt, wait, operation);
         tokio::time::sleep_until(retry_at).await;
         return Ok(());

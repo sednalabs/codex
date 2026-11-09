@@ -102,6 +102,19 @@ fn set_agent_control(
     session.services.agent_control = Arc::new(control);
 }
 
+fn actionable_communication(
+    author: AgentPath,
+    recipient: AgentPath,
+    others: Vec<AgentPath>,
+    content: String,
+    trigger_turn: bool,
+) -> InterAgentCommunication {
+    let mut communication =
+        InterAgentCommunication::new(author, recipient, others, content, trigger_turn);
+    communication.intent = Some(codex_protocol::protocol::AgentMessageIntent::ResultReady);
+    communication
+}
+
 fn invocation(
     session: Arc<crate::session::session::Session>,
     turn: Arc<TurnContext>,
@@ -3039,19 +3052,17 @@ async fn multi_agent_v2_wait_agent_accepts_timeout_only_argument() {
     });
     tokio::task::yield_now().await;
 
+    let mut message = InterAgentCommunication::new(
+        worker_path,
+        AgentPath::root(),
+        Vec::new(),
+        "hello from worker".to_string(),
+        /*trigger_turn*/ false,
+    );
+    message.intent = Some(codex_protocol::protocol::AgentMessageIntent::ActionRequired);
     session
         .input_queue
-        .enqueue_mailbox_communication(
-            InterAgentCommunication::new(
-                worker_path,
-                AgentPath::root(),
-                Vec::new(),
-                "hello from worker".to_string(),
-                /*trigger_turn*/ false,
-            )
-            .into(),
-            Default::default(),
-        )
+        .enqueue_mailbox_communication(message.into(), Default::default())
         .await;
 
     let output = wait_task
@@ -3069,6 +3080,88 @@ async fn multi_agent_v2_wait_agent_accepts_timeout_only_argument() {
         }
     );
     assert_eq!(success, None);
+}
+
+#[tokio::test]
+async fn multi_agent_v2_targeted_all_wait_ignores_other_completions() {
+    use codex_protocol::protocol::AgentCommunicationOrigin;
+    use codex_protocol::protocol::AgentMessageIntent;
+    let (mut session, turn) = make_session_and_context().await;
+    let manager = thread_manager();
+    set_agent_control(&mut session, manager.agent_control());
+    let first = manager
+        .start_thread(StartThreadOptions::new((*turn.config).clone()))
+        .await
+        .unwrap();
+    let second = manager
+        .start_thread(StartThreadOptions::new((*turn.config).clone()))
+        .await
+        .unwrap();
+    let mut first_status = first.thread.subscribe_status();
+    let mut second_status = second.thread.subscribe_status();
+    let session = Arc::new(session);
+    let turn = Arc::new(turn);
+    let mut waiting = tokio::spawn({
+        let session = Arc::clone(&session);
+        let turn = Arc::clone(&turn);
+        let targets = vec![first.thread_id.to_string(), second.thread_id.to_string()];
+        async move {
+            WaitAgentHandlerV2::default()
+                .handle(invocation(
+                    session,
+                    turn,
+                    "wait_agent",
+                    function_payload(
+                        json!({"targets": targets, "return_when": "all", "timeout_ms": 10_000}),
+                    ),
+                ))
+                .await
+        }
+    });
+    tokio::task::yield_now().await;
+    let mut unrelated = InterAgentCommunication::new(
+        AgentPath::root().join("unrelated").unwrap(),
+        AgentPath::root(),
+        Vec::new(),
+        "other result".to_string(),
+        /*trigger_turn*/ false,
+    );
+    unrelated.intent = Some(AgentMessageIntent::ResultReady);
+    unrelated.origin = Some(AgentCommunicationOrigin::Result);
+    session
+        .input_queue
+        .enqueue_mailbox_communication(unrelated.into(), Default::default())
+        .await;
+    assert!(
+        timeout(Duration::from_millis(100), &mut waiting)
+            .await
+            .is_err()
+    );
+    first.thread.submit(Op::Shutdown {}).await.unwrap();
+    timeout(Duration::from_secs(2), first_status.changed())
+        .await
+        .unwrap()
+        .unwrap();
+    assert!(
+        timeout(Duration::from_millis(100), &mut waiting)
+            .await
+            .is_err()
+    );
+    second.thread.submit(Op::Shutdown {}).await.unwrap();
+    timeout(Duration::from_secs(2), second_status.changed())
+        .await
+        .unwrap()
+        .unwrap();
+    let output = timeout(Duration::from_secs(2), waiting)
+        .await
+        .unwrap()
+        .unwrap()
+        .unwrap();
+    let (content, _) = expect_text_output(output);
+    let result: crate::tools::handlers::multi_agents_v2::wait::WaitAgentResult =
+        serde_json::from_str(&content).unwrap();
+    assert!(!result.timed_out);
+    assert_eq!(session.input_queue.drain_mailbox().await.len(), 1);
 }
 
 #[tokio::test]
@@ -3543,7 +3636,7 @@ async fn multi_agent_v2_wait_agent_returns_summary_for_mailbox_activity() {
     session
         .input_queue
         .enqueue_mailbox_communication(
-            InterAgentCommunication::new(
+            actionable_communication(
                 worker_path,
                 AgentPath::root(),
                 Vec::new(),
@@ -3620,7 +3713,7 @@ async fn multi_agent_v2_wait_agent_returns_for_already_queued_mail() {
     session
         .input_queue
         .enqueue_mailbox_communication(
-            InterAgentCommunication::new(
+            actionable_communication(
                 worker_path,
                 AgentPath::root(),
                 Vec::new(),
@@ -3658,7 +3751,7 @@ async fn multi_agent_v2_wait_agent_returns_for_already_queued_mail() {
 }
 
 #[tokio::test]
-async fn multi_agent_v2_wait_agent_wakes_on_any_mailbox_notification() {
+async fn multi_agent_v2_wait_agent_wakes_on_actionable_mailbox_notification() {
     let (mut session, mut turn) = make_session_and_context().await;
     let manager = thread_manager();
     let root = manager
@@ -3723,7 +3816,7 @@ async fn multi_agent_v2_wait_agent_wakes_on_any_mailbox_notification() {
     session
         .input_queue
         .enqueue_mailbox_communication(
-            InterAgentCommunication::new(
+            actionable_communication(
                 worker_b_path,
                 AgentPath::root(),
                 Vec::new(),
@@ -3815,7 +3908,7 @@ async fn multi_agent_v2_wait_agent_does_not_return_completed_content() {
     session
         .input_queue
         .enqueue_mailbox_communication(
-            InterAgentCommunication::new(
+            actionable_communication(
                 worker_path,
                 AgentPath::root(),
                 Vec::new(),
