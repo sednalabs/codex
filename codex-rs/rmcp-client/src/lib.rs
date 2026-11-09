@@ -1,5 +1,6 @@
 mod auth_status;
 mod bounded_stdio_transport;
+mod device_oauth_http;
 mod device_oauth_metadata;
 mod elicitation_client_service;
 mod ema_auth;

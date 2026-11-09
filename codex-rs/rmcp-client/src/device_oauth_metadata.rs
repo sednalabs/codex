@@ -9,10 +9,10 @@ use anyhow::bail;
 use rmcp::transport::AuthorizationManager;
 use rmcp::transport::auth::AuthError;
 use rmcp::transport::auth::OAuthHttpClient;
-use rmcp::transport::auth::OAuthHttpRedirectPolicy;
 use serde::Deserialize;
 use url::Url;
 
+use crate::device_oauth_http::execute_same_origin;
 use crate::oauth::validate_authorization_server_endpoints;
 use crate::oauth_http_client::OAuthHttpClientAdapter;
 
@@ -30,7 +30,7 @@ pub(crate) struct DeviceMetadata {
     authorization_endpoint: Option<String>,
 }
 
-fn checked_endpoint(value: &str) -> Result<Url> {
+pub(crate) fn checked_endpoint(value: &str) -> Result<Url> {
     let url = Url::parse(value).context("invalid OAuth device endpoint URL")?;
     if !matches!(url.scheme(), "http" | "https")
         || url.host_str().is_none()
@@ -144,14 +144,7 @@ pub(crate) async fn discover_device_only_metadata(
             .uri(url.as_str())
             .header("MCP-Protocol-Version", "2024-11-05")
             .body(Vec::new())?;
-        let response = match client
-            .execute_request(
-                request,
-                OAuthHttpRedirectPolicy::Stop,
-                Some(Duration::from_secs(5)),
-            )
-            .await
-        {
+        let response = match execute_same_origin(client, request, Duration::from_secs(5)).await {
             Ok(response) if response.status().is_success() => response,
             _ => continue,
         };
