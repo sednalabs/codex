@@ -4,6 +4,7 @@ use crate::state::ActiveTurn;
 use crate::state::MailboxDeliveryPhase;
 use crate::state::TurnState;
 use codex_protocol::models::ResponseItem;
+use codex_protocol::protocol::AgentCommunicationOrigin;
 use codex_protocol::protocol::InterAgentCommunication;
 use codex_protocol::user_input::UserInput;
 use std::collections::HashSet;
@@ -320,8 +321,17 @@ impl InputQueue {
     /// Nondestructive mailbox read used by native wait reporting. The delivery
     /// queue remains untouched so model delivery ordering and ownership are
     /// preserved.
+    #[cfg(test)]
     pub(crate) async fn snapshot_mailbox_communications(
         &self,
+    ) -> Vec<(InterAgentCommunication, u64, u64)> {
+        self.snapshot_mailbox_communications_for_wait(/*exact_target_wait*/ false)
+            .await
+    }
+
+    pub(crate) async fn snapshot_mailbox_communications_for_wait(
+        &self,
+        exact_target_wait: bool,
     ) -> Vec<(InterAgentCommunication, u64, u64)> {
         let mailbox = self.mailbox.lock().await;
         let mut snapshot = Vec::with_capacity(
@@ -340,7 +350,8 @@ impl InputQueue {
             if snapshot.len() < Self::MAX_MAILBOX_NOTIFICATION_SNAPSHOT {
                 snapshot.push(snapshot_entry.clone());
             }
-            if first_actionable.is_none() && is_actionable_wait_communication(&entry.communication)
+            if first_actionable.is_none()
+                && is_wait_eligible_communication(&entry.communication, exact_target_wait)
             {
                 first_actionable = Some(snapshot_entry);
             }
@@ -361,9 +372,22 @@ impl InputQueue {
     /// native wait subscribed. Startup drains the durable mailbox into
     /// `TurnState` before the model runs; retain the original sequence and
     /// enqueue timestamp separately so wait provenance remains truthful.
+    #[cfg(test)]
     pub(crate) async fn snapshot_pending_mailbox_communications(
         &self,
         active_turn: &Mutex<Option<ActiveTurn>>,
+    ) -> Vec<(InterAgentCommunication, u64, u64)> {
+        self.snapshot_pending_mailbox_communications_for_wait(
+            active_turn,
+            /*exact_target_wait*/ false,
+        )
+        .await
+    }
+
+    pub(crate) async fn snapshot_pending_mailbox_communications_for_wait(
+        &self,
+        active_turn: &Mutex<Option<ActiveTurn>>,
+        exact_target_wait: bool,
     ) -> Vec<(InterAgentCommunication, u64, u64)> {
         let turn_state = {
             let active = active_turn.lock().await;
@@ -414,7 +438,8 @@ impl InputQueue {
             if snapshot.len() < Self::MAX_MAILBOX_NOTIFICATION_SNAPSHOT {
                 snapshot.push(snapshot_entry.clone());
             }
-            if first_actionable.is_none() && is_actionable_wait_communication(&entry.communication)
+            if first_actionable.is_none()
+                && is_wait_eligible_communication(&entry.communication, exact_target_wait)
             {
                 first_actionable = Some(snapshot_entry);
             }
@@ -479,32 +504,47 @@ impl InputQueue {
             .any(|entry| entry.communication.trigger_turn)
     }
 
-    /// Returns whether a mailbox message carries an explicit action/result
-    /// signal for a native wait. This is independent of trigger-turn scheduling
-    /// and does not inspect or decrypt the message payload.
-    pub(crate) async fn has_actionable_wait_mailbox_items(&self) -> bool {
+    /// Returns whether the mailbox contains a communication eligible to wake
+    /// this native wait. This is independent of trigger-turn scheduling and
+    /// does not inspect or decrypt the message payload.
+    pub(crate) async fn has_actionable_wait_mailbox_items_for_wait(
+        &self,
+        exact_target_wait: bool,
+    ) -> bool {
         self.mailbox
             .lock()
             .await
             .entries
             .iter()
-            .any(|entry| is_actionable_wait_communication(&entry.communication))
+            .any(|entry| is_wait_eligible_communication(&entry.communication, exact_target_wait))
     }
 
-    /// This predicate is intentionally used for both exact-target and
-    /// targetless waits. Ordinary queue-only progress remains durable but must
-    /// not wake a parent merely because the mailbox is non-empty.
+    /// This predicate supports both exact-target and targetless waits.
+    /// Ordinary queue-only progress remains durable but must not wake a parent
+    /// merely because the mailbox is non-empty. For exact-target waits,
+    /// generated terminal handoffs remain queued while the selected targets'
+    /// status subscriptions enforce the requested any/all completion rule.
     ///
     /// Queue-only progress and turn-scheduling messages remain durable but do
     /// not satisfy the native-wait predicate for either targeted or targetless
     /// waits. Explicit action/result intent is independent of turn scheduling.
+    #[cfg(test)]
+    pub(crate) async fn has_pending_wait_input(
+        &self,
+        active_turn: &Mutex<Option<ActiveTurn>>,
+    ) -> bool {
+        self.has_pending_wait_input_for_wait(active_turn, /*exact_target_wait*/ false)
+            .await
+    }
+
     #[expect(
         clippy::await_holding_invalid_type,
         reason = "active turn checks and turn state reads must remain atomic"
     )]
-    pub(crate) async fn has_pending_wait_input(
+    pub(crate) async fn has_pending_wait_input_for_wait(
         &self,
         active_turn: &Mutex<Option<ActiveTurn>>,
+        exact_target_wait: bool,
     ) -> bool {
         let pending_turn_input = {
             let active = active_turn.lock().await;
@@ -517,7 +557,7 @@ impl InputQueue {
                         .iter()
                         .any(|input| match input {
                             TurnInput::InterAgentCommunication(communication) => {
-                                is_actionable_wait_communication(communication)
+                                is_wait_eligible_communication(communication, exact_target_wait)
                             }
                             TurnInput::UserInput { .. } | TurnInput::ResponseItem(_) => true,
                         })
@@ -525,7 +565,10 @@ impl InputQueue {
                 None => false,
             }
         };
-        pending_turn_input || self.has_actionable_wait_mailbox_items().await
+        pending_turn_input
+            || self
+                .has_actionable_wait_mailbox_items_for_wait(exact_target_wait)
+                .await
     }
 
     /// Returns the activity class for input that is already pending when a
@@ -576,7 +619,10 @@ impl InputQueue {
         if pending_activity.is_some() {
             return pending_activity;
         }
-        if self.has_actionable_wait_mailbox_items().await {
+        if self
+            .has_actionable_wait_mailbox_items_for_wait(/*exact_target_wait*/ false)
+            .await
+        {
             return Some(InputQueueActivity::Mailbox);
         }
         None
@@ -814,6 +860,14 @@ impl InputQueue {
 
 pub(crate) fn is_actionable_wait_communication(communication: &InterAgentCommunication) -> bool {
     communication.resolved_intent().wakes_native_wait()
+}
+
+pub(crate) fn is_wait_eligible_communication(
+    communication: &InterAgentCommunication,
+    exact_target_wait: bool,
+) -> bool {
+    is_actionable_wait_communication(communication)
+        && (!exact_target_wait || communication.origin != Some(AgentCommunicationOrigin::Result))
 }
 
 pub(crate) fn current_time_ms() -> u64 {
@@ -1178,6 +1232,57 @@ mod tests {
         input_queue.enqueue_mailbox_communication(actionable).await;
         assert!(input_queue.has_trigger_turn_mailbox_items().await);
         assert!(input_queue.has_pending_wait_input(&Mutex::new(None)).await);
+    }
+
+    #[tokio::test]
+    async fn targeted_wait_ignores_terminal_handoffs_but_keeps_explicit_results() {
+        let input_queue = InputQueue::new();
+        let active_turn = Mutex::new(None);
+        let mut terminal_handoff = make_mail(
+            AgentPath::try_from("/root/sibling").expect("sibling path"),
+            AgentPath::root(),
+            "sibling finished",
+            /*trigger_turn*/ false,
+        );
+        terminal_handoff.intent = Some(codex_protocol::protocol::AgentMessageIntent::ResultReady);
+        terminal_handoff.origin = Some(AgentCommunicationOrigin::Result);
+        input_queue
+            .enqueue_mailbox_communication(terminal_handoff)
+            .await;
+
+        assert!(input_queue.has_pending_wait_input(&active_turn).await);
+        assert!(
+            !input_queue
+                .has_pending_wait_input_for_wait(&active_turn, /*exact_target_wait*/ true)
+                .await,
+            "an automatic terminal handoff must not satisfy an exact-target wait"
+        );
+        assert!(input_queue.has_pending_mailbox_items().await);
+
+        let mut explicit_result = make_mail(
+            AgentPath::try_from("/root/sibling").expect("sibling path"),
+            AgentPath::root(),
+            "explicit result ready",
+            /*trigger_turn*/ false,
+        );
+        explicit_result.intent = Some(codex_protocol::protocol::AgentMessageIntent::ResultReady);
+        input_queue
+            .enqueue_mailbox_communication(explicit_result)
+            .await;
+
+        assert!(
+            input_queue
+                .has_pending_wait_input_for_wait(&active_turn, /*exact_target_wait*/ true)
+                .await,
+            "an explicitly addressed result remains eligible outside the target set"
+        );
+        let snapshot = input_queue
+            .snapshot_mailbox_communications_for_wait(/*exact_target_wait*/ true)
+            .await;
+        assert_eq!(snapshot.len(), 2);
+        assert_eq!(snapshot[0].0.origin, Some(AgentCommunicationOrigin::Result));
+        assert_eq!(snapshot[1].0.content, "explicit result ready");
+        assert!(input_queue.has_pending_mailbox_items().await);
     }
 
     #[tokio::test]

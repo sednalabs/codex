@@ -45,10 +45,13 @@ decisions.
 
 - Downstream V2 `wait_agent` keeps all inter-agent messages durable and
   preserves FIFO delivery. Missing message intent defaults to `progress` for
-  legacy records and callers. Only explicit `action_required` or `result_ready`
-  intent wakes the directly addressed recipient's native wait; the message may
-  come from outside an exact completion target set. `trigger_turn` remains an
-  independent idle-turn scheduling signal and does not by itself end a wait.
+  legacy records and callers. An explicitly sent `action_required` or
+  `result_ready` message wakes the directly addressed recipient's native wait;
+  the message may come from outside an exact completion target set. An
+  automatically generated terminal handoff remains queued during an exact
+  target wait and does not bypass its any/all completion rule; targetless waits
+  may still wake for that handoff. `trigger_turn` remains an independent
+  idle-turn scheduling signal and does not by itself end a wait.
 - Selected-target terminal status still follows the existing `any`/`all`
   completion rule. Unrelated process-terminal bookkeeping stays queued for
   normal delivery and does not end the wait. Explicit action/result messages

@@ -5794,6 +5794,7 @@ async fn multi_agent_v2_wait_agent_all_waits_for_each_terminal_child_event() {
                     function_payload(json!({
                         "targets": [first_id.to_string(), second_id.to_string()],
                         "return_when": "all",
+                        "native_event_wait": true,
                         "timeout_ms": 10_000
                     })),
                 ))
@@ -5806,11 +5807,25 @@ async fn multi_agent_v2_wait_agent_all_waits_for_each_terminal_child_event() {
         .submit(Op::Shutdown {})
         .await
         .expect("first shutdown should submit");
+    let mut first_terminal_handoff = InterAgentCommunication::new(
+        AgentPath::try_from("/root/first").expect("first target path"),
+        AgentPath::root(),
+        Vec::new(),
+        "first target finished".to_string(),
+        /*trigger_turn*/ false,
+    );
+    first_terminal_handoff.intent = Some(codex_protocol::protocol::AgentMessageIntent::ResultReady);
+    first_terminal_handoff.origin =
+        Some(codex_protocol::protocol::AgentCommunicationOrigin::Result);
+    session
+        .input_queue
+        .enqueue_mailbox_communication(first_terminal_handoff)
+        .await;
     assert!(
         timeout(Duration::from_millis(100), &mut wait_task)
             .await
             .is_err(),
-        "return_when=all must remain blocked until every target is terminal"
+        "a first target's terminal handoff must not bypass return_when=all"
     );
 
     second
@@ -5835,6 +5850,11 @@ async fn multi_agent_v2_wait_agent_all_waits_for_each_terminal_child_event() {
         CollabWaitingCompletionReason::Terminal
     );
     assert!(!result.timed_out);
+    assert!(result.wake_provenance.queued_updates.iter().any(|update| {
+        update.intent == codex_protocol::protocol::AgentMessageIntent::ResultReady
+            && !update.ended_active_wait
+            && update.actual_wake_cause.is_none()
+    }));
     assert_eq!(success, None);
 }
 
@@ -5911,6 +5931,19 @@ fn multi_agent_v2_wait_agent_wakes_on_explicit_action_from_outside_exact_target_
         });
         tokio::task::yield_now().await;
 
+        let mut automatic_result = InterAgentCommunication::new(
+            worker_b_path.clone(),
+            AgentPath::root(),
+            Vec::new(),
+            "worker b finished".to_string(),
+            /*trigger_turn*/ false,
+        );
+        automatic_result.intent = Some(codex_protocol::protocol::AgentMessageIntent::ResultReady);
+        automatic_result.origin = Some(codex_protocol::protocol::AgentCommunicationOrigin::Result);
+        session
+            .input_queue
+            .enqueue_mailbox_communication(automatic_result)
+            .await;
         session
             .input_queue
             .enqueue_mailbox_communication(InterAgentCommunication::new(
@@ -5987,16 +6020,28 @@ fn multi_agent_v2_wait_agent_wakes_on_explicit_action_from_outside_exact_target_
             result.wake_provenance.target_set_relation,
             "directly_addressed_outside_target_set"
         );
+        assert_eq!(result.wake_provenance.queued_updates.len(), 3);
         assert_eq!(
             result.wake_provenance.queued_updates[0].intent,
-            codex_protocol::protocol::AgentMessageIntent::Progress
+            codex_protocol::protocol::AgentMessageIntent::ResultReady
         );
-        assert!(result.wake_provenance.queued_updates[0].trigger_turn_requested);
+        assert!(!result.wake_provenance.queued_updates[0].ended_active_wait);
+        assert!(
+            result.wake_provenance.queued_updates[0]
+                .actual_wake_cause
+                .is_none()
+        );
         assert_eq!(
             result.wake_provenance.queued_updates[1].intent,
+            codex_protocol::protocol::AgentMessageIntent::Progress
+        );
+        assert!(result.wake_provenance.queued_updates[1].trigger_turn_requested);
+        assert_eq!(
+            result.wake_provenance.queued_updates[2].intent,
             codex_protocol::protocol::AgentMessageIntent::ActionRequired
         );
-        assert!(!result.wake_provenance.queued_updates[1].trigger_turn_requested);
+        assert!(!result.wake_provenance.queued_updates[2].trigger_turn_requested);
+        assert!(result.wake_provenance.queued_updates[2].ended_active_wait);
         assert_eq!(success, None);
         assert!(session.input_queue.has_pending_terminal_completions().await);
     });
