@@ -62,6 +62,12 @@ async fn runtime_opens_recover_or_report_corruption_by_database_policy() -> anyh
                 .create_if_missing(true),
         )
         .await?;
+        if path == sqlite.thread_history_db_path() {
+            // Keep the history ledger recognizable while corrupting an unrelated table.
+            crate::migrations::THREAD_HISTORY_MIGRATOR
+                .run(&pool)
+                .await?;
+        }
         sqlx::raw_sql(
             "CREATE TABLE sample(value INTEGER);
              INSERT INTO sample VALUES (NULL);
