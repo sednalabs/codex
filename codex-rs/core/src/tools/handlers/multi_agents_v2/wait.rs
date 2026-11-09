@@ -3,7 +3,7 @@ use crate::agent::agent_resolver::resolve_agent_targets;
 use crate::agent::status::is_final;
 use crate::session::input_queue::InputQueue;
 use crate::session::input_queue::InputQueueActivity;
-use crate::session::input_queue::is_actionable_wait_communication;
+use crate::session::input_queue::is_wait_eligible_communication;
 use crate::session::session::Session;
 use crate::session::turn_context::TurnContext;
 use crate::tools::context::FunctionToolOutput;
@@ -306,6 +306,7 @@ impl Handler {
                             &receiver_thread_ids,
                             target_set_relation(receiver_thread_ids.is_empty()),
                             WakeSource::SubscriptionLoss,
+                            !receiver_thread_ids.is_empty(),
                         )
                         .await
                         .notifications,
@@ -384,6 +385,7 @@ impl Handler {
             &receiver_thread_ids,
             target_set_relation(receiver_thread_ids.is_empty()),
             wake_source,
+            !receiver_thread_ids.is_empty(),
         )
         .await;
         let result = WaitAgentResult::new(
@@ -584,12 +586,19 @@ async fn mailbox_snapshot(
     receiver_thread_ids: &[ThreadId],
     target_set_relation: String,
     wake_source: WakeSource,
+    exact_target_wait: bool,
 ) -> MailboxSnapshot {
-    let mut entries = session.input_queue.snapshot_mailbox_communications().await;
+    let mut entries = session
+        .input_queue
+        .snapshot_mailbox_communications_for_wait(exact_target_wait)
+        .await;
     entries.extend(
         session
             .input_queue
-            .snapshot_pending_mailbox_communications(&session.active_turn)
+            .snapshot_pending_mailbox_communications_for_wait(
+                &session.active_turn,
+                exact_target_wait,
+            )
             .await,
     );
     entries.sort_unstable_by_key(|(_, sequence, _)| *sequence);
@@ -609,7 +618,8 @@ async fn mailbox_snapshot(
                 .iter()
                 .map(|(communication, _, _)| communication)
                 .collect::<Vec<_>>();
-            causal_mailbox_index(&actionable).and_then(|index| entries.get(index).cloned())
+            causal_mailbox_index(&actionable, exact_target_wait)
+                .and_then(|index| entries.get(index).cloned())
         })
         .flatten();
     let target_set_relation = match wake_source {
@@ -637,9 +647,7 @@ async fn mailbox_snapshot(
         causal_entry
             .as_ref()
             .map(|(communication, _, _)| {
-                if communication.origin == Some(AgentCommunicationOrigin::Result)
-                    && !communication.resolved_intent().wakes_native_wait()
-                {
+                if communication.origin == Some(AgentCommunicationOrigin::Result) {
                     AgentWakeCause::ChildTerminalTransition
                 } else {
                     AgentWakeCause::ChildActionableMessage
@@ -812,16 +820,18 @@ async fn mailbox_snapshot(
 
 fn mailbox_entry_is_causal(
     communication: &codex_protocol::protocol::InterAgentCommunication,
+    exact_target_wait: bool,
 ) -> bool {
-    is_actionable_wait_communication(communication)
+    is_wait_eligible_communication(communication, exact_target_wait)
 }
 
 fn causal_mailbox_index(
     entries: &[&codex_protocol::protocol::InterAgentCommunication],
+    exact_target_wait: bool,
 ) -> Option<usize> {
     entries
         .iter()
-        .position(|communication| mailbox_entry_is_causal(communication))
+        .position(|communication| mailbox_entry_is_causal(communication, exact_target_wait))
 }
 
 fn target_set_relation(targetless: bool) -> String {
@@ -850,7 +860,7 @@ async fn ready_wake_source(
     receiver_thread_ids: &[ThreadId],
     wake_on_mailbox: bool,
     pending_input_activity: Option<InputQueueActivity>,
-    _exact_target_wait: bool,
+    exact_target_wait: bool,
     status_rxs: &mut [(ThreadId, Receiver<AgentStatus>)],
 ) -> Option<WakeSource> {
     if completion_rule.is_satisfied(final_statuses, receiver_thread_ids) {
@@ -861,7 +871,7 @@ async fn ready_wake_source(
             Some(InputQueueActivity::Steer | InputQueueActivity::RuntimeSystemEvent)
         ) || session
             .input_queue
-            .has_pending_wait_input(&session.active_turn)
+            .has_pending_wait_input_for_wait(&session.active_turn, exact_target_wait)
             .await)
     {
         let latest = collect_current_wait_statuses(session, receiver_thread_ids).await;
@@ -1109,7 +1119,7 @@ async fn wait_for_wake_source(
     completion_rule: CompletionRule,
     final_statuses: &mut HashMap<ThreadId, AgentStatus>,
     wake_on_mailbox: bool,
-    _exact_target_wait: bool,
+    exact_target_wait: bool,
     call_id: &str,
     native_event_wait: bool,
     lease_timer_enabled: bool,
@@ -1195,7 +1205,10 @@ async fn wait_for_wake_source(
                     Ok(())
                         if session
                             .input_queue
-                            .has_pending_wait_input(&session.active_turn)
+                            .has_pending_wait_input_for_wait(
+                                &session.active_turn,
+                                exact_target_wait,
+                            )
                             .await =>
                     {
                         let latest = collect_current_wait_statuses(
@@ -1543,11 +1556,41 @@ mod tests {
             "progress".to_string(),
             /*trigger_turn*/ false,
         );
+        let mut generated_terminal_handoff = codex_protocol::protocol::InterAgentCommunication::new(
+            AgentPath::try_from("/root/other_reviewer").expect("sibling path"),
+            AgentPath::root(),
+            Vec::new(),
+            "terminal handoff".to_string(),
+            /*trigger_turn*/ false,
+        );
+        generated_terminal_handoff.intent =
+            Some(codex_protocol::protocol::AgentMessageIntent::ResultReady);
+        generated_terminal_handoff.origin = Some(AgentCommunicationOrigin::Result);
 
-        assert!(mailbox_entry_is_causal(&target_action));
-        assert!(mailbox_entry_is_causal(&sibling_action));
-        assert!(!mailbox_entry_is_causal(&sibling_turn_trigger));
-        assert!(!mailbox_entry_is_causal(&queued_progress));
+        assert!(mailbox_entry_is_causal(
+            &target_action,
+            /*exact_target_wait*/ true
+        ));
+        assert!(mailbox_entry_is_causal(
+            &sibling_action,
+            /*exact_target_wait*/ true
+        ));
+        assert!(!mailbox_entry_is_causal(
+            &sibling_turn_trigger,
+            /*exact_target_wait*/ true
+        ));
+        assert!(!mailbox_entry_is_causal(
+            &queued_progress,
+            /*exact_target_wait*/ true
+        ));
+        assert!(mailbox_entry_is_causal(
+            &generated_terminal_handoff,
+            /*exact_target_wait*/ false
+        ));
+        assert!(!mailbox_entry_is_causal(
+            &generated_terminal_handoff,
+            /*exact_target_wait*/ true
+        ));
     }
 
     #[test]
@@ -1562,6 +1605,7 @@ mod tests {
             /*trigger_turn*/ false,
         );
         let target_terminal = codex_protocol::protocol::InterAgentCommunication {
+            intent: Some(codex_protocol::protocol::AgentMessageIntent::ResultReady),
             origin: Some(AgentCommunicationOrigin::Result),
             ..target_terminal
         };
@@ -1583,8 +1627,18 @@ mod tests {
         later_action.intent = Some(codex_protocol::protocol::AgentMessageIntent::ResultReady);
         let entries = vec![&target_terminal, &sibling_action, &later_action];
 
-        assert_eq!(causal_mailbox_index(&entries), Some(1));
-        assert_eq!(causal_mailbox_index(&[&target_terminal]), None);
+        assert_eq!(
+            causal_mailbox_index(&entries, /*exact_target_wait*/ true),
+            Some(1)
+        );
+        assert_eq!(
+            causal_mailbox_index(&[&target_terminal], /*exact_target_wait*/ true),
+            None
+        );
+        assert_eq!(
+            causal_mailbox_index(&[&target_terminal], /*exact_target_wait*/ false),
+            Some(0)
+        );
     }
 
     #[test]
