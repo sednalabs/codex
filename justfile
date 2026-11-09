@@ -203,3 +203,9 @@ log *args:
 [windows]
 log *args:
     $forwarded_args = @($args | Select-Object -Skip 1); if ($forwarded_args.Count -gt 0 -and $forwarded_args[0] -eq "--") { $forwarded_args = @($forwarded_args | Select-Object -Skip 1) }; cargo run -p codex-cli --bin logs_client -- @forwarded_args
+
+# Diagnostic-only use of the existing targeted core validation lane.
+core-subagent-surface-targeted:
+    RUST_MIN_STACK=8388608 cargo test --locked -p codex-core --lib guardian_review_retries_transient_failure_then_approves -- --test-threads=1
+    RUST_MIN_STACK=8388608 cargo test --locked -p codex-core --lib multi_agent_v2_ -- --test-threads=1
+    RUST_MIN_STACK=8388608 cargo test --locked -p codex-core --lib native_wait_tests:: -- --test-threads=1
