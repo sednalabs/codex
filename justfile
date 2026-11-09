@@ -588,16 +588,11 @@ exec-native-computer-use-targeted:
     cargo test --locked -p codex-exec tests::thread_lifecycle_params_include_configured_native_dynamic_tools --lib -- --exact --test-threads=1
     cargo test --locked -p codex-exec --test all event_processor_with_json_output::computer_use_started_and_completed_translate_to_thread_events -- --exact --test-threads=1
 
-# Focused native computer-use tool registry slice for canonical schema conversion
-
-# and deferred tool-search discovery.
+# Focused computer-use registry slice for retained desktop classification,
+# generic provider registration, and legacy Browser declaration handling.
 native-computer-use-tool-registry-targeted:
-    cargo test --locked -p codex-tools canonical_android_dynamic_tool --lib -- --test-threads=1
-    cargo test --locked -p codex-tools native_computer_use_provider_registry_does_not_claim_retired_browser_tools --lib -- --test-threads=1
     cargo test --locked -p codex-tools desktop_tool --lib -- --test-threads=1
     cargo test --locked -p codex-tools native_computer_use_registry_classifies_desktop_tools --lib -- --test-threads=1
-    cargo test --locked -p codex-android-computer-use configured_android_tools_load_from_explicit_codex_home --lib -- --test-threads=1
-    cargo test --locked -p codex-android-computer-use prefer_stable_ui_defaults_to_true_unless_disabled --lib -- --test-threads=1
     cargo test --locked -p codex-core computer_use_call_times_out_and_unregisters_pending_response --lib -- --test-threads=1
     cargo test --locked -p codex-core resumed_thread_drops_legacy_browser_declarations --lib -- --test-threads=1
     cargo test --locked -p codex-core forked_thread_drops_legacy_browser_declarations --lib -- --test-threads=1
