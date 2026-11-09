@@ -98,3 +98,32 @@ async fn stream_retry_preserves_deadline_across_delayed_notification() {
         "retry resumed at {resumed_at:?}, expected {advice:?}"
     );
 }
+
+#[tokio::test]
+async fn capacity_retry_respects_server_deadline_without_spending_stream_budget() {
+    let (session, turn_context) = make_session_and_context().await;
+    let step_context = StepContext::for_test(Arc::new(turn_context));
+    let mut client_session = session.services.model_client.new_session();
+    let mut retry_state = ResponsesStreamRetryState::default();
+    tokio::time::pause();
+    let advice = RetryAfter::from_delay(Duration::from_secs(10)).expect("retry deadline");
+    {
+        let retry = handle_response_stream_error(
+            &mut retry_state,
+            /*max_retries*/ 0,
+            CodexErr::ServerOverloaded.with_retry_after(advice),
+            &mut client_session,
+            &session,
+            &step_context,
+            ResponsesStreamRequest::Sampling,
+        );
+        tokio::pin!(retry);
+        assert!(futures::poll!(&mut retry).is_pending());
+        tokio::time::advance(Duration::from_secs(9)).await;
+        assert!(futures::poll!(&mut retry).is_pending());
+        tokio::time::advance(Duration::from_secs(1)).await;
+        retry.await.expect("capacity retry should be allowed");
+    }
+    assert_eq!(retry_state.retries, 0);
+    assert_eq!(retry_state.capacity_retries, 1);
+}

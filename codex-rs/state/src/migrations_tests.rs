@@ -961,9 +961,11 @@ async fn repairs_recency_migration_that_was_applied_as_version_38() {
         .await
         .expect("legacy recency migration should apply as version 38");
 
-    repair_legacy_recency_migration_version(&pool, &STATE_MIGRATOR)
+    let mut connection = pool.acquire().await.expect("connection should open");
+    repair_legacy_recency_migration_version(&mut connection, &STATE_MIGRATOR)
         .await
         .expect("legacy migration history should be repaired");
+    drop(connection);
     STATE_MIGRATOR
         .run(&pool)
         .await
@@ -1023,7 +1025,13 @@ async fn repair_recency_migration_succeeds_while_another_connection_holds_writer
         .await
         .expect("write transaction should acquire the writer slot");
 
-    let repair_result = repair_legacy_recency_migration_version(&read_pool, &STATE_MIGRATOR).await;
+    let mut read_connection = read_pool
+        .acquire()
+        .await
+        .expect("read connection should open");
+    let repair_result =
+        repair_legacy_recency_migration_version(&mut read_connection, &STATE_MIGRATOR).await;
+    drop(read_connection);
 
     write_transaction
         .rollback()

@@ -664,7 +664,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn open_state_sqlite_tolerates_newer_applied_migrations() {
+    async fn open_state_sqlite_rejects_unknown_newer_migrations() {
         let codex_home = unique_temp_dir();
         tokio::fs::create_dir_all(&codex_home)
             .await
@@ -701,11 +701,19 @@ mod tests {
         strict_pool.close().await;
 
         let tolerant_migrator = runtime_state_migrator();
-        let tolerant_pool = sqlite
+        let error = sqlite
             .open_state_db(&tolerant_migrator, /*telemetry_override*/ None)
             .await
-            .expect("runtime migrator should tolerate newer applied migrations");
-        tolerant_pool.close().await;
+            .expect_err("runtime should reject an unknown state migration");
+        assert!(format!("{error:#}").contains("state migration history at version 9999"));
+        let check_pool = open_db_pool(state_path.as_path()).await;
+        let checksum: Vec<u8> =
+            sqlx::query_scalar("SELECT checksum FROM _sqlx_migrations WHERE version = 9999")
+                .fetch_one(&check_pool)
+                .await
+                .expect("unknown migration record must remain unchanged");
+        assert_eq!(checksum, vec![1_u8, 2, 3, 4]);
+        check_pool.close().await;
 
         let _ = tokio::fs::remove_dir_all(codex_home).await;
     }

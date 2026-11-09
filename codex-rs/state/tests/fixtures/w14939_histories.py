@@ -1,0 +1,87 @@
+#!/usr/bin/env python3
+"""Construct disposable state schemas from public migration SQL.
+
+This checks fixture provenance and schema effects. It does not invoke the
+Rust migrator or qualify a historical upgrade.
+"""
+
+import hashlib
+import json
+from pathlib import Path
+import sqlite3
+import unittest
+
+
+HERE = Path(__file__).resolve().parent
+UPSTREAM_MIGRATIONS = HERE.parent.parent / "migrations"
+SEDNA = json.loads((HERE / "w14939-sedna-migrations.json").read_text())
+
+
+def entries(source):
+    if source == "sedna":
+        return SEDNA["migrations"]
+    return [
+        {"filename": path.name, "sha384": hashlib.sha384(path.read_bytes()).hexdigest(),
+         "sql": path.read_text()}
+        for path in sorted(UPSTREAM_MIGRATIONS.glob("*.sql"))
+    ]
+
+
+def history(source, through):
+    db = sqlite3.connect(":memory:")
+    db.execute("""CREATE TABLE _sqlx_migrations (
+        version BIGINT PRIMARY KEY, description TEXT NOT NULL,
+        installed_on TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+        success BOOLEAN NOT NULL, checksum BLOB NOT NULL,
+        execution_time BIGINT NOT NULL)""")
+    for entry in entries(source):
+        filename = entry["filename"]
+        version = int(filename.split("_", 1)[0])
+        if version > through:
+            break
+        sql = entry["sql"].encode()
+        assert hashlib.sha384(sql).hexdigest() == entry["sha384"]
+        db.executescript(entry["sql"])
+        description = Path(filename).stem.split("_", 1)[1].replace("_", " ")
+        db.execute("INSERT INTO _sqlx_migrations (version, description, success, checksum, execution_time) VALUES (?, ?, 1, ?, 0)",
+                   (version, description, bytes.fromhex(entry["sha384"])))
+        db.commit()
+    db.execute("""INSERT INTO threads
+        (id, rollout_path, created_at, updated_at, source, model_provider, cwd,
+         title, sandbox_policy, approval_mode)
+        VALUES ('synthetic-thread', '/synthetic.jsonl', 1, 2, 'cli', 'test',
+                '/synthetic', 'preserve-me', 'read-only', 'never')""")
+    db.commit()
+    return db
+
+
+class MigrationHistories(unittest.TestCase):
+    def test_collision_histories_and_schema_effects(self):
+        self.assertEqual(SEDNA["source_commit"], "97f6c6b811cbda5aa618356e6761c541da2b5032")
+        expected_fork = {
+            39: "d7b56acb07c96858bdc7ca4c53db51eb71c6a19ef2c524ff68c2660a6fe0d23211a6d39cb905f01c42ffb7c8ee913bbc",
+            45: "dd42ba9960d4e01c554bfac6a27c67f3c21e80bdc8e0dd928a90d208e1e680976a3ea356a9f9360f9760a5ca42659053",
+        }
+        for version, expected in expected_fork.items():
+            with self.subTest(version=version):
+                fork = history("sedna", version)
+                upstream = history("upstream", version)
+                fork_rows = dict(fork.execute("SELECT version, checksum FROM _sqlx_migrations"))
+                upstream_rows = dict(upstream.execute("SELECT version, checksum FROM _sqlx_migrations"))
+                self.assertEqual(fork_rows[version].hex(), expected)
+                self.assertNotEqual(fork_rows[version], upstream_rows[version])
+                self.assertEqual(next(v for v in sorted(fork_rows) if fork_rows[v] != upstream_rows[v]), 24)
+                self.assertEqual(fork.execute("SELECT title FROM threads WHERE id = 'synthetic-thread'").fetchone(), ("preserve-me",))
+                columns = {row[1] for row in fork.execute("PRAGMA table_info(threads)")}
+                if version == 39:
+                    self.assertNotIn("recency_at", columns)
+                else:
+                    self.assertIn("configured_identity_provenance", columns)
+                    self.assertIn("recency_at", columns)
+                    self.assertNotIn("thread_section_id", columns)
+                fork.close()
+                upstream.close()
+
+
+if __name__ == "__main__":
+    unittest.main()
