@@ -119,11 +119,13 @@ WHERE version = ?
     Ok(())
 }
 
-/// Reject identities we cannot relate to the embedded state migration history.
-/// Validate the entire ledger before the legacy recency rekey can write to it.
-pub(crate) async fn validate_state_migration_identities(
+/// Reject identities we cannot relate to the embedded migration history.
+/// For state, validate the entire ledger before the legacy recency rekey writes.
+pub(crate) async fn validate_migration_identities(
     connection: &mut SqliteConnection,
     migrator: &Migrator,
+    database: &'static str,
+    allow_legacy_recency: bool,
 ) -> anyhow::Result<()> {
     let exists = sqlx::query_scalar::<_, i64>(
         "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = '_sqlx_migrations'",
@@ -148,17 +150,22 @@ pub(crate) async fn validate_state_migration_identities(
         .await?;
         anyhow::ensure!(
             objects == 0,
-            "state schema exists without a recognized migration history"
+            "{database} schema exists without a recognized migration history"
         );
         return Ok(());
     }
-    let legacy_recency = migrator.migrations.iter().find(|m| m.version == 39);
+    let legacy_recency = allow_legacy_recency
+        .then(|| migrator.migrations.iter().find(|m| m.version == 39))
+        .flatten();
     for (index, (version, description, success, checksum)) in applied.iter().enumerate() {
-        anyhow::ensure!(*success, "state migration {version} was not successful");
+        anyhow::ensure!(
+            *success,
+            "{database} migration {version} was not successful"
+        );
         let migration = migrator.migrations.get(index);
         anyhow::ensure!(
             migration.is_some_and(|m| m.version == *version),
-            "unrecognized or incomplete state migration history at version {version}"
+            "unrecognized or incomplete {database} migration history at version {version}"
         );
         if *version == 38
             && index + 1 == applied.len()
@@ -174,7 +181,7 @@ pub(crate) async fn validate_state_migration_identities(
                 m.description.as_ref() == description.as_str()
                     && m.checksum.as_ref() == checksum.as_slice()
             }),
-            "unrecognized state migration identity at version {version}"
+            "unrecognized {database} migration identity at version {version}"
         );
     }
     Ok(())
