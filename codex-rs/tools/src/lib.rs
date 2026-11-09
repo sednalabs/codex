@@ -1,7 +1,6 @@
 //! Shared tool definitions and Responses API tool primitives that can live
 //! outside `codex-core`.
 
-mod browser_tool;
 mod code_mode;
 mod computer_use_tool;
 mod desktop_tool;
@@ -23,16 +22,12 @@ mod tool_payload;
 mod tool_search;
 mod tool_spec;
 
-pub use browser_tool::BROWSER_OBSERVE_TOOL_NAME;
-pub use browser_tool::BROWSER_STEP_TOOL_NAME;
-pub use browser_tool::canonical_browser_dynamic_tool;
 pub use code_mode::augment_tool_spec_for_code_mode;
 pub use code_mode::code_mode_name_for_tool_name;
 pub use code_mode::collect_code_mode_exec_prompt_tool_definitions;
 pub use code_mode::collect_code_mode_tool_definitions;
 pub use code_mode::tool_spec_to_code_mode_tool_definition;
 pub use codex_protocol::ToolName;
-pub use computer_use_tool::COMPUTER_USE_ADAPTER_BROWSER;
 pub use computer_use_tool::COMPUTER_USE_ADAPTER_DESKTOP;
 pub use computer_use_tool::NativeComputerUseProvider;
 pub use computer_use_tool::NativeComputerUseProviderTool;

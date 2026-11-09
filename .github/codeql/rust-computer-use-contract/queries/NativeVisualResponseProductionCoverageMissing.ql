@@ -1,7 +1,7 @@
 /**
  * @name Native visual response production handler coverage missing
  * @id rust/native-visual-response-production-handler-coverage-missing
- * @description The retained production browser visual handler must remain discoverable with at least one recognized successful response exit so native-image guard analysis cannot become vacuous.
+ * @description The retained production desktop visual handler must remain discoverable with at least one recognized successful response exit so native-image guard analysis cannot become vacuous.
  * @kind problem
  * @problem.severity error
  * @precision high
@@ -14,7 +14,7 @@ import rust
 import NativeVisualResponseFlow
 
 predicate expectedProductionHandler(File file, string handlerName) {
-  file.getRelativePath() = "codex-rs/browser-computer-use/src/lib.rs" and
+  file.getRelativePath() = "codex-rs/tui/src/desktop_computer_use_provider.rs" and
   handlerName = "handle_with_provider"
 }
 

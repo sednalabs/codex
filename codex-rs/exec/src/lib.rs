@@ -24,8 +24,6 @@ use codex_app_server_client::InProcessAppServerClient;
 use codex_app_server_client::InProcessClientStartArgs;
 use codex_app_server_client::InProcessServerEvent;
 use codex_app_server_protocol::ClientRequest;
-use codex_app_server_protocol::ComputerUseCallParams;
-use codex_app_server_protocol::ComputerUseCallResponse;
 use codex_app_server_protocol::ConfigWarningNotification;
 use codex_app_server_protocol::JSONRPCErrorError;
 use codex_app_server_protocol::McpServerElicitationAction;
@@ -57,7 +55,6 @@ use codex_app_server_protocol::TurnStartParams;
 use codex_app_server_protocol::TurnStartResponse;
 use codex_app_server_protocol::TurnStartedNotification;
 use codex_arg0::Arg0DispatchPaths;
-use codex_browser_computer_use::BrowserComputerUseOutcome;
 use codex_cloud_config::cloud_config_bundle_loader_for_storage;
 use codex_config::AppToolApproval;
 use codex_config::CloudConfigBundleLoader;
@@ -110,8 +107,6 @@ use codex_protocol::protocol::RolloutLine;
 use codex_protocol::protocol::SessionConfiguredEvent;
 use codex_protocol::protocol::SessionSource;
 use codex_protocol::user_input::UserInput;
-use codex_tools::COMPUTER_USE_ADAPTER_BROWSER;
-use codex_tools::native_computer_use_provider_for_call;
 use codex_utils_absolute_path::AbsolutePathBuf;
 use codex_utils_cli::SharedCliOptions;
 use codex_utils_oss::ensure_oss_provider_ready;
@@ -1178,13 +1173,7 @@ async fn run_exec_session(args: ExecRunArgs) -> anyhow::Result<()> {
 
         match server_event {
             InProcessServerEvent::ServerRequest(request) => {
-                handle_server_request(
-                    &client,
-                    request,
-                    &mut error_seen,
-                    config.codex_home.as_path(),
-                )
-                .await;
+                handle_server_request(&client, request, &mut error_seen).await;
             }
             InProcessServerEvent::ServerNotification(mut notification) => {
                 if let ServerNotification::Error(payload) = &notification {
@@ -1275,7 +1264,7 @@ fn thread_start_params_from_config(config: &Config) -> ThreadStartParams {
         config: config_request_overrides_from_config(config),
         ephemeral: Some(config.ephemeral),
         thread_source: Some(ThreadSource::User),
-        dynamic_tools: configured_native_dynamic_tools(config),
+        dynamic_tools: None,
         ..ThreadStartParams::default()
     }
 }
@@ -1303,86 +1292,9 @@ fn thread_resume_params_from_config(
         sandbox: sandbox.flatten(),
         permissions,
         config: config_request_overrides_from_config(config),
-        dynamic_tools: configured_native_dynamic_tools(config),
+        dynamic_tools: None,
         ..ThreadResumeParams::default()
     }
-}
-
-fn configured_native_dynamic_tools(
-    config: &Config,
-) -> Option<Vec<codex_app_server_protocol::DynamicToolSpec>> {
-    let tools = codex_browser_computer_use::configured_browser_dynamic_tools_for_codex_home(
-        config.codex_home.as_path(),
-    );
-    (!tools.is_empty()).then_some(tools)
-}
-
-enum ExecComputerUseProviderOutcome {
-    Handled(ComputerUseCallResponse),
-    Unavailable,
-}
-
-fn exec_computer_use_providers() -> &'static [ExecComputerUseProvider] {
-    static PROVIDERS: [ExecComputerUseProvider; 1] = [ExecComputerUseProvider {
-        adapter: COMPUTER_USE_ADAPTER_BROWSER,
-        handler: ExecComputerUseProviderHandler::Browser,
-    }];
-
-    &PROVIDERS
-}
-
-#[derive(Clone, Copy)]
-struct ExecComputerUseProvider {
-    adapter: &'static str,
-    handler: ExecComputerUseProviderHandler,
-}
-
-#[derive(Clone, Copy)]
-enum ExecComputerUseProviderHandler {
-    Browser,
-}
-
-impl ExecComputerUseProvider {
-    fn supports(&self, params: &ComputerUseCallParams) -> bool {
-        native_computer_use_provider_for_call(&params.adapter, &params.tool)
-            .is_some_and(|(provider, _)| provider.adapter == self.adapter)
-    }
-
-    async fn handle(
-        &self,
-        params: &ComputerUseCallParams,
-        codex_home: &Path,
-    ) -> ExecComputerUseProviderOutcome {
-        match self.handler {
-            ExecComputerUseProviderHandler::Browser => {
-                match codex_browser_computer_use::handle_browser_computer_use_for_codex_home(
-                    params, codex_home,
-                )
-                .await
-                {
-                    BrowserComputerUseOutcome::Handled(response) => {
-                        ExecComputerUseProviderOutcome::Handled(response)
-                    }
-                    BrowserComputerUseOutcome::Unavailable => {
-                        ExecComputerUseProviderOutcome::Unavailable
-                    }
-                }
-            }
-        }
-    }
-}
-
-async fn handle_exec_computer_use_for_codex_home(
-    params: &ComputerUseCallParams,
-    codex_home: &Path,
-) -> ExecComputerUseProviderOutcome {
-    for provider in exec_computer_use_providers() {
-        if provider.supports(params) {
-            return provider.handle(params, codex_home).await;
-        }
-    }
-
-    ExecComputerUseProviderOutcome::Unavailable
 }
 
 fn config_request_overrides_from_config(config: &Config) -> Option<HashMap<String, Value>> {
@@ -1941,7 +1853,6 @@ async fn handle_server_request(
     client: &InProcessAppServerClient,
     request: ServerRequest,
     error_seen: &mut bool,
-    codex_home: &Path,
 ) {
     let method = server_request_method_name(&request);
     let handle_result = match request {
@@ -2011,28 +1922,16 @@ async fn handle_server_request(
             .await
         }
         ServerRequest::ComputerUseCall { request_id, params } => {
-            match handle_exec_computer_use_for_codex_home(&params, codex_home).await {
-                ExecComputerUseProviderOutcome::Handled(response) => {
-                    match serde_json::to_value(response) {
-                        Ok(value) => {
-                            resolve_server_request(client, request_id, value, &method).await
-                        }
-                        Err(err) => {
-                            Err(format!("failed to serialize computer-use response: {err}"))
-                        }
-                    }
-                }
-                ExecComputerUseProviderOutcome::Unavailable => reject_server_request(
-                    client,
-                    request_id,
-                    &method,
-                    format!(
-                        "No exec computer-use provider is available for `{}`/`{}` in thread `{}`.",
-                        params.adapter, params.tool, params.thread_id
-                    ),
-                )
-                .await,
-            }
+            reject_server_request(
+                client,
+                request_id,
+                &method,
+                format!(
+                    "No exec computer-use provider is available for `{}`/`{}` in thread `{}`.",
+                    params.adapter, params.tool, params.thread_id
+                ),
+            )
+            .await
         }
         ServerRequest::CurrentTimeRead { request_id, params } => {
             reject_server_request(
@@ -2704,7 +2603,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn thread_lifecycle_params_keep_browser_tools_and_ignore_retired_android_config() {
+    async fn thread_lifecycle_params_ignore_retired_browser_and_android_config() {
         let codex_home = tempdir().expect("create temp codex home");
         std::fs::write(
             codex_home.path().join("browser-computer-use.json"),
@@ -2731,59 +2630,8 @@ mod tests {
             /*approvals_reviewer_override*/ None,
         );
 
-        let native_tools = vec!["browser_observe".to_string(), "browser_step".to_string()];
-        assert_eq!(
-            start_params
-                .dynamic_tools
-                .expect("start dynamic tools")
-                .into_iter()
-                .map(|tool| tool.name)
-                .collect::<Vec<_>>(),
-            native_tools
-        );
-        assert_eq!(
-            resume_params
-                .dynamic_tools
-                .expect("resume dynamic tools")
-                .into_iter()
-                .map(|tool| tool.name)
-                .collect::<Vec<_>>(),
-            native_tools
-        );
-    }
-
-    #[test]
-    fn exec_computer_use_provider_registry_declares_supported_exec_adapters() {
-        assert_eq!(
-            exec_computer_use_providers()
-                .iter()
-                .map(|provider| provider.adapter)
-                .collect::<Vec<_>>(),
-            vec![COMPUTER_USE_ADAPTER_BROWSER]
-        );
-    }
-
-    #[tokio::test]
-    async fn exec_computer_use_provider_registry_does_not_claim_unknown_tools() {
-        let codex_home = tempdir().expect("create temp codex home");
-        let outcome = handle_exec_computer_use_for_codex_home(
-            &ComputerUseCallParams {
-                thread_id: "thread-1".to_string(),
-                call_id: "call-unknown".to_string(),
-                turn_id: "turn-1".to_string(),
-                environment_id: Some("env-1".to_string()),
-                adapter: COMPUTER_USE_ADAPTER_BROWSER.to_string(),
-                tool: "browser_private_backend_probe".to_string(),
-                arguments: serde_json::json!({}),
-            },
-            codex_home.path(),
-        )
-        .await;
-
-        assert!(matches!(
-            outcome,
-            ExecComputerUseProviderOutcome::Unavailable
-        ));
+        assert!(start_params.dynamic_tools.is_none());
+        assert!(resume_params.dynamic_tools.is_none());
     }
 
     #[tokio::test]

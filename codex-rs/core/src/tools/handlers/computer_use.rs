@@ -447,11 +447,7 @@ fn unavailable_response(message: &str) -> ComputerUseResponse {
 }
 
 fn adapter_display_name(adapter: &str) -> String {
-    match adapter {
-        "android" => "Android".to_string(),
-        "browser" => "Browser".to_string(),
-        other => other.to_string(),
-    }
+    adapter.to_string()
 }
 
 #[cfg(test)]
@@ -473,8 +469,6 @@ mod tests {
     use codex_protocol::dynamic_tools::DynamicToolSpec;
     use codex_protocol::models::FunctionCallOutputContentItem;
     use codex_protocol::protocol::EventMsg;
-    use codex_tools::BROWSER_OBSERVE_TOOL_NAME;
-    use codex_tools::COMPUTER_USE_ADAPTER_BROWSER;
     use codex_tools::COMPUTER_USE_ADAPTER_DESKTOP;
     use codex_tools::DESKTOP_OBSERVE_TOOL_NAME;
     use codex_tools::LoadableToolSpec;
@@ -512,19 +506,10 @@ mod tests {
     }
 
     #[test]
-    fn browser_handler_uses_browser_adapter() {
-        let observe_handler = ComputerUseHandler::from_dynamic_tool(&native_dynamic_tool(
-            BROWSER_OBSERVE_TOOL_NAME,
-            /*defer_loading*/ false,
-        ))
-        .expect("browser observe should create a native computer-use handler");
-
-        assert_eq!(observe_handler.adapter, COMPUTER_USE_ADAPTER_BROWSER);
-    }
-
-    #[test]
-    fn retired_android_tools_are_not_native_computer_use_handlers() {
+    fn retired_browser_and_android_tools_are_not_native_computer_use_handlers() {
         for tool_name in [
+            "browser_observe",
+            "browser_step",
             "android_observe",
             "android_step",
             "android_install_build_from_run",

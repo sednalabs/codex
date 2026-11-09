@@ -1457,31 +1457,6 @@
       "needs_sccache": true
     },
     {
-      "lane_id": "codex.native-browser-evidence-targeted",
-      "groups": [
-        "ui_protocol"
-      ],
-      "lane_sets": [
-        "all",
-        "ui-protocol"
-      ],
-      "frontier_default": true,
-      "frontier_lane_sets": [
-        "ui-protocol"
-      ],
-      "setup_class": "node",
-      "batch_weight_seconds": 300,
-      "working_directory": ".",
-      "script_path": ".github/scripts/validation-lanes/native-browser-evidence.sh",
-      "script_args": [],
-      "needs_just": false,
-      "needs_node": true,
-      "needs_nextest": false,
-      "needs_linux_build_deps": false,
-      "needs_dotslash": false,
-      "needs_sccache": false
-    },
-    {
       "lane_id": "codex.app-server-collab-spawn-identity-targeted",
       "groups": [
         "ui_protocol"
@@ -2636,6 +2611,7 @@
         "codex-rs/app-server-protocol/src/protocol/v2/tests.rs",
         "codex-rs/app-server/src/bespoke_event_handling.rs",
         "codex-rs/app-server/src/request_processors/thread_processor.rs",
+        "codex-rs/app-server/src/request_processors/thread_processor_tests.rs",
         "codex-rs/app-server/tests/suite/v2/turn_start.rs",
         "codex-rs/core/src/agent/control.rs",
         "codex-rs/core/src/tools/handlers/multi_agents/close_agent.rs",
@@ -2730,28 +2706,6 @@
       ]
     },
     {
-      "route_id": "native-browser-guidance",
-      "lane_ids": [
-        "codex.native-browser-evidence-targeted"
-      ],
-      "allowed_paths": [
-        ".codex/skills/use-native-browser/**",
-        ".github/scripts/validation-lanes/native-browser-evidence.sh",
-        ".github/validation-lanes.json",
-        ".github/scripts/test_ci_planners.py",
-        "justfile",
-        "docs/native-computer-use.md",
-        "docs/downstream-tool-surface-matrix.md",
-        "docs/downstream-regression-matrix.md",
-        "docs/divergences/index.yaml",
-        "docs/carry-divergence-ledger.md"
-      ],
-      "required_any_paths": [
-        ".codex/skills/use-native-browser/**",
-        ".github/scripts/validation-lanes/native-browser-evidence.sh"
-      ]
-    },
-    {
       "route_id": "app-server-computer-use",
       "lane_ids": [
         "codex.app-server-protocol-test",
@@ -2759,7 +2713,6 @@
         "codex.tui-native-computer-use-targeted",
         "codex.exec-native-computer-use-targeted",
         "codex.native-computer-use-tool-registry-targeted",
-        "codex.native-browser-evidence-targeted",
         "codex.code-mode-declaration-targeted",
         "codex.native-computer-use-doctor-targeted"
       ],
@@ -2771,6 +2724,10 @@
         "codex-rs/app-server-protocol/schema/**",
         "codex-rs/app-server-protocol/src/**",
         "codex-rs/core/src/thread_manager.rs",
+        "codex-rs/core/src/agent/control/spawn.rs",
+        "codex-rs/core/src/agent/control_tests.rs",
+        "codex-rs/core/src/session/mod.rs",
+        "codex-rs/core/src/session/tests.rs",
         "codex-rs/core-plugins/src/lib.rs",
         "codex-rs/code-mode-protocol/src/description.rs",
         "codex-rs/core/src/tools/handlers/computer_use.rs",
@@ -2793,19 +2750,28 @@
         "codex-rs/cli/src/doctor/computer_use.rs",
         "codex-rs/cli/src/doctor/output.rs",
         "codex-rs/browser-computer-use/**",
-        "codex-rs/browser-computer-use/BUILD.bazel",
-        "codex-rs/browser-computer-use/Cargo.toml",
         ".github/scripts/validation-lanes/native-browser-evidence.sh",
+        "codex-rs/Cargo.toml",
+        "codex-rs/core/Cargo.toml",
         "codex-rs/exec/Cargo.toml",
         "codex-rs/exec/src/lib.rs",
+        "codex-rs/exec/tests/event_processor_with_json_output.rs",
         "codex-rs/exec/src/lib_tests.rs",
         "codex-rs/tui/Cargo.toml",
-        "codex-rs/tui/src/browser_computer_use_provider.rs",
         "codex-rs/tui/src/computer_use_provider.rs",
+        "codex-rs/tui/src/browser_computer_use_provider.rs",
         "codex-rs/tui/src/desktop_computer_use_provider.rs",
         "codex-rs/tui/src/app_server_session.rs",
         "codex-rs/tui/src/app/app_server_adapter.rs",
         "codex-rs/tui/src/app/app_server_events.rs",
+        ".github/codeql/rust-computer-use-contract/**",
+        ".github/scripts/classify_ci_paths.py",
+        ".github/scripts/test_classify_ci_paths.py",
+        ".github/scripts/verify_native_visual_response_contract.py",
+        ".github/scripts/test_verify_native_visual_response_contract.py",
+        ".github/workflows/codeql.yml",
+        ".github/workflows/sedna-heavy-tests.yml",
+        ".codex/skills/use-native-browser/**",
         "codex-rs/tui/src/app/tests.rs",
         "codex-rs/tui/src/lib.rs",
         "justfile",
@@ -2828,13 +2794,9 @@
         "codex-rs/core/src/tools/handlers/computer_use.rs",
         "codex-rs/core/src/tools/handlers/computer_use_code_mode.rs",
         "codex-rs/tools/src/android_tool.rs",
-        "codex-rs/tools/src/browser_tool.rs",
         "codex-rs/tools/src/computer_use_tool.rs",
         "codex-rs/tools/src/desktop_tool.rs",
-        "codex-rs/browser-computer-use/src/lib.rs",
-        "codex-rs/browser-computer-use/src/browser_playwright_provider.mjs",
         "codex-rs/exec/src/lib.rs",
-        "codex-rs/tui/src/browser_computer_use_provider.rs",
         "codex-rs/tui/src/computer_use_provider.rs",
         "codex-rs/tui/src/desktop_computer_use_provider.rs",
         "codex-rs/tui/src/app_server_session.rs",

@@ -2345,22 +2345,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "codex-browser-computer-use"
-version = "0.0.0"
-dependencies = [
- "codex-app-server-protocol",
- "codex-protocol",
- "codex-tools",
- "codex-utils-home-dir",
- "pretty_assertions",
- "serde",
- "serde_json",
- "shlex 1.3.0",
- "tempfile",
- "tokio",
-]
-
-[[package]]
 name = "codex-bwrap"
 version = "0.0.0"
 dependencies = [
@@ -2739,7 +2723,6 @@ dependencies = [
  "codex-app-server-protocol",
  "codex-apply-patch",
  "codex-async-utils",
- "codex-browser-computer-use",
  "codex-code-mode",
  "codex-config",
  "codex-connectors",
@@ -2974,7 +2957,6 @@ dependencies = [
  "codex-app-server-protocol",
  "codex-apply-patch",
  "codex-arg0",
- "codex-browser-computer-use",
  "codex-cloud-config",
  "codex-config",
  "codex-core",
@@ -2985,7 +2967,6 @@ dependencies = [
  "codex-otel",
  "codex-protocol",
  "codex-runtime-proof",
- "codex-tools",
  "codex-utils-absolute-path",
  "codex-utils-cargo-bin",
  "codex-utils-cli",
@@ -4326,7 +4307,6 @@ dependencies = [
  "codex-app-server-client",
  "codex-app-server-protocol",
  "codex-arg0",
- "codex-browser-computer-use",
  "codex-cli",
  "codex-cloud-config",
  "codex-config",

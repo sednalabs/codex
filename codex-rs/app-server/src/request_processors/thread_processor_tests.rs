@@ -199,7 +199,7 @@ mod thread_processor_behavior_tests {
     }
 
     #[test]
-    fn validate_dynamic_tools_accepts_deferred_bare_browser_computer_use_tool() {
+    fn validate_dynamic_tools_rejects_deferred_bare_retired_browser_tool() {
         let tools = vec![dynamic_tool(
             /*namespace*/ None,
             "browser_observe",
@@ -207,7 +207,12 @@ mod thread_processor_behavior_tests {
             /*defer_loading*/ true,
         )];
 
-        validate_dynamic_tools(&tools).expect("deferred native Browser tool is valid");
+        let err = validate_dynamic_tools(&tools)
+            .expect_err("retired bare Browser tools must not bypass the namespace requirement");
+        assert!(
+            err.contains("must include a namespace"),
+            "unexpected error: {err}"
+        );
     }
 
     #[test]
@@ -227,10 +232,10 @@ mod thread_processor_behavior_tests {
     }
 
     #[test]
-    fn capability_bearing_native_dynamic_tool_requires_thread_reload() {
+    fn capability_bearing_desktop_dynamic_tool_requires_thread_reload() {
         let mut tool = dynamic_tool(
             /*namespace*/ None,
-            "browser_observe",
+            "desktop_observe",
             json!({"type": "object", "properties": {}}),
             /*defer_loading*/ false,
         );

@@ -1,9 +1,7 @@
-use super::COMPUTER_USE_ADAPTER_BROWSER;
 use super::COMPUTER_USE_ADAPTER_DESKTOP;
 use super::canonical_native_computer_use_dynamic_tool;
 use super::native_computer_use_provider_for_call;
 use super::native_computer_use_provider_registry;
-use crate::BROWSER_STEP_TOOL_NAME;
 use crate::DESKTOP_OBSERVE_TOOL_NAME;
 use crate::DESKTOP_STEP_TOOL_NAME;
 use codex_protocol::dynamic_tools::DynamicToolSpec;
@@ -20,15 +18,6 @@ fn dynamic_tool(name: &str) -> DynamicToolSpec {
         persist_on_resume: true,
         capability: None,
     }
-}
-
-#[test]
-fn native_computer_use_registry_classifies_browser_tools() {
-    let browser = canonical_native_computer_use_dynamic_tool(&dynamic_tool(BROWSER_STEP_TOOL_NAME))
-        .expect("browser step should be native computer-use");
-
-    assert_eq!(browser.adapter, COMPUTER_USE_ADAPTER_BROWSER);
-    assert!(browser.is_mutating);
 }
 
 #[test]
@@ -50,15 +39,8 @@ fn native_computer_use_provider_registry_declares_adapters_tools_and_backends() 
             .iter()
             .map(|provider| provider.adapter)
             .collect::<Vec<_>>(),
-        vec![COMPUTER_USE_ADAPTER_BROWSER, COMPUTER_USE_ADAPTER_DESKTOP,]
+        vec![COMPUTER_USE_ADAPTER_DESKTOP]
     );
-
-    let (browser, browser_step) =
-        native_computer_use_provider_for_call(COMPUTER_USE_ADAPTER_BROWSER, BROWSER_STEP_TOOL_NAME)
-            .expect("browser step tool should be declared");
-    assert_eq!(browser.backend_argument, Some("backend"));
-    assert!(browser.backend_hints.contains(&"chrome"));
-    assert!(browser_step.is_mutating);
 
     let (desktop, desktop_observe) = native_computer_use_provider_for_call(
         COMPUTER_USE_ADAPTER_DESKTOP,
@@ -77,13 +59,18 @@ fn native_computer_use_registry_does_not_claim_retired_android_tools() {
 }
 
 #[test]
+fn native_computer_use_registry_does_not_claim_retired_browser_tools() {
+    assert!(native_computer_use_provider_for_call("browser", "browser_observe").is_none());
+    assert!(native_computer_use_provider_for_call("browser", "browser_step").is_none());
+    assert!(canonical_native_computer_use_dynamic_tool(&dynamic_tool("browser_observe")).is_none());
+    assert!(canonical_native_computer_use_dynamic_tool(&dynamic_tool("browser_step")).is_none());
+}
+
+#[test]
 fn native_computer_use_provider_registry_does_not_claim_unknown_tools() {
     assert!(
-        native_computer_use_provider_for_call(
-            COMPUTER_USE_ADAPTER_BROWSER,
-            "browser_private_backend_probe",
-        )
-        .is_none()
+        native_computer_use_provider_for_call("browser", "browser_private_backend_probe",)
+            .is_none()
     );
     assert!(
         canonical_native_computer_use_dynamic_tool(&dynamic_tool("browser_private_backend_probe"))
