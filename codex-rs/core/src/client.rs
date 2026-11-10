@@ -312,7 +312,10 @@ pub struct ModelClient {
     http_client_factory: HttpClientFactory,
     restored_history: bool,
     instruction_overlays: Arc<codex_config::InstructionOverlaysToml>,
+    instruction_overlay_origin_fences: Arc<[codex_config::InstructionOverlayComponent]>,
     adopted_baseline_digests: Arc<AdoptedBaselineDigests>,
+    client_owned_baseline_digest: Arc<AdoptedBaselineDigests>,
+    model_baseline_editable: bool,
     request_contributors: Vec<Arc<dyn codex_extension_api::ModelRequestContributor>>,
     executed_tool_calls: Option<ExecutedToolCalls>,
     // Resolved once when the session is created, like other session feature flags.
@@ -660,7 +663,10 @@ impl ModelClient {
             http_client_factory,
             restored_history: false,
             instruction_overlays: Arc::new(codex_config::InstructionOverlaysToml::default()),
+            instruction_overlay_origin_fences: Arc::default(),
             adopted_baseline_digests: Arc::default(),
+            client_owned_baseline_digest: Arc::default(),
+            model_baseline_editable: false,
             request_contributors,
             executed_tool_calls: None,
             api_key_cyber_access_programs:
@@ -677,10 +683,17 @@ impl ModelClient {
     pub(crate) fn with_instruction_overlays(
         mut self,
         overlays: codex_config::InstructionOverlaysToml,
+        origin_fences: Vec<codex_config::InstructionOverlayComponent>,
         adopted_baseline_digests: Vec<String>,
+        client_owned_baseline_digest: Vec<String>,
+        model_baseline_editable: bool,
     ) -> Self {
         self.instruction_overlays = Arc::new(overlays);
+        self.instruction_overlay_origin_fences = origin_fences.into();
         self.adopted_baseline_digests = Arc::new(AdoptedBaselineDigests(adopted_baseline_digests));
+        self.client_owned_baseline_digest =
+            Arc::new(AdoptedBaselineDigests(client_owned_baseline_digest));
+        self.model_baseline_editable = model_baseline_editable;
         self
     }
 
@@ -1210,30 +1223,39 @@ impl ModelClient {
         include_internal: bool,
     ) -> Result<ResponsesApiRequest> {
         let mut input = prompt.get_formatted_input_for_request(model_info);
-        let active_baseline_overlay = matches!(
+        let review = matches!(
             &self.state.session_source,
-            SessionSource::Cli
-                | SessionSource::VSCode
-                | SessionSource::Exec
-                | SessionSource::Mcp
-                | SessionSource::SubAgent(SubAgentSource::ThreadSpawn { .. })
-        ) && self
-            .instruction_overlays
-            .model_baseline
-            .as_ref()
+            SessionSource::SubAgent(SubAgentSource::Review)
+        );
+        let active_overlay = instruction_overlays::has_eligible_plan(
+            &self.state.session_source,
+            &self.instruction_overlays,
+            &model_info.slug,
+        );
+        let active_baseline_overlay = active_overlay
+            && if review {
+                self.instruction_overlays.review_baseline.as_ref()
+            } else {
+                self.instruction_overlays.model_baseline.as_ref()
+            }
             .is_some_and(|plan| !plan.edits.is_empty() && plan.applies_to_model(&model_info.slug));
         let authority = prompt
             .overlay_base_instructions
             .as_ref()
             .unwrap_or(&prompt.base_instructions);
-        let baseline_authorized = self.state.provider.info().is_openai()
-            && (matches!(
-                authority.provenance,
-                Some(BaseInstructionsProvenance::Model { .. })
-            ) || self.adopted_baseline_digests.0.iter().any(|digest| {
-                *digest
-                    == codex_config::HistoricalBaselineAdoption::baseline_digest(&authority.text)
-            }));
+        let authority_digest =
+            codex_config::HistoricalBaselineAdoption::baseline_digest(&authority.text);
+        let baseline_authorized = self
+            .client_owned_baseline_digest
+            .0
+            .contains(&authority_digest)
+            || self.state.provider.info().is_openai()
+                && ((self.model_baseline_editable
+                    && matches!(
+                        authority.provenance,
+                        Some(BaseInstructionsProvenance::Model { .. })
+                    ))
+                    || (!review && self.adopted_baseline_digests.0.contains(&authority_digest)));
         if active_baseline_overlay {
             if !baseline_authorized {
                 self.report_instruction_overlay(
@@ -1244,11 +1266,32 @@ impl ModelClient {
                     "instruction overlay blocked: protected or unknown baseline".into(),
                 ));
             }
+            let current_template = codex_prompts::render_model_instructions(model_info);
+            let current_template_without_plan =
+                codex_prompts::without_update_plan_instructions(&current_template);
+            let mut expected = vec![authority.text.as_str()];
+            if self.model_baseline_editable
+                && matches!(
+                    authority.provenance,
+                    Some(BaseInstructionsProvenance::Model { .. })
+                )
+            {
+                expected.extend([
+                    current_template.as_str(),
+                    current_template_without_plan.as_str(),
+                ]);
+            }
             if let Err(error) =
-                instruction_overlays::classify_retained_baseline(&mut input, &authority.text)
+                instruction_overlays::classify_retained_baseline(&mut input, &expected)
             {
                 self.report_instruction_overlay(responses_metadata, "blocked: ambiguous baseline");
                 return Err(CodexErr::InvalidRequest(error.to_string()));
+            }
+            if !prompt.base_instructions.text.is_empty() {
+                instruction_overlays::remove_duplicate_retained_baseline(
+                    &mut input,
+                    &prompt.base_instructions.text,
+                );
             }
         }
         if !self.reasoning_effort_override_enabled(model_info) {
@@ -1313,23 +1356,14 @@ impl ModelClient {
             prefix.push(instructions);
         }
         input.splice(0..0, prefix);
-        if active_baseline_overlay {
+        if active_overlay {
             let before = input.clone();
-            let fences = [
-                codex_config::InstructionOverlayComponent::DeveloperGuidance,
-                codex_config::InstructionOverlayComponent::MultiAgentMode,
-                codex_config::InstructionOverlayComponent::MultiAgentRole,
-                codex_config::InstructionOverlayComponent::MultiAgentUsageHint,
-                codex_config::InstructionOverlayComponent::ModelSwitchGuidance,
-                codex_config::InstructionOverlayComponent::CollaborationGuidance,
-                codex_config::InstructionOverlayComponent::PersistentGuidance,
-            ];
             input = match instruction_overlays::transform_request(
                 &self.state.session_source,
                 &self.instruction_overlays,
                 &model_info.slug,
                 baseline_authorized,
-                &fences,
+                &self.instruction_overlay_origin_fences,
                 input,
             ) {
                 Ok(input) => input,

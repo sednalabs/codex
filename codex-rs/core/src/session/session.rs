@@ -1552,9 +1552,8 @@ impl Session {
                 config.model_context_window,
                 config.model_auto_compact_token_limit,
                 config.permissions.approval_policy.value(),
-                config
-                    .permissions
-                    .legacy_sandbox_policy(session_configuration.cwd().as_path()),
+                &config.permissions.effective_permission_profile(),
+                session_configuration.cwd().as_path(),
                 mcp_server_names.iter().map(String::as_str).collect(),
                 &crate::config::legacy_multi_agent_disabled_sources(&config.config_layer_stack),
             );
@@ -1915,6 +1914,7 @@ impl Session {
                 config.features.enabled(Feature::ReasoningEffortOverride) && !title_request;
             let mut adopted_baseline_digests = Vec::new();
             if config.base_instructions.is_none()
+                && config.model_provider_id == codex_model_provider_info::OPENAI_PROVIDER_ID
                 && let (Some(adoption), Some(plan), Some(historical)) = (
                     config.historical_baseline_adoption.as_ref(),
                     config.instruction_overlays.model_baseline.as_ref(),
@@ -1962,7 +1962,16 @@ impl Session {
                 extensions.model_request_contributors().to_vec(),
             )
             .with_executed_tool_calls(executed_tool_calls.clone())
-            .with_instruction_overlays(config.instruction_overlays.clone(), adopted_baseline_digests)
+            .with_instruction_overlays(
+                config.instruction_overlays.clone(),
+                config.instruction_overlay_origin_fences(&session_configuration.session_source),
+                adopted_baseline_digests,
+                config.base_instructions.as_ref().filter(|_| config.client_owned_base_instructions)
+                    .map(|text| vec![codex_config::HistoricalBaselineAdoption::baseline_digest(text)])
+                    .unwrap_or_default(),
+                config.base_instructions.is_none()
+                    && config.model_provider_id == codex_model_provider_info::OPENAI_PROVIDER_ID,
+            )
             .with_restored_history(matches!(
                 &initial_history,
                 InitialHistory::Resumed(_) | InitialHistory::Forked(_)

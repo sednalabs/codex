@@ -26,11 +26,24 @@ const NORMAL_COMPONENTS: &[InstructionOverlayComponent] = &[
 const REVIEW_COMPONENTS: &[InstructionOverlayComponent] =
     &[InstructionOverlayComponent::ReviewBaseline];
 
+pub(super) fn has_eligible_plan(
+    source: &SessionSource,
+    plan: &InstructionOverlaysToml,
+    model: &str,
+) -> bool {
+    eligible_components(source).is_some_and(|components| {
+        components.iter().any(|component| {
+            plan.component(*component)
+                .is_some_and(|p| !p.edits.is_empty() && p.applies_to_model(model))
+        })
+    })
+}
+
 /// Classify exactly one retained baseline by its complete text, on the request copy.
 /// A historical marker alone is not proof that the text belongs to the current baseline.
 pub(super) fn classify_retained_baseline(
     input: &mut [ResponseItem],
-    expected: &str,
+    expected: &[&str],
 ) -> Result<usize> {
     let mut found = 0;
     for item in input {
@@ -75,7 +88,7 @@ pub(super) fn classify_retained_baseline(
             let ContentItem::InputText { text } = content else {
                 anyhow::bail!("instruction overlay blocked: baseline is not text");
             };
-            if text != expected {
+            if !expected.contains(&text.as_str()) {
                 anyhow::bail!("instruction overlay blocked: ambiguous baseline identity");
             }
             found += 1;
@@ -86,6 +99,52 @@ pub(super) fn classify_retained_baseline(
         }
     }
     Ok(found)
+}
+
+/// Remove the one exact retained duplicate when the request also has a scalar prefix.
+/// This operates only on the request copy and keeps all parallel metadata aligned.
+pub(super) fn remove_duplicate_retained_baseline(input: &mut Vec<ResponseItem>, expected: &str) {
+    input.retain_mut(|item| {
+        let ResponseItem::Message {
+            id,
+            role,
+            content,
+            internal_chat_message_metadata_passthrough: Some(metadata),
+            ..
+        } = item
+        else {
+            return true;
+        };
+        if role != "developer" {
+            return true;
+        }
+        let Some(kinds) = metadata.content_item_kinds.as_mut() else {
+            return true;
+        };
+        let Some(index) = kinds
+            .iter()
+            .zip(content.iter())
+            .position(|(kind, content)| {
+                kind.as_str() == "client.base_instructions"
+                    && matches!(content, ContentItem::InputText { text } if text == expected)
+            })
+        else {
+            return true;
+        };
+        content.remove(index);
+        kinds.remove(index);
+        if kinds.is_empty() {
+            metadata.content_item_kinds = None;
+        }
+        if let Some(sources) = metadata.content_item_metadata.as_mut() {
+            sources.remove(index);
+            if sources.is_empty() {
+                metadata.content_item_metadata = None;
+            }
+        }
+        *id = None;
+        !content.is_empty()
+    });
 }
 
 pub(super) fn transform_request(
@@ -485,7 +544,7 @@ mod tests {
         let original = vec![retained("synthetic target")];
         let mut request = original.clone();
         assert_eq!(
-            classify_retained_baseline(&mut request, "synthetic target").unwrap(),
+            classify_retained_baseline(&mut request, &["synthetic target"]).unwrap(),
             1
         );
         let plan = InstructionOverlaysToml {
@@ -531,9 +590,9 @@ mod tests {
     fn retained_baseline_requires_exact_unambiguous_identity() {
         let original = vec![retained("other baseline")];
         let mut request = original.clone();
-        assert!(classify_retained_baseline(&mut request, "expected baseline").is_err());
+        assert!(classify_retained_baseline(&mut request, &["expected baseline"]).is_err());
         assert_eq!(original, vec![retained("other baseline")]);
         let mut duplicate = vec![retained("expected baseline"), retained("expected baseline")];
-        assert!(classify_retained_baseline(&mut duplicate, "expected baseline").is_err());
+        assert!(classify_retained_baseline(&mut duplicate, &["expected baseline"]).is_err());
     }
 }

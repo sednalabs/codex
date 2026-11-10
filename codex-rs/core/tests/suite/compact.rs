@@ -1140,11 +1140,15 @@ async fn reasoning_effort_override_remote_v2_compaction_resets_pinned_effort(
     Ok(())
 }
 
-#[test_case::test_case(non_openai_model_provider; "local")]
-#[test_case::test_case(openai_model_provider; "remote")]
+#[test_case::test_case(non_openai_model_provider, 403, json!({"detail": {"code": "invalid_workspace_selected"}}); "local workspace denial")]
+#[test_case::test_case(openai_model_provider, 403, json!({"detail": {"code": "invalid_workspace_selected"}}); "remote workspace denial")]
+#[test_case::test_case(non_openai_model_provider, 400, json!({"error": {"code": "content_policy_violation", "param": "input"}}); "local content policy denial")]
+#[test_case::test_case(openai_model_provider, 400, json!({"error": {"code": "content_policy_violation", "param": "input"}}); "remote content policy denial")]
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn workspace_denial_stops_compaction_on_model_downshift(
+async fn explicit_denial_stops_compaction_on_model_downshift(
     provider: fn(&MockServer) -> ModelProviderInfo,
+    status: u16,
+    body: Value,
 ) -> Result<()> {
     skip_if_no_network!(Ok(()));
     let server = start_mock_server().await;
@@ -1177,9 +1181,8 @@ async fn workspace_denial_stops_compaction_on_model_downshift(
     .await;
     test.submit_turn("first turn").await?;
 
-    let denied = responses::mount_response_handler(&server, |_| {
-        wiremock::ResponseTemplate::new(403)
-            .set_body_json(json!({ "detail": { "code": "invalid_workspace_selected" } }))
+    let denied = responses::mount_response_handler(&server, move |_| {
+        wiremock::ResponseTemplate::new(status).set_body_json(&body)
     })
     .await;
     test.codex
@@ -1197,36 +1200,78 @@ async fn workspace_denial_stops_compaction_on_model_downshift(
     Ok(())
 }
 
-#[test_case::test_case(json!({"input_tokens": 120_000, "output_tokens": 30_000, "total_tokens": 150_000}); "reported_usage")]
-#[test_case::test_case(Value::Null; "missing_usage")]
+#[test_case::test_case(
+    json!({
+        "type": "response.incomplete",
+        "response": {
+            "id": "incomplete-compaction",
+            "incomplete_details": {"reason": "max_output_tokens"},
+            "usage": {"input_tokens": 120_000, "output_tokens": 30_000, "total_tokens": 150_000}
+        }
+    }),
+    "Incomplete response returned, reason: max_output_tokens",
+    CodexErrorInfo::Other,
+    270_000;
+    "incomplete_reported_usage"
+)]
+#[test_case::test_case(
+    json!({
+        "type": "response.incomplete",
+        "response": {
+            "id": "incomplete-compaction",
+            "incomplete_details": {"reason": "max_output_tokens"},
+            "usage": null
+        }
+    }),
+    "Incomplete response returned, reason: max_output_tokens",
+    CodexErrorInfo::Other,
+    120_000;
+    "incomplete_missing_usage"
+)]
+#[test_case::test_case(
+    json!({
+        "type": "error",
+        "error": {"code": "inference_hook_denied", "message": "Blocked by the workspace hook."}
+    }),
+    "Blocked by the workspace hook.",
+    CodexErrorInfo::InferenceHookDenied,
+    120_000;
+    "inference_hook_denied_error"
+)]
+#[test_case::test_case(
+    json!({
+        "type": "response.failed",
+        "response": {
+            "id": "denied-compaction",
+            "error": {"code": "inference_hook_denied", "message": "Blocked by the workspace hook."}
+        }
+    }),
+    "Blocked by the workspace hook.",
+    CodexErrorInfo::InferenceHookDenied,
+    120_000;
+    "inference_hook_denied_response_failed"
+)]
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn incomplete_response_during_compaction_is_terminal_and_counted(
-    reported_usage: Value,
+async fn terminal_compaction_failure_preserves_usage_and_history(
+    failure_event: Value,
+    expected_error: &str,
+    expected_error_info: CodexErrorInfo,
+    expected_total_tokens: i64,
 ) -> Result<()> {
     skip_if_no_network!(Ok(()));
-    for (provider, expected_error) in [
+    for (provider, error_prefix) in [
         (
             non_openai_model_provider as fn(&MockServer) -> ModelProviderInfo,
-            "Incomplete response returned, reason: max_output_tokens",
+            "",
         ),
-        (
-            openai_model_provider,
-            "Error running remote compact task: Incomplete response returned, reason: max_output_tokens",
-        ),
+        (openai_model_provider, "Error running remote compact task: "),
     ] {
         let server = start_mock_server().await;
         let previous_model = "gpt-5.4";
         let selected_model = "gpt-5.2";
-        let incomplete = sse(vec![
-            ev_assistant_message("discarded", "DISCARDED_INCOMPLETE_SUMMARY"),
-            json!({
-                "type": "response.incomplete",
-                "response": {
-                    "id": "incomplete-compaction",
-                    "incomplete_details": {"reason": "max_output_tokens"},
-                    "usage": reported_usage
-                }
-            }),
+        let failure = sse(vec![
+            ev_assistant_message("discarded", "DISCARDED_FAILED_SUMMARY"),
+            failure_event.clone(),
         ]);
         let response_mock = mount_sse_sequence(
             &server,
@@ -1235,8 +1280,8 @@ async fn incomplete_response_during_compaction_is_terminal_and_counted(
                     ev_assistant_message("initial", "Initial reply."),
                     ev_completed_with_tokens("initial", /*total_tokens*/ 120_000),
                 ]),
-                incomplete.clone(),
-                incomplete,
+                failure.clone(),
+                failure,
             ],
         )
         .await;
@@ -1267,7 +1312,7 @@ async fn incomplete_response_during_compaction_is_terminal_and_counted(
         // includes request overhead that the local history estimate does not count.
         test.submit_turn(&"x".repeat(440_000)).await?;
         // A smaller selected model forces compaction with the previous model.
-        // An incomplete result must stop both retries and fallback to the selected model.
+        // A terminal failure must stop both retries and fallback to the selected model.
         test.codex
             .start_or_steer_turn(
                 TurnInputRequest::user_input(vec![UserInput::Text {
@@ -1290,29 +1335,33 @@ async fn incomplete_response_during_compaction_is_terminal_and_counted(
         let mut errors = Vec::new();
         wait_for_event(&test.codex, |event| {
             match event {
-                EventMsg::Error(error) => errors.push(error.message.clone()),
+                EventMsg::Error(error) => {
+                    errors.push((error.message.clone(), error.codex_error_info.clone()));
+                }
                 EventMsg::StreamError(value) => panic!("unexpected compaction retry: {value:?}"),
                 EventMsg::RawResponseCompleted(value) => {
-                    panic!("incomplete response marked complete: {value:?}")
+                    panic!("failed response marked complete: {value:?}")
                 }
                 _ => {}
             }
             matches!(event, EventMsg::TurnComplete(_))
         })
         .await;
-        assert_eq!(errors, vec![expected_error]);
+        assert_eq!(
+            errors,
+            vec![(
+                format!("{error_prefix}{expected_error}"),
+                Some(expected_error_info.clone())
+            )]
+        );
         assert_eq!(
             test.codex
                 .token_usage_info()
                 .await
-                .expect("partial usage")
+                .expect("token usage")
                 .total_token_usage
                 .total_tokens,
-            if reported_usage.is_null() {
-                120_000
-            } else {
-                270_000
-            },
+            expected_total_tokens,
         );
         assert_eq!(
             response_mock
@@ -1343,7 +1392,7 @@ async fn incomplete_response_during_compaction_is_terminal_and_counted(
         );
         assert!(!body_contains_text(
             &requests[2].body_json().to_string(),
-            "DISCARDED_INCOMPLETE_SUMMARY",
+            "DISCARDED_FAILED_SUMMARY",
         ));
     }
     Ok(())
@@ -4524,22 +4573,25 @@ async fn manual_compact_retries_after_context_window_error() {
         ev_assistant_message("m1", FIRST_REPLY),
         ev_completed("r1"),
     ]);
-    let compact_failed = sse_failed(
-        "resp-fail",
-        "context_length_exceeded",
-        CONTEXT_LIMIT_MESSAGE,
-    );
+    let compact_failed = wiremock::ResponseTemplate::new(/*s*/ 400).set_body_json(json!({
+        "error": {
+            "type": "invalid_request_error",
+            "code": "context_length_exceeded",
+            "message": CONTEXT_LIMIT_MESSAGE,
+            "param": "input",
+        }
+    }));
     let compact_succeeds = sse(vec![
         ev_assistant_message("m2", SUMMARY_TEXT),
         ev_completed("r2"),
     ]);
 
-    let request_log = mount_sse_sequence(
+    let request_log = mount_response_sequence(
         &server,
         vec![
-            user_turn.clone(),
-            compact_failed.clone(),
-            compact_succeeds.clone(),
+            sse_response(user_turn),
+            compact_failed,
+            sse_response(compact_succeeds),
         ],
     )
     .await;

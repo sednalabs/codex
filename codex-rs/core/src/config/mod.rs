@@ -135,6 +135,8 @@ use codex_protocol::permissions::NetworkSandboxPolicy;
 use codex_protocol::protocol::AskForApproval;
 use codex_protocol::protocol::MultiAgentVersion;
 use codex_protocol::protocol::SandboxPolicy;
+use codex_protocol::protocol::SessionSource;
+use codex_protocol::protocol::SubAgentSource;
 use codex_rmcp_client::McpOAuthRefreshMode;
 use codex_sandboxing::SandboxType;
 pub use codex_thread_store::ExtraConfig;
@@ -732,6 +734,9 @@ pub struct Config {
     /// Explicit authorization from the local user config for one historical baseline.
     pub historical_baseline_adoption: Option<codex_config::HistoricalBaselineAdoption>,
 
+    pub client_owned_developer_instructions: bool,
+    pub client_owned_base_instructions: bool,
+
     /// Developer instructions override injected as a separate message.
     pub developer_instructions: Option<String>,
 
@@ -855,6 +860,7 @@ pub struct Config {
 
     /// Own the fullscreen transcript when the alternate screen is enabled.
     pub tui_fullscreen_transcript: bool,
+    pub tui_collapse_turn_details: bool,
 
     /// Preferred docked sidebar width as a percentage of the terminal.
     pub tui_sidebar_width_percent: Option<u8>,
@@ -1694,6 +1700,83 @@ impl Config {
         } else {
             codex_guardian_context::ContextBudgeting::Fixed
         }
+    }
+
+    pub(crate) fn instruction_origin_is_client_owned(stack: &ConfigLayerStack, key: &str) -> bool {
+        stack
+            .origins_with_path_filter(|path| path.iter().map(String::as_str).eq(key.split('.')))
+            .get(key)
+            .is_some_and(|origin| {
+                matches!(
+                    origin.name,
+                    ConfigLayerSource::PackagedDefaults { .. }
+                        | ConfigLayerSource::User { .. }
+                        | ConfigLayerSource::Project { .. }
+                        | ConfigLayerSource::SessionFlags
+                )
+            })
+    }
+
+    pub(crate) fn multi_agent_text_is_client_owned(&self, key: &str, text: &str) -> bool {
+        let path = format!("features.multi_agent_v2.{key}");
+        if !Self::instruction_origin_is_client_owned(&self.config_layer_stack, &path) {
+            return false;
+        }
+        self.config_layer_stack
+            .effective_config()
+            .get("features")
+            .and_then(|features| features.get("multi_agent_v2"))
+            .and_then(|config| config.get(key))
+            .and_then(TomlValue::as_str)
+            .is_some_and(|value| {
+                if key == "subagent_developer_instructions" {
+                    value.trim() == text
+                } else {
+                    value == text
+                }
+            })
+    }
+
+    pub(crate) fn instruction_overlay_origin_fences(
+        &self,
+        source: &SessionSource,
+    ) -> Vec<codex_config::InstructionOverlayComponent> {
+        use codex_config::InstructionOverlayComponent;
+        let mut fenced = Vec::new();
+        if self.developer_instructions.is_some() && !self.client_owned_developer_instructions {
+            fenced.push(InstructionOverlayComponent::DeveloperGuidance);
+        }
+        if self
+            .multi_agent_v2
+            .multi_agent_mode_hint_text
+            .as_deref()
+            .is_some_and(|text| {
+                !self.multi_agent_text_is_client_owned("multi_agent_mode_hint_text", text)
+            })
+        {
+            fenced.push(InstructionOverlayComponent::MultiAgentMode);
+        }
+        let (key, text) = if matches!(
+            source,
+            SessionSource::SubAgent(SubAgentSource::ThreadSpawn { .. })
+        ) {
+            (
+                "subagent_usage_hint_text",
+                self.multi_agent_v2.subagent_usage_hint_text.as_deref(),
+            )
+        } else {
+            (
+                "root_agent_usage_hint_text",
+                self.multi_agent_v2.root_agent_usage_hint_text.as_deref(),
+            )
+        };
+        if text.is_some_and(|text| !self.multi_agent_text_is_client_owned(key, text)) {
+            fenced.extend([
+                InstructionOverlayComponent::MultiAgentRole,
+                InstructionOverlayComponent::MultiAgentUsageHint,
+            ]);
+        }
+        fenced
     }
 
     pub fn sqlite_config(&self) -> &codex_state::SqliteConfig {
@@ -4331,6 +4414,13 @@ impl Config {
             "model instructions file",
         )
         .await?;
+        let client_owned_base_instructions = base_instructions.is_none()
+            && Self::instruction_origin_is_client_owned(
+                &config_layer_stack,
+                if file_base_instructions.is_some() { "model_instructions_file" } else { "instructions" },
+            );
+        let client_owned_developer_instructions = developer_instructions.is_none()
+            && Self::instruction_origin_is_client_owned(&config_layer_stack, "developer_instructions");
         let base_instructions = base_instructions
             .or(file_base_instructions)
             .or(cfg.instructions.clone());
@@ -4684,6 +4774,8 @@ impl Config {
             base_instructions_provenance,
             instruction_overlays: cfg.instruction_overlays.unwrap_or_default(),
             historical_baseline_adoption: cfg.historical_baseline_adoption,
+            client_owned_developer_instructions,
+            client_owned_base_instructions,
             personality,
             developer_instructions,
             compact_prompt,
@@ -4907,6 +4999,7 @@ impl Config {
                 .as_ref()
                 .map(|t| t.raw_output_mode)
                 .unwrap_or(false),
+            tui_collapse_turn_details: cfg.tui.as_ref().is_some_and(|tui| tui.collapse_turn_details),
             tui_fullscreen_transcript: cfg
                 .tui
                 .as_ref()

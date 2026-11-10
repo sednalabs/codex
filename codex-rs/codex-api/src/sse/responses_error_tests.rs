@@ -115,6 +115,14 @@ async fn terminal_failure_with_retry_header_ends_stream_immediately() {
     for (code, expected) in [
         ("flex_unavailable", CodexErrorInfo::FlexUnavailable),
         ("budget_reached", CodexErrorInfo::SessionBudgetExceeded),
+        ("inference_hook_denied", CodexErrorInfo::InferenceHookDenied),
+        (
+            "context_length_exceeded",
+            CodexErrorInfo::ContextWindowExceeded,
+        ),
+        ("invalid_access_program", CodexErrorInfo::Other),
+        ("unsupported_access_program", CodexErrorInfo::Other),
+        ("content_policy_violation", CodexErrorInfo::InvalidPrompt),
         (
             "access_program_not_enabled",
             CodexErrorInfo::HttpConnectionFailed {
@@ -241,6 +249,7 @@ async fn streamed_retry_after_uses_http_header_validation() {
 async fn retry_header_survives_other_failed_responses() {
     for (code, expected_code) in [
         ("server_is_overloaded", CodexErrorInfo::ServerOverloaded),
+        ("safety_violation", CodexErrorInfo::Other),
         ("unknown_failure", CodexErrorInfo::Other),
     ] {
         let event = serde_json::from_value(json!({

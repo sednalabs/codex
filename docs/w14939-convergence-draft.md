@@ -1,8 +1,29 @@
 # w14939 upstream convergence: draft
 
 This is an incomplete source draft, not a release or installation candidate.
-Its upstream base is `5b98eaafeb341225d3724a6112a93c993cc09613`; the Sedna
-fixture source is `97f6c6b811cbda5aa618356e6761c541da2b5032`.
+The existing candidate was merged with upstream
+`c82708f85803d21fe9046af407107a1ee105b6e5` in
+`53b8bc981ea124845168e30a6e882be9af76d7f1`. The Sedna fixture source is
+`97f6c6b811cbda5aa618356e6761c541da2b5032`. Evidence from older commits and
+the preview artifact does not validate this merge or any later overlay draft.
+
+The overlay integration is unfinished. The draft deliberately rejects overlay
+configuration until request handling, origin fences and hosted validation are
+complete. Its historical adoption binds a local user authorization to one
+thread, the SHA-256 of the complete saved baseline and the SHA-256 of the exact
+model-baseline edit plan. Only unique, single-match exact removals qualify. It
+does not adopt known custom/protected provenance or authorize a different
+thread, component or plan. Unknown, protected, absent and ambiguous outcomes
+must be visible. The old installed engine and the w18679 source differ; their
+full compatibility and role precedence are still being reconciled.
+
+`scripts/w14939-overlay-identities.py` computes the two hashes locally from a
+TOML fragment containing the effective `[model_baseline]` plan and the exact
+UTF-8 baseline bytes supplied on stdin. It outputs only hashes, never input
+text. A local operator must determine those bytes and verify that the fragment
+matches the effective plan; a mismatch fails closed. The helper is synthetic-test
+validated only, and no real thread, database, transcript or configuration has
+been accessed to establish this candidate.
 
 The state startup preflight requires a known successful migration prefix. It
 checks all identities before repairing the historical upstream recency-38

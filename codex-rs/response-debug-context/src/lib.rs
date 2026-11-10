@@ -94,10 +94,12 @@ pub fn telemetry_api_error_message(error: &ApiError) -> String {
         ApiError::RateLimit(_) => "rate limit".to_string(),
         ApiError::ModelNotFound { .. } => "model not found".to_string(),
         ApiError::AccessProgramNotEnabled { .. } => "access program not enabled".to_string(),
+        ApiError::ContentPolicyViolation { .. } => "content policy violation".to_string(),
         ApiError::InvalidRequest { .. }
         | ApiError::InvalidAudioInput { .. }
         | ApiError::InvalidPrompt { .. } => "invalid request".to_string(),
         ApiError::CyberPolicy { .. } => "cyber policy".to_string(),
+        ApiError::InferenceHookDenied { .. } => "inference hook denied".to_string(),
         ApiError::BioPolicy { .. } => "bio policy".to_string(),
         ApiError::MisalignmentPolicyViolation { .. } => "misalignment policy violation".to_string(),
         ApiError::ServerOverloaded { .. } => "server overloaded".to_string(),

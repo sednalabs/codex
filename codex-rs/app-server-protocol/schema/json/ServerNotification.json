@@ -730,6 +730,13 @@
           "type": "string"
         },
         {
+          "description": "The workspace's inference hook explicitly denied this request.",
+          "enum": [
+            "inferenceHookDenied"
+          ],
+          "type": "string"
+        },
+        {
           "additionalProperties": false,
           "properties": {
             "httpConnectionFailed": {
@@ -2005,6 +2012,13 @@
           ]
         },
         "error": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "loginId": {
+          "description": "Identifies the completed device login attempt.",
           "type": [
             "string",
             "null"

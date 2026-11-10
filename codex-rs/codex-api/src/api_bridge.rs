@@ -43,6 +43,8 @@ pub fn map_api_error(err: ApiError) -> CodexErr {
         | ApiError::InvalidAudioInput { .. }
         | ApiError::ModelNotFound { .. }
         | ApiError::InvalidPrompt { .. }
+        | ApiError::InferenceHookDenied { .. }
+        | ApiError::ContentPolicyViolation { .. }
         | ApiError::CyberPolicy { .. }
         | ApiError::BioPolicy { .. }
         | ApiError::MisalignmentPolicyViolation { .. } => None,
@@ -103,6 +105,12 @@ fn map_api_error_details(err: ApiError) -> CodexErr {
         }
         ApiError::InvalidPrompt { message } => {
             CodexErr::new(CodexErrorDetails::InvalidPrompt { message })
+        }
+        ApiError::InferenceHookDenied { message } => {
+            CodexErr::new(CodexErrorDetails::InferenceHookDenied { message })
+        }
+        ApiError::ContentPolicyViolation { message, status } => {
+            CodexErrorDetails::ContentPolicyViolation { message, status }.into()
         }
         ApiError::CyberPolicy { message } => {
             CodexErr::new(CodexErrorDetails::CyberPolicy { message })
@@ -286,9 +294,10 @@ fn map_api_error_details(err: ApiError) -> CodexErr {
                     });
                     let code = body_code.or(response.identity_error_code.as_deref());
                     match (status, code) {
-                        (http::StatusCode::FORBIDDEN, Some("invalid_workspace_selected")) => {
-                            CodexErrorDetails::InvalidWorkspaceSelected(response).into()
-                        }
+                        (
+                            http::StatusCode::FORBIDDEN,
+                            Some("invalid_workspace_selected" | "codex_workspace_access_denied"),
+                        ) => CodexErrorDetails::WorkspaceAccessDenied(response).into(),
                         (http::StatusCode::FORBIDDEN, Some("access_program_not_enabled")) => {
                             CodexErrorDetails::AccessProgramNotEnabled(ProviderRejection::Http(
                                 response,

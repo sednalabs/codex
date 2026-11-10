@@ -13,6 +13,37 @@ use codex_protocol::protocol::SubAgentSource;
 
 const HOSTED_MULTI_AGENT_SKILL_GUIDANCE: &str = "Before calling any multi-agent tool, read the full multi-agent skill using its listed package locator. Skip the read only if the full skill text is already in your current context. If the read fails, make note of the blocker.";
 
+pub(super) fn multi_agent_mode_is_client_owned(step_context: &StepContext) -> bool {
+    let config = &step_context.turn.as_ref().config;
+    config
+        .multi_agent_v2
+        .multi_agent_mode_hint_text
+        .as_deref()
+        .is_none_or(|text| {
+            config.multi_agent_text_is_client_owned("multi_agent_mode_hint_text", text)
+        })
+}
+
+pub(super) fn usage_hint_is_client_owned(step_context: &StepContext) -> bool {
+    let turn = step_context.turn.as_ref();
+    let config = &turn.config;
+    let (key, text) = if matches!(
+        &turn.session_source,
+        SessionSource::SubAgent(SubAgentSource::ThreadSpawn { .. })
+    ) {
+        (
+            "subagent_usage_hint_text",
+            config.multi_agent_v2.subagent_usage_hint_text.as_deref(),
+        )
+    } else {
+        (
+            "root_agent_usage_hint_text",
+            config.multi_agent_v2.root_agent_usage_hint_text.as_deref(),
+        )
+    };
+    text.is_none_or(|text| config.multi_agent_text_is_client_owned(key, text))
+}
+
 pub(super) fn usage_hint_text(step_context: &StepContext) -> Option<MultiAgentRoleInstructions> {
     let turn_context = step_context.turn.as_ref();
     if turn_context.multi_agent_version != MultiAgentVersion::V2 {

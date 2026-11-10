@@ -105,6 +105,7 @@ impl InstructionOverlayComponentToml {
 }
 
 #[derive(Clone, Serialize, PartialEq, Eq, JsonSchema)]
+#[serde(tag = "op", rename_all = "snake_case")]
 pub enum InstructionOverlayEdit {
     Prepend {
         text: String,
@@ -235,13 +236,19 @@ pub struct InstructionOverlaysToml {
 /// Explicit, local authorization for one unknown historical model baseline and one edit plan.
 /// The digests are lowercase SHA-256 hex. The plan digest is over the domain-separated,
 /// deterministic JSON serialization of the complete `model_baseline` plan.
-#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq, JsonSchema)]
+#[derive(Clone, Deserialize, Serialize, PartialEq, Eq, JsonSchema)]
 #[serde(deny_unknown_fields)]
 #[schemars(deny_unknown_fields)]
 pub struct HistoricalBaselineAdoption {
     pub thread_id: String,
     pub baseline_sha256: String,
     pub plan_sha256: String,
+}
+
+impl fmt::Debug for HistoricalBaselineAdoption {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str("HistoricalBaselineAdoption(<redacted>)")
+    }
 }
 
 impl HistoricalBaselineAdoption {
@@ -699,6 +706,15 @@ mod tests {
             baseline_sha256: HistoricalBaselineAdoption::baseline_digest("synthetic target"),
             plan_sha256: HistoricalBaselineAdoption::plan_digest(&plan),
         };
+        // These public synthetic vectors also exercise the local operator helper.
+        assert_eq!(
+            adoption.baseline_sha256,
+            "a1311114618394433a7ff0e8f01ce4af655464f5e66bb46dbd7d270dcbc4c65f"
+        );
+        assert_eq!(
+            adoption.plan_sha256,
+            "0f9f8fd711af2773cfb0ac61b62e189d568a24997c24e476681445eacebe9bcc"
+        );
         assert!(adoption.matches("synthetic-thread", "synthetic target", &plan));
         assert!(!adoption.matches("another-thread", "synthetic target", &plan));
         assert!(!adoption.matches("synthetic-thread", "different baseline", &plan));
@@ -713,5 +729,15 @@ mod tests {
             ..adoption
         };
         assert!(!replacement_adoption.matches("synthetic-thread", "synthetic target", &plan));
+    }
+
+    #[test]
+    fn overlay_plan_round_trips_through_role_config_serialization() {
+        let overlay: InstructionOverlaysToml = toml::from_str(
+            "[model_baseline]\nedits = [{ op = \"remove_exact_if_present\", text = \"target\", expected_matches = 1 }]\n",
+        ).unwrap();
+        let serialized = toml::to_string(&overlay).unwrap();
+        let recovered: InstructionOverlaysToml = toml::from_str(&serialized).unwrap();
+        assert_eq!(recovered, overlay);
     }
 }
