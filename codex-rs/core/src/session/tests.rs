@@ -7282,9 +7282,25 @@ async fn make_session_with_history_source_and_agent_control_and_rx(
     session_source: SessionSource,
     agent_control: LocalAgentControl,
 ) -> anyhow::Result<(Arc<Session>, async_channel::Receiver<Event>)> {
+    make_session_with_history_source_and_config(
+        initial_history,
+        session_source,
+        agent_control,
+        |_| {},
+    )
+    .await
+}
+
+async fn make_session_with_history_source_and_config(
+    initial_history: InitialHistory,
+    session_source: SessionSource,
+    agent_control: LocalAgentControl,
+    configure: impl FnOnce(&mut Config),
+) -> anyhow::Result<(Arc<Session>, async_channel::Receiver<Event>)> {
     let codex_home = tempfile::tempdir().expect("create temp dir");
     let mut config = build_test_config(codex_home.path()).await;
     config.ephemeral = true;
+    configure(&mut config);
     let config = Arc::new(config);
     let auth_manager = AuthManager::from_auth_for_testing(CodexAuth::from_api_key("Test API Key"));
     let models_manager = models_manager_with_provider(
@@ -7324,6 +7340,11 @@ async fn make_session_with_history_source_and_agent_control_and_rx(
         base_instructions: config
             .base_instructions
             .clone()
+            .or_else(|| {
+                initial_history
+                    .get_base_instructions()
+                    .map(|base| base.text)
+            })
             .unwrap_or_else(|| render_model_instructions(&model_info)),
         permission_profile_state: config.permissions.permission_profile_state().clone(),
         allow_login_shell: config.permissions.allow_login_shell,
@@ -7449,6 +7470,220 @@ async fn resumed_root_session_uses_thread_id_as_session_id() {
     };
     assert_eq!(event.session_id, SessionId::from(thread_id));
     assert_eq!(event.thread_id, thread_id);
+}
+
+#[tokio::test]
+async fn historical_overlay_resume_to_serialized_request_is_identity_bound() -> anyhow::Result<()> {
+    use codex_config::HistoricalBaselineAdoption;
+    use codex_config::InstructionOverlayComponentToml;
+    use codex_config::InstructionOverlayEdit;
+    use codex_config::InstructionOverlayOnAbsent;
+    use codex_config::InstructionOverlaysToml;
+    use codex_protocol::models::BaseInstructionsProvenance;
+
+    let target = "synthetic obsolete guidance";
+    let baseline = format!("before {target} after");
+    let plan = InstructionOverlayComponentToml {
+        on_absent: InstructionOverlayOnAbsent::Skip,
+        edits: vec![InstructionOverlayEdit::RemoveExactIfPresent {
+            text: target.into(),
+            expected_matches: 1,
+        }],
+        ..Default::default()
+    };
+    for (child, incremental, adopted, protected) in [
+        (false, false, true, false),
+        (true, false, true, false),
+        (false, true, true, false),
+        (true, true, true, false),
+        (false, false, false, false),
+        (false, false, true, true),
+    ] {
+        let thread_id = ThreadId::new();
+        let source = if child {
+            SessionSource::SubAgent(SubAgentSource::ThreadSpawn {
+                parent_thread_id: ThreadId::new(),
+                depth: 1,
+                agent_path: None,
+                agent_nickname: None,
+                agent_role: None,
+            })
+        } else {
+            SessionSource::Cli
+        };
+        let saved = Arc::new(vec![RolloutItem::SessionMeta(Box::new(SessionMetaLine {
+            meta: SessionMeta {
+                id: thread_id,
+                session_id: thread_id.into(),
+                source: source.clone(),
+                base_instructions: Some(BaseInstructions {
+                    text: baseline.clone(),
+                    provenance: protected.then_some(BaseInstructionsProvenance::Custom),
+                }),
+                ..SessionMeta::default()
+            },
+            git: None,
+        }))]);
+        let saved_before = serde_json::to_value(saved.as_ref())?;
+        let adoption = HistoricalBaselineAdoption {
+            thread_id: if adopted {
+                thread_id.to_string()
+            } else {
+                ThreadId::new().to_string()
+            },
+            baseline_sha256: HistoricalBaselineAdoption::baseline_digest(&baseline),
+            plan_sha256: HistoricalBaselineAdoption::plan_digest(&plan),
+        };
+        let plan_for_session = plan.clone();
+        let (session, events) = make_session_with_history_source_and_config(
+            InitialHistory::Resumed(ResumedHistory {
+                history_revision: None,
+                conversation_id: thread_id,
+                history: Arc::clone(&saved),
+                rollout_path: None,
+            }),
+            source,
+            LocalAgentControl::default(),
+            move |config| {
+                config.instruction_overlays = InstructionOverlaysToml {
+                    model_baseline: Some(plan_for_session),
+                    ..Default::default()
+                };
+                config.historical_baseline_adoption = Some(adoption);
+            },
+        )
+        .await?;
+        let (turn_context, _) = session
+            .new_turn_with_sub_id(
+                "synthetic-overlay".to_string(),
+                SessionSettingsUpdate::default(),
+                Default::default(),
+            )
+            .await?;
+        let step_context = StepContext::for_test(Arc::clone(&turn_context));
+        let base = session.get_prompt_base_instructions().await;
+        let input = if incremental {
+            vec![ContextualUserFragment::into(
+                crate::context::BaseInstructionsFragment(base.text.clone()),
+            )]
+        } else {
+            Vec::new()
+        };
+        let prompt = super::turn::build_prompt(input, &step_context, base, incremental);
+        let before = prompt.input.clone();
+        let metadata = session
+            .responses_metadata(&step_context, CodexResponsesRequestKind::Turn)
+            .await;
+        let result = session.services.model_client.build_responses_request(
+            &prompt,
+            &step_context.settings.model_info,
+            None,
+            codex_protocol::config_types::ReasoningSummary::None,
+            None,
+            &metadata,
+            true,
+        );
+        if adopted && !protected {
+            let serialized = serde_json::to_string(&result?)?;
+            assert!(!serialized.contains(target));
+            assert!(serialized.contains("before  after"));
+            let mut saw_applied = false;
+            while let Ok(event) = events.try_recv() {
+                saw_applied |= matches!(event.msg, EventMsg::Warning(warning) if warning.message.contains("applied"));
+            }
+            assert!(saw_applied);
+        } else {
+            assert!(result.is_err());
+        }
+        assert_eq!(prompt.input, before);
+        assert_eq!(serde_json::to_value(saved.as_ref())?, saved_before);
+        assert_eq!(session.get_base_instructions().await.text, baseline);
+    }
+    Ok(())
+}
+
+#[tokio::test]
+async fn historical_overlay_uses_inferred_model_provenance_through_request() -> anyhow::Result<()> {
+    use codex_config::InstructionOverlayComponentToml;
+    use codex_config::InstructionOverlayEdit;
+    use codex_config::InstructionOverlaysToml;
+
+    let temp = tempfile::tempdir()?;
+    let config = build_test_config(temp.path()).await;
+    let model = get_model_offline_for_tests(config.model.as_deref());
+    let info =
+        construct_model_info_offline_for_tests(model.as_str(), &config.to_models_manager_config());
+    let baseline = render_model_instructions(&info);
+    let target = baseline
+        .lines()
+        .find(|line| line.len() > 20 && baseline.match_indices(*line).count() == 1)
+        .expect("synthetic model template has a unique line")
+        .to_string();
+    let thread_id = ThreadId::new();
+    let history = InitialHistory::Resumed(ResumedHistory {
+        history_revision: None,
+        conversation_id: thread_id,
+        rollout_path: None,
+        history: Arc::new(vec![RolloutItem::SessionMeta(Box::new(SessionMetaLine {
+            meta: SessionMeta {
+                id: thread_id,
+                session_id: thread_id.into(),
+                base_instructions: Some(BaseInstructions {
+                    text: baseline.clone(),
+                    provenance: None,
+                }),
+                ..SessionMeta::default()
+            },
+            git: None,
+        }))]),
+    });
+    let (session, _) = make_session_with_history_source_and_config(
+        history,
+        SessionSource::Cli,
+        LocalAgentControl::default(),
+        |config| {
+            config.instruction_overlays = InstructionOverlaysToml {
+                model_baseline: Some(InstructionOverlayComponentToml {
+                    edits: vec![InstructionOverlayEdit::RemoveExact {
+                        text: target.clone(),
+                        expected_matches: 1,
+                    }],
+                    ..Default::default()
+                }),
+                ..Default::default()
+            };
+        },
+    )
+    .await?;
+    let base = session.get_prompt_base_instructions().await;
+    assert!(matches!(
+        base.provenance.as_ref(),
+        Some(codex_protocol::models::BaseInstructionsProvenance::Model { .. })
+    ));
+    let (turn, _) = session
+        .new_turn_with_sub_id(
+            "synthetic-inferred".to_string(),
+            SessionSettingsUpdate::default(),
+            Default::default(),
+        )
+        .await?;
+    let step = StepContext::for_test(turn);
+    let prompt = super::turn::build_prompt(Vec::new(), &step, base, false);
+    let metadata = session
+        .responses_metadata(&step, CodexResponsesRequestKind::Turn)
+        .await;
+    let request = session.services.model_client.build_responses_request(
+        &prompt,
+        &step.settings.model_info,
+        None,
+        codex_protocol::config_types::ReasoningSummary::None,
+        None,
+        &metadata,
+        true,
+    )?;
+    assert!(!serde_json::to_string(&request)?.contains(&target));
+    assert_eq!(session.get_base_instructions().await.text, baseline);
+    Ok(())
 }
 
 #[tokio::test]

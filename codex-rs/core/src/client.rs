@@ -33,6 +33,8 @@ use std::sync::OnceLock;
 use std::sync::atomic::AtomicBool;
 use std::sync::atomic::Ordering;
 
+#[path = "client/instruction_overlays.rs"]
+mod instruction_overlays;
 #[path = "client_tool_metadata.rs"]
 mod tool_metadata;
 
@@ -87,6 +89,8 @@ use codex_protocol::auth::AuthMode;
 use codex_protocol::ThreadId;
 use codex_protocol::config_types::ReasoningSummary as ReasoningSummaryConfig;
 use codex_protocol::config_types::Verbosity as VerbosityConfig;
+use codex_protocol::models::BaseInstructionsProvenance;
+use codex_protocol::models::ContentItemKind;
 use codex_protocol::models::ResponseItem;
 use codex_protocol::openai_models::ModelInfo;
 use codex_protocol::openai_models::ReasoningEffort as ReasoningEffortConfig;
@@ -97,6 +101,7 @@ use codex_protocol::protocol::InternalSessionSource;
 use codex_protocol::protocol::SessionSource;
 use codex_protocol::protocol::SubAgentSource;
 use codex_protocol::protocol::W3cTraceContext;
+use codex_protocol::protocol::WarningEvent;
 use codex_rollout_trace::InferenceTraceAttempt;
 use codex_rollout_trace::InferenceTraceContext;
 use codex_tools::ToolSpec;
@@ -306,11 +311,22 @@ pub struct ModelClient {
     event_sender: Option<Sender<ProtocolEvent>>,
     http_client_factory: HttpClientFactory,
     restored_history: bool,
+    instruction_overlays: Arc<codex_config::InstructionOverlaysToml>,
+    adopted_baseline_digests: Arc<AdoptedBaselineDigests>,
     request_contributors: Vec<Arc<dyn codex_extension_api::ModelRequestContributor>>,
     executed_tool_calls: Option<ExecutedToolCalls>,
     // Resolved once when the session is created, like other session feature flags.
     api_key_cyber_access_programs: cyber_access_program::ApiKeyCyberAccessPrograms,
     required_cyber_access_programs: Option<Arc<cyber_access_program::RequiredCyberAccessPrograms>>,
+}
+
+#[derive(Default)]
+struct AdoptedBaselineDigests(Vec<String>);
+
+impl std::fmt::Debug for AdoptedBaselineDigests {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("<redacted>")
+    }
 }
 
 /// A turn-scoped streaming session created from a [`ModelClient`].
@@ -643,6 +659,8 @@ impl ModelClient {
             event_sender: None,
             http_client_factory,
             restored_history: false,
+            instruction_overlays: Arc::new(codex_config::InstructionOverlaysToml::default()),
+            adopted_baseline_digests: Arc::default(),
             request_contributors,
             executed_tool_calls: None,
             api_key_cyber_access_programs:
@@ -654,6 +672,28 @@ impl ModelClient {
     pub(crate) fn with_executed_tool_calls(mut self, recorder: ExecutedToolCalls) -> Self {
         self.executed_tool_calls = Some(recorder);
         self
+    }
+
+    pub(crate) fn with_instruction_overlays(
+        mut self,
+        overlays: codex_config::InstructionOverlaysToml,
+        adopted_baseline_digests: Vec<String>,
+    ) -> Self {
+        self.instruction_overlays = Arc::new(overlays);
+        self.adopted_baseline_digests = Arc::new(AdoptedBaselineDigests(adopted_baseline_digests));
+        self
+    }
+
+    fn report_instruction_overlay(&self, metadata: &CodexResponsesMetadata, outcome: &'static str) {
+        tracing::info!(outcome, "instruction overlay outcome");
+        if let (Some(sender), Some(turn_id)) = (&self.event_sender, &metadata.turn_id) {
+            let _ = sender.try_send(ProtocolEvent {
+                id: turn_id.clone(),
+                msg: EventMsg::Warning(WarningEvent {
+                    message: format!("Instruction overlay: {outcome}."),
+                }),
+            });
+        }
     }
 
     pub(crate) fn reasoning_effort_override_enabled(&self, model_info: &ModelInfo) -> bool {
@@ -1170,6 +1210,47 @@ impl ModelClient {
         include_internal: bool,
     ) -> Result<ResponsesApiRequest> {
         let mut input = prompt.get_formatted_input_for_request(model_info);
+        let active_baseline_overlay = matches!(
+            &self.state.session_source,
+            SessionSource::Cli
+                | SessionSource::VSCode
+                | SessionSource::Exec
+                | SessionSource::Mcp
+                | SessionSource::SubAgent(SubAgentSource::ThreadSpawn { .. })
+        ) && self
+            .instruction_overlays
+            .model_baseline
+            .as_ref()
+            .is_some_and(|plan| !plan.edits.is_empty() && plan.applies_to_model(&model_info.slug));
+        let authority = prompt
+            .overlay_base_instructions
+            .as_ref()
+            .unwrap_or(&prompt.base_instructions);
+        let baseline_authorized = self.state.provider.info().is_openai()
+            && (matches!(
+                authority.provenance,
+                Some(BaseInstructionsProvenance::Model { .. })
+            ) || self.adopted_baseline_digests.0.iter().any(|digest| {
+                *digest
+                    == codex_config::HistoricalBaselineAdoption::baseline_digest(&authority.text)
+            }));
+        if active_baseline_overlay {
+            if !baseline_authorized {
+                self.report_instruction_overlay(
+                    responses_metadata,
+                    "blocked: protected or unknown baseline",
+                );
+                return Err(CodexErr::InvalidRequest(
+                    "instruction overlay blocked: protected or unknown baseline".into(),
+                ));
+            }
+            if let Err(error) =
+                instruction_overlays::classify_retained_baseline(&mut input, &authority.text)
+            {
+                self.report_instruction_overlay(responses_metadata, "blocked: ambiguous baseline");
+                return Err(CodexErr::InvalidRequest(error.to_string()));
+            }
+        }
         if !self.reasoning_effort_override_enabled(model_info) {
             // Unsupported models and disabled overrides must also accept saved history.
             // Filter only the request copy; persisted history remains unchanged.
@@ -1215,6 +1296,16 @@ impl ModelClient {
             let mut instructions = ContextualUserFragment::into(BaseInstructionsFragment(
                 prompt.base_instructions.text.clone(),
             ));
+            if active_baseline_overlay
+                && let ResponseItem::Message {
+                    internal_chat_message_metadata_passthrough: Some(metadata),
+                    ..
+                } = &mut instructions
+                && let Some(kinds) = &mut metadata.content_item_kinds
+                && let Some(kind) = kinds.first_mut()
+            {
+                *kind = ContentItemKind("client.base_instructions".to_string());
+            }
             instructions.set_id(Some(ResponseItemId::with_suffix(
                 "msg",
                 Uuid::new_v5(&prefix_namespace, prompt.base_instructions.text.as_bytes()),
@@ -1222,6 +1313,36 @@ impl ModelClient {
             prefix.push(instructions);
         }
         input.splice(0..0, prefix);
+        if active_baseline_overlay {
+            let before = input.clone();
+            let fences = [
+                codex_config::InstructionOverlayComponent::DeveloperGuidance,
+                codex_config::InstructionOverlayComponent::MultiAgentMode,
+                codex_config::InstructionOverlayComponent::MultiAgentRole,
+                codex_config::InstructionOverlayComponent::MultiAgentUsageHint,
+                codex_config::InstructionOverlayComponent::ModelSwitchGuidance,
+                codex_config::InstructionOverlayComponent::CollaborationGuidance,
+                codex_config::InstructionOverlayComponent::PersistentGuidance,
+            ];
+            input = match instruction_overlays::transform_request(
+                &self.state.session_source,
+                &self.instruction_overlays,
+                &model_info.slug,
+                baseline_authorized,
+                &fences,
+                input,
+            ) {
+                Ok(input) => input,
+                Err(error) => {
+                    self.report_instruction_overlay(responses_metadata, "blocked");
+                    return Err(CodexErr::InvalidRequest(error.to_string()));
+                }
+            };
+            self.report_instruction_overlay(
+                responses_metadata,
+                if input == before { "absent" } else { "applied" },
+            );
+        }
         if !model_info.use_responses_lite {
             // Only RLite accepts per-content attribution until the Responses API schema expands.
             for item in &mut input {

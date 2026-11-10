@@ -272,6 +272,7 @@ async fn new_config(
         base_instructions: None,
         base_instructions_provenance: None,
         instruction_overlays: Default::default(),
+        historical_baseline_adoption: None,
         developer_instructions: None,
         guardian_policy_revision: 0,
         guardian_policy_config: None,

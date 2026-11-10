@@ -1913,6 +1913,27 @@ impl Session {
                 );
             let reasoning_effort_override_enabled =
                 config.features.enabled(Feature::ReasoningEffortOverride) && !title_request;
+            let mut adopted_baseline_digests = Vec::new();
+            if config.base_instructions.is_none()
+                && let (Some(adoption), Some(plan), Some(historical)) = (
+                    config.historical_baseline_adoption.as_ref(),
+                    config.instruction_overlays.model_baseline.as_ref(),
+                    initial_history.get_base_instructions(),
+                )
+                && historical.provenance.is_none()
+                && adoption.matches(&thread_id.to_string(), &historical.text, plan)
+            {
+                adopted_baseline_digests.push(
+                    codex_config::HistoricalBaselineAdoption::baseline_digest(&historical.text),
+                );
+                // The existing prompt projection may remove update-plan guidance. Bind that
+                // deterministic projection to the same historical identity as well.
+                adopted_baseline_digests.push(
+                    codex_config::HistoricalBaselineAdoption::baseline_digest(
+                        &codex_prompts::without_update_plan_instructions(&historical.text),
+                    ),
+                );
+            }
             let model_client = ModelClient::new(
                 Arc::clone(&session_configuration.provider),
                 if config.features.enabled(Feature::UseAgentIdentity) {
@@ -1941,6 +1962,7 @@ impl Session {
                 extensions.model_request_contributors().to_vec(),
             )
             .with_executed_tool_calls(executed_tool_calls.clone())
+            .with_instruction_overlays(config.instruction_overlays.clone(), adopted_baseline_digests)
             .with_restored_history(matches!(
                 &initial_history,
                 InitialHistory::Resumed(_) | InitialHistory::Forked(_)

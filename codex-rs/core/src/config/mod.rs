@@ -729,6 +729,9 @@ pub struct Config {
     /// Request-only instruction overlay plans from the effective configuration.
     pub instruction_overlays: codex_config::InstructionOverlaysToml,
 
+    /// Explicit authorization from the local user config for one historical baseline.
+    pub historical_baseline_adoption: Option<codex_config::HistoricalBaselineAdoption>,
+
     /// Developer instructions override injected as a separate message.
     pub developer_instructions: Option<String>,
 
@@ -3420,6 +3423,23 @@ impl Config {
         config_layer_stack.validate_project_mitm_profiles()?;
         // Keep the large config-construction future off small test thread stacks.
         Box::pin(async move {
+        if cfg.historical_baseline_adoption.is_some() {
+            let origins = config_layer_stack.origins_with_path_filter(|path| {
+                path.first().is_some_and(|key| key == "historical_baseline_adoption")
+            });
+            let trusted_user_fields = ["thread_id", "baseline_sha256", "plan_sha256"]
+                .into_iter()
+                .all(|field| {
+                    origins.get(&format!("historical_baseline_adoption.{field}"))
+                        .is_some_and(|origin| matches!(origin.name, ConfigLayerSource::User { .. }))
+                });
+            if !trusted_user_fields {
+                return Err(std::io::Error::new(
+                    std::io::ErrorKind::InvalidInput,
+                    "historical baseline adoption must be supplied by the local user config",
+                ));
+            }
+        }
         // Fail closed while the request-side integration is being completed: accepting
         // these settings without applying them would hide an instruction override.
         if cfg.instruction_overlays.is_some() || cfg.historical_baseline_adoption.is_some() {
@@ -4663,6 +4683,7 @@ impl Config {
             base_instructions,
             base_instructions_provenance,
             instruction_overlays: cfg.instruction_overlays.unwrap_or_default(),
+            historical_baseline_adoption: cfg.historical_baseline_adoption,
             personality,
             developer_instructions,
             compact_prompt,

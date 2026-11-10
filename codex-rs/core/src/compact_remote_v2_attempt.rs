@@ -190,6 +190,7 @@ pub(super) async fn run_remote_compact_v2_attempt(
             tool_router.model_visible_specs()
         },
         parallel_tool_calls: true,
+        overlay_base_instructions: Some(base_instructions.clone()),
         base_instructions,
         output_schema: None,
         output_schema_strict: true,

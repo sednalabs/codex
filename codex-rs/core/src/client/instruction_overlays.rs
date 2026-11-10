@@ -4,6 +4,7 @@ use codex_config::InstructionOverlaySelection;
 use codex_config::InstructionOverlaysToml;
 use codex_config::MAX_INSTRUCTION_OVERLAY_REQUEST_BYTES;
 use codex_protocol::models::ContentItem;
+use codex_protocol::models::ContentItemKind;
 use codex_protocol::models::ResponseItem;
 use codex_protocol::protocol::COLLABORATION_MODE_CLOSE_TAG;
 use codex_protocol::protocol::COLLABORATION_MODE_OPEN_TAG;
@@ -24,6 +25,68 @@ const NORMAL_COMPONENTS: &[InstructionOverlayComponent] = &[
 ];
 const REVIEW_COMPONENTS: &[InstructionOverlayComponent] =
     &[InstructionOverlayComponent::ReviewBaseline];
+
+/// Classify exactly one retained baseline by its complete text, on the request copy.
+/// A historical marker alone is not proof that the text belongs to the current baseline.
+pub(super) fn classify_retained_baseline(
+    input: &mut [ResponseItem],
+    expected: &str,
+) -> Result<usize> {
+    let mut found = 0;
+    for item in input {
+        let ResponseItem::Message {
+            role,
+            content,
+            internal_chat_message_metadata_passthrough: Some(metadata),
+            ..
+        } = item
+        else {
+            continue;
+        };
+        if role != "developer" {
+            continue;
+        }
+        let Some(kinds) = metadata.content_item_kinds.as_mut() else {
+            continue;
+        };
+        if !kinds.iter().any(|kind| {
+            matches!(
+                kind.as_str(),
+                "model.base_instructions" | "client.base_instructions"
+            )
+        }) {
+            continue;
+        }
+        if kinds.len() != content.len()
+            || metadata
+                .content_item_metadata
+                .as_ref()
+                .is_some_and(|m| m.len() != content.len())
+        {
+            anyhow::bail!("instruction overlay blocked: misaligned baseline metadata");
+        }
+        for (kind, content) in kinds.iter_mut().zip(content.iter()) {
+            if !matches!(
+                kind.as_str(),
+                "model.base_instructions" | "client.base_instructions"
+            ) {
+                continue;
+            }
+            let ContentItem::InputText { text } = content else {
+                anyhow::bail!("instruction overlay blocked: baseline is not text");
+            };
+            if text != expected {
+                anyhow::bail!("instruction overlay blocked: ambiguous baseline identity");
+            }
+            found += 1;
+            if found > 1 {
+                anyhow::bail!("instruction overlay blocked: ambiguous baseline selection");
+            }
+            *kind = ContentItemKind("client.base_instructions".to_string());
+        }
+    }
+    Ok(found)
+}
 
 pub(super) fn transform_request(
     source: &SessionSource,
@@ -50,7 +113,10 @@ pub(super) fn transform_request(
                 .component(*component)
                 .is_some_and(|component| !component.edits.is_empty())
         {
-            let _ = apply_component(plan, *component, /*body*/ None)?;
+            anyhow::bail!(
+                "instruction overlay blocked: protected or unknown {}",
+                component.as_str()
+            );
         }
     }
 
@@ -75,7 +141,10 @@ pub(super) fn transform_request(
                 &mut selected_bytes,
             )?;
         } else {
-            let _ = apply_component(plan, baseline_component, /*body*/ None)?;
+            anyhow::bail!(
+                "instruction overlay blocked: protected or unknown {}",
+                baseline_component.as_str()
+            );
         }
     }
     for component in components.iter().copied().filter(|component| {
@@ -185,6 +254,16 @@ fn find_candidate(
                 component.as_str()
             );
         }
+        if internal_chat_message_metadata_passthrough
+            .as_ref()
+            .and_then(|metadata| metadata.content_item_metadata.as_ref())
+            .is_some_and(|metadata| metadata.len() != content.len())
+        {
+            anyhow::bail!(
+                "instruction overlay target for {} has misaligned source metadata at request item {item_index}",
+                component.as_str()
+            );
+        }
         for (content_index, kind) in kinds.iter().enumerate() {
             if kind.as_str() == target_kind {
                 if unique_selection && !selected.is_empty() {
@@ -279,6 +358,14 @@ fn apply_candidates(
                         metadata.content_item_kinds = None;
                     }
                 }
+                if let Some(metadata) = internal_chat_message_metadata_passthrough.as_mut()
+                    && let Some(sources) = metadata.content_item_metadata.as_mut()
+                {
+                    sources.remove(content_index);
+                    if sources.is_empty() {
+                        metadata.content_item_metadata = None;
+                    }
+                }
                 if internal_chat_message_metadata_passthrough
                     .as_ref()
                     .is_some_and(|metadata| metadata == &Default::default())
@@ -368,5 +455,85 @@ fn split_wrapper(
         ))
     } else {
         Ok(("", text, ""))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use codex_config::InstructionOverlayComponentToml;
+    use codex_config::InstructionOverlayEdit;
+    use serde_json::json;
+
+    fn retained(baseline: &str) -> ResponseItem {
+        serde_json::from_value(json!({
+            "type": "message", "role": "developer",
+            "content": [
+                {"type": "input_text", "text": baseline},
+                {"type": "input_text", "text": "protected synthetic guidance"}
+            ],
+            "internal_chat_message_metadata_passthrough": {
+                "content_item_kinds": ["model.base_instructions", "generic.developer_instructions"],
+                "content_item_metadata": [{"harness_injected": true}, {"harness_injected": false}]
+            }
+        }))
+        .unwrap()
+    }
+
+    #[test]
+    fn retained_baseline_edit_preserves_history_and_metadata_alignment() {
+        let original = vec![retained("synthetic target")];
+        let mut request = original.clone();
+        assert_eq!(
+            classify_retained_baseline(&mut request, "synthetic target").unwrap(),
+            1
+        );
+        let plan = InstructionOverlaysToml {
+            model_baseline: Some(InstructionOverlayComponentToml {
+                edits: vec![InstructionOverlayEdit::RemoveExact {
+                    text: "synthetic target".into(),
+                    expected_matches: 1,
+                }],
+                ..Default::default()
+            }),
+            ..Default::default()
+        };
+        let output = transform_request(
+            &SessionSource::Cli,
+            &plan,
+            "synthetic-model",
+            true,
+            &[],
+            request,
+        )
+        .unwrap();
+        assert_eq!(original, vec![retained("synthetic target")]);
+        let ResponseItem::Message {
+            content,
+            internal_chat_message_metadata_passthrough: Some(metadata),
+            ..
+        } = &output[0]
+        else {
+            panic!("expected message")
+        };
+        assert_eq!(content.len(), 1);
+        assert_eq!(metadata.content_item_kinds.as_ref().unwrap().len(), 1);
+        assert_eq!(metadata.content_item_metadata.as_ref().unwrap().len(), 1);
+        assert_eq!(
+            content[0],
+            ContentItem::InputText {
+                text: "protected synthetic guidance".into()
+            }
+        );
+    }
+
+    #[test]
+    fn retained_baseline_requires_exact_unambiguous_identity() {
+        let original = vec![retained("other baseline")];
+        let mut request = original.clone();
+        assert!(classify_retained_baseline(&mut request, "expected baseline").is_err());
+        assert_eq!(original, vec![retained("other baseline")]);
+        let mut duplicate = vec![retained("expected baseline"), retained("expected baseline")];
+        assert!(classify_retained_baseline(&mut duplicate, "expected baseline").is_err());
     }
 }

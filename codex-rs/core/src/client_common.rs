@@ -32,6 +32,10 @@ pub struct Prompt {
 
     pub base_instructions: BaseInstructions,
 
+    /// Unmodified request authority for the baseline, including incremental windows
+    /// where `base_instructions` is intentionally empty and the text is in history.
+    pub(crate) overlay_base_instructions: Option<BaseInstructions>,
+
     /// Optional the output schema for the model's response.
     pub output_schema: Option<Value>,
 
@@ -50,6 +54,7 @@ impl Default for Prompt {
             tools: Arc::default(),
             parallel_tool_calls: false,
             base_instructions: BaseInstructions::default(),
+            overlay_base_instructions: None,
             output_schema: None,
             output_schema_strict: true,
             prompt_cache_ttl: None,
