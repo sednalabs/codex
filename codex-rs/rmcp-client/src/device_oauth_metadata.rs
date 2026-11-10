@@ -1,5 +1,6 @@
 //! Device-grant discovery. Never infer credential-bearing endpoints.
 
+use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -8,6 +9,7 @@ use anyhow::Result;
 use anyhow::bail;
 use rmcp::transport::AuthorizationManager;
 use rmcp::transport::auth::AuthError;
+use rmcp::transport::auth::AuthorizationMetadata;
 use rmcp::transport::auth::OAuthHttpClient;
 use serde::Deserialize;
 use url::Url;
@@ -28,6 +30,8 @@ pub(crate) struct DeviceMetadata {
     pub scopes_supported: Option<Vec<String>>,
     #[serde(default)]
     authorization_endpoint: Option<String>,
+    #[serde(flatten)]
+    additional_fields: HashMap<String, serde_json::Value>,
 }
 
 pub(crate) fn checked_endpoint(value: &str) -> Result<Url> {
@@ -44,6 +48,19 @@ pub(crate) fn checked_endpoint(value: &str) -> Result<Url> {
 }
 
 impl DeviceMetadata {
+    /// RMCP requires a syntactic authorization URL even for a refresh-only client.
+    /// No browser flow is advertised or permitted through this synthetic metadata.
+    pub(crate) fn into_refresh_metadata(self) -> AuthorizationMetadata {
+        let mut metadata = AuthorizationMetadata::default();
+        metadata.authorization_endpoint = self.issuer.clone();
+        metadata.token_endpoint = self.token_endpoint;
+        metadata.issuer = Some(self.issuer);
+        metadata.scopes_supported = self.scopes_supported;
+        metadata.response_types_supported = Some(Vec::new());
+        metadata.additional_fields = self.additional_fields;
+        metadata
+    }
+
     fn validate(&self) -> Result<()> {
         let issuer = checked_endpoint(&self.issuer)?;
         if issuer.query().is_some() {
@@ -250,6 +267,7 @@ mod tests {
             grant_types_supported: None,
             scopes_supported: None,
             authorization_endpoint: None,
+            additional_fields: HashMap::new(),
         };
         assert!(metadata.validate().is_ok());
         metadata.device_authorization_endpoint = "https://user:password@example.test/device".into();

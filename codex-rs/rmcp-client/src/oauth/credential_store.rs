@@ -46,6 +46,7 @@ use super::WrappedOAuthTokenResponse;
 use super::normalized_oauth_credentials;
 use super::refresh_expires_in_from_timestamp;
 use super::refresh_transaction::REFRESH_REQUEST_TIMEOUT;
+use super::resolve_refresh_metadata;
 use super::resolved_store::Backend;
 use super::token_needs_refresh;
 use super::validate_refresh_token_issuer;
@@ -64,6 +65,7 @@ struct OAuthCredentialStoreInner<K> {
     store: ResolvedOAuthCredentialStore,
     keyring: K,
     oauth_config: Option<McpServerOAuthConfig>,
+    device_metadata_client: Option<Arc<crate::oauth_http_client::OAuthHttpClientAdapter>>,
     last_credentials: Mutex<Option<StoredOAuthTokens>>,
     rejected_credentials: Mutex<Option<StoredOAuthTokens>>,
     refresh_guard: Mutex<Weak<RefreshCredentialLock>>,
@@ -85,12 +87,23 @@ impl<K: KeyringStore + Clone + 'static> OAuthCredentialStore<K> {
                 store,
                 keyring,
                 oauth_config,
+                device_metadata_client: None,
                 last_credentials: Mutex::new(Some(tokens)),
                 rejected_credentials: Mutex::new(None),
                 refresh_guard: Mutex::new(Weak::new()),
             }),
             held_refresh_guard: None,
         }
+    }
+
+    pub(crate) fn with_device_metadata_client(
+        mut self,
+        client: Arc<crate::oauth_http_client::OAuthHttpClientAdapter>,
+    ) -> Self {
+        Arc::get_mut(&mut self.inner)
+            .expect("new OAuth credential store has one owner")
+            .device_metadata_client = Some(client);
+        self
     }
 
     pub(crate) async fn refresh_if_needed(&self, manager: &mut AuthorizationManager) -> Result<()> {
@@ -105,7 +118,13 @@ impl<K: KeyringStore + Clone + 'static> OAuthCredentialStore<K> {
         if !token_needs_refresh(tokens.expires_at) {
             return Ok(());
         }
-        let metadata = manager.resolve_metadata().await?.metadata;
+        let metadata = resolve_refresh_metadata(
+            manager,
+            &self.inner.url,
+            self.inner.device_metadata_client.as_deref(),
+            &tokens,
+        )
+        .await?;
         validate_refresh_token_issuer(&metadata, &tokens)?;
         manager.set_metadata(metadata);
         manager.configure_client_id(&tokens.client_id)?;

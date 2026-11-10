@@ -30,6 +30,7 @@ use super::WrappedOAuthTokenResponse;
 use super::compute_expires_at_millis;
 use super::expires_in_from_timestamp;
 use super::refresh_lock::RefreshCredentialLock;
+use super::resolve_refresh_metadata;
 use super::token_needs_refresh;
 use super::validate_refresh_token_issuer;
 
@@ -175,11 +176,14 @@ impl OAuthPersistor {
         // The provider uses a separate HTTP client and cannot re-enter `AuthClient`. Retain this
         // async guard so requests cannot observe credentials while they are staged and committed.
         let mut guard = manager.lock().await;
-        let metadata = guard
-            .resolve_metadata()
-            .await
-            .context("failed to resolve OAuth metadata before using stored refresh credentials")?
-            .metadata;
+        let metadata = resolve_refresh_metadata(
+            &guard,
+            &self.inner.url,
+            self.inner.device_metadata_client.as_deref(),
+            &latest,
+        )
+        .await
+        .context("failed to resolve OAuth metadata before using stored refresh credentials")?;
         validate_refresh_token_issuer(&metadata, &latest)?;
         guard.set_metadata(metadata);
         install_tokens_in_manager(&mut guard, &latest, self.inner.oauth_config.as_ref())

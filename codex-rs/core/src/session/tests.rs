@@ -7271,13 +7271,29 @@ async fn make_session_with_history_source_config_file(
     configure: impl FnOnce(&mut Config),
 ) -> anyhow::Result<(Arc<Session>, async_channel::Receiver<Event>)> {
     let codex_home = tempfile::tempdir().expect("create temp dir");
+    make_session_with_history_source_config_file_in_home(
+        initial_history,
+        session_source,
+        agent_control,
+        config_contents,
+        codex_home.path(),
+        configure,
+    )
+    .await
+}
+
+async fn make_session_with_history_source_config_file_in_home(
+    initial_history: InitialHistory,
+    session_source: SessionSource,
+    agent_control: LocalAgentControl,
+    config_contents: Option<&str>,
+    codex_home: &std::path::Path,
+    configure: impl FnOnce(&mut Config),
+) -> anyhow::Result<(Arc<Session>, async_channel::Receiver<Event>)> {
     if let Some(contents) = config_contents {
-        std::fs::write(
-            codex_home.path().join(codex_config::CONFIG_TOML_FILE),
-            contents,
-        )?;
+        std::fs::write(codex_home.join(codex_config::CONFIG_TOML_FILE), contents)?;
     }
-    let mut config = build_test_config(codex_home.path()).await;
+    let mut config = build_test_config(codex_home).await;
     config.ephemeral = true;
     configure(&mut config);
     let config = Arc::new(config);
@@ -7449,6 +7465,119 @@ async fn resumed_root_session_uses_thread_id_as_session_id() {
     };
     assert_eq!(event.session_id, SessionId::from(thread_id));
     assert_eq!(event.thread_id, thread_id);
+}
+
+#[tokio::test]
+async fn historical_overlay_disk_resume_runs_a_real_turn_and_preserves_rollout()
+-> anyhow::Result<()> {
+    use codex_config::HistoricalBaselineAdoption;
+    use codex_config::InstructionOverlayComponentToml;
+    use codex_config::InstructionOverlayEdit;
+    use codex_history::RolloutLine;
+
+    let home = tempfile::tempdir()?;
+    let thread_id = ThreadId::new();
+    let target = "synthetic obsolete guidance";
+    let baseline = format!("before {target} after");
+    let plan = InstructionOverlayComponentToml {
+        edits: vec![InstructionOverlayEdit::RemoveExact {
+            text: target.into(),
+            expected_matches: 1,
+        }],
+        ..Default::default()
+    };
+    let original = RolloutLine {
+        timestamp: "2025-01-01T00:00:00Z".into(),
+        ordinal: None,
+        item: RolloutItem::SessionMeta(Box::new(SessionMetaLine {
+            meta: SessionMeta {
+                id: thread_id,
+                session_id: thread_id.into(),
+                source: SessionSource::Cli,
+                base_instructions: Some(BaseInstructions {
+                    text: baseline.clone(),
+                    provenance: None,
+                }),
+                ..SessionMeta::default()
+            },
+            git: None,
+        })),
+    };
+    let path = home.path().join("synthetic-rollout.jsonl");
+    let original_bytes = format!("{}\n", serde_json::to_string(&original)?);
+    std::fs::write(&path, &original_bytes)?;
+    let history = RolloutRecorder::get_rollout_history(&path).await?;
+    let config_contents = format!(
+        "[instruction_overlays.model_baseline]\nedits = [{{ op = \"remove_exact\", text = {target:?}, expected_matches = 1 }}]\n[historical_baseline_adoption]\nthread_id = {:?}\nbaseline_sha256 = {:?}\nplan_sha256 = {:?}\n",
+        thread_id.to_string(),
+        HistoricalBaselineAdoption::baseline_digest(&baseline),
+        HistoricalBaselineAdoption::plan_digest(&plan),
+    );
+    let server = start_mock_server().await;
+    let requests = mount_sse_once(
+        &server,
+        sse(vec![
+            ev_response_created("synthetic-response"),
+            ev_assistant_message("synthetic-message", "done"),
+            ev_completed("synthetic-response"),
+        ]),
+    )
+    .await;
+    let mut provider = built_in_model_providers(None)["openai"].clone();
+    provider.base_url = Some(format!("{}/v1", server.uri()));
+    provider.supports_websockets = false;
+    let (session, events) = make_session_with_history_source_config_file_in_home(
+        history,
+        SessionSource::Cli,
+        LocalAgentControl::default(),
+        Some(&config_contents),
+        home.path(),
+        move |config| {
+            config.ephemeral = false;
+            config.model_provider = provider;
+        },
+    )
+    .await?;
+    let turn = session.new_default_turn().await;
+    session
+        .spawn_task(
+            turn,
+            vec![TurnInput::UserInput {
+                metadata: Default::default(),
+                content: vec![UserInput::Text {
+                    text: "synthetic resumed turn".into(),
+                    text_elements: Vec::new(),
+                }],
+                client_id: None,
+            }],
+            crate::tasks::RegularTask::new(),
+        )
+        .await;
+    let saw_applied = tokio::time::timeout(Duration::from_secs(30), async {
+        let mut applied = false;
+        loop {
+            let event = events.recv().await.expect("turn event channel open");
+            match event.msg {
+                EventMsg::Warning(warning) => {
+                    applied |= warning.message.starts_with("Instruction overlay: applied");
+                }
+                EventMsg::TurnComplete(_) => break applied,
+                EventMsg::Error(error) => panic!("synthetic turn failed: {error:?}"),
+                _ => {}
+            }
+        }
+    })
+    .await?;
+    assert!(saw_applied);
+    let request = requests.single_request().body_json().to_string();
+    assert!(!request.contains(target));
+    assert!(request.contains("before  after"));
+    assert!(request.contains("synthetic resumed turn"));
+    session.flush_rollout().await?;
+    let saved = std::fs::read_to_string(&path)?;
+    assert!(saved.starts_with(&original_bytes));
+    assert!(saved.contains(target));
+    Ok(())
 }
 
 #[tokio::test]
