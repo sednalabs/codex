@@ -14322,3 +14322,99 @@ fn sqlite_home_env_conflict_reports_an_override() -> std::io::Result<()> {
 
     Ok(())
 }
+#[test]
+fn historical_adoption_requires_every_field_from_user_layer() {
+    use crate::config::Config;
+    use codex_utils_absolute_path::AbsolutePathBuf;
+
+    let path = AbsolutePathBuf::try_from(std::env::temp_dir()).unwrap();
+    let user = ConfigLayerEntry::new(
+        ConfigLayerSource::User {
+            file: path.clone(),
+            profile: None,
+        },
+        toml::toml! {
+            [historical_baseline_adoption]
+            thread_id = "synthetic"
+            baseline_sha256 = "synthetic"
+            plan_sha256 = "synthetic"
+        }
+        .into(),
+    );
+    let user_only =
+        ConfigLayerStack::new(vec![user.clone()], Default::default(), Default::default()).unwrap();
+    assert!(Config::historical_baseline_adoption_is_user_owned(
+        &user_only
+    ));
+    for source in [
+        ConfigLayerSource::Project {
+            dot_codex_folder: path.clone(),
+        },
+        ConfigLayerSource::SessionFlags,
+        ConfigLayerSource::LegacyManagedConfigTomlFromMdm,
+    ] {
+        let override_layer = ConfigLayerEntry::new(
+            source,
+            toml::toml! {
+                [historical_baseline_adoption]
+                thread_id = "other-synthetic-thread"
+            }
+            .into(),
+        );
+        let stack = ConfigLayerStack::new(
+            vec![user.clone(), override_layer],
+            Default::default(),
+            Default::default(),
+        )
+        .unwrap();
+        assert!(!Config::historical_baseline_adoption_is_user_owned(&stack));
+    }
+    let absent = ConfigLayerStack::new(Vec::new(), Default::default(), Default::default()).unwrap();
+    assert!(!Config::historical_baseline_adoption_is_user_owned(&absent));
+}
+
+#[tokio::test]
+async fn instruction_overlay_fences_protected_configuration() {
+    let home = tempfile::tempdir().unwrap();
+    let mut config = ConfigBuilder::without_managed_config_for_tests()
+        .codex_home(home.path().to_path_buf())
+        .fallback_cwd(Some(home.path().to_path_buf()))
+        .build()
+        .await
+        .unwrap();
+    config.developer_instructions = Some("synthetic protected instruction".into());
+    config.client_owned_developer_instructions = false;
+    config.model_provider_id = "synthetic-provider".into();
+    let fences =
+        config.instruction_overlay_origin_fences(&codex_protocol::protocol::SessionSource::Cli);
+    assert!(fences.contains(&codex_config::InstructionOverlayComponent::DeveloperGuidance));
+    assert!(fences.contains(&codex_config::InstructionOverlayComponent::ModelSwitchGuidance));
+    assert!(fences.contains(&codex_config::InstructionOverlayComponent::CollaborationGuidance));
+    assert!(fences.contains(&codex_config::InstructionOverlayComponent::PersistentGuidance));
+}
+
+#[tokio::test]
+async fn historical_adoption_requires_an_eligible_configured_plan() {
+    let home = tempfile::tempdir().unwrap();
+    std::fs::write(
+        home.path().join(codex_config::CONFIG_TOML_FILE),
+        r#"
+[historical_baseline_adoption]
+thread_id = "synthetic"
+baseline_sha256 = "synthetic"
+plan_sha256 = "synthetic"
+"#,
+    )
+    .unwrap();
+    let result = ConfigBuilder::without_managed_config_for_tests()
+        .codex_home(home.path().to_path_buf())
+        .fallback_cwd(Some(home.path().to_path_buf()))
+        .build()
+        .await;
+    let error = result.expect_err("adoption without a plan must fail");
+    assert!(
+        error
+            .to_string()
+            .contains("requires a unique model-baseline exact-removal plan")
+    );
+}

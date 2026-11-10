@@ -8,6 +8,7 @@ use crate::config::Config;
 use crate::config::deserialize_config_toml_with_base;
 use anyhow::anyhow;
 use codex_agent_roles::parse_agent_role_file_contents;
+use codex_config::InstructionOverlaysToml;
 use codex_config::SkillsConfig;
 use codex_config::loader::resolve_relative_paths_in_config_toml;
 use codex_exec_server::read_sensitive_file_to_string;
@@ -33,6 +34,7 @@ const AGENT_TYPE_UNAVAILABLE_ERROR: &str = "agent type is currently not availabl
 #[derive(Default, Serialize)]
 struct AgentRoleOverrides {
     developer_instructions: Option<String>,
+    instruction_overlays: Option<InstructionOverlaysToml>,
     model: Option<String>,
     model_reasoning_effort: Option<ReasoningEffort>,
     model_reasoning_summary: Option<ReasoningSummary>,
@@ -57,8 +59,8 @@ pub(crate) async fn apply_role_to_config(
 
     apply_role_to_config_inner(config, role_name, &role)
         .await
-        .map_err(|err| {
-            tracing::warn!("failed to apply role to config: {err}");
+        .map_err(|_| {
+            tracing::warn!("failed to apply role configuration");
             AGENT_TYPE_UNAVAILABLE_ERROR.to_string()
         })
 }
@@ -74,8 +76,12 @@ async fn apply_role_to_config_inner(
     };
     let role_layer_toml = load_role_layer_toml(config, config_file, is_built_in, role_name).await?;
     let role_config = deserialize_config_toml_with_base(role_layer_toml, &config.codex_home)?;
+    if role_config.historical_baseline_adoption.is_some() {
+        anyhow::bail!("historical baseline adoption is not permitted in role configuration");
+    }
     let mut overrides = AgentRoleOverrides {
         developer_instructions: role_config.developer_instructions,
+        instruction_overlays: role_config.instruction_overlays,
         model: role_config.model,
         model_reasoning_effort: role_config.model_reasoning_effort,
         model_reasoning_summary: role_config.model_reasoning_summary,
@@ -180,11 +186,35 @@ mod role_overrides {
         next_config.config_layer_stack = next_config
             .config_layer_stack
             .with_session_config(role_layer_toml)?;
+        if overrides.instruction_overlays.is_some() {
+            let overlays: InstructionOverlaysToml = next_config
+                .config_layer_stack
+                .effective_config()
+                .get("instruction_overlays")
+                .cloned()
+                .ok_or_else(|| anyhow!("invalid instruction overlay configuration"))?
+                .try_into()
+                .map_err(|_| anyhow!("invalid instruction overlay configuration"))?;
+            overlays
+                .validate_all()
+                .map_err(|_| anyhow!("invalid instruction overlay configuration"))?;
+            next_config.instruction_overlays = overlays;
+        }
         if let Some(model) = &overrides.model {
             next_config.model = Some(model.clone());
         }
         if let Some(instructions) = &overrides.developer_instructions {
             next_config.developer_instructions = Some(instructions.clone());
+            next_config.client_owned_developer_instructions =
+                Config::instruction_origin_is_client_owned(
+                    &next_config.config_layer_stack,
+                    "developer_instructions",
+                ) && next_config
+                    .config_layer_stack
+                    .effective_config()
+                    .get("developer_instructions")
+                    .and_then(TomlValue::as_str)
+                    .is_some_and(|effective| effective == instructions);
         }
         if let Some(effort) = overrides.model_reasoning_effort.clone() {
             next_config.model_reasoning_effort = Some(effort);

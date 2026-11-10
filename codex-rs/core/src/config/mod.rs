@@ -135,6 +135,8 @@ use codex_protocol::permissions::NetworkSandboxPolicy;
 use codex_protocol::protocol::AskForApproval;
 use codex_protocol::protocol::MultiAgentVersion;
 use codex_protocol::protocol::SandboxPolicy;
+use codex_protocol::protocol::SessionSource;
+use codex_protocol::protocol::SubAgentSource;
 use codex_rmcp_client::McpOAuthRefreshMode;
 use codex_sandboxing::SandboxType;
 pub use codex_thread_store::ExtraConfig;
@@ -725,6 +727,15 @@ pub struct Config {
 
     /// Origin of the configured base instructions when supplied by another session or lockfile.
     pub base_instructions_provenance: Option<BaseInstructionsProvenance>,
+
+    /// Request-only instruction overlay plans from the effective configuration.
+    pub instruction_overlays: codex_config::InstructionOverlaysToml,
+
+    /// Explicit authorization from the local user config for one historical baseline.
+    pub historical_baseline_adoption: Option<codex_config::HistoricalBaselineAdoption>,
+
+    pub client_owned_developer_instructions: bool,
+    pub client_owned_base_instructions: bool,
 
     /// Developer instructions override injected as a separate message.
     pub developer_instructions: Option<String>,
@@ -1689,6 +1700,109 @@ impl Config {
         } else {
             codex_guardian_context::ContextBudgeting::Fixed
         }
+    }
+
+    pub(crate) fn instruction_origin_is_client_owned(stack: &ConfigLayerStack, key: &str) -> bool {
+        stack
+            .origins_with_path_filter(|path| path.iter().map(String::as_str).eq(key.split('.')))
+            .get(key)
+            .is_some_and(|origin| {
+                matches!(
+                    origin.name,
+                    ConfigLayerSource::PackagedDefaults { .. }
+                        | ConfigLayerSource::User { .. }
+                        | ConfigLayerSource::Project { .. }
+                        | ConfigLayerSource::SessionFlags
+                )
+            })
+    }
+
+    fn historical_baseline_adoption_is_user_owned(stack: &ConfigLayerStack) -> bool {
+        let origins = stack.origins_with_path_filter(|path| {
+            path.first()
+                .is_some_and(|key| key == "historical_baseline_adoption")
+        });
+        ["thread_id", "baseline_sha256", "plan_sha256"]
+            .into_iter()
+            .all(|field| {
+                origins
+                    .get(&format!("historical_baseline_adoption.{field}"))
+                    .is_some_and(|origin| matches!(origin.name, ConfigLayerSource::User { .. }))
+            })
+    }
+
+    pub(crate) fn multi_agent_text_is_client_owned(&self, key: &str, text: &str) -> bool {
+        let path = format!("features.multi_agent_v2.{key}");
+        if !Self::instruction_origin_is_client_owned(&self.config_layer_stack, &path) {
+            return false;
+        }
+        self.config_layer_stack
+            .effective_config()
+            .get("features")
+            .and_then(|features| features.get("multi_agent_v2"))
+            .and_then(|config| config.get(key))
+            .and_then(TomlValue::as_str)
+            .is_some_and(|value| {
+                if key == "subagent_developer_instructions" {
+                    value.trim() == text
+                } else {
+                    value == text
+                }
+            })
+    }
+
+    pub(crate) fn instruction_overlay_origin_fences(
+        &self,
+        source: &SessionSource,
+    ) -> Vec<codex_config::InstructionOverlayComponent> {
+        use codex_config::InstructionOverlayComponent;
+        let mut fenced = Vec::new();
+        // These components can carry model-catalog instructions. Without the
+        // built-in OpenAI catalog, their provider origin is not established.
+        if self.model_provider_id != OPENAI_PROVIDER_ID
+            || self.model_provider.base_url.is_some()
+            || self.model_catalog.is_some()
+        {
+            fenced.extend([
+                InstructionOverlayComponent::ModelSwitchGuidance,
+                InstructionOverlayComponent::CollaborationGuidance,
+                InstructionOverlayComponent::PersistentGuidance,
+            ]);
+        }
+        if self.developer_instructions.is_some() && !self.client_owned_developer_instructions {
+            fenced.push(InstructionOverlayComponent::DeveloperGuidance);
+        }
+        if self
+            .multi_agent_v2
+            .multi_agent_mode_hint_text
+            .as_deref()
+            .is_some_and(|text| {
+                !self.multi_agent_text_is_client_owned("multi_agent_mode_hint_text", text)
+            })
+        {
+            fenced.push(InstructionOverlayComponent::MultiAgentMode);
+        }
+        let (key, text) = if matches!(
+            source,
+            SessionSource::SubAgent(SubAgentSource::ThreadSpawn { .. })
+        ) {
+            (
+                "subagent_usage_hint_text",
+                self.multi_agent_v2.subagent_usage_hint_text.as_deref(),
+            )
+        } else {
+            (
+                "root_agent_usage_hint_text",
+                self.multi_agent_v2.root_agent_usage_hint_text.as_deref(),
+            )
+        };
+        if text.is_some_and(|text| !self.multi_agent_text_is_client_owned(key, text)) {
+            fenced.extend([
+                InstructionOverlayComponent::MultiAgentRole,
+                InstructionOverlayComponent::MultiAgentUsageHint,
+            ]);
+        }
+        fenced
     }
 
     pub fn sqlite_config(&self) -> &codex_state::SqliteConfig {
@@ -3418,6 +3532,27 @@ impl Config {
         config_layer_stack.validate_project_mitm_profiles()?;
         // Keep the large config-construction future off small test thread stacks.
         Box::pin(async move {
+        if cfg.historical_baseline_adoption.is_some() {
+            if !Self::historical_baseline_adoption_is_user_owned(&config_layer_stack) {
+                return Err(std::io::Error::new(
+                    std::io::ErrorKind::InvalidInput,
+                    "historical baseline adoption must be supplied by the local user config",
+                ));
+            }
+        }
+        if let Some(overlays) = &cfg.instruction_overlays {
+            overlays.validate_all().map_err(|error| std::io::Error::new(
+                std::io::ErrorKind::InvalidInput,
+                format!("invalid instruction overlay configuration: {error}"),
+            ))?;
+        }
+        if cfg.historical_baseline_adoption.is_some()
+            && !cfg.instruction_overlays.as_ref().and_then(|overlays| overlays.model_baseline.as_ref())
+                .is_some_and(codex_config::HistoricalBaselineAdoption::plan_is_eligible)
+        {
+            return Err(std::io::Error::new(std::io::ErrorKind::InvalidInput,
+                "historical baseline adoption requires a unique model-baseline exact-removal plan"));
+        }
         if cfg.experimental_thread_store_endpoint.is_some() {
             return Err(std::io::Error::new(
                 std::io::ErrorKind::InvalidInput,
@@ -4301,6 +4436,13 @@ impl Config {
             "model instructions file",
         )
         .await?;
+        let client_owned_base_instructions = base_instructions.is_none()
+            && Self::instruction_origin_is_client_owned(
+                &config_layer_stack,
+                if file_base_instructions.is_some() { "model_instructions_file" } else { "instructions" },
+            );
+        let client_owned_developer_instructions = developer_instructions.is_none()
+            && Self::instruction_origin_is_client_owned(&config_layer_stack, "developer_instructions");
         let base_instructions = base_instructions
             .or(file_base_instructions)
             .or(cfg.instructions.clone());
@@ -4652,6 +4794,10 @@ impl Config {
             notify: cfg.notify,
             base_instructions,
             base_instructions_provenance,
+            instruction_overlays: cfg.instruction_overlays.unwrap_or_default(),
+            historical_baseline_adoption: cfg.historical_baseline_adoption,
+            client_owned_developer_instructions,
+            client_owned_base_instructions,
             personality,
             developer_instructions,
             compact_prompt,

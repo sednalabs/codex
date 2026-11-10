@@ -19,6 +19,133 @@ use std::path::PathBuf;
 use std::sync::Arc;
 use tempfile::TempDir;
 
+#[tokio::test]
+async fn instruction_overlay_role_projection_preserves_effective_plan() {
+    let (home, mut config) = test_config_with_cli_overrides(Vec::new()).await;
+    let role_path = write_role_config(
+        &home,
+        "overlay-role.toml",
+        r#"
+developer_instructions = "synthetic role guidance"
+[instruction_overlays.model_baseline]
+models = ["synthetic-model"]
+edits = [{ op = "remove_exact_if_present", text = "synthetic target", expected_matches = 1 }]
+"#,
+    )
+    .await;
+    config.agent_roles.insert(
+        "synthetic".into(),
+        AgentRoleConfig {
+            description: None,
+            config_file: Some(role_path),
+            nickname_candidates: None,
+        },
+    );
+    apply_role_to_config(&mut config, Some("synthetic"))
+        .await
+        .unwrap();
+    let plan = config.instruction_overlays.model_baseline.as_ref().unwrap();
+    assert_eq!(
+        plan.models.as_deref(),
+        Some(["synthetic-model".to_string()].as_slice())
+    );
+    assert!(config.client_owned_developer_instructions);
+    assert_eq!(
+        config
+            .instruction_overlays
+            .apply_component(
+                codex_config::InstructionOverlayComponent::ModelBaseline,
+                Some("synthetic target remains")
+            )
+            .unwrap()
+            .as_deref(),
+        Some(" remains")
+    );
+}
+
+#[tokio::test]
+async fn instruction_overlay_role_rejects_historical_adoption() {
+    let (home, mut config) = test_config_with_cli_overrides(Vec::new()).await;
+    let role_path = write_role_config(
+        &home,
+        "overlay-adoption-role.toml",
+        r#"
+[historical_baseline_adoption]
+thread_id = "synthetic"
+baseline_sha256 = "synthetic"
+plan_sha256 = "synthetic"
+"#,
+    )
+    .await;
+    config.agent_roles.insert(
+        "synthetic".into(),
+        AgentRoleConfig {
+            description: None,
+            config_file: Some(role_path),
+            nickname_candidates: None,
+        },
+    );
+    assert!(
+        apply_role_to_config(&mut config, Some("synthetic"))
+            .await
+            .is_err()
+    );
+}
+
+#[tokio::test]
+async fn instruction_overlay_role_merges_other_components_and_clears_explicitly() {
+    let parent: TomlValue = toml::from_str(
+        r#"
+        [model_baseline]
+        edits = [{ op = "append", text = " parent-base" }]
+        [developer_guidance]
+        edits = [{ op = "append", text = " parent-dev" }]
+    "#,
+    )
+    .unwrap();
+    let (home, mut config) =
+        test_config_with_cli_overrides(vec![("instruction_overlays".into(), parent)]).await;
+    let role_path = write_role_config(
+        &home,
+        "clear-overlay-role.toml",
+        "[instruction_overlays.model_baseline]\nedits = []\n",
+    )
+    .await;
+    config.agent_roles.insert(
+        "synthetic".into(),
+        AgentRoleConfig {
+            description: None,
+            config_file: Some(role_path),
+            nickname_candidates: None,
+        },
+    );
+    apply_role_to_config(&mut config, Some("synthetic"))
+        .await
+        .unwrap();
+    assert_eq!(
+        config
+            .instruction_overlays
+            .apply_component(
+                codex_config::InstructionOverlayComponent::ModelBaseline,
+                Some("synthetic")
+            )
+            .unwrap()
+            .as_deref(),
+        Some("synthetic")
+    );
+    assert_eq!(
+        config
+            .instruction_overlays
+            .apply_component(
+                codex_config::InstructionOverlayComponent::DeveloperGuidance,
+                Some("synthetic")
+            )
+            .unwrap()
+            .as_deref(),
+        Some("synthetic parent-dev")
+    );
+}
+
 async fn test_config_with_cli_overrides(
     cli_overrides: Vec<(String, TomlValue)>,
 ) -> (TempDir, Config) {

@@ -1,8 +1,49 @@
 # w14939 upstream convergence: draft
 
-This is an incomplete source draft, not a release or installation candidate.
-Its upstream base is `5b98eaafeb341225d3724a6112a93c993cc09613`; the Sedna
-fixture source is `97f6c6b811cbda5aa618356e6761c541da2b5032`.
+This is a source candidate under validation, not a release or installation candidate.
+The existing candidate was merged with upstream
+`c82708f85803d21fe9046af407107a1ee105b6e5` in
+`53b8bc981ea124845168e30a6e882be9af76d7f1`; the missing compaction-test
+import was restored in `f332147b84865f052256a8ce67094e2c9caaa661`. The later
+upstream thread-search commit `77fde36ae112437a8ce23e752209099ee04a0d50` was
+merged in `a9b230a73ae1a67c1963d68183cff67af2c21a91`. The Sedna fixture source is
+`97f6c6b811cbda5aa618356e6761c541da2b5032`. Evidence from older commits and
+the preview artifact does not validate this merge or any later overlay draft.
+
+The overlay integration is unqualified. Its historical adoption
+binds a local user authorization to one
+thread, the SHA-256 of the complete saved baseline and the SHA-256 of the exact
+model-baseline edit plan. Only unique, single-match exact removals qualify. It
+does not adopt known custom/protected provenance or authorize a different
+thread, component or plan. Unknown, protected, absent and ambiguous outcomes
+must be visible. The old installed engine and the w18679 source differ; their
+full compatibility and role precedence are still being reconciled.
+An adoption for a parent thread does not authorize a child or fork; each thread
+must meet its own identity and origin checks.
+
+`scripts/w14939-overlay-identities.py` (Python 3.11 or later) computes the two hashes locally from a
+TOML fragment containing the effective `[model_baseline]` plan and the exact
+UTF-8 baseline bytes supplied on stdin. It outputs only hashes, never input
+text. A local operator must determine those bytes and verify that the fragment
+matches the effective plan; a mismatch fails closed. The helper is synthetic-test
+validated only, and no real thread, database, transcript or configuration has
+been accessed to establish this candidate.
+Synthetic HTTP tests use a test-only loopback endpoint; production code does not
+permit that endpoint as a trusted model source. A custom OpenAI endpoint is
+currently blocked until its provenance can be established.
+
+The proposed authorization belongs in the user's local config:
+
+```toml
+[historical_baseline_adoption]
+thread_id = "<exact-thread-id>"
+baseline_sha256 = "<hash-of-exact-saved-baseline>"
+plan_sha256 = "<hash-of-effective-model-baseline-plan>"
+```
+
+It is request-only and can be revoked by removing this table. Project, session,
+and managed config layers cannot supply this authorization. The helper and
+config format are draft interfaces and are not part of a qualified package.
 
 The state startup preflight requires a known successful migration prefix. It
 checks all identities before repairing the historical upstream recency-38
@@ -34,9 +75,8 @@ that either actual schema has no other history. Both recorded source trees
 also contain the same eight thread-history migration files as upstream. A
 synthetic history fixture applies the later migrations to earlier schema and
 checks that fabricated turn, item and projection records survive; it is not
-a copy of any real session. A subsequent untested Rust draft additionally
-checks thread-history prefixes and refuses unknown ledger identities before
-opening that database.
+a copy of any real session. The Rust preflight also checks thread-history prefixes and refuses unknown
+ledger identities before opening that database.
 
 The capacity retry draft retries the selected model on `ServerOverloaded`,
 honors the server deadline, and uses capped backoff. It also covers local and
@@ -51,16 +91,15 @@ progress messages quiet during native waits, and supports targeted any/all
 completion waits. Its protocol compatibility test passed locally; the core
 implementation passed focused local queue and wait tests, including targeted
 all-completion filtering, before the refresh to this upstream base. A subsequent
-draft adds native event waits and lease renewal; those changes remain untested. Full Sedna mailbox compatibility,
+draft adds native event waits and lease renewal. Full Sedna mailbox compatibility,
 including structured receipts and mailbox persistence, is not established.
 
 An MCP device-login draft uses upstream's routed and bounded OAuth HTTP
 adapter, issuer-bound advertised discovery, public-client registration,
-PKCE fallback, device polling and locked token storage. The rmcp-client library
-compiled locally before the refresh; the CLI and device tests have not been compiled or run locally.
+PKCE fallback, device polling and locked token storage. The rmcp-client library and synthetic CLI device tests passed hosted validation
+on the earlier candidate `abf09fbad15480dc3d9ddb27851ed47fd2b7f22d`.
 Device-only discovery, the `mcp add` hint, preservation of unknown credential
-file fields, and Sedna's synthetic CLI login tests are included in a subsequent
-untested draft. Bounded same-origin device-request redirects are included in the
+file fields, and Sedna's synthetic CLI login tests are included in the candidate. Bounded same-origin device-request redirects are included in the
 draft; cross-origin redirects are rejected. Device-only refresh compatibility
 still needs assessment.
 Full session-history compatibility, hosted validation, packaging and consumer

@@ -62,6 +62,27 @@ use tokio_util::task::TaskTracker;
 type McpToolApprovalMetadataMap =
     HashMap<(String, String), std::sync::Weak<McpToolApprovalContext>>;
 
+pub(super) fn trusted_model_overlay_source(config: &Config) -> bool {
+    if config.model_provider_id != codex_model_provider_info::OPENAI_PROVIDER_ID {
+        return false;
+    }
+    if config.model_provider.base_url.is_none() {
+        return true;
+    }
+    // Synthetic HTTP tests use a loopback endpoint; this exception is not built
+    // into production binaries and never applies to a different provider ID.
+    #[cfg(test)]
+    if let Some(url) = config.model_provider.base_url.as_deref()
+        && let Ok(url) = url::Url::parse(url)
+        && url.scheme() == "http"
+        && url.host_str() == Some("127.0.0.1")
+        && url.port().is_some()
+    {
+        return true;
+    }
+    false
+}
+
 /// A thread's installed reporter and the tasks that may still hand it an outcome.
 pub(crate) struct AgentOutcomeReporting {
     pub(super) reporter: Arc<dyn AgentTurnOutcomeReporter>,
@@ -1912,6 +1933,28 @@ impl Session {
                 );
             let reasoning_effort_override_enabled =
                 config.features.enabled(Feature::ReasoningEffortOverride) && !title_request;
+            let mut adopted_baseline_digests = Vec::new();
+            if config.base_instructions.is_none()
+                && trusted_model_overlay_source(&config)
+                && let (Some(adoption), Some(plan), Some(historical)) = (
+                    config.historical_baseline_adoption.as_ref(),
+                    config.instruction_overlays.model_baseline.as_ref(),
+                    initial_history.get_base_instructions(),
+                )
+                && historical.provenance.is_none()
+                && adoption.matches(&thread_id.to_string(), &historical.text, plan)
+            {
+                adopted_baseline_digests.push(
+                    codex_config::HistoricalBaselineAdoption::baseline_digest(&historical.text),
+                );
+                // The existing prompt projection may remove update-plan guidance. Bind that
+                // deterministic projection to the same historical identity as well.
+                adopted_baseline_digests.push(
+                    codex_config::HistoricalBaselineAdoption::baseline_digest(
+                        &codex_prompts::without_update_plan_instructions(&historical.text),
+                    ),
+                );
+            }
             let model_client = ModelClient::new(
                 Arc::clone(&session_configuration.provider),
                 if config.features.enabled(Feature::UseAgentIdentity) {
@@ -1940,6 +1983,22 @@ impl Session {
                 extensions.model_request_contributors().to_vec(),
             )
             .with_executed_tool_calls(executed_tool_calls.clone())
+            .with_instruction_overlays(
+                config.instruction_overlays.clone(),
+                if config.instruction_overlays == Default::default() {
+                    Vec::new()
+                } else {
+                    config.instruction_overlay_origin_fences(&session_configuration.session_source)
+                },
+                adopted_baseline_digests,
+                config.base_instructions.as_ref().filter(|_| config.client_owned_base_instructions)
+                    .map(|text| vec![codex_config::HistoricalBaselineAdoption::baseline_digest(text)])
+                    .unwrap_or_default(),
+                trusted_model_overlay_source(&config)
+                    && (config.base_instructions.is_none()
+                        || (matches!(session_configuration.session_source, SessionSource::SubAgent(SubAgentSource::ThreadSpawn { .. }))
+                            && matches!(config.base_instructions_provenance, Some(BaseInstructionsProvenance::Model { .. })))),
+            )
             .with_restored_history(matches!(
                 &initial_history,
                 InitialHistory::Resumed(_) | InitialHistory::Forked(_)

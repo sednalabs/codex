@@ -7238,9 +7238,48 @@ async fn make_session_with_history_source_and_agent_control_and_rx(
     session_source: SessionSource,
     agent_control: LocalAgentControl,
 ) -> anyhow::Result<(Arc<Session>, async_channel::Receiver<Event>)> {
+    make_session_with_history_source_and_config(
+        initial_history,
+        session_source,
+        agent_control,
+        |_| {},
+    )
+    .await
+}
+
+async fn make_session_with_history_source_and_config(
+    initial_history: InitialHistory,
+    session_source: SessionSource,
+    agent_control: LocalAgentControl,
+    configure: impl FnOnce(&mut Config),
+) -> anyhow::Result<(Arc<Session>, async_channel::Receiver<Event>)> {
+    make_session_with_history_source_config_file(
+        initial_history,
+        session_source,
+        agent_control,
+        None,
+        configure,
+    )
+    .await
+}
+
+async fn make_session_with_history_source_config_file(
+    initial_history: InitialHistory,
+    session_source: SessionSource,
+    agent_control: LocalAgentControl,
+    config_contents: Option<&str>,
+    configure: impl FnOnce(&mut Config),
+) -> anyhow::Result<(Arc<Session>, async_channel::Receiver<Event>)> {
     let codex_home = tempfile::tempdir().expect("create temp dir");
+    if let Some(contents) = config_contents {
+        std::fs::write(
+            codex_home.path().join(codex_config::CONFIG_TOML_FILE),
+            contents,
+        )?;
+    }
     let mut config = build_test_config(codex_home.path()).await;
     config.ephemeral = true;
+    configure(&mut config);
     let config = Arc::new(config);
     let auth_manager = AuthManager::from_auth_for_testing(CodexAuth::from_api_key("Test API Key"));
     let models_manager = models_manager_with_provider(
@@ -7280,6 +7319,11 @@ async fn make_session_with_history_source_and_agent_control_and_rx(
         base_instructions: config
             .base_instructions
             .clone()
+            .or_else(|| {
+                initial_history
+                    .get_base_instructions()
+                    .map(|base| base.text)
+            })
             .unwrap_or_else(|| render_model_instructions(&model_info)),
         permission_profile_state: config.permissions.permission_profile_state().clone(),
         allow_login_shell: config.permissions.allow_login_shell,
@@ -7405,6 +7449,368 @@ async fn resumed_root_session_uses_thread_id_as_session_id() {
     };
     assert_eq!(event.session_id, SessionId::from(thread_id));
     assert_eq!(event.thread_id, thread_id);
+}
+
+#[tokio::test]
+async fn historical_overlay_resume_to_serialized_request_is_identity_bound() -> anyhow::Result<()> {
+    use codex_config::HistoricalBaselineAdoption;
+    use codex_config::InstructionOverlayComponentToml;
+    use codex_config::InstructionOverlayEdit;
+    use codex_config::InstructionOverlayOnAbsent;
+    use codex_protocol::models::BaseInstructionsProvenance;
+    use futures::StreamExt;
+
+    let target = "synthetic obsolete guidance";
+    let baseline = format!("before {target} after");
+    for (child, incremental, adopted, protected, absent, fake_provider) in [
+        (false, false, true, false, false, false),
+        (true, false, true, false, false, false),
+        (false, true, true, false, false, false),
+        (true, true, true, false, false, false),
+        (false, false, false, false, false, false),
+        (false, false, true, true, false, false),
+        (false, false, true, false, true, false),
+        (false, false, true, false, false, true),
+    ] {
+        let server = start_mock_server().await;
+        let requests = mount_sse_once(
+            &server,
+            sse(vec![
+                ev_response_created("synthetic-response"),
+                ev_completed("synthetic-response"),
+            ]),
+        )
+        .await;
+        let mut provider = built_in_model_providers(None)["openai"].clone();
+        provider.base_url = Some(format!("{}/v1", server.uri()));
+        provider.supports_websockets = false;
+        let plan = InstructionOverlayComponentToml {
+            on_absent: InstructionOverlayOnAbsent::Skip,
+            edits: vec![InstructionOverlayEdit::RemoveExactIfPresent {
+                text: if absent {
+                    "missing synthetic target"
+                } else {
+                    target
+                }
+                .into(),
+                expected_matches: 1,
+            }],
+            ..Default::default()
+        };
+        let thread_id = ThreadId::new();
+        let source = if child {
+            SessionSource::SubAgent(SubAgentSource::ThreadSpawn {
+                parent_thread_id: ThreadId::new(),
+                depth: 1,
+                agent_path: None,
+                agent_nickname: None,
+                agent_role: None,
+            })
+        } else {
+            SessionSource::Cli
+        };
+        let saved = Arc::new(vec![RolloutItem::SessionMeta(Box::new(SessionMetaLine {
+            meta: SessionMeta {
+                id: thread_id,
+                session_id: thread_id.into(),
+                source: source.clone(),
+                base_instructions: Some(BaseInstructions {
+                    text: baseline.clone(),
+                    provenance: protected.then_some(BaseInstructionsProvenance::Custom),
+                }),
+                ..SessionMeta::default()
+            },
+            git: None,
+        }))]);
+        let saved_before = serde_json::to_value(saved.as_ref())?;
+        let adoption = HistoricalBaselineAdoption {
+            thread_id: if adopted {
+                thread_id.to_string()
+            } else {
+                ThreadId::new().to_string()
+            },
+            baseline_sha256: HistoricalBaselineAdoption::baseline_digest(&baseline),
+            plan_sha256: HistoricalBaselineAdoption::plan_digest(&plan),
+        };
+        let edit_target = if absent {
+            "missing synthetic target"
+        } else {
+            target
+        };
+        let config_contents = format!(
+            "[instruction_overlays.model_baseline]\non_absent = \"skip\"\nedits = [{{ op = \"remove_exact_if_present\", text = {edit_target:?}, expected_matches = 1 }}]\n[historical_baseline_adoption]\nthread_id = {:?}\nbaseline_sha256 = {:?}\nplan_sha256 = {:?}\n",
+            adoption.thread_id, adoption.baseline_sha256, adoption.plan_sha256,
+        );
+        let (session, events) = make_session_with_history_source_config_file(
+            InitialHistory::Resumed(ResumedHistory {
+                history_revision: None,
+                conversation_id: thread_id,
+                history: Arc::clone(&saved),
+                rollout_path: None,
+            }),
+            source,
+            LocalAgentControl::default(),
+            Some(&config_contents),
+            move |config| {
+                config.model_provider = provider;
+                if fake_provider {
+                    // A provider's display name is not proof of OpenAI ownership.
+                    config.model_provider_id = "synthetic-other-provider".into();
+                }
+            },
+        )
+        .await?;
+        let history_before = raw_history_items(&session.clone_history().await);
+        let (turn_context, _) = session
+            .new_turn_with_sub_id(
+                "synthetic-overlay".to_string(),
+                SessionSettingsUpdate::default(),
+                Default::default(),
+            )
+            .await?;
+        let step_context = StepContext::for_test(Arc::clone(&turn_context));
+        let base = session.get_prompt_base_instructions().await;
+        let mut input = if incremental {
+            vec![ContextualUserFragment::into(
+                crate::context::BaseInstructionsFragment(base.text.clone()),
+            )]
+        } else {
+            Vec::new()
+        };
+        let protected_item: ResponseItem = serde_json::from_value(serde_json::json!({
+            "type": "message", "role": "developer",
+            "content": [{"type": "input_text", "text": "protected synthetic guidance"}],
+            "internal_chat_message_metadata_passthrough": {
+                "content_item_kinds": ["generic.developer_instructions"],
+                "content_item_metadata": [{"provenance": {"type": "developer_instructions", "from_additional_requirements": true}}]
+            }
+        }))?;
+        input.push(protected_item);
+        let prompt = super::turn::build_prompt(input, &step_context, base, incremental);
+        let before = prompt.input.clone();
+        let metadata = session
+            .responses_metadata(&step_context, CodexResponsesRequestKind::Turn)
+            .await;
+        let mut client_session = session.services.model_client.new_session();
+        let result = client_session
+            .stream(
+                &prompt,
+                &step_context.settings.model_info,
+                &step_context.session_telemetry,
+                None,
+                codex_protocol::config_types::ReasoningSummary::None,
+                None,
+                &metadata,
+                &codex_rollout_trace::InferenceTraceContext::disabled(),
+            )
+            .await;
+        if adopted && !protected && !fake_provider {
+            let mut stream = result?;
+            while let Some(event) = stream.next().await {
+                event?;
+            }
+            let serialized = requests.single_request().body_json().to_string();
+            if absent {
+                assert!(serialized.contains(target));
+            } else {
+                assert!(!serialized.contains(target));
+                assert!(serialized.contains("before  after"));
+            }
+            assert!(serialized.contains("protected synthetic guidance"));
+            let expected_outcome = if absent { "absent" } else { "applied" };
+            let mut saw_outcome = false;
+            while let Ok(event) = events.try_recv() {
+                saw_outcome |= matches!(event.msg, EventMsg::Warning(warning) if warning.message.starts_with(&format!("Instruction overlay: {expected_outcome}")));
+            }
+            assert!(saw_outcome);
+        } else {
+            assert!(result.is_err());
+            assert!(requests.requests().is_empty());
+            let mut saw_blocked = false;
+            while let Ok(event) = events.try_recv() {
+                saw_blocked |= matches!(event.msg, EventMsg::Warning(warning) if warning.message.starts_with("Instruction overlay: blocked"));
+            }
+            assert!(saw_blocked);
+        }
+        assert_eq!(prompt.input, before);
+        assert_eq!(serde_json::to_value(saved.as_ref())?, saved_before);
+        assert_eq!(
+            raw_history_items(&session.clone_history().await),
+            history_before
+        );
+        assert_eq!(session.get_base_instructions().await.text, baseline);
+    }
+    Ok(())
+}
+
+#[tokio::test]
+async fn historical_overlay_uses_inferred_model_provenance_through_request() -> anyhow::Result<()> {
+    use codex_config::InstructionOverlayComponentToml;
+    use codex_config::InstructionOverlayEdit;
+    use codex_config::InstructionOverlaysToml;
+
+    let temp = tempfile::tempdir()?;
+    let config = build_test_config(temp.path()).await;
+    let model = get_model_offline_for_tests(config.model.as_deref());
+    let info =
+        construct_model_info_offline_for_tests(model.as_str(), &config.to_models_manager_config());
+    let baseline = render_model_instructions(&info);
+    let target = baseline
+        .lines()
+        .find(|line| line.len() > 20 && baseline.match_indices(*line).count() == 1)
+        .expect("synthetic model template has a unique line")
+        .to_string();
+    let thread_id = ThreadId::new();
+    let history = InitialHistory::Resumed(ResumedHistory {
+        history_revision: None,
+        conversation_id: thread_id,
+        rollout_path: None,
+        history: Arc::new(vec![RolloutItem::SessionMeta(Box::new(SessionMetaLine {
+            meta: SessionMeta {
+                id: thread_id,
+                session_id: thread_id.into(),
+                base_instructions: Some(BaseInstructions {
+                    text: baseline.clone(),
+                    provenance: None,
+                }),
+                ..SessionMeta::default()
+            },
+            git: None,
+        }))]),
+    });
+    let (session, _) = make_session_with_history_source_and_config(
+        history,
+        SessionSource::Cli,
+        LocalAgentControl::default(),
+        |config| {
+            config.instruction_overlays = InstructionOverlaysToml {
+                model_baseline: Some(InstructionOverlayComponentToml {
+                    edits: vec![InstructionOverlayEdit::RemoveExact {
+                        text: target.clone(),
+                        expected_matches: 1,
+                    }],
+                    ..Default::default()
+                }),
+                ..Default::default()
+            };
+        },
+    )
+    .await?;
+    let base = session.get_prompt_base_instructions().await;
+    assert!(matches!(
+        base.provenance.as_ref(),
+        Some(codex_protocol::models::BaseInstructionsProvenance::Model { .. })
+    ));
+    let (turn, _) = session
+        .new_turn_with_sub_id(
+            "synthetic-inferred".to_string(),
+            SessionSettingsUpdate::default(),
+            Default::default(),
+        )
+        .await?;
+    let step = StepContext::for_test(turn);
+    let prompt = super::turn::build_prompt(Vec::new(), &step, base, false);
+    let metadata = session
+        .responses_metadata(&step, CodexResponsesRequestKind::Turn)
+        .await;
+    let request = session.services.model_client.build_responses_request(
+        &prompt,
+        &step.settings.model_info,
+        None,
+        codex_protocol::config_types::ReasoningSummary::None,
+        None,
+        &metadata,
+        true,
+    )?;
+    fn contains_text(value: &serde_json::Value, target: &str) -> bool {
+        match value {
+            serde_json::Value::String(text) => text.contains(target),
+            serde_json::Value::Array(values) => values.iter().any(|v| contains_text(v, target)),
+            serde_json::Value::Object(values) => values.values().any(|v| contains_text(v, target)),
+            _ => false,
+        }
+    }
+    let wire_value: serde_json::Value = serde_json::from_slice(&serde_json::to_vec(&request)?)?;
+    assert!(!contains_text(&wire_value, &target));
+    assert_eq!(session.get_base_instructions().await.text, baseline);
+    Ok(())
+}
+
+#[tokio::test]
+async fn historical_overlay_accepts_inherited_model_provenance_for_spawned_child()
+-> anyhow::Result<()> {
+    use codex_config::{
+        InstructionOverlayComponentToml, InstructionOverlayEdit, InstructionOverlaysToml,
+    };
+    let source = SessionSource::SubAgent(SubAgentSource::ThreadSpawn {
+        parent_thread_id: ThreadId::new(),
+        depth: 1,
+        agent_path: None,
+        agent_nickname: None,
+        agent_role: None,
+    });
+    let (session, _) = make_session_with_history_source_and_config(
+        InitialHistory::New,
+        source,
+        LocalAgentControl::default(),
+        |config| {
+            config.base_instructions = Some("synthetic target and remainder".into());
+            config.base_instructions_provenance =
+                Some(codex_protocol::models::BaseInstructionsProvenance::Model {
+                    model: "synthetic-parent".into(),
+                });
+            config.instruction_overlays = InstructionOverlaysToml {
+                model_baseline: Some(InstructionOverlayComponentToml {
+                    edits: vec![InstructionOverlayEdit::RemoveExact {
+                        text: "synthetic target".into(),
+                        expected_matches: 1,
+                    }],
+                    ..Default::default()
+                }),
+                ..Default::default()
+            };
+        },
+    )
+    .await?;
+    let (turn, _) = session
+        .new_turn_with_sub_id(
+            "synthetic-child".into(),
+            SessionSettingsUpdate::default(),
+            Default::default(),
+        )
+        .await?;
+    let step = StepContext::for_test(turn);
+    let base = session.get_prompt_base_instructions().await;
+    let prompt = super::turn::build_prompt(Vec::new(), &step, base, false);
+    let metadata = session
+        .responses_metadata(&step, CodexResponsesRequestKind::Turn)
+        .await;
+    let request = session.services.model_client.build_responses_request(
+        &prompt,
+        &step.settings.model_info,
+        None,
+        codex_protocol::config_types::ReasoningSummary::None,
+        None,
+        &metadata,
+        true,
+    )?;
+    let serialized = serde_json::to_string(&request)?;
+    assert!(!serialized.contains("synthetic target"));
+    assert!(serialized.contains("and remainder"));
+    assert_eq!(
+        session.get_base_instructions().await.text,
+        "synthetic target and remainder"
+    );
+    Ok(())
+}
+
+#[tokio::test]
+async fn historical_overlay_rejects_untrusted_openai_endpoint_override() {
+    let home = tempfile::tempdir().unwrap();
+    let mut config = build_test_config(home.path()).await;
+    assert!(super::session::trusted_model_overlay_source(&config));
+    config.model_provider.base_url = Some("https://synthetic-provider.invalid/v1".into());
+    assert!(!super::session::trusted_model_overlay_source(&config));
 }
 
 #[tokio::test]

@@ -427,10 +427,39 @@ impl Session {
         let mut multi_agent_mode = MultiAgentModeState::new(
             super::multi_agents::effective_multi_agent_mode(step_context),
         )
+        .with_client_ownership(
+            turn_context
+                .config
+                .instruction_overlays
+                .multi_agent_mode
+                .as_ref()
+                .is_some_and(|plan| {
+                    !plan.edits.is_empty() && plan.applies_to_model(&model_info.slug)
+                })
+                && super::multi_agents::multi_agent_mode_is_client_owned(step_context),
+        )
         .with_namespace(v2_namespace.clone());
         if let Some(usage_hint_text) = super::multi_agents::usage_hint_text(step_context) {
-            let usage_hint =
-                MultiAgentUsageHintState::new(usage_hint_text).with_namespace(v2_namespace.clone());
+            let usage_hint = MultiAgentUsageHintState::new(usage_hint_text)
+                .with_client_ownership(
+                    [
+                        turn_context
+                            .config
+                            .instruction_overlays
+                            .multi_agent_role
+                            .as_ref(),
+                        turn_context
+                            .config
+                            .instruction_overlays
+                            .multi_agent_usage_hint
+                            .as_ref(),
+                    ]
+                    .into_iter()
+                    .flatten()
+                    .any(|plan| !plan.edits.is_empty() && plan.applies_to_model(&model_info.slug))
+                        && super::multi_agents::usage_hint_is_client_owned(step_context),
+                )
+                .with_namespace(v2_namespace.clone());
             multi_agent_mode = multi_agent_mode.with_usage_hint(&usage_hint);
             world_state.add_section(usage_hint);
         }

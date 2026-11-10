@@ -16,12 +16,19 @@ use serde::Serialize;
 
 const MULTI_AGENT_MODE_MAX_TOKENS: usize = 400;
 
+#[allow(clippy::trivially_copy_pass_by_ref)]
+fn is_false(value: &bool) -> bool {
+    !value
+}
+
 /// Effective multi-agent mode currently visible to the model.
 #[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
 pub(crate) struct MultiAgentModeState {
     mode: Option<MultiAgentMode>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     usage_hint_hash: Option<WorldStateHash>,
+    #[serde(default, skip_serializing_if = "is_false")]
+    client_owned: bool,
     #[serde(skip)]
     namespace: Option<ContentItemNamespace>,
 }
@@ -37,6 +44,7 @@ impl MultiAgentModeState {
                 mode @ (MultiAgentMode::ExplicitRequestOnly | MultiAgentMode::Proactive) => mode,
             }),
             usage_hint_hash: None,
+            client_owned: false,
             namespace: None,
         }
     }
@@ -48,6 +56,11 @@ impl MultiAgentModeState {
 
     pub(crate) fn with_usage_hint(mut self, usage_hint: &MultiAgentUsageHintState) -> Self {
         self.usage_hint_hash = Some(usage_hint.fingerprint.clone());
+        self
+    }
+
+    pub(crate) fn with_client_ownership(mut self, client_owned: bool) -> Self {
+        self.client_owned = client_owned;
         self
     }
 }
@@ -75,7 +88,8 @@ impl WorldStateSection for MultiAgentModeState {
         let mode = match (&self.mode, previous) {
             (Some(mode), PreviousSectionState::Known(previous))
                 if previous.mode.as_ref() == Some(mode)
-                    && previous.usage_hint_hash == self.usage_hint_hash =>
+                    && previous.usage_hint_hash == self.usage_hint_hash
+                    && previous.client_owned == self.client_owned =>
             {
                 return (None, Vec::new());
             }
@@ -97,8 +111,11 @@ impl WorldStateSection for MultiAgentModeState {
         };
 
         let fragment = MultiAgentModeInstructions::from_mode(mode).map(|instructions| {
-            Box::new(instructions.with_metadata(ContentItemMetadata::tool(self.namespace.clone())))
-                as super::WorldStateFragment
+            Box::new(
+                instructions
+                    .with_client_ownership(self.client_owned)
+                    .with_metadata(ContentItemMetadata::tool(self.namespace.clone())),
+            ) as super::WorldStateFragment
         });
         (
             Some(self.clone()),
