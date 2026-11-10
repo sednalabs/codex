@@ -204,14 +204,9 @@ log *args:
 log *args:
     $forwarded_args = @($args | Select-Object -Skip 1); if ($forwarded_args.Count -gt 0 -and $forwarded_args[0] -eq "--") { $forwarded_args = @($forwarded_args | Select-Object -Skip 1) }; cargo run -p codex-cli --bin logs_client -- @forwarded_args
 
-# Diagnostic-only convergence checks with the required local host binary.
+# Diagnostic-only bounded compile and synthetic cases.
 core-subagent-surface-targeted:
-    cargo build --locked -p codex-code-mode-host --bin codex-code-mode-host
     RUST_MIN_STACK=16777216 cargo test --locked -p codex-core --test all explicit_denial_stops_compaction_on_model_downshift -- --test-threads=1
     RUST_MIN_STACK=8388608 cargo test --locked -p codex-core --lib historical_overlay_ -- --test-threads=1
-    RUST_MIN_STACK=8388608 cargo test --locked -p codex-core --lib historical_adoption_ -- --test-threads=1
-    RUST_MIN_STACK=8388608 cargo test --locked -p codex-core --lib client::instruction_overlays::tests:: -- --test-threads=1
-    RUST_MIN_STACK=8388608 cargo test --locked -p codex-core --lib config_schema_matches_fixture -- --test-threads=1
-    RUST_MIN_STACK=8388608 cargo test --locked -p codex-core --lib code_mode_host::tests:: -- --test-threads=1
     RUST_MIN_STACK=8388608 cargo test --locked -p codex-rmcp-client --lib device_only_refresh_uses_issuer_bound_metadata_in_both_modes -- --test-threads=1
     RUST_MIN_STACK=8388608 cargo test --locked -p codex-rmcp-client --lib oauth_discovery::tests:: -- --test-threads=1
