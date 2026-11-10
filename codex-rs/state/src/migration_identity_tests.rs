@@ -219,9 +219,9 @@ async fn recorded_source_prefixes_migrate_without_losing_witness() {
 
 #[tokio::test]
 async fn unknown_high_state_ledger_fails_without_changing_synthetic_effects() {
-    // The real high-version descriptions, SQL and checksums are not established.
-    // These seven rows and their effects are deliberately synthetic, not a claim
-    // about the origin or semantics of the observed workstation history.
+    // Six public Sedna migrations have names matching the reported high-version
+    // descriptions, but their actual identities have not been established.
+    // The remaining migration and all witness data are deliberately synthetic.
     const FIRST_HIGH_VERSION: i64 = 8_000_000_000_000_000;
     let sqlite_home = tempfile::TempDir::new().unwrap();
     let sqlite = crate::SqliteConfig::new_for_testing(sqlite_home.path().abs());
@@ -232,11 +232,14 @@ async fn unknown_high_state_ledger_fails_without_changing_synthetic_effects() {
     STATE_MIGRATOR.run(&pool).await.unwrap();
     sqlx::query("INSERT INTO threads (id, rollout_path, created_at, updated_at, source, model_provider, cwd, title, sandbox_policy, approval_mode) VALUES ('synthetic-thread', '/synthetic', 1, 2, 'cli', 'test', '/synthetic', 'preserve-me', 'read-only', 'never')")
         .execute(&pool).await.unwrap();
+    sqlx::query("INSERT INTO threads (id, rollout_path, created_at, updated_at, source, model_provider, cwd, title, sandbox_policy, approval_mode) VALUES ('synthetic-child', '/synthetic-child', 1, 2, ?, 'test', '/synthetic', 'child', 'read-only', 'never')")
+        .bind(r#"{"subagent":{"thread_spawn":{"parent_thread_id":"synthetic-thread"}}}"#)
+        .execute(&pool).await.unwrap();
     let fixture: Value = serde_json::from_str(include_str!(
         "../tests/fixtures/w14939-sedna-migrations.json"
     ))
     .unwrap();
-    for prefix in ["0024_", "0038_"] {
+    for prefix in ["0038_", "0045_", "0024_", "0027_", "0028_", "0050_"] {
         let migration = fixture["migrations"]
             .as_array()
             .unwrap()
@@ -254,14 +257,57 @@ async fn unknown_high_state_ledger_fails_without_changing_synthetic_effects() {
         .unwrap();
     sqlx::query("INSERT INTO phase2_attested_baselines VALUES ('synthetic-root', 'synthetic-tree', 1, 'selection', 'inputs', 'consolidator', 2, 3, 4)")
         .execute(&pool).await.unwrap();
+    sqlx::query(
+        "UPDATE threads SET configured_identity_provenance = 2 WHERE id = 'synthetic-thread'",
+    )
+    .execute(&pool)
+    .await
+    .unwrap();
+    sqlx::query("INSERT INTO thread_dynamic_tools (thread_id, position, name, description, input_schema, persist_on_resume, capability_json) VALUES ('synthetic-thread', 0, 'synthetic-tool', 'synthetic', '{}', 0, '{\"synthetic\":true}')")
+        .execute(&pool).await.unwrap();
     sqlx::query("CREATE TABLE synthetic_extension_effects (version INTEGER PRIMARY KEY, marker TEXT NOT NULL)")
         .execute(&pool).await.unwrap();
-    for offset in 0..7_i64 {
+    let public_candidates = [
+        Some("0038_"),
+        Some("0045_"),
+        None,
+        Some("0024_"),
+        Some("0027_"),
+        Some("0028_"),
+        Some("0050_"),
+    ];
+    for (offset, candidate) in public_candidates.into_iter().enumerate() {
+        let offset = offset as i64;
         let version = FIRST_HIGH_VERSION + offset;
+        let (description, checksum) = if let Some(prefix) = candidate {
+            let entry = fixture["migrations"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .find(|entry| entry["filename"].as_str().unwrap().starts_with(prefix))
+                .unwrap();
+            let filename = entry["filename"].as_str().unwrap();
+            let description = filename
+                .trim_end_matches(".sql")
+                .split_once('_')
+                .unwrap()
+                .1
+                .replace('_', " ");
+            let checksum = entry["sha384"]
+                .as_str()
+                .unwrap()
+                .as_bytes()
+                .chunks_exact(2)
+                .map(|pair| u8::from_str_radix(std::str::from_utf8(pair).unwrap(), 16).unwrap())
+                .collect::<Vec<_>>();
+            (description, checksum)
+        } else {
+            ("thread dynamic tools state".to_string(), vec![2_u8; 48])
+        };
         sqlx::query("INSERT INTO _sqlx_migrations (version, description, success, checksum, execution_time) VALUES (?, ?, 1, ?, 0)")
             .bind(version)
-            .bind(format!("synthetic unknown extension {offset}"))
-            .bind(vec![offset as u8; 48])
+            .bind(description)
+            .bind(checksum)
             .execute(&pool).await.unwrap();
         sqlx::query("INSERT INTO synthetic_extension_effects VALUES (?, ?)")
             .bind(version)
@@ -297,6 +343,26 @@ async fn unknown_high_state_ledger_fails_without_changing_synthetic_effects() {
             .await
             .unwrap();
     assert_eq!(effects_after, effects_before);
+    let identity: i64 = sqlx::query_scalar(
+        "SELECT configured_identity_provenance FROM threads WHERE id = 'synthetic-thread'",
+    )
+    .fetch_one(&pool)
+    .await
+    .unwrap();
+    assert_eq!(identity, 2);
+    let tool: (bool, String) = sqlx::query_as("SELECT persist_on_resume, capability_json FROM thread_dynamic_tools WHERE thread_id = 'synthetic-thread'")
+        .fetch_one(&pool).await.unwrap();
+    assert_eq!(tool, (false, r#"{"synthetic":true}"#.to_string()));
+    let edge: (String, String, String) = sqlx::query_as("SELECT parent_thread_id, child_thread_id, status FROM thread_spawn_edges WHERE child_thread_id = 'synthetic-child'")
+        .fetch_one(&pool).await.unwrap();
+    assert_eq!(
+        edge,
+        (
+            "synthetic-thread".to_string(),
+            "synthetic-child".to_string(),
+            "open".to_string()
+        )
+    );
     let roots: (String, i64, i64) = sqlx::query_as(
         "SELECT memory_root_key, required_since, updated_at FROM phase2_attestation_roots",
     )
