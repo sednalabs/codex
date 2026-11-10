@@ -7,7 +7,7 @@ use sqlx::SqlitePool;
 use sqlx::migrate::Migration;
 use sqlx::migrate::Migrator;
 
-type Ledger = Vec<(i64, String, bool, Vec<u8>, i64)>;
+type Ledger = Vec<(i64, String, bool, Vec<u8>, i64, String)>;
 type Schema = Vec<(String, String, Option<String>)>;
 
 #[tokio::test]
@@ -45,7 +45,7 @@ async fn thread_history_prefixes_upgrade_and_unknown_identities_fail_closed() {
         assert_eq!(witness, "{\"text\":\"preserve-me\"}");
         sqlx::query("INSERT INTO _sqlx_migrations (version, description, success, checksum, execution_time) VALUES (9999, 'unknown', 1, x'01', 0)")
             .execute(&pool).await.unwrap();
-        let before: Ledger = sqlx::query_as("SELECT version, description, success, checksum, execution_time FROM _sqlx_migrations ORDER BY version")
+        let before: Ledger = sqlx::query_as("SELECT version, description, success, checksum, execution_time, CAST(installed_on AS TEXT) FROM _sqlx_migrations ORDER BY version")
             .fetch_all(&pool).await.unwrap();
         pool.close().await;
 
@@ -58,7 +58,7 @@ async fn thread_history_prefixes_upgrade_and_unknown_identities_fail_closed() {
             .open_read_write_pool(&sqlite.thread_history_db_path())
             .await
             .unwrap();
-        let after: Ledger = sqlx::query_as("SELECT version, description, success, checksum, execution_time FROM _sqlx_migrations ORDER BY version")
+        let after: Ledger = sqlx::query_as("SELECT version, description, success, checksum, execution_time, CAST(installed_on AS TEXT) FROM _sqlx_migrations ORDER BY version")
             .fetch_all(&pool).await.unwrap();
         assert_eq!(after, before);
         let witness: String =
@@ -72,7 +72,7 @@ async fn thread_history_prefixes_upgrade_and_unknown_identities_fail_closed() {
 }
 
 async fn snapshot(pool: &SqlitePool) -> (Ledger, Schema, String) {
-    let ledger = sqlx::query_as("SELECT version, description, success, checksum, execution_time FROM _sqlx_migrations ORDER BY version")
+    let ledger = sqlx::query_as("SELECT version, description, success, checksum, execution_time, CAST(installed_on AS TEXT) FROM _sqlx_migrations ORDER BY version")
         .fetch_all(pool).await.unwrap();
     let schema = sqlx::query_as("SELECT type, name, sql FROM sqlite_master ORDER BY type, name")
         .fetch_all(pool)
@@ -198,13 +198,13 @@ async fn recorded_source_prefixes_migrate_without_losing_witness() {
             }
             sqlx::query("INSERT INTO threads (id, rollout_path, created_at, updated_at, source, model_provider, cwd, title, sandbox_policy, approval_mode) VALUES ('synthetic-thread', '/synthetic', 1, 2, 'cli', 'test', '/synthetic', 'preserve-me', 'read-only', 'never')")
                 .execute(&pool).await.unwrap();
-            let before: Ledger = sqlx::query_as("SELECT version, description, success, checksum, execution_time FROM _sqlx_migrations ORDER BY version").fetch_all(&pool).await.unwrap();
+            let before: Ledger = sqlx::query_as("SELECT version, description, success, checksum, execution_time, CAST(installed_on AS TEXT) FROM _sqlx_migrations ORDER BY version").fetch_all(&pool).await.unwrap();
             pool.close().await;
             let pool = sqlite
                 .open_state_db(&STATE_MIGRATOR, /*telemetry_override*/ None)
                 .await
                 .unwrap();
-            let after: Ledger = sqlx::query_as("SELECT version, description, success, checksum, execution_time FROM _sqlx_migrations WHERE version <= ? ORDER BY version").bind(through).fetch_all(&pool).await.unwrap();
+            let after: Ledger = sqlx::query_as("SELECT version, description, success, checksum, execution_time, CAST(installed_on AS TEXT) FROM _sqlx_migrations WHERE version <= ? ORDER BY version").bind(through).fetch_all(&pool).await.unwrap();
             assert_eq!(after, before);
             let witness: String =
                 sqlx::query_scalar("SELECT title FROM threads WHERE id = 'synthetic-thread'")
