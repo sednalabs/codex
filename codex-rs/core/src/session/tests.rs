@@ -7941,6 +7941,10 @@ async fn historical_overlay_rejects_untrusted_openai_endpoint_override() {
     assert!(super::session::trusted_model_overlay_source(&config));
     config.model_provider.base_url = Some("https://synthetic-provider.invalid/v1".into());
     assert!(!super::session::trusted_model_overlay_source(&config));
+    config.model_provider.base_url = None;
+    config.model_catalog =
+        Some(codex_protocol::openai_models::ModelsResponse { models: Vec::new() });
+    assert!(!super::session::trusted_model_overlay_source(&config));
 }
 
 #[tokio::test]

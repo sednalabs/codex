@@ -33,8 +33,9 @@ matches the effective plan; a mismatch fails closed. The helper is synthetic-tes
 validated only, and no real thread, database, transcript or configuration has
 been accessed to establish this candidate.
 Synthetic HTTP tests use a test-only loopback endpoint; production code does not
-permit that endpoint as a trusted model source. A custom OpenAI endpoint is
-currently blocked until its provenance can be established.
+permit that endpoint as a trusted model source. A custom OpenAI endpoint or
+external model catalog cannot establish a model-owned or adopted baseline until
+its provenance can be established.
 
 The proposed authorization belongs in the user's local config:
 
