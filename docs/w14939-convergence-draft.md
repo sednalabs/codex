@@ -1,7 +1,7 @@
 # w14939 upstream convergence: draft
 
 This is an incomplete source draft, not a release or installation candidate.
-Its upstream base is `caae161dd0c82f2e04e57e6f9d738fafbce503ba`; the Sedna
+Its upstream base is `5b98eaafeb341225d3724a6112a93c993cc09613`; the Sedna
 fixture source is `97f6c6b811cbda5aa618356e6761c541da2b5032`.
 
 The state startup preflight requires a known successful migration prefix. It
