@@ -1935,9 +1935,24 @@ impl Session {
                 );
             let reasoning_effort_override_enabled =
                 config.features.enabled(Feature::ReasoningEffortOverride) && !title_request;
+            // A saved model baseline can have been created under a different provider.
+            // Follow the same first baseline-bearing metadata used by get_base_instructions.
+            let recorded_provider_is_compatible = initial_history
+                .get_rollout_items()
+                .iter()
+                .find_map(|item| match item {
+                    RolloutItem::SessionMeta(meta) if meta.meta.base_instructions.is_some() => {
+                        Some(meta.meta.model_provider.as_deref())
+                    }
+                    _ => None,
+                })
+                .flatten()
+                .is_none_or(|provider| provider == codex_model_provider_info::OPENAI_PROVIDER_ID);
+            let trusted_model_source =
+                trusted_model_overlay_source(&config) && recorded_provider_is_compatible;
             let mut adopted_baseline_digests = Vec::new();
             if config.base_instructions.is_none()
-                && trusted_model_overlay_source(&config)
+                && trusted_model_source
                 && let (Some(adoption), Some(plan), Some(historical)) = (
                     config.historical_baseline_adoption.as_ref(),
                     config.instruction_overlays.model_baseline.as_ref(),
@@ -1996,7 +2011,7 @@ impl Session {
                 config.base_instructions.as_ref().filter(|_| config.client_owned_base_instructions)
                     .map(|text| vec![codex_config::HistoricalBaselineAdoption::baseline_digest(text)])
                     .unwrap_or_default(),
-                trusted_model_overlay_source(&config)
+                trusted_model_source
                     && (config.base_instructions.is_none()
                         || (matches!(session_configuration.session_source, SessionSource::SubAgent(SubAgentSource::ThreadSpawn { .. }))
                             && matches!(config.base_instructions_provenance, Some(BaseInstructionsProvenance::Model { .. })))),

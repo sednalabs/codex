@@ -22,6 +22,8 @@ does not adopt known custom/protected provenance or authorize a different
 thread, component or plan. Unknown, protected, absent and ambiguous outcomes
 must be visible. The old installed engine and the w18679 source differ; their
 full compatibility and role precedence are still being reconciled.
+When the baseline's saved session metadata names a different provider, that
+explicit mismatch blocks model-owned and adopted baseline edits.
 An adoption for a parent thread does not authorize a child or fork; each thread
 must meet its own identity and origin checks.
 
