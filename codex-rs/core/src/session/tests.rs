@@ -7766,8 +7766,15 @@ async fn historical_overlay_resume_to_serialized_request_is_identity_bound() -> 
             assert!(result.is_err());
             assert!(requests.requests().is_empty());
             let mut saw_blocked = false;
+            let expected_outcome = if protected {
+                "Instruction overlay: blocked: protected baseline"
+            } else if old_provider == 2 {
+                "Instruction overlay: blocked: untrusted model baseline"
+            } else {
+                "Instruction overlay: blocked: unknown baseline"
+            };
             while let Ok(event) = events.try_recv() {
-                saw_blocked |= matches!(event.msg, EventMsg::Warning(warning) if warning.message.starts_with("Instruction overlay: blocked"));
+                saw_blocked |= matches!(event.msg, EventMsg::Warning(warning) if warning.message == format!("{expected_outcome}."));
             }
             assert!(saw_blocked);
         }

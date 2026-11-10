@@ -1302,13 +1302,17 @@ impl ModelClient {
         };
         if active_baseline_overlay {
             if !baseline_authorized {
-                self.report_instruction_overlay(
-                    responses_metadata,
-                    "blocked: protected or unknown baseline",
-                );
-                return Err(CodexErr::InvalidRequest(
-                    "instruction overlay blocked: protected or unknown baseline".into(),
-                ));
+                let outcome = match &authority.provenance {
+                    Some(BaseInstructionsProvenance::Custom) => "blocked: protected baseline",
+                    Some(BaseInstructionsProvenance::Model { .. }) => {
+                        "blocked: untrusted model baseline"
+                    }
+                    None => "blocked: unknown baseline",
+                };
+                self.report_instruction_overlay(responses_metadata, outcome);
+                return Err(CodexErr::InvalidRequest(format!(
+                    "instruction overlay {outcome}"
+                )));
             }
             let current_template = codex_prompts::render_model_instructions(model_info);
             let current_template_without_plan =
