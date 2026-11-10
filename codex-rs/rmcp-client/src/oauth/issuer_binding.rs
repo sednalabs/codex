@@ -1,7 +1,6 @@
 use anyhow::Context;
 use anyhow::Result;
 use anyhow::bail;
-use futures::future::BoxFuture;
 use rmcp::transport::auth::AuthError;
 use rmcp::transport::auth::AuthorizationManager;
 use rmcp::transport::auth::AuthorizationMetadata;
@@ -15,24 +14,22 @@ use super::StoredOAuthTokens;
 /// Preserve normal discovery; use the existing issuer-bound device discovery only
 /// when browser metadata is unavailable and this connection has refresh credentials.
 /// Callers must validate the returned issuer before installing or using credentials.
-pub(crate) fn resolve_refresh_metadata<'a>(
-    manager: &'a AuthorizationManager,
-    resource: &'a str,
-    client: Option<&'a OAuthHttpClientAdapter>,
-    tokens: &'a StoredOAuthTokens,
-) -> BoxFuture<'a, Result<AuthorizationMetadata>> {
-    Box::pin(async move {
-        let resolution = manager.resolve_metadata().await?;
-        if !resolution.source.is_discovered()
-            && tokens.has_refresh_token()
-            && tokens.bound_issuer().is_some()
-            && let Some(client) = client
-            && let Some(device) = discover_device_only_metadata(resource, client).await?
-        {
-            return Ok(device.into_refresh_metadata());
-        }
-        Ok(resolution.metadata)
-    })
+pub(crate) async fn resolve_refresh_metadata(
+    manager: &AuthorizationManager,
+    resource: &str,
+    client: Option<&OAuthHttpClientAdapter>,
+    tokens: &StoredOAuthTokens,
+) -> Result<AuthorizationMetadata> {
+    let resolution = manager.resolve_metadata().await?;
+    if !resolution.source.is_discovered()
+        && tokens.has_refresh_token()
+        && tokens.bound_issuer().is_some()
+        && let Some(client) = client
+        && let Some(device) = discover_device_only_metadata(resource, client).await?
+    {
+        return Ok(device.into_refresh_metadata());
+    }
+    Ok(resolution.metadata)
 }
 
 /// Reject non-web authorization endpoints or endpoints that cannot be bound to their issuer.
