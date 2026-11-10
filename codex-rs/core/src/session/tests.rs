@@ -7577,6 +7577,7 @@ async fn historical_overlay_disk_resume_runs_a_real_turn_and_preserves_rollout()
     let saved = std::fs::read_to_string(&path)?;
     assert!(saved.starts_with(&original_bytes));
     assert!(saved.contains(target));
+    assert!(saved.contains("synthetic resumed turn"));
     Ok(())
 }
 
