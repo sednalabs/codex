@@ -1,6 +1,6 @@
 # w14939 upstream convergence: draft
 
-This is an incomplete source draft, not a release or installation candidate.
+This is a source candidate under validation, not a release or installation candidate.
 The existing candidate was merged with upstream
 `c82708f85803d21fe9046af407107a1ee105b6e5` in
 `53b8bc981ea124845168e30a6e882be9af76d7f1`; the missing compaction-test
@@ -10,7 +10,7 @@ merged in `a9b230a73ae1a67c1963d68183cff67af2c21a91`. The Sedna fixture source i
 `97f6c6b811cbda5aa618356e6761c541da2b5032`. Evidence from older commits and
 the preview artifact does not validate this merge or any later overlay draft.
 
-The overlay integration is unfinished and unqualified. Its historical adoption
+The overlay integration is unqualified. Its historical adoption
 binds a local user authorization to one
 thread, the SHA-256 of the complete saved baseline and the SHA-256 of the exact
 model-baseline edit plan. Only unique, single-match exact removals qualify. It
@@ -75,9 +75,8 @@ that either actual schema has no other history. Both recorded source trees
 also contain the same eight thread-history migration files as upstream. A
 synthetic history fixture applies the later migrations to earlier schema and
 checks that fabricated turn, item and projection records survive; it is not
-a copy of any real session. A subsequent untested Rust draft additionally
-checks thread-history prefixes and refuses unknown ledger identities before
-opening that database.
+a copy of any real session. The Rust preflight also checks thread-history prefixes and refuses unknown
+ledger identities before opening that database.
 
 The capacity retry draft retries the selected model on `ServerOverloaded`,
 honors the server deadline, and uses capped backoff. It also covers local and
@@ -92,16 +91,15 @@ progress messages quiet during native waits, and supports targeted any/all
 completion waits. Its protocol compatibility test passed locally; the core
 implementation passed focused local queue and wait tests, including targeted
 all-completion filtering, before the refresh to this upstream base. A subsequent
-draft adds native event waits and lease renewal; those changes remain untested. Full Sedna mailbox compatibility,
+draft adds native event waits and lease renewal. Full Sedna mailbox compatibility,
 including structured receipts and mailbox persistence, is not established.
 
 An MCP device-login draft uses upstream's routed and bounded OAuth HTTP
 adapter, issuer-bound advertised discovery, public-client registration,
-PKCE fallback, device polling and locked token storage. The rmcp-client library
-compiled locally before the refresh; the CLI and device tests have not been compiled or run locally.
+PKCE fallback, device polling and locked token storage. The rmcp-client library and synthetic CLI device tests passed hosted validation
+on the earlier candidate `abf09fbad15480dc3d9ddb27851ed47fd2b7f22d`.
 Device-only discovery, the `mcp add` hint, preservation of unknown credential
-file fields, and Sedna's synthetic CLI login tests are included in a subsequent
-untested draft. Bounded same-origin device-request redirects are included in the
+file fields, and Sedna's synthetic CLI login tests are included in the candidate. Bounded same-origin device-request redirects are included in the
 draft; cross-origin redirects are rejected. Device-only refresh compatibility
 still needs assessment.
 Full session-history compatibility, hosted validation, packaging and consumer

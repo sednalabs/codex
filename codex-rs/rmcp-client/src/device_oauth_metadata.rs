@@ -230,6 +230,27 @@ mod tests {
             )
             .unwrap(),
         );
+        let mut manager = AuthorizationManager::new_with_oauth_http_client(
+            &resource, adapter.clone(),
+        ).await.unwrap();
+        manager.set_allow_missing_issuer(true);
+        let resolution = manager.resolve_metadata().await.unwrap();
+        assert!(!resolution.source.is_discovered(), "runtime unexpectedly discovered metadata");
+        assert!(resolution.metadata.issuer.is_none());
+        let stored: crate::oauth::StoredOAuthTokens = serde_json::from_value(serde_json::json!({
+            "server_name": "synthetic-server",
+            "url": resource,
+            "issuer": resource,
+            "client_id": "synthetic-client",
+            "token_response": {
+                "access_token": "synthetic-access",
+                "token_type": "bearer",
+                "refresh_token": "synthetic-refresh"
+            },
+            "expires_at": 0
+        })).unwrap();
+        assert!(crate::oauth::validate_refresh_token_issuer(&resolution.metadata, &stored).is_err());
+        assert!(!stored.access_token_is_usable_without_refresh());
         let metadata = discover_device_metadata(&resource, adapter)
             .await
             .expect("device-only metadata");
