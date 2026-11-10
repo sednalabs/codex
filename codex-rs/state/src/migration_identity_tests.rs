@@ -218,6 +218,110 @@ async fn recorded_source_prefixes_migrate_without_losing_witness() {
 }
 
 #[tokio::test]
+async fn unknown_high_state_ledger_fails_without_changing_synthetic_effects() {
+    // The real high-version descriptions, SQL and checksums are not established.
+    // These seven rows and their effects are deliberately synthetic, not a claim
+    // about the origin or semantics of the observed workstation history.
+    const FIRST_HIGH_VERSION: i64 = 8_000_000_000_000_000;
+    let sqlite_home = tempfile::TempDir::new().unwrap();
+    let sqlite = crate::SqliteConfig::new_for_testing(sqlite_home.path().abs());
+    let pool = sqlite
+        .open_read_write_pool(&sqlite.state_db_path())
+        .await
+        .unwrap();
+    STATE_MIGRATOR.run(&pool).await.unwrap();
+    sqlx::query("INSERT INTO threads (id, rollout_path, created_at, updated_at, source, model_provider, cwd, title, sandbox_policy, approval_mode) VALUES ('synthetic-thread', '/synthetic', 1, 2, 'cli', 'test', '/synthetic', 'preserve-me', 'read-only', 'never')")
+        .execute(&pool).await.unwrap();
+    let fixture: Value = serde_json::from_str(include_str!(
+        "../tests/fixtures/w14939-sedna-migrations.json"
+    ))
+    .unwrap();
+    for prefix in ["0024_", "0038_"] {
+        let migration = fixture["migrations"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|entry| entry["filename"].as_str().unwrap().starts_with(prefix))
+            .unwrap();
+        sqlx::raw_sql(sqlx::AssertSqlSafe(migration["sql"].as_str().unwrap()))
+            .execute(&pool)
+            .await
+            .unwrap();
+    }
+    sqlx::query("INSERT INTO phase2_attestation_roots VALUES ('synthetic-root', 1, 2)")
+        .execute(&pool)
+        .await
+        .unwrap();
+    sqlx::query("INSERT INTO phase2_attested_baselines VALUES ('synthetic-root', 'synthetic-tree', 1, 'selection', 'inputs', 'consolidator', 2, 3, 4)")
+        .execute(&pool).await.unwrap();
+    sqlx::query("CREATE TABLE synthetic_extension_effects (version INTEGER PRIMARY KEY, marker TEXT NOT NULL)")
+        .execute(&pool).await.unwrap();
+    for offset in 0..7_i64 {
+        let version = FIRST_HIGH_VERSION + offset;
+        sqlx::query("INSERT INTO _sqlx_migrations (version, description, success, checksum, execution_time) VALUES (?, ?, 1, ?, 0)")
+            .bind(version)
+            .bind(format!("synthetic unknown extension {offset}"))
+            .bind(vec![offset as u8; 48])
+            .execute(&pool).await.unwrap();
+        sqlx::query("INSERT INTO synthetic_extension_effects VALUES (?, ?)")
+            .bind(version)
+            .bind(format!("synthetic-marker-{offset}"))
+            .execute(&pool)
+            .await
+            .unwrap();
+    }
+    let before = snapshot(&pool).await;
+    let effects_before: Vec<(i64, String)> =
+        sqlx::query_as("SELECT version, marker FROM synthetic_extension_effects ORDER BY version")
+            .fetch_all(&pool)
+            .await
+            .unwrap();
+    pool.close().await;
+
+    let error = crate::StateRuntime::init(sqlite.clone(), "synthetic-provider".to_string())
+        .await
+        .err()
+        .expect("unknown state identities must reject startup");
+    assert!(format!("{error:#}").contains(&format!(
+        "unrecognized or incomplete state migration history at version {FIRST_HIGH_VERSION}"
+    )));
+    assert!(!crate::is_sqlite_corruption_error(&error));
+    let pool = sqlite
+        .open_read_write_pool(&sqlite.state_db_path())
+        .await
+        .unwrap();
+    assert_eq!(snapshot(&pool).await, before);
+    let effects_after: Vec<(i64, String)> =
+        sqlx::query_as("SELECT version, marker FROM synthetic_extension_effects ORDER BY version")
+            .fetch_all(&pool)
+            .await
+            .unwrap();
+    assert_eq!(effects_after, effects_before);
+    let roots: (String, i64, i64) = sqlx::query_as(
+        "SELECT memory_root_key, required_since, updated_at FROM phase2_attestation_roots",
+    )
+    .fetch_one(&pool)
+    .await
+    .unwrap();
+    assert_eq!(roots, ("synthetic-root".to_string(), 1, 2));
+    let baselines: (String, String, i64) = sqlx::query_as(
+        "SELECT memory_root_key, output_tree_sha256, attested_at FROM phase2_attested_baselines",
+    )
+    .fetch_one(&pool)
+    .await
+    .unwrap();
+    assert_eq!(
+        baselines,
+        (
+            "synthetic-root".to_string(),
+            "synthetic-tree".to_string(),
+            4
+        )
+    );
+    pool.close().await;
+}
+
+#[tokio::test]
 async fn individual_fork_identities_39_and_45_are_not_upstream_identities() {
     let fixture: Value = serde_json::from_str(include_str!(
         "../tests/fixtures/w14939-sedna-migrations.json"
