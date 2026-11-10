@@ -53,112 +53,15 @@ use crate::oauth::WrappedOAuthTokenResponse;
 use crate::oauth::compute_expires_at_millis;
 use crate::oauth::compute_store_key;
 use crate::oauth::delete_oauth_tokens;
-use crate::oauth::install_tokens_in_manager;
 use crate::oauth::load_oauth_tokens_from_file;
 use crate::oauth::normalized_oauth_credentials;
 use crate::oauth::refresh_lock::RefreshCredentialLock;
-use crate::oauth::resolve_refresh_metadata;
 use crate::oauth::save_oauth_tokens;
 use crate::oauth::save_oauth_tokens_to_file;
 use crate::oauth::stored_oauth_credentials;
-use crate::oauth::validate_refresh_token_issuer;
 use crate::oauth_http_client::OAuthHttpClientAdapter;
 use crate::oauth_http_client::PROACTIVE_REFRESH_TIMEOUT;
 use crate::startup_error::is_authentication_required_error;
-
-#[tokio::test(flavor = "current_thread")]
-async fn device_only_refresh_uses_issuer_bound_metadata_in_both_modes() -> Result<()> {
-    let _env = TempCodexHome::new();
-    let server = MockServer::start().await;
-    let url = format!("{}/mcp", server.uri());
-    let tokens = expired_tokens(&url);
-    Mock::given(method("GET"))
-        .and(path("/.well-known/oauth-authorization-server/mcp"))
-        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
-            "issuer": url,
-            "token_endpoint": format!("{}/device-token", server.uri()),
-            "device_authorization_endpoint": format!("{}/device", server.uri()),
-            "grant_types_supported": ["urn:ietf:params:oauth:grant-type:device_code", "refresh_token"]
-        })))
-        .mount(&server)
-        .await;
-    Mock::given(method("POST"))
-        .and(path("/device-token"))
-        .and(body_string_contains("grant_type=refresh_token"))
-        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
-            "access_token": "synthetic-refreshed-access",
-            "token_type": "bearer",
-            "expires_in": 3600
-        })))
-        .expect(2)
-        .mount(&server)
-        .await;
-    for mode in [
-        crate::McpOAuthRefreshMode::Legacy,
-        crate::McpOAuthRefreshMode::Coordinated,
-    ] {
-        save_oauth_tokens_to_file(&tokens)?;
-        let client = Arc::new(OAuthHttpClientAdapter::new(
-            Arc::new(RouteAwareHttpClient::new(HttpClientFactory::new(
-                OutboundProxyPolicy::ReqwestDefault,
-            ))),
-            HeaderMap::new(),
-            &url,
-        ));
-        let mut manager =
-            AuthorizationManager::new_with_oauth_http_client(&url, client.clone()).await?;
-        manager.set_allow_missing_issuer(true);
-        let metadata = resolve_refresh_metadata(&manager, &url, Some(&client), &tokens).await?;
-        validate_refresh_token_issuer(&metadata, &tokens)?;
-        manager.set_metadata(metadata);
-        install_tokens_in_manager(&mut manager, &tokens, None).await?;
-        assert!(manager.get_authorization_url(&[]).await.is_err());
-        let manager = Arc::new(TokioMutex::new(manager));
-        let runtime = match mode {
-            crate::McpOAuthRefreshMode::Legacy => OAuthRuntime::Legacy(
-                OAuthPersistor::new(
-                    tokens.server_name.clone(),
-                    url.clone(),
-                    manager,
-                    ResolvedOAuthCredentialStore::file(),
-                    Some(tokens.clone()),
-                    None,
-                )
-                .with_device_metadata_client(client.clone()),
-            ),
-            crate::McpOAuthRefreshMode::Coordinated => {
-                let store = OAuthCredentialStore::new(
-                    tokens.clone(),
-                    ResolvedOAuthCredentialStore::file(),
-                    DefaultKeyringStore,
-                    None,
-                )
-                .with_device_metadata_client(client.clone());
-                manager.lock().await.set_credential_store(store.clone());
-                OAuthRuntime::Coordinated {
-                    auth_manager: manager,
-                    store,
-                }
-            }
-        };
-        runtime.refresh_if_needed().await?;
-        let refreshed = load_oauth_tokens_from_file(&tokens.server_name, &url)?.unwrap();
-        assert_eq!(
-            refreshed.token_response.0.access_token().secret(),
-            "synthetic-refreshed-access"
-        );
-
-        let manager =
-            AuthorizationManager::new_with_oauth_http_client(&url, client.clone()).await?;
-        let mut wrong_issuer = tokens.clone();
-        wrong_issuer.issuer = Some(format!("{}/other", server.uri()));
-        let metadata =
-            resolve_refresh_metadata(&manager, &url, Some(&client), &wrong_issuer).await?;
-        assert!(validate_refresh_token_issuer(&metadata, &wrong_issuer).is_err());
-    }
-    server.verify().await;
-    Ok(())
-}
 
 const REFRESH_LOCK_CONTENTION_EVENT_TARGET: &str =
     "codex_rmcp_client::oauth::refresh_lock::contention";

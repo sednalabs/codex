@@ -87,7 +87,6 @@ pub(crate) use self::enterprise_generation::EnterpriseOAuthGeneration;
 pub(crate) use self::enterprise_generation::EnterpriseOAuthGenerationFile;
 pub(crate) use self::enterprise_generation::EnterpriseOAuthGenerationKind;
 use self::enterprise_generation::invalidate_enterprise_credential_version;
-pub(crate) use self::issuer_binding::resolve_refresh_metadata;
 pub(crate) use self::issuer_binding::validate_authorization_server_endpoints;
 pub(crate) use self::issuer_binding::validate_refresh_token_issuer;
 pub(crate) use self::refresh_lock::RefreshCredentialLock;
@@ -758,7 +757,6 @@ struct OAuthPersistorInner {
     authorization_manager: Arc<Mutex<AuthorizationManager>>,
     credential_store: ResolvedOAuthCredentialStore,
     oauth_config: Option<McpServerOAuthConfig>,
-    device_metadata_client: Option<Arc<crate::oauth_http_client::OAuthHttpClientAdapter>>,
     last_credentials: Mutex<Option<StoredOAuthTokens>>,
 }
 
@@ -779,19 +777,8 @@ impl OAuthPersistor {
                 credential_store,
                 last_credentials: Mutex::new(initial_credentials),
                 oauth_config,
-                device_metadata_client: None,
             }),
         }
-    }
-
-    pub(crate) fn with_device_metadata_client(
-        mut self,
-        client: Arc<crate::oauth_http_client::OAuthHttpClientAdapter>,
-    ) -> Self {
-        Arc::get_mut(&mut self.inner)
-            .expect("new OAuth persistor has one owner")
-            .device_metadata_client = Some(client);
-        self
     }
 
     pub(crate) async fn stored_credentials(&self) -> Option<StoredOAuthTokens> {
