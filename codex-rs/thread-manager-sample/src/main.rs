@@ -271,6 +271,7 @@ async fn new_config(
         show_raw_agent_reasoning: false,
         base_instructions: None,
         base_instructions_provenance: None,
+        instruction_overlays: Default::default(),
         developer_instructions: None,
         guardian_policy_revision: 0,
         guardian_policy_config: None,

@@ -166,6 +166,10 @@ pub struct FeatureToggleToml {
 #[derive(Serialize, Deserialize, Debug, Clone, Default, PartialEq, JsonSchema)]
 #[schemars(deny_unknown_fields)]
 pub struct ConfigToml {
+    /// Request-only edits to eligible client instruction components.
+    pub instruction_overlays: Option<crate::InstructionOverlaysToml>,
+    /// Explicit authorization for an unknown saved model baseline; only the user layer is trusted.
+    pub historical_baseline_adoption: Option<crate::HistoricalBaselineAdoption>,
     /// Optional override of model selection.
     pub model: Option<String>,
     /// Default Daybreak preference for new threads and non-interactive turns.

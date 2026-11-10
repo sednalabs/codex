@@ -726,6 +726,9 @@ pub struct Config {
     /// Origin of the configured base instructions when supplied by another session or lockfile.
     pub base_instructions_provenance: Option<BaseInstructionsProvenance>,
 
+    /// Request-only instruction overlay plans from the effective configuration.
+    pub instruction_overlays: codex_config::InstructionOverlaysToml,
+
     /// Developer instructions override injected as a separate message.
     pub developer_instructions: Option<String>,
 
@@ -3417,6 +3420,14 @@ impl Config {
         config_layer_stack.validate_project_mitm_profiles()?;
         // Keep the large config-construction future off small test thread stacks.
         Box::pin(async move {
+        // Fail closed while the request-side integration is being completed: accepting
+        // these settings without applying them would hide an instruction override.
+        if cfg.instruction_overlays.is_some() || cfg.historical_baseline_adoption.is_some() {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::Unsupported,
+                "instruction overlay request integration is not available in this build",
+            ));
+        }
         if cfg.experimental_thread_store_endpoint.is_some() {
             return Err(std::io::Error::new(
                 std::io::ErrorKind::InvalidInput,
@@ -4651,6 +4662,7 @@ impl Config {
             notify: cfg.notify,
             base_instructions,
             base_instructions_provenance,
+            instruction_overlays: cfg.instruction_overlays.unwrap_or_default(),
             personality,
             developer_instructions,
             compact_prompt,
