@@ -37,8 +37,10 @@ impl MultiAgentUsageHintState {
     }
 
     pub(crate) fn with_client_ownership(mut self, client_owned: bool) -> Self {
-        self.client_owned = client_owned;
-        self.fingerprint = WorldStateHash::from_fragment(&self);
+        if client_owned {
+            self.client_owned = true;
+            self.fingerprint = WorldStateHash::from_fragment(&self);
+        }
         self
     }
 }

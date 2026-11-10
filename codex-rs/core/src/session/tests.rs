@@ -7620,7 +7620,7 @@ async fn historical_overlay_resume_to_serialized_request_is_identity_bound() -> 
             let expected_outcome = if absent { "absent" } else { "applied" };
             let mut saw_outcome = false;
             while let Ok(event) = events.try_recv() {
-                saw_outcome |= matches!(event.msg, EventMsg::Warning(warning) if warning.message.contains(expected_outcome));
+                saw_outcome |= matches!(event.msg, EventMsg::Warning(warning) if warning.message.starts_with(&format!("Instruction overlay: {expected_outcome}")));
             }
             assert!(saw_outcome);
         } else {

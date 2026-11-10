@@ -206,6 +206,9 @@ log *args:
 
 # Diagnostic-only selector; excluded from the candidate.
 core-subagent-surface-targeted:
+    just write-config-schema
+    python3 -c 'import base64,subprocess; print("W14939_SCHEMA_PATCH_BASE64=" + base64.b64encode(subprocess.check_output(["git", "-C", "..", "diff", "--binary", "--", "codex-rs/core/config.schema.json"])).decode())'
+    RUST_MIN_STACK=8388608 cargo test --locked -p codex-core --lib config_schema_matches_fixture -- --test-threads=1
     RUST_MIN_STACK=8388608 cargo test --locked -p codex-core --lib historical_overlay_ -- --test-threads=1
     RUST_MIN_STACK=8388608 cargo test --locked -p codex-core --lib client::instruction_overlays::tests:: -- --test-threads=1
     RUST_MIN_STACK=8388608 cargo test --locked -p codex-core --lib historical_adoption_requires_every_field_from_user_layer -- --test-threads=1

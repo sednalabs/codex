@@ -1964,7 +1964,11 @@ impl Session {
             .with_executed_tool_calls(executed_tool_calls.clone())
             .with_instruction_overlays(
                 config.instruction_overlays.clone(),
-                config.instruction_overlay_origin_fences(&session_configuration.session_source),
+                if config.instruction_overlays == Default::default() {
+                    Vec::new()
+                } else {
+                    config.instruction_overlay_origin_fences(&session_configuration.session_source)
+                },
                 adopted_baseline_digests,
                 config.base_instructions.as_ref().filter(|_| config.client_owned_base_instructions)
                     .map(|text| vec![codex_config::HistoricalBaselineAdoption::baseline_digest(text)])

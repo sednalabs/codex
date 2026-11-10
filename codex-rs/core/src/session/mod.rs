@@ -5107,7 +5107,16 @@ impl Session {
             && let Some(developer_instructions) = turn_context.developer_instructions.as_deref()
             && !developer_instructions.is_empty()
         {
-            let fragment = if turn_context.config.client_owned_developer_instructions
+            let fragment = if turn_context
+                .config
+                .instruction_overlays
+                .developer_guidance
+                .as_ref()
+                .is_some_and(|plan| {
+                    !plan.edits.is_empty()
+                        && plan.applies_to_model(&step_context.settings.model_info.slug)
+                })
+                && turn_context.config.client_owned_developer_instructions
                 && turn_context.config.developer_instructions.as_deref()
                     == Some(developer_instructions)
             {
