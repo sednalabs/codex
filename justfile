@@ -204,7 +204,6 @@ log *args:
 log *args:
     $forwarded_args = @($args | Select-Object -Skip 1); if ($forwarded_args.Count -gt 0 -and $forwarded_args[0] -eq "--") { $forwarded_args = @($forwarded_args | Select-Object -Skip 1) }; cargo run -p codex-cli --bin logs_client -- @forwarded_args
 
-# Diagnostic-only code-mode host checks using the upstream V8 setup.
+# Diagnostic-only resumed-session request and disk checks.
 core-subagent-surface-targeted:
-    cargo build --locked -p codex-code-mode-host --bin codex-code-mode-host
-    RUST_MIN_STACK=8388608 cargo test --locked -p codex-core --lib code_mode_host::tests:: -- --test-threads=1
+    RUST_MIN_STACK=8388608 cargo test --locked -p codex-core --lib historical_overlay_ -- --test-threads=1
