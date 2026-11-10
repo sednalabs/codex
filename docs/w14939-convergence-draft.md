@@ -22,6 +22,8 @@ does not adopt known custom/protected provenance or authorize a different
 thread, component or plan. Unknown, protected, absent and ambiguous outcomes
 must be visible. The old installed engine and the w18679 source differ; their
 full compatibility and role precedence are still being reconciled.
+When the baseline's saved session metadata names a different provider, that
+explicit mismatch blocks model-owned and adopted baseline edits.
 An adoption for a parent thread does not authorize a child or fork; each thread
 must meet its own identity and origin checks.
 
@@ -33,8 +35,9 @@ matches the effective plan; a mismatch fails closed. The helper is synthetic-tes
 validated only, and no real thread, database, transcript or configuration has
 been accessed to establish this candidate.
 Synthetic HTTP tests use a test-only loopback endpoint; production code does not
-permit that endpoint as a trusted model source. A custom OpenAI endpoint is
-currently blocked until its provenance can be established.
+permit that endpoint as a trusted model source. A custom OpenAI endpoint or
+external model catalog cannot establish a model-owned or adopted baseline until
+its provenance can be established.
 
 The proposed authorization belongs in the user's local config:
 

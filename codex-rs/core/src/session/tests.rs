@@ -7592,15 +7592,17 @@ async fn historical_overlay_resume_to_serialized_request_is_identity_bound() -> 
 
     let target = "synthetic obsolete guidance";
     let baseline = format!("before {target} after");
-    for (child, incremental, adopted, protected, absent, fake_provider) in [
-        (false, false, true, false, false, false),
-        (true, false, true, false, false, false),
-        (false, true, true, false, false, false),
-        (true, true, true, false, false, false),
-        (false, false, false, false, false, false),
-        (false, false, true, true, false, false),
-        (false, false, true, false, true, false),
-        (false, false, true, false, false, true),
+    for (child, incremental, adopted, protected, absent, fake_provider, old_provider) in [
+        (false, false, true, false, false, false, 0),
+        (true, false, true, false, false, false, 0),
+        (false, true, true, false, false, false, 0),
+        (true, true, true, false, false, false, 0),
+        (false, false, false, false, false, false, 0),
+        (false, false, true, true, false, false, 0),
+        (false, false, true, false, true, false, 0),
+        (false, false, true, false, false, true, 0),
+        (false, false, true, false, false, false, 1),
+        (false, false, true, false, false, false, 2),
     ] {
         let server = start_mock_server().await;
         let requests = mount_sse_once(
@@ -7644,9 +7646,16 @@ async fn historical_overlay_resume_to_serialized_request_is_identity_bound() -> 
                 id: thread_id,
                 session_id: thread_id.into(),
                 source: source.clone(),
+                model_provider: (old_provider != 0).then(|| "synthetic-other-provider".into()),
                 base_instructions: Some(BaseInstructions {
                     text: baseline.clone(),
-                    provenance: protected.then_some(BaseInstructionsProvenance::Custom),
+                    provenance: if old_provider == 2 {
+                        Some(BaseInstructionsProvenance::Model {
+                            model: "synthetic-other-model".into(),
+                        })
+                    } else {
+                        protected.then_some(BaseInstructionsProvenance::Custom)
+                    },
                 }),
                 ..SessionMeta::default()
             },
@@ -7734,7 +7743,7 @@ async fn historical_overlay_resume_to_serialized_request_is_identity_bound() -> 
                 &codex_rollout_trace::InferenceTraceContext::disabled(),
             )
             .await;
-        if adopted && !protected && !fake_provider {
+        if adopted && !protected && !fake_provider && old_provider == 0 {
             let mut stream = result?;
             while let Some(event) = stream.next().await {
                 event?;
@@ -7940,6 +7949,10 @@ async fn historical_overlay_rejects_untrusted_openai_endpoint_override() {
     let mut config = build_test_config(home.path()).await;
     assert!(super::session::trusted_model_overlay_source(&config));
     config.model_provider.base_url = Some("https://synthetic-provider.invalid/v1".into());
+    assert!(!super::session::trusted_model_overlay_source(&config));
+    config.model_provider.base_url = None;
+    config.model_catalog =
+        Some(codex_protocol::openai_models::ModelsResponse { models: Vec::new() });
     assert!(!super::session::trusted_model_overlay_source(&config));
 }
 
