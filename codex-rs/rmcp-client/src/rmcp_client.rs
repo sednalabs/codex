@@ -95,6 +95,7 @@ use crate::oauth::ResolvedOAuthTokens;
 use crate::oauth::StoredOAuthTokens;
 use crate::oauth::install_tokens_in_manager;
 use crate::oauth::resolve_oauth_tokens_from_store_policy;
+use crate::oauth::resolve_refresh_metadata;
 use crate::oauth::validate_refresh_token_issuer;
 use crate::oauth_client_credentials::OAuthClientCredentials;
 use crate::oauth_http_client::OAuthHttpClientAdapter;
@@ -1994,15 +1995,16 @@ async fn create_oauth_transport_and_runtime(
         has_configured_headers,
         redirect_mode,
     )?);
-    let mut manager =
-        AuthorizationManager::new_with_oauth_http_client(url.to_string(), oauth_http_client)
-            .await?;
+    let mut manager = AuthorizationManager::new_with_oauth_http_client(
+        url.to_string(),
+        oauth_http_client.clone(),
+    )
+    .await?;
     manager.set_allow_missing_issuer(true);
-    let metadata = manager
-        .resolve_metadata()
-        .await
-        .context("failed to resolve OAuth metadata before using stored credentials")?
-        .metadata;
+    let metadata =
+        resolve_refresh_metadata(&manager, url, Some(&oauth_http_client), &initial_tokens)
+            .await
+            .context("failed to resolve OAuth metadata before using stored credentials")?;
     let use_stored_access_token_only =
         match validate_refresh_token_issuer(&metadata, &initial_tokens) {
             Ok(()) => false,
@@ -2023,7 +2025,8 @@ async fn create_oauth_transport_and_runtime(
                 credential_store,
                 DefaultKeyringStore,
                 oauth_config.cloned(),
-            );
+            )
+            .with_device_metadata_client(oauth_http_client.clone());
             manager.set_credential_store(store.clone());
             Some(store)
         }
@@ -2060,14 +2063,17 @@ async fn create_oauth_transport_and_runtime(
             auth_manager,
             store,
         },
-        None => OAuthRuntime::Legacy(OAuthPersistor::new(
-            server_name.to_string(),
-            url.to_string(),
-            auth_manager,
-            credential_store,
-            Some(initial_tokens),
-            oauth_config.cloned(),
-        )),
+        None => OAuthRuntime::Legacy(
+            OAuthPersistor::new(
+                server_name.to_string(),
+                url.to_string(),
+                auth_manager,
+                credential_store,
+                Some(initial_tokens),
+                oauth_config.cloned(),
+            )
+            .with_device_metadata_client(oauth_http_client),
+        ),
     };
 
     Ok(PendingTransport::StreamableHttpWithOAuth {

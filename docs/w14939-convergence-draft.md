@@ -9,6 +9,10 @@ upstream thread-search commit `77fde36ae112437a8ce23e752209099ee04a0d50` was
 merged in `a9b230a73ae1a67c1963d68183cff67af2c21a91`. The Sedna fixture source is
 `97f6c6b811cbda5aa618356e6761c541da2b5032`. Evidence from older commits and
 the preview artifact does not validate this merge or any later overlay draft.
+Upstream `b32ada5320b043bde03a10edab6b88fc126812b4` adds credential-free OAuth
+metadata discovery and was merged in `55bde4a290f9562b147ccbc10e955539176d904c`.
+That upstream helper intentionally treats device-only metadata as unavailable;
+runtime device refresh must use the separately routed issuer-bound path.
 
 The overlay integration is unqualified. Its historical adoption
 binds a local user authorization to one
@@ -100,8 +104,12 @@ PKCE fallback, device polling and locked token storage. The rmcp-client library 
 on the earlier candidate `abf09fbad15480dc3d9ddb27851ed47fd2b7f22d`.
 Device-only discovery, the `mcp add` hint, preservation of unknown credential
 file fields, and Sedna's synthetic CLI login tests are included in the candidate. Bounded same-origin device-request redirects are included in the
-draft; cross-origin redirects are rejected. Device-only refresh compatibility
-still needs assessment.
+draft; cross-origin redirects are rejected. Device-only refresh reuses the
+issuer-bound discovery with the connection's existing HTTP adapter at startup
+and during both refresh modes. It uses only the advertised token endpoint,
+rejects an issuer mismatch and prevents the refresh-only metadata from starting
+a browser flow. Synthetic hosted checks exercised both modes; no real server
+or credentials were used.
 Full session-history compatibility, hosted validation, packaging and consumer
 acceptance remain unfinished. The owner has been asked only for non-sensitive
 migration identity and schema metadata. Do not install or run this draft
