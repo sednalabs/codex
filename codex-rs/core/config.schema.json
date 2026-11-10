@@ -2435,6 +2435,27 @@
       },
       "type": "object"
     },
+    "HistoricalBaselineAdoption": {
+      "additionalProperties": false,
+      "description": "Explicit, local authorization for one unknown historical model baseline and one edit plan. The digests are lowercase SHA-256 hex. The plan digest is over the domain-separated, deterministic JSON serialization of the complete `model_baseline` plan.",
+      "properties": {
+        "baseline_sha256": {
+          "type": "string"
+        },
+        "plan_sha256": {
+          "type": "string"
+        },
+        "thread_id": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "baseline_sha256",
+        "plan_sha256",
+        "thread_id"
+      ],
+      "type": "object"
+    },
     "History": {
       "additionalProperties": false,
       "description": "Settings that govern if and what will be written to `~/.codex/history.jsonl`.",
@@ -2707,6 +2728,225 @@
             "$ref": "#/definitions/HookStateToml"
           },
           "type": "object"
+        }
+      },
+      "type": "object"
+    },
+    "InstructionOverlayComponentToml": {
+      "additionalProperties": false,
+      "properties": {
+        "edits": {
+          "default": [],
+          "items": {
+            "$ref": "#/definitions/InstructionOverlayEdit"
+          },
+          "type": "array"
+        },
+        "models": {
+          "default": null,
+          "description": "Exact model slugs for this target; omitted means the target applies to every model.",
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "on_absent": {
+          "allOf": [
+            {
+              "$ref": "#/definitions/InstructionOverlayOnAbsent"
+            }
+          ],
+          "default": "error"
+        },
+        "selection": {
+          "allOf": [
+            {
+              "$ref": "#/definitions/InstructionOverlaySelection"
+            }
+          ],
+          "default": "unique"
+        }
+      },
+      "type": "object"
+    },
+    "InstructionOverlayEdit": {
+      "oneOf": [
+        {
+          "properties": {
+            "op": {
+              "enum": [
+                "prepend"
+              ],
+              "type": "string"
+            },
+            "text": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "op",
+            "text"
+          ],
+          "type": "object"
+        },
+        {
+          "properties": {
+            "op": {
+              "enum": [
+                "append"
+              ],
+              "type": "string"
+            },
+            "text": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "op",
+            "text"
+          ],
+          "type": "object"
+        },
+        {
+          "properties": {
+            "op": {
+              "enum": [
+                "replace"
+              ],
+              "type": "string"
+            },
+            "text": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "op",
+            "text"
+          ],
+          "type": "object"
+        },
+        {
+          "properties": {
+            "expected_matches": {
+              "format": "uint",
+              "minimum": 1.0,
+              "type": "integer"
+            },
+            "from": {
+              "type": "string"
+            },
+            "op": {
+              "enum": [
+                "replace_exact"
+              ],
+              "type": "string"
+            },
+            "to": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "expected_matches",
+            "from",
+            "op",
+            "to"
+          ],
+          "type": "object"
+        },
+        {
+          "properties": {
+            "expected_matches": {
+              "format": "uint",
+              "minimum": 1.0,
+              "type": "integer"
+            },
+            "op": {
+              "enum": [
+                "remove_exact"
+              ],
+              "type": "string"
+            },
+            "text": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "expected_matches",
+            "op",
+            "text"
+          ],
+          "type": "object"
+        },
+        {
+          "description": "Removes the literal if present; a nonzero occurrence count must match the expectation.",
+          "properties": {
+            "expected_matches": {
+              "format": "uint",
+              "minimum": 1.0,
+              "type": "integer"
+            },
+            "op": {
+              "enum": [
+                "remove_exact_if_present"
+              ],
+              "type": "string"
+            },
+            "text": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "expected_matches",
+            "op",
+            "text"
+          ],
+          "type": "object"
+        }
+      ]
+    },
+    "InstructionOverlayOnAbsent": {
+      "enum": [
+        "error",
+        "skip"
+      ],
+      "type": "string"
+    },
+    "InstructionOverlaySelection": {
+      "enum": [
+        "unique",
+        "all_classified"
+      ],
+      "type": "string"
+    },
+    "InstructionOverlaysToml": {
+      "additionalProperties": false,
+      "properties": {
+        "collaboration_guidance": {
+          "$ref": "#/definitions/InstructionOverlayComponentToml"
+        },
+        "developer_guidance": {
+          "$ref": "#/definitions/InstructionOverlayComponentToml"
+        },
+        "model_baseline": {
+          "$ref": "#/definitions/InstructionOverlayComponentToml"
+        },
+        "model_switch_guidance": {
+          "$ref": "#/definitions/InstructionOverlayComponentToml"
+        },
+        "multi_agent_mode": {
+          "$ref": "#/definitions/InstructionOverlayComponentToml"
+        },
+        "multi_agent_role": {
+          "$ref": "#/definitions/InstructionOverlayComponentToml"
+        },
+        "multi_agent_usage_hint": {
+          "$ref": "#/definitions/InstructionOverlayComponentToml"
+        },
+        "persistent_guidance": {
+          "$ref": "#/definitions/InstructionOverlayComponentToml"
+        },
+        "review_baseline": {
+          "$ref": "#/definitions/InstructionOverlayComponentToml"
         }
       },
       "type": "object"
@@ -8612,6 +8852,14 @@
       "description": "When set to `true`, `AgentReasoning` events will be hidden from the UI/output. Defaults to `false`.",
       "type": "boolean"
     },
+    "historical_baseline_adoption": {
+      "allOf": [
+        {
+          "$ref": "#/definitions/HistoricalBaselineAdoption"
+        }
+      ],
+      "description": "Explicit authorization for an unknown saved model baseline; only the user layer is trusted."
+    },
     "history": {
       "allOf": [
         {
@@ -8651,6 +8899,14 @@
     "include_permissions_instructions": {
       "description": "Whether to inject the `<permissions instructions>` developer block.",
       "type": "boolean"
+    },
+    "instruction_overlays": {
+      "allOf": [
+        {
+          "$ref": "#/definitions/InstructionOverlaysToml"
+        }
+      ],
+      "description": "Request-only edits to eligible client instruction components."
     },
     "instructions": {
       "description": "System instructions.",

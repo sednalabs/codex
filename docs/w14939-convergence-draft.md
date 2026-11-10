@@ -3,7 +3,10 @@
 This is an incomplete source draft, not a release or installation candidate.
 The existing candidate was merged with upstream
 `c82708f85803d21fe9046af407107a1ee105b6e5` in
-`53b8bc981ea124845168e30a6e882be9af76d7f1`. The Sedna fixture source is
+`53b8bc981ea124845168e30a6e882be9af76d7f1`; the missing compaction-test
+import was restored in `f332147b84865f052256a8ce67094e2c9caaa661`. The later
+upstream thread-search commit `77fde36ae112437a8ce23e752209099ee04a0d50` was
+merged in `a9b230a73ae1a67c1963d68183cff67af2c21a91`. The Sedna fixture source is
 `97f6c6b811cbda5aa618356e6761c541da2b5032`. Evidence from older commits and
 the preview artifact does not validate this merge or any later overlay draft.
 
@@ -25,6 +28,9 @@ text. A local operator must determine those bytes and verify that the fragment
 matches the effective plan; a mismatch fails closed. The helper is synthetic-test
 validated only, and no real thread, database, transcript or configuration has
 been accessed to establish this candidate.
+Synthetic HTTP tests use a test-only loopback endpoint; production code does not
+permit that endpoint as a trusted model source. A custom OpenAI endpoint is
+currently blocked until its provenance can be established.
 
 The proposed authorization belongs in the user's local config:
 

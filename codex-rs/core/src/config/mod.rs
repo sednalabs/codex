@@ -3546,6 +3546,13 @@ impl Config {
                 format!("invalid instruction overlay configuration: {error}"),
             ))?;
         }
+        if cfg.historical_baseline_adoption.is_some()
+            && !cfg.instruction_overlays.as_ref().and_then(|overlays| overlays.model_baseline.as_ref())
+                .is_some_and(codex_config::HistoricalBaselineAdoption::plan_is_eligible)
+        {
+            return Err(std::io::Error::new(std::io::ErrorKind::InvalidInput,
+                "historical baseline adoption requires a unique model-baseline exact-removal plan"));
+        }
         if cfg.experimental_thread_store_endpoint.is_some() {
             return Err(std::io::Error::new(
                 std::io::ErrorKind::InvalidInput,

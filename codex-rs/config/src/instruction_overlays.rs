@@ -275,7 +275,11 @@ impl HistoricalBaselineAdoption {
         self.thread_id == thread_id
             && self.baseline_sha256 == Self::baseline_digest(baseline)
             && self.plan_sha256 == Self::plan_digest(plan)
-            && plan.selection == InstructionOverlaySelection::Unique
+            && Self::plan_is_eligible(plan)
+    }
+
+    pub fn plan_is_eligible(plan: &InstructionOverlayComponentToml) -> bool {
+        plan.selection == InstructionOverlaySelection::Unique
             && !plan.edits.is_empty()
             && plan.edits.iter().all(|edit| {
                 matches!(

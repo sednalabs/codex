@@ -208,7 +208,7 @@ log *args:
 core-subagent-surface-targeted:
     RUST_MIN_STACK=8388608 cargo test --locked -p codex-core --lib historical_overlay_ -- --test-threads=1
     RUST_MIN_STACK=8388608 cargo test --locked -p codex-core --lib client::instruction_overlays::tests:: -- --test-threads=1
-    RUST_MIN_STACK=8388608 cargo test --locked -p codex-core --lib historical_adoption_requires_every_field_from_user_layer -- --test-threads=1
+    RUST_MIN_STACK=8388608 cargo test --locked -p codex-core --lib historical_adoption_ -- --test-threads=1
     RUST_MIN_STACK=8388608 cargo test --locked -p codex-core --lib instruction_overlay_ -- --test-threads=1
     RUST_MIN_STACK=8388608 cargo test --locked -p codex-core --lib guardian_review_retries_transient_failure_then_approves -- --test-threads=1
     RUST_MIN_STACK=8388608 cargo test --locked -p codex-core --lib multi_agent_v2_ -- --test-threads=1
@@ -219,3 +219,4 @@ core-subagent-surface-targeted:
     RUST_MIN_STACK=16777216 cargo test --locked -p codex-core --test all manual_remote_compact_capacity_recovers_after_retry_limit -- --test-threads=1
     RUST_MIN_STACK=16777216 cargo test --locked -p codex-core --test all workspace_denial_stops_compaction_on_model_downshift -- --test-threads=1
     RUST_MIN_STACK=16777216 cargo test --locked -p codex-api --lib terminal_failure_with_retry_header_ends_stream_immediately -- --test-threads=1
+    RUST_MIN_STACK=8388608 cargo test --locked -p codex-core --lib config_schema_matches_fixture -- --test-threads=1

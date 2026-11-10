@@ -57,7 +57,8 @@ def main():
     if sys.stdin.isatty():
         parser.error("pipe the exact baseline bytes on stdin")
     try:
-        plan_bytes = args.plan_file.read_bytes()
+        with args.plan_file.open("rb") as plan_file:
+            plan_bytes = plan_file.read(LIMIT + 1)
         if len(plan_bytes) > LIMIT:
             raise ValueError("plan file exceeds the size limit")
         document = tomllib.loads(plan_bytes.decode("utf-8"))

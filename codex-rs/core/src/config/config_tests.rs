@@ -14392,3 +14392,29 @@ async fn instruction_overlay_fences_protected_configuration() {
     assert!(fences.contains(&codex_config::InstructionOverlayComponent::CollaborationGuidance));
     assert!(fences.contains(&codex_config::InstructionOverlayComponent::PersistentGuidance));
 }
+
+#[tokio::test]
+async fn historical_adoption_requires_an_eligible_configured_plan() {
+    let home = tempfile::tempdir().unwrap();
+    std::fs::write(
+        home.path().join(codex_config::CONFIG_TOML_FILE),
+        r#"
+[historical_baseline_adoption]
+thread_id = "synthetic"
+baseline_sha256 = "synthetic"
+plan_sha256 = "synthetic"
+"#,
+    )
+    .unwrap();
+    let result = ConfigBuilder::without_managed_config_for_tests()
+        .codex_home(home.path().to_path_buf())
+        .fallback_cwd(Some(home.path().to_path_buf()))
+        .build()
+        .await;
+    let error = result.expect_err("adoption without a plan must fail");
+    assert!(
+        error
+            .to_string()
+            .contains("requires a unique model-baseline exact-removal plan")
+    );
+}
