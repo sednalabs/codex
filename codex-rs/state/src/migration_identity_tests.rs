@@ -388,6 +388,53 @@ async fn unknown_high_state_ledger_fails_without_changing_synthetic_effects() {
 }
 
 #[tokio::test]
+async fn sqlx_applies_a_pending_low_version_without_rewriting_unknown_high_rows() {
+    // Exercise SQLx in isolation, bypassing the production preflight: this is
+    // not permission to open a database with an unidentified migration.
+    let home = tempfile::TempDir::new().unwrap();
+    let sqlite = crate::SqliteConfig::new_for_testing(home.path().abs());
+    let pool = sqlite
+        .open_read_write_pool(&sqlite.state_db_path())
+        .await
+        .unwrap();
+    let prefix = Migrator::with_migrations(
+        STATE_MIGRATOR
+            .migrations
+            .iter()
+            .filter(|migration| migration.version <= 61)
+            .cloned()
+            .collect(),
+    );
+    prefix.run(&pool).await.unwrap();
+    sqlx::query("CREATE TABLE synthetic_extension (marker TEXT NOT NULL)")
+        .execute(&pool)
+        .await
+        .unwrap();
+    sqlx::query("INSERT INTO synthetic_extension VALUES ('preserve-me')")
+        .execute(&pool)
+        .await
+        .unwrap();
+    sqlx::query("INSERT INTO _sqlx_migrations (version, description, success, checksum, execution_time) VALUES (8000000000000000, 'synthetic unknown', 1, X'0102', 17)").execute(&pool).await.unwrap();
+    let before: Ledger = sqlx::query_as("SELECT version, description, success, checksum, execution_time, CAST(installed_on AS TEXT) FROM _sqlx_migrations ORDER BY version").fetch_all(&pool).await.unwrap();
+    super::runtime_state_migrator().run(&pool).await.unwrap();
+    let after: Ledger = sqlx::query_as("SELECT version, description, success, checksum, execution_time, CAST(installed_on AS TEXT) FROM _sqlx_migrations WHERE version != 62 ORDER BY version").fetch_all(&pool).await.unwrap();
+    assert_eq!(after, before);
+    let applied: bool = sqlx::query_scalar(
+        "SELECT EXISTS(SELECT 1 FROM _sqlx_migrations WHERE version = 62 AND success = 1)",
+    )
+    .fetch_one(&pool)
+    .await
+    .unwrap();
+    assert!(applied);
+    let marker: String = sqlx::query_scalar("SELECT marker FROM synthetic_extension")
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+    assert_eq!(marker, "preserve-me");
+    pool.close().await;
+}
+
+#[tokio::test]
 async fn individual_fork_identities_39_and_45_are_not_upstream_identities() {
     let fixture: Value = serde_json::from_str(include_str!(
         "../tests/fixtures/w14939-sedna-migrations.json"
