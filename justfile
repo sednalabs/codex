@@ -206,13 +206,10 @@ log *args:
 
 # Diagnostic-only selector; excluded from the candidate.
 core-subagent-surface-targeted:
-    just write-config-schema
-    python3 -c 'import base64,subprocess; print("W14939_SCHEMA_PATCH_BASE64=" + base64.b64encode(subprocess.check_output(["git", "-C", "..", "diff", "--binary", "--", "codex-rs/core/config.schema.json"])).decode())'
-    RUST_MIN_STACK=8388608 cargo test --locked -p codex-core --lib config_schema_matches_fixture -- --test-threads=1
     RUST_MIN_STACK=8388608 cargo test --locked -p codex-core --lib historical_overlay_ -- --test-threads=1
     RUST_MIN_STACK=8388608 cargo test --locked -p codex-core --lib client::instruction_overlays::tests:: -- --test-threads=1
     RUST_MIN_STACK=8388608 cargo test --locked -p codex-core --lib historical_adoption_requires_every_field_from_user_layer -- --test-threads=1
-    RUST_MIN_STACK=8388608 cargo test --locked -p codex-core --lib instruction_overlay_role_projection_preserves_effective_plan -- --test-threads=1
+    RUST_MIN_STACK=8388608 cargo test --locked -p codex-core --lib instruction_overlay_ -- --test-threads=1
     RUST_MIN_STACK=8388608 cargo test --locked -p codex-core --lib guardian_review_retries_transient_failure_then_approves -- --test-threads=1
     RUST_MIN_STACK=8388608 cargo test --locked -p codex-core --lib multi_agent_v2_ -- --test-threads=1
     RUST_MIN_STACK=8388608 cargo test --locked -p codex-core --lib native_wait_tests:: -- --test-threads=1

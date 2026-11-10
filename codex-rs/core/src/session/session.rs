@@ -62,6 +62,27 @@ use tokio_util::task::TaskTracker;
 type McpToolApprovalMetadataMap =
     HashMap<(String, String), std::sync::Weak<McpToolApprovalContext>>;
 
+pub(super) fn trusted_model_overlay_source(config: &Config) -> bool {
+    if config.model_provider_id != codex_model_provider_info::OPENAI_PROVIDER_ID {
+        return false;
+    }
+    if config.model_provider.base_url.is_none() {
+        return true;
+    }
+    // Synthetic HTTP tests use a loopback endpoint; this exception is not built
+    // into production binaries and never applies to a different provider ID.
+    #[cfg(test)]
+    if let Some(url) = config.model_provider.base_url.as_deref()
+        && let Ok(url) = url::Url::parse(url)
+        && url.scheme() == "http"
+        && url.host_str() == Some("127.0.0.1")
+        && url.port().is_some()
+    {
+        return true;
+    }
+    false
+}
+
 /// A thread's installed reporter and the tasks that may still hand it an outcome.
 pub(crate) struct AgentOutcomeReporting {
     pub(super) reporter: Arc<dyn AgentTurnOutcomeReporter>,
@@ -1914,7 +1935,7 @@ impl Session {
                 config.features.enabled(Feature::ReasoningEffortOverride) && !title_request;
             let mut adopted_baseline_digests = Vec::new();
             if config.base_instructions.is_none()
-                && config.model_provider_id == codex_model_provider_info::OPENAI_PROVIDER_ID
+                && trusted_model_overlay_source(&config)
                 && let (Some(adoption), Some(plan), Some(historical)) = (
                     config.historical_baseline_adoption.as_ref(),
                     config.instruction_overlays.model_baseline.as_ref(),
@@ -1973,7 +1994,7 @@ impl Session {
                 config.base_instructions.as_ref().filter(|_| config.client_owned_base_instructions)
                     .map(|text| vec![codex_config::HistoricalBaselineAdoption::baseline_digest(text)])
                     .unwrap_or_default(),
-                config.model_provider_id == codex_model_provider_info::OPENAI_PROVIDER_ID
+                trusted_model_overlay_source(&config)
                     && (config.base_instructions.is_none()
                         || (matches!(session_configuration.session_source, SessionSource::SubAgent(SubAgentSource::ThreadSpawn { .. }))
                             && matches!(config.base_instructions_provenance, Some(BaseInstructionsProvenance::Model { .. })))),

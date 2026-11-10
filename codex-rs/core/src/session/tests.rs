@@ -7626,6 +7626,11 @@ async fn historical_overlay_resume_to_serialized_request_is_identity_bound() -> 
         } else {
             assert!(result.is_err());
             assert!(requests.requests().is_empty());
+            let mut saw_blocked = false;
+            while let Ok(event) = events.try_recv() {
+                saw_blocked |= matches!(event.msg, EventMsg::Warning(warning) if warning.message.starts_with("Instruction overlay: blocked"));
+            }
+            assert!(saw_blocked);
         }
         assert_eq!(prompt.input, before);
         assert_eq!(serde_json::to_value(saved.as_ref())?, saved_before);
@@ -7797,6 +7802,15 @@ async fn historical_overlay_accepts_inherited_model_provenance_for_spawned_child
         "synthetic target and remainder"
     );
     Ok(())
+}
+
+#[tokio::test]
+async fn historical_overlay_rejects_untrusted_openai_endpoint_override() {
+    let home = tempfile::tempdir().unwrap();
+    let mut config = build_test_config(home.path()).await;
+    assert!(super::session::trusted_model_overlay_source(&config));
+    config.model_provider.base_url = Some("https://synthetic-provider.invalid/v1".into());
+    assert!(!super::session::trusted_model_overlay_source(&config));
 }
 
 #[tokio::test]

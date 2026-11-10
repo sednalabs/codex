@@ -76,6 +76,9 @@ async fn apply_role_to_config_inner(
     };
     let role_layer_toml = load_role_layer_toml(config, config_file, is_built_in, role_name).await?;
     let role_config = deserialize_config_toml_with_base(role_layer_toml, &config.codex_home)?;
+    if role_config.historical_baseline_adoption.is_some() {
+        anyhow::bail!("historical baseline adoption is not permitted in role configuration");
+    }
     let mut overrides = AgentRoleOverrides {
         developer_instructions: role_config.developer_instructions,
         instruction_overlays: role_config.instruction_overlays,

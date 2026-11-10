@@ -1759,7 +1759,10 @@ impl Config {
         let mut fenced = Vec::new();
         // These components can carry model-catalog instructions. Without the
         // built-in OpenAI catalog, their provider origin is not established.
-        if self.model_provider_id != OPENAI_PROVIDER_ID || self.model_catalog.is_some() {
+        if self.model_provider_id != OPENAI_PROVIDER_ID
+            || self.model_provider.base_url.is_some()
+            || self.model_catalog.is_some()
+        {
             fenced.extend([
                 InstructionOverlayComponent::ModelSwitchGuidance,
                 InstructionOverlayComponent::CollaborationGuidance,

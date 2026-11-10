@@ -14372,3 +14372,23 @@ fn historical_adoption_requires_every_field_from_user_layer() {
     let absent = ConfigLayerStack::new(Vec::new(), Default::default(), Default::default()).unwrap();
     assert!(!Config::historical_baseline_adoption_is_user_owned(&absent));
 }
+
+#[tokio::test]
+async fn instruction_overlay_fences_protected_configuration() {
+    let home = tempfile::tempdir().unwrap();
+    let mut config = ConfigBuilder::without_managed_config_for_tests()
+        .codex_home(home.path().to_path_buf())
+        .fallback_cwd(Some(home.path().to_path_buf()))
+        .build()
+        .await
+        .unwrap();
+    config.developer_instructions = Some("synthetic protected instruction".into());
+    config.client_owned_developer_instructions = false;
+    config.model_provider_id = "synthetic-provider".into();
+    let fences =
+        config.instruction_overlay_origin_fences(&codex_protocol::protocol::SessionSource::Cli);
+    assert!(fences.contains(&codex_config::InstructionOverlayComponent::DeveloperGuidance));
+    assert!(fences.contains(&codex_config::InstructionOverlayComponent::ModelSwitchGuidance));
+    assert!(fences.contains(&codex_config::InstructionOverlayComponent::CollaborationGuidance));
+    assert!(fences.contains(&codex_config::InstructionOverlayComponent::PersistentGuidance));
+}
