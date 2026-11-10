@@ -1,3 +1,4 @@
+use crate::McpRefreshReason;
 use crate::agent::LocalAgentControl;
 use codex_protocol::ContextWindowId;
 #[path = "compaction_replay_tests.rs"]
@@ -683,50 +684,6 @@ async fn regular_turn_emits_turn_started_with_trace_id_without_waiting_for_start
     sess.abort_all_tasks(TurnAbortReason::Interrupted).await;
 }
 
-#[test_case(SessionSource::Exec; "root")]
-#[test_case(SessionSource::SubAgent(SubAgentSource::Review); "subagent")]
-#[test_case(SessionSource::Internal(InternalSessionSource::Guardian); "guardian")]
-#[tokio::test]
-async fn request_mcp_server_elicitation_auto_accepts_when_auto_deny_is_enabled(
-    source: SessionSource,
-) {
-    let (session, mut turn_context, rx) = make_session_and_context_with_rx().await;
-    Arc::get_mut(&mut turn_context)
-        .expect("turn context should not be shared")
-        .session_source = source;
-    session
-        .services
-        .mcp_runtime
-        .set_elicitations_auto_deny(/*auto_deny*/ true);
-
-    let response = session
-        .request_mcp_server_elicitation(
-            turn_context.as_ref(),
-            "codex_apps".to_string(),
-            RequestId::String("request-1".into()),
-            ElicitationRequest::Form {
-                meta: None,
-                message: "Allow this request?".to_string(),
-                requested_schema: json!({
-                    "type": "object",
-                    "properties": {},
-                }),
-            },
-        )
-        .await;
-
-    assert_eq!(
-        response.response,
-        Some(ElicitationResponse {
-            action: ElicitationAction::Accept,
-            content: Some(json!({})),
-            meta: None,
-        })
-    );
-    assert!(!response.sent);
-    assert!(rx.try_recv().is_err());
-}
-
 #[test_case(SessionSource::Exec, true; "root")]
 #[test_case(SessionSource::Exec, false; "capture_off")]
 #[test_case(SessionSource::SubAgent(SubAgentSource::Review), true; "subagent")]
@@ -818,12 +775,11 @@ async fn request_mcp_server_elicitation_waits_for_user_response(
         )
         .await
         .expect("user response should resolve the elicitation");
-    let outcome = tokio::time::timeout(Duration::from_secs(1), pending)
+    let received = tokio::time::timeout(Duration::from_secs(1), pending)
         .await
         .expect("elicitation should finish")
         .expect("elicitation task should succeed");
-    assert_eq!(outcome.response, Some(response));
-    assert!(outcome.sent);
+    assert_eq!(received, Some(response));
     assert!(!*paused.borrow());
     assert!(rx.try_recv().is_err());
 }
@@ -2374,7 +2330,7 @@ async fn refresh_config_rejects_stale_owner_without_effects(scope: RuntimeConfig
         crate::ConfigRefreshOutcome::Published
     );
     let current_owner = session.get_config().await;
-    assert!(session.mcp_refresh.claim());
+    assert!(!session.mcp_refresh.take_pending().is_empty());
 
     assert_eq!(
         session
@@ -7118,7 +7074,7 @@ pub(crate) async fn make_session_and_context() -> (Session, TurnContext) {
         "turn_id".to_string(),
         skills_snapshot,
     );
-    session.mark_mcp_runtime_dirty();
+    session.mark_mcp_runtime_dirty(McpRefreshReason::ExplicitInvalidation);
     crate::guardian::test_host::install(&session, &turn_context.config);
     (session, turn_context)
 }
@@ -9462,7 +9418,7 @@ where
         "turn_id".to_string(),
         skills_snapshot,
     ));
-    session.mark_mcp_runtime_dirty();
+    session.mark_mcp_runtime_dirty(McpRefreshReason::ExplicitInvalidation);
     crate::guardian::test_host::install(&session, &turn_context.config);
     (session, turn_context, rx_event)
 }
@@ -9649,7 +9605,7 @@ async fn refresh_mcp_servers_uses_latest_state_for_existing_turns() {
             .expect("enable secret auth storage");
         state.session_configuration.original_config_do_not_use = Arc::new(config);
     }
-    session.mark_mcp_runtime_dirty();
+    session.mark_mcp_runtime_dirty(McpRefreshReason::ExplicitInvalidation);
 
     let next_turn = session.new_default_turn().await;
     let new_step = session
@@ -9819,7 +9775,7 @@ async fn mcp_elicitation_reviewer_uses_active_reviewer_and_latest_runtime_policy
         .spawn_task(Arc::clone(&old_turn), Vec::new(), task)
         .await;
 
-    session.mark_mcp_runtime_dirty();
+    session.mark_mcp_runtime_dirty(McpRefreshReason::ExplicitInvalidation);
     session.refresh_mcp_if_dirty().await;
     if live_update {
         assert_eq!(
@@ -10035,7 +9991,7 @@ async fn mcp_elicitation_reviewer_is_reused_across_runtime_refreshes() {
     let session = Arc::new(session);
     let previous = session.mcp_elicitation_reviewer();
 
-    session.mark_mcp_runtime_dirty();
+    session.mark_mcp_runtime_dirty(McpRefreshReason::ExplicitInvalidation);
     session.refresh_mcp_if_dirty().await;
 
     assert!(Arc::ptr_eq(&previous, &session.mcp_elicitation_reviewer()));
@@ -10381,7 +10337,7 @@ async fn step_context_keeps_its_mcp_runtime_for_tools() -> anyhow::Result<()> {
     );
     assert_ne!(step_context.mcp.config().plugins, current_config.plugins);
 
-    session.mark_mcp_runtime_dirty();
+    session.mark_mcp_runtime_dirty(McpRefreshReason::ExplicitInvalidation);
     session.refresh_mcp_if_dirty().await;
     let current = session
         .services

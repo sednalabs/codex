@@ -148,9 +148,9 @@ pub enum CodexErrorDetails {
     /// surface a polite FunctionCallOutput back to the model instead of crashing the CLI.
     #[error("interrupted (Ctrl-C). Something went wrong? Hit `/feedback` to report the issue.")]
     Interrupted,
-    /// The server rejected the selected workspace.
+    /// The account cannot use Codex in the selected workspace.
     #[error("{0}")]
-    InvalidWorkspaceSelected(UnexpectedResponseError),
+    WorkspaceAccessDenied(UnexpectedResponseError),
     /// The provider denied the access program required for this request.
     #[error("{0}")]
     AccessProgramNotEnabled(ProviderRejection),
@@ -173,6 +173,15 @@ pub enum CodexErrorDetails {
     },
     #[error("{message}")]
     InvalidPrompt { message: String },
+    /// The workspace's inference hook explicitly denied this request.
+    #[error("{message}")]
+    InferenceHookDenied { message: String },
+    /// The provider rejected the input under its content policy.
+    #[error("{message}")]
+    ContentPolicyViolation {
+        message: String,
+        status: Option<StatusCode>,
+    },
     /// Multiple registered tools share the same effective name.
     #[error("duplicate tool: {0}")]
     ToolCollision(String),
@@ -457,6 +466,8 @@ impl CodexErr {
             | CodexErrorDetails::ResponseIncomplete(_)
             | CodexErrorDetails::ModelNotFound { .. }
             | CodexErrorDetails::InvalidPrompt { .. }
+            | CodexErrorDetails::InferenceHookDenied { .. }
+            | CodexErrorDetails::ContentPolicyViolation { .. }
             | CodexErrorDetails::ToolCollision(_)
             | CodexErrorDetails::RefreshTokenFailed(_)
             | CodexErrorDetails::GatewayLoginRequired(_)
@@ -472,7 +483,7 @@ impl CodexErr {
             | CodexErrorDetails::FlexUnavailable
             | CodexErrorDetails::CyberPolicy { .. }
             | CodexErrorDetails::BioPolicy { .. }
-            | CodexErrorDetails::InvalidWorkspaceSelected(_)
+            | CodexErrorDetails::WorkspaceAccessDenied(_)
             | CodexErrorDetails::AccessProgramNotEnabled(_)
             | CodexErrorDetails::MisalignmentPolicyViolation { .. } => None,
             CodexErrorDetails::ServerOverloaded
@@ -537,10 +548,12 @@ impl CodexErr {
                 CodexErrorInfo::PolicyCapacityUnavailable
             }
             CodexErrorDetails::FlexUnavailable => CodexErrorInfo::FlexUnavailable,
+            CodexErrorDetails::InferenceHookDenied { .. } => CodexErrorInfo::InferenceHookDenied,
             CodexErrorDetails::CyberPolicy { .. } => CodexErrorInfo::CyberPolicy,
             CodexErrorDetails::BioPolicy { .. } => CodexErrorInfo::BioPolicy,
             CodexErrorDetails::ModelNotFound { .. } => CodexErrorInfo::ModelNotFound,
-            CodexErrorDetails::InvalidPrompt { .. } => CodexErrorInfo::InvalidPrompt,
+            CodexErrorDetails::InvalidPrompt { .. }
+            | CodexErrorDetails::ContentPolicyViolation { .. } => CodexErrorInfo::InvalidPrompt,
             CodexErrorDetails::MisalignmentPolicyViolation { .. } => {
                 CodexErrorInfo::MisalignmentPolicyViolation
             }
@@ -548,7 +561,7 @@ impl CodexErr {
                 http_status_code: self.http_status_code_value(),
             },
             CodexErrorDetails::ConnectionFailed(_)
-            | CodexErrorDetails::InvalidWorkspaceSelected(_)
+            | CodexErrorDetails::WorkspaceAccessDenied(_)
             | CodexErrorDetails::AccessProgramNotEnabled(_)
             | CodexErrorDetails::UnexpectedStatus(_) => CodexErrorInfo::HttpConnectionFailed {
                 http_status_code: self.http_status_code_value(),
@@ -593,9 +606,10 @@ impl CodexErr {
     pub fn http_status_code_value(&self) -> Option<u16> {
         let http_status_code = match &self.details {
             CodexErrorDetails::FlexUnavailable => Some(StatusCode::TOO_MANY_REQUESTS),
-            CodexErrorDetails::ModelNotFound { status, .. } => *status,
+            CodexErrorDetails::ModelNotFound { status, .. }
+            | CodexErrorDetails::ContentPolicyViolation { status, .. } => *status,
             CodexErrorDetails::RetryLimit(err) => Some(err.status),
-            CodexErrorDetails::InvalidWorkspaceSelected(err)
+            CodexErrorDetails::WorkspaceAccessDenied(err)
             | CodexErrorDetails::AccessProgramNotEnabled(ProviderRejection::Http(err))
             | CodexErrorDetails::UnexpectedStatus(err) => Some(err.status),
             CodexErrorDetails::ConnectionFailed(err) => err.source.status(),

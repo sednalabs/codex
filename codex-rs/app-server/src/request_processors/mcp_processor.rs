@@ -3,12 +3,14 @@ use super::account_processor::EnterpriseLoginTarget;
 use super::thread_input::ensure_direct_input_allowed;
 use super::*;
 use codex_config::types::McpServerAuth;
+use codex_core::McpRefreshReason;
 use codex_mcp::McpServerSource;
 use codex_mcp::ReadResourceRequestParams;
 use codex_mcp::ema_auth_scope;
 use codex_mcp::resolve_oauth_callback;
 use codex_otel::auth_storage::AuthStorageOriginator;
 use codex_rmcp_client::EnterpriseOAuthLoginRequest;
+use codex_rmcp_client::McpRequestTrace;
 use std::future::Future;
 
 use crate::thread_state::ThreadStateManager;
@@ -351,7 +353,9 @@ impl McpRequestProcessor {
                 Err(err) => (false, Some(err.to_string())),
             };
             if success && !enterprise {
-                thread_manager.invalidate_mcp_runtimes().await;
+                thread_manager
+                    .invalidate_mcp_runtimes_for(McpRefreshReason::McpOAuthLoginCompleted)
+                    .await;
             }
 
             let notification = ServerNotification::McpServerOauthLoginCompleted(
@@ -391,7 +395,7 @@ impl McpRequestProcessor {
                 .await;
             outgoing.send_result(request, result).await;
         };
-        tokio::spawn(AuthStorageOriginator::current().scope(task));
+        self.spawn_mcp_request(request_id, task).await;
         Ok(())
     }
 
@@ -680,7 +684,7 @@ impl McpRequestProcessor {
 
         if let Some(thread_id) = thread_id {
             let (_, thread) = self.load_thread(&thread_id).await?;
-            let request_id = request_id.clone();
+            let response_request_id = request_id.clone();
 
             let task = async move {
                 let origin_call_id = origin_call_id.filter(|_| is_codex_apps);
@@ -692,10 +696,15 @@ impl McpRequestProcessor {
                     }
                     None => thread.read_mcp_resource(&server, resource_params).await,
                 };
-                Self::send_mcp_resource_read_response(outgoing, request_id, result, origin_call_id)
-                    .await;
+                Self::send_mcp_resource_read_response(
+                    outgoing,
+                    response_request_id,
+                    result,
+                    origin_call_id,
+                )
+                .await;
             };
-            tokio::spawn(AuthStorageOriginator::current().scope(task));
+            self.spawn_mcp_request(request_id, task).await;
             return Ok(());
         }
 
@@ -719,7 +728,7 @@ impl McpRequestProcessor {
         // environment stdio MCPs must declare their own absolute cwd.
         let runtime_context =
             McpRuntimeContext::new(Arc::clone(&environment_manager), config.cwd.to_path_buf());
-        let request_id = request_id.clone();
+        let response_request_id = request_id.clone();
 
         let task = async move {
             let result = read_mcp_resource_without_thread(
@@ -735,11 +744,14 @@ impl McpRequestProcessor {
             .await
             .and_then(|result| serde_json::to_value(result).map_err(anyhow::Error::from));
             Self::send_mcp_resource_read_response(
-                outgoing, request_id, result, /*origin_call_id*/ None,
+                outgoing,
+                response_request_id,
+                result,
+                /*origin_call_id*/ None,
             )
             .await;
         };
-        tokio::spawn(AuthStorageOriginator::current().scope(task));
+        self.spawn_mcp_request(request_id, task).await;
         Ok(())
     }
 
@@ -775,7 +787,7 @@ impl McpRequestProcessor {
         let (_, thread) = self.load_thread(&thread_id).await?;
         ensure_direct_input_allowed(thread.as_ref()).await?;
         let meta = with_mcp_tool_call_thread_id_meta(params.meta, &thread_id);
-        let request_id = request_id.clone();
+        let response_request_id = request_id.clone();
 
         let task = async move {
             let result = thread
@@ -783,10 +795,24 @@ impl McpRequestProcessor {
                 .await
                 .map(McpServerToolCallResponse::from)
                 .map_err(mcp_operation_error);
-            outgoing.send_result(request_id, result).await;
+            outgoing.send_result(response_request_id, result).await;
         };
-        tokio::spawn(AuthStorageOriginator::current().scope(task));
+        self.spawn_mcp_request(request_id, task).await;
         Ok(())
+    }
+
+    fn spawn_mcp_request<'a>(
+        &'a self,
+        request_id: &'a ConnectionRequestId,
+        task: impl Future<Output = ()> + Send + 'static,
+    ) -> impl Future<Output = ()> + 'a {
+        // Bound the dispatcher future before awaiting the request trace lookup.
+        let task = Box::pin(task);
+        async move {
+            let trace =
+                McpRequestTrace::from_w3c(self.outgoing.request_trace_context(request_id).await);
+            tokio::spawn(AuthStorageOriginator::current().scope(trace.scope(task)));
+        }
     }
 }
 
