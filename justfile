@@ -204,7 +204,22 @@ log *args:
 log *args:
     $forwarded_args = @($args | Select-Object -Skip 1); if ($forwarded_args.Count -gt 0 -and $forwarded_args[0] -eq "--") { $forwarded_args = @($forwarded_args | Select-Object -Skip 1) }; cargo run -p codex-cli --bin logs_client -- @forwarded_args
 
-# Diagnostic-only device refresh checks.
+# Diagnostic-only selector; excluded from the candidate.
 core-subagent-surface-targeted:
+    RUST_MIN_STACK=8388608 cargo test --locked -p codex-core --lib historical_overlay_ -- --test-threads=1
+    RUST_MIN_STACK=8388608 cargo test --locked -p codex-core --lib client::instruction_overlays::tests:: -- --test-threads=1
+    RUST_MIN_STACK=8388608 cargo test --locked -p codex-core --lib historical_adoption_ -- --test-threads=1
+    RUST_MIN_STACK=8388608 cargo test --locked -p codex-core --lib instruction_overlay_ -- --test-threads=1
+    RUST_MIN_STACK=8388608 cargo test --locked -p codex-core --lib guardian_review_retries_transient_failure_then_approves -- --test-threads=1
+    RUST_MIN_STACK=8388608 cargo test --locked -p codex-core --lib multi_agent_v2_ -- --test-threads=1
+    RUST_MIN_STACK=8388608 cargo test --locked -p codex-core --lib native_wait_tests:: -- --test-threads=1
+    RUST_MIN_STACK=16777216 cargo test --locked -p codex-core --test all manual_local_compaction_does_not_retry_terminal_errors -- --test-threads=1
+    RUST_MIN_STACK=16777216 cargo test --locked -p codex-core --test all manual_local_compact_retries_selected_model_capacity -- --test-threads=1
+    RUST_MIN_STACK=16777216 cargo test --locked -p codex-core --test all manual_compact_capacity_wait_is_interruptible -- --test-threads=1
+    RUST_MIN_STACK=16777216 cargo test --locked -p codex-core --test all manual_remote_compact_capacity_recovers_after_retry_limit -- --test-threads=1
+    RUST_MIN_STACK=16777216 cargo test --locked -p codex-core --test all explicit_denial_stops_compaction_on_model_downshift -- --test-threads=1
+    RUST_MIN_STACK=16777216 cargo test --locked -p codex-api --lib terminal_failure_with_retry_header_ends_stream_immediately -- --test-threads=1
+    RUST_MIN_STACK=8388608 cargo test --locked -p codex-core --lib config_schema_matches_fixture -- --test-threads=1
     RUST_MIN_STACK=8388608 cargo test --locked -p codex-rmcp-client --lib device_only_refresh_uses_issuer_bound_metadata_in_both_modes -- --test-threads=1
     RUST_MIN_STACK=8388608 cargo test --locked -p codex-rmcp-client --lib device_oauth_metadata::tests:: -- --test-threads=1
+    RUST_MIN_STACK=8388608 cargo test --locked -p codex-rmcp-client --lib oauth_discovery::tests:: -- --test-threads=1
