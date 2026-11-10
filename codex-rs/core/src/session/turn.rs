@@ -1861,7 +1861,18 @@ pub(crate) fn build_prompt(
             step_context.tool_router.model_visible_specs()
         },
         parallel_tool_calls: true,
-        overlay_base_instructions: Some(base_instructions.clone()),
+        overlay_base_instructions: (incremental_tools
+            && (turn_context
+                .config
+                .instruction_overlays
+                .model_baseline
+                .is_some()
+                || turn_context
+                    .config
+                    .instruction_overlays
+                    .review_baseline
+                    .is_some()))
+        .then(|| base_instructions.clone()),
         base_instructions: if incremental_tools {
             BaseInstructions {
                 text: String::new(),

@@ -2,9 +2,11 @@ use anyhow::Result;
 use codex_config::InstructionOverlayComponent;
 use codex_config::InstructionOverlaySelection;
 use codex_config::InstructionOverlaysToml;
+use codex_config::MAX_INSTRUCTION_OVERLAY_INSTANCES;
 use codex_config::MAX_INSTRUCTION_OVERLAY_REQUEST_BYTES;
 use codex_protocol::models::ContentItem;
 use codex_protocol::models::ContentItemKind;
+use codex_protocol::models::ContentItemProvenance;
 use codex_protocol::models::ResponseItem;
 use codex_protocol::protocol::COLLABORATION_MODE_CLOSE_TAG;
 use codex_protocol::protocol::COLLABORATION_MODE_OPEN_TAG;
@@ -39,11 +41,42 @@ pub(super) fn has_eligible_plan(
     })
 }
 
+pub(super) fn has_configured_plan(source: &SessionSource, plan: &InstructionOverlaysToml) -> bool {
+    eligible_components(source).is_some_and(|components| {
+        components.iter().any(|component| {
+            plan.component(*component)
+                .is_some_and(|p| !p.edits.is_empty())
+        })
+    })
+}
+
+pub(super) fn only_optional_removals(
+    source: &SessionSource,
+    plan: &InstructionOverlaysToml,
+    model: &str,
+) -> bool {
+    eligible_components(source).is_some_and(|components| {
+        components
+            .iter()
+            .filter_map(|component| plan.component(*component))
+            .filter(|part| !part.edits.is_empty() && part.applies_to_model(model))
+            .all(|part| {
+                part.edits.iter().all(|edit| {
+                    matches!(
+                        edit,
+                        codex_config::InstructionOverlayEdit::RemoveExactIfPresent { .. }
+                    )
+                })
+            })
+    })
+}
+
 /// Classify exactly one retained baseline by its complete text, on the request copy.
 /// A historical marker alone is not proof that the text belongs to the current baseline.
 pub(super) fn classify_retained_baseline(
     input: &mut [ResponseItem],
     expected: &[&str],
+    allow_multiple: bool,
 ) -> Result<usize> {
     let mut found = 0;
     for item in input {
@@ -92,7 +125,7 @@ pub(super) fn classify_retained_baseline(
                 anyhow::bail!("instruction overlay blocked: ambiguous baseline identity");
             }
             found += 1;
-            if found > 1 {
+            if found > 1 && !allow_multiple {
                 anyhow::bail!("instruction overlay blocked: ambiguous baseline selection");
             }
             *kind = ContentItemKind("client.base_instructions".to_string());
@@ -181,6 +214,7 @@ pub(super) fn transform_request(
 
     let mut transformed_input = input;
     let mut selected_bytes = 0usize;
+    let mut selected_instances = 0usize;
     let baseline_component = if matches!(source, SessionSource::SubAgent(SubAgentSource::Review)) {
         InstructionOverlayComponent::ReviewBaseline
     } else {
@@ -197,6 +231,7 @@ pub(super) fn transform_request(
                 plan,
                 baseline_component,
                 &mut transformed_input,
+                &mut selected_instances,
                 &mut selected_bytes,
             )?;
         } else {
@@ -215,7 +250,13 @@ pub(super) fn transform_request(
                     | InstructionOverlayComponent::ReviewBaseline
             )
     }) {
-        apply_tagged_component(plan, component, &mut transformed_input, &mut selected_bytes)?;
+        apply_tagged_component(
+            plan,
+            component,
+            &mut transformed_input,
+            &mut selected_instances,
+            &mut selected_bytes,
+        )?;
     }
     Ok(transformed_input)
 }
@@ -258,6 +299,7 @@ fn apply_tagged_component(
     plan: &InstructionOverlaysToml,
     component: InstructionOverlayComponent,
     input: &mut Vec<ResponseItem>,
+    selected_instances: &mut usize,
     selected_bytes: &mut usize,
 ) -> Result<()> {
     if plan
@@ -266,7 +308,14 @@ fn apply_tagged_component(
     {
         return Ok(());
     }
-    let selected = find_candidate(plan, input, component, target_kind(component))?;
+    let selected = find_candidate(
+        plan,
+        input,
+        component,
+        target_kind(component),
+        *selected_instances,
+    )?;
+    *selected_instances += selected.len();
     apply_candidates(plan, component, input, selected, selected_bytes)
 }
 
@@ -280,8 +329,10 @@ fn find_candidate(
     input: &[ResponseItem],
     component: InstructionOverlayComponent,
     target_kind: &str,
+    already_selected: usize,
 ) -> Result<Vec<Candidate>> {
     let mut selected = Vec::new();
+    let mut protected_or_unknown = false;
     let unique_selection = plan
         .component(component)
         .is_none_or(|config| config.selection == InstructionOverlaySelection::Unique);
@@ -304,7 +355,11 @@ fn find_candidate(
         else {
             continue;
         };
-        if !kinds.iter().any(|kind| kind.as_str() == target_kind) {
+        if !kinds.iter().any(|kind| {
+            kind.as_str() == target_kind
+                || (component == InstructionOverlayComponent::DeveloperGuidance
+                    && kind.as_str() == "generic.developer_instructions")
+        }) {
             continue;
         }
         if kinds.len() != content.len() {
@@ -324,12 +379,32 @@ fn find_candidate(
             );
         }
         for (content_index, kind) in kinds.iter().enumerate() {
-            if kind.as_str() == target_kind {
+            let client_tool_guidance = component == InstructionOverlayComponent::DeveloperGuidance
+                && kind.as_str() == "generic.developer_instructions"
+                && internal_chat_message_metadata_passthrough
+                    .as_ref()
+                    .and_then(|metadata| metadata.content_item_metadata.as_ref())
+                    .and_then(|metadata| metadata.get(content_index))
+                    .is_some_and(|metadata| {
+                        matches!(metadata.provenance, ContentItemProvenance::Tool { .. })
+                    });
+            if component == InstructionOverlayComponent::DeveloperGuidance
+                && kind.as_str() == "generic.developer_instructions"
+                && !client_tool_guidance
+            {
+                protected_or_unknown = true;
+            }
+            if kind.as_str() == target_kind || client_tool_guidance {
                 if unique_selection && !selected.is_empty() {
                     anyhow::bail!(
                         "instruction overlay target for {} is ambiguous",
                         component.as_str()
                     );
+                }
+                if already_selected.saturating_add(selected.len())
+                    >= MAX_INSTRUCTION_OVERLAY_INSTANCES
+                {
+                    anyhow::bail!("instruction overlay selected-instance limit exceeded");
                 }
                 let ContentItem::InputText { .. } = &content[content_index] else {
                     anyhow::bail!(
@@ -343,6 +418,9 @@ fn find_candidate(
                 });
             }
         }
+    }
+    if selected.is_empty() && protected_or_unknown {
+        anyhow::bail!("instruction overlay blocked: protected or unknown developer_guidance");
     }
     Ok(selected)
 }
@@ -539,12 +617,165 @@ mod tests {
         .unwrap()
     }
 
+    fn tagged(kind: &str, text: &str) -> ResponseItem {
+        serde_json::from_value(json!({
+            "type": "message", "role": "developer",
+            "content": [{"type": "input_text", "text": text}],
+            "internal_chat_message_metadata_passthrough": {"content_item_kinds": [kind]}
+        }))
+        .unwrap()
+    }
+
+    #[test]
+    fn configured_components_apply_only_to_classified_request_copies() {
+        use InstructionOverlayComponent::*;
+        for component in [
+            ModelBaseline,
+            ReviewBaseline,
+            DeveloperGuidance,
+            MultiAgentMode,
+            MultiAgentRole,
+            MultiAgentUsageHint,
+            ModelSwitchGuidance,
+            CollaborationGuidance,
+            PersistentGuidance,
+        ] {
+            let part = InstructionOverlayComponentToml {
+                on_absent: codex_config::InstructionOverlayOnAbsent::Skip,
+                edits: vec![InstructionOverlayEdit::Append {
+                    text: " synthetic-edit".into(),
+                }],
+                ..Default::default()
+            };
+            let mut plan = InstructionOverlaysToml::default();
+            match component {
+                ModelBaseline => plan.model_baseline = Some(part),
+                ReviewBaseline => plan.review_baseline = Some(part),
+                DeveloperGuidance => plan.developer_guidance = Some(part),
+                MultiAgentMode => plan.multi_agent_mode = Some(part),
+                MultiAgentRole => plan.multi_agent_role = Some(part),
+                MultiAgentUsageHint => plan.multi_agent_usage_hint = Some(part),
+                ModelSwitchGuidance => plan.model_switch_guidance = Some(part),
+                CollaborationGuidance => plan.collaboration_guidance = Some(part),
+                PersistentGuidance => plan.persistent_guidance = Some(part),
+            }
+            let source = if component == ReviewBaseline {
+                SessionSource::SubAgent(SubAgentSource::Review)
+            } else {
+                SessionSource::Cli
+            };
+            let text = match component {
+                MultiAgentMode => {
+                    format!("{MULTI_AGENT_MODE_OPEN_TAG}synthetic{MULTI_AGENT_MODE_CLOSE_TAG}")
+                }
+                MultiAgentRole => "<multi_agent_role>synthetic</multi_agent_role>".into(),
+                ModelSwitchGuidance => "<model_switch>synthetic</model_switch>".into(),
+                CollaborationGuidance => {
+                    format!("{COLLABORATION_MODE_OPEN_TAG}synthetic{COLLABORATION_MODE_CLOSE_TAG}")
+                }
+                PersistentGuidance => "<persistent_mode>synthetic</persistent_mode>".into(),
+                _ => "synthetic".into(),
+            };
+            let original = vec![
+                tagged(target_kind(component), &text),
+                tagged("managed.instructions", "protected synthetic"),
+            ];
+            let output = transform_request(
+                &source,
+                &plan,
+                "synthetic-model",
+                true,
+                &[],
+                original.clone(),
+            )
+            .unwrap();
+            assert!(
+                serde_json::to_string(&output)
+                    .unwrap()
+                    .contains("synthetic-edit")
+            );
+            assert_eq!(output[1], original[1]);
+            assert!(
+                !serde_json::to_string(&original)
+                    .unwrap()
+                    .contains("synthetic-edit")
+            );
+            assert!(
+                transform_request(
+                    &source,
+                    &plan,
+                    "synthetic-model",
+                    true,
+                    &[component],
+                    original
+                )
+                .is_err()
+            );
+        }
+    }
+
+    #[test]
+    fn generic_tool_guidance_requires_tool_attribution() {
+        let make = |provenance: serde_json::Value| -> ResponseItem {
+            serde_json::from_value(json!({
+                "type": "message", "role": "developer",
+                "content": [{"type": "input_text", "text": "synthetic guidance"}],
+                "internal_chat_message_metadata_passthrough": {
+                    "content_item_kinds": ["generic.developer_instructions"],
+                    "content_item_metadata": [{"provenance": provenance}]
+                }
+            }))
+            .unwrap()
+        };
+        let tool = make(json!({"type": "tool", "namespace": "functions"}));
+        let protected =
+            make(json!({"type": "developer_instructions", "from_additional_requirements": true}));
+        let plan = InstructionOverlaysToml {
+            developer_guidance: Some(InstructionOverlayComponentToml {
+                edits: vec![InstructionOverlayEdit::Append {
+                    text: " synthetic-edit".into(),
+                }],
+                ..Default::default()
+            }),
+            ..Default::default()
+        };
+        let output = transform_request(
+            &SessionSource::Cli,
+            &plan,
+            "synthetic-model",
+            false,
+            &[],
+            vec![tool, protected.clone()],
+        )
+        .unwrap();
+        assert!(
+            serde_json::to_string(&output[0])
+                .unwrap()
+                .contains("synthetic-edit")
+        );
+        assert_eq!(output[1], protected);
+        let mut optional = plan.clone();
+        optional.developer_guidance.as_mut().unwrap().on_absent =
+            codex_config::InstructionOverlayOnAbsent::Skip;
+        assert!(
+            transform_request(
+                &SessionSource::Cli,
+                &optional,
+                "synthetic-model",
+                false,
+                &[],
+                vec![protected]
+            )
+            .is_err()
+        );
+    }
+
     #[test]
     fn retained_baseline_edit_preserves_history_and_metadata_alignment() {
         let original = vec![retained("synthetic target")];
         let mut request = original.clone();
         assert_eq!(
-            classify_retained_baseline(&mut request, &["synthetic target"]).unwrap(),
+            classify_retained_baseline(&mut request, &["synthetic target"], false).unwrap(),
             1
         );
         let plan = InstructionOverlaysToml {
@@ -590,9 +821,39 @@ mod tests {
     fn retained_baseline_requires_exact_unambiguous_identity() {
         let original = vec![retained("other baseline")];
         let mut request = original.clone();
-        assert!(classify_retained_baseline(&mut request, &["expected baseline"]).is_err());
+        assert!(classify_retained_baseline(&mut request, &["expected baseline"], false).is_err());
         assert_eq!(original, vec![retained("other baseline")]);
         let mut duplicate = vec![retained("expected baseline"), retained("expected baseline")];
-        assert!(classify_retained_baseline(&mut duplicate, &["expected baseline"]).is_err());
+        assert!(classify_retained_baseline(&mut duplicate, &["expected baseline"], false).is_err());
+    }
+
+    #[test]
+    fn all_classified_is_bounded() {
+        let mut input = (0..=MAX_INSTRUCTION_OVERLAY_INSTANCES)
+            .map(|_| retained("synthetic target"))
+            .collect::<Vec<_>>();
+        classify_retained_baseline(&mut input, &["synthetic target"], true).unwrap();
+        let plan = InstructionOverlaysToml {
+            model_baseline: Some(InstructionOverlayComponentToml {
+                selection: InstructionOverlaySelection::AllClassified,
+                edits: vec![InstructionOverlayEdit::RemoveExact {
+                    text: "synthetic target".into(),
+                    expected_matches: 1,
+                }],
+                ..Default::default()
+            }),
+            ..Default::default()
+        };
+        assert!(
+            transform_request(
+                &SessionSource::Cli,
+                &plan,
+                "synthetic-model",
+                true,
+                &[],
+                input
+            )
+            .is_err()
+        );
     }
 }

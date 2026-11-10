@@ -19,6 +19,50 @@ use std::path::PathBuf;
 use std::sync::Arc;
 use tempfile::TempDir;
 
+#[tokio::test]
+async fn instruction_overlay_role_projection_preserves_effective_plan() {
+    let (home, mut config) = test_config_with_cli_overrides(Vec::new()).await;
+    let role_path = write_role_config(
+        &home,
+        "overlay-role.toml",
+        r#"
+developer_instructions = "synthetic role guidance"
+[instruction_overlays.model_baseline]
+models = ["synthetic-model"]
+edits = [{ op = "remove_exact_if_present", text = "synthetic target", expected_matches = 1 }]
+"#,
+    )
+    .await;
+    config.agent_roles.insert(
+        "synthetic".into(),
+        AgentRoleConfig {
+            description: None,
+            config_file: Some(role_path),
+            nickname_candidates: None,
+        },
+    );
+    apply_role_to_config(&mut config, Some("synthetic"))
+        .await
+        .unwrap();
+    let plan = config.instruction_overlays.model_baseline.as_ref().unwrap();
+    assert_eq!(
+        plan.models.as_deref(),
+        Some(["synthetic-model".to_string()].as_slice())
+    );
+    assert!(config.client_owned_developer_instructions);
+    assert_eq!(
+        config
+            .instruction_overlays
+            .apply_component(
+                codex_config::InstructionOverlayComponent::ModelBaseline,
+                Some("synthetic target remains")
+            )
+            .unwrap()
+            .as_deref(),
+        Some(" remains")
+    );
+}
+
 async fn test_config_with_cli_overrides(
     cli_overrides: Vec<(String, TomlValue)>,
 ) -> (TempDir, Config) {

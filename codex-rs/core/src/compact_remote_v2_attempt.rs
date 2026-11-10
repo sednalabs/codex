@@ -68,6 +68,7 @@ pub(crate) struct BackgroundCompactionInput {
     turn_state: Option<String>,
     window: (String, u64, codex_protocol::ContextWindowId),
     base_instructions: BaseInstructions,
+    overlay_base_instructions: Option<BaseInstructions>,
     input: Vec<ResponseItem>,
     metadata: Vec<Option<CodexHarnessMetadata>>,
 }
@@ -87,6 +88,7 @@ pub(super) async fn run_remote_compact_v2_attempt(
         input_goal_ids,
         trace_input_history,
         base_instructions,
+        overlay_base_instructions,
         mut input,
         mut prompt_input_metadata,
         mut transport,
@@ -98,13 +100,30 @@ pub(super) async fn run_remote_compact_v2_attempt(
             let input_goal_ids = UserGoalUpdate::message_ids(history.raw_items());
             let tools_in_history = step_context.incremental_tools_feature().is_some()
                 && history.has_tool_declarations();
+            let has_baseline_overlay = turn_context
+                .config
+                .instruction_overlays
+                .model_baseline
+                .is_some()
+                || turn_context
+                    .config
+                    .instruction_overlays
+                    .review_baseline
+                    .is_some();
+            let resolved_base = if !tools_in_history || has_baseline_overlay {
+                Some(sess.get_prompt_base_instructions().await)
+            } else {
+                None
+            };
             let base_instructions = if tools_in_history {
                 BaseInstructions {
                     text: String::new(),
                     provenance: None,
                 }
             } else {
-                sess.get_prompt_base_instructions().await
+                resolved_base
+                    .clone()
+                    .expect("non-incremental baseline is resolved")
             };
             let (rewritten_outputs, estimated_deleted_tokens) =
                 trim_function_call_history_to_fit_context_window(
@@ -152,6 +171,7 @@ pub(super) async fn run_remote_compact_v2_attempt(
                 input_goal_ids,
                 trace_input_history,
                 base_instructions,
+                has_baseline_overlay.then_some(resolved_base).flatten(),
                 input,
                 metadata,
                 CompactionRequestTransport::Foreground(client_session),
@@ -163,6 +183,7 @@ pub(super) async fn run_remote_compact_v2_attempt(
             UserGoalUpdate::message_ids(input.input.iter()),
             None,
             input.base_instructions,
+            input.overlay_base_instructions,
             input.input,
             input.metadata,
             CompactionRequestTransport::Background(input.turn_state, input.prefix.auth_owner),
@@ -190,7 +211,7 @@ pub(super) async fn run_remote_compact_v2_attempt(
             tool_router.model_visible_specs()
         },
         parallel_tool_calls: true,
-        overlay_base_instructions: Some(base_instructions.clone()),
+        overlay_base_instructions,
         base_instructions,
         output_schema: None,
         output_schema_strict: true,
@@ -289,6 +310,19 @@ pub(crate) async fn capture_background_input(
     auth_owner: Option<AuthOwner>,
     window: (String, u64, codex_protocol::ContextWindowId),
 ) -> BackgroundCompactionInput {
+    let overlay_base_instructions = (step_context
+        .turn
+        .config
+        .instruction_overlays
+        .model_baseline
+        .is_some()
+        || step_context
+            .turn
+            .config
+            .instruction_overlays
+            .review_baseline
+            .is_some())
+    .then(|| base_instructions.clone());
     let base_instructions =
         if step_context.incremental_tools_feature().is_some() && snapshot.has_tool_declarations() {
             BaseInstructions {
@@ -324,6 +358,7 @@ pub(crate) async fn capture_background_input(
         turn_state,
         window,
         base_instructions,
+        overlay_base_instructions,
         input,
         metadata,
     }

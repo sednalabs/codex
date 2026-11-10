@@ -1717,6 +1717,20 @@ impl Config {
             })
     }
 
+    fn historical_baseline_adoption_is_user_owned(stack: &ConfigLayerStack) -> bool {
+        let origins = stack.origins_with_path_filter(|path| {
+            path.first()
+                .is_some_and(|key| key == "historical_baseline_adoption")
+        });
+        ["thread_id", "baseline_sha256", "plan_sha256"]
+            .into_iter()
+            .all(|field| {
+                origins
+                    .get(&format!("historical_baseline_adoption.{field}"))
+                    .is_some_and(|origin| matches!(origin.name, ConfigLayerSource::User { .. }))
+            })
+    }
+
     pub(crate) fn multi_agent_text_is_client_owned(&self, key: &str, text: &str) -> bool {
         let path = format!("features.multi_agent_v2.{key}");
         if !Self::instruction_origin_is_client_owned(&self.config_layer_stack, &path) {
@@ -1743,6 +1757,15 @@ impl Config {
     ) -> Vec<codex_config::InstructionOverlayComponent> {
         use codex_config::InstructionOverlayComponent;
         let mut fenced = Vec::new();
+        // These components can carry model-catalog instructions. Without the
+        // built-in OpenAI catalog, their provider origin is not established.
+        if self.model_provider_id != OPENAI_PROVIDER_ID || self.model_catalog.is_some() {
+            fenced.extend([
+                InstructionOverlayComponent::ModelSwitchGuidance,
+                InstructionOverlayComponent::CollaborationGuidance,
+                InstructionOverlayComponent::PersistentGuidance,
+            ]);
+        }
         if self.developer_instructions.is_some() && !self.client_owned_developer_instructions {
             fenced.push(InstructionOverlayComponent::DeveloperGuidance);
         }
@@ -3507,29 +3530,18 @@ impl Config {
         // Keep the large config-construction future off small test thread stacks.
         Box::pin(async move {
         if cfg.historical_baseline_adoption.is_some() {
-            let origins = config_layer_stack.origins_with_path_filter(|path| {
-                path.first().is_some_and(|key| key == "historical_baseline_adoption")
-            });
-            let trusted_user_fields = ["thread_id", "baseline_sha256", "plan_sha256"]
-                .into_iter()
-                .all(|field| {
-                    origins.get(&format!("historical_baseline_adoption.{field}"))
-                        .is_some_and(|origin| matches!(origin.name, ConfigLayerSource::User { .. }))
-                });
-            if !trusted_user_fields {
+            if !Self::historical_baseline_adoption_is_user_owned(&config_layer_stack) {
                 return Err(std::io::Error::new(
                     std::io::ErrorKind::InvalidInput,
                     "historical baseline adoption must be supplied by the local user config",
                 ));
             }
         }
-        // Fail closed while the request-side integration is being completed: accepting
-        // these settings without applying them would hide an instruction override.
-        if cfg.instruction_overlays.is_some() || cfg.historical_baseline_adoption.is_some() {
-            return Err(std::io::Error::new(
-                std::io::ErrorKind::Unsupported,
-                "instruction overlay request integration is not available in this build",
-            ));
+        if let Some(overlays) = &cfg.instruction_overlays {
+            overlays.validate_all().map_err(|error| std::io::Error::new(
+                std::io::ErrorKind::InvalidInput,
+                format!("invalid instruction overlay configuration: {error}"),
+            ))?;
         }
         if cfg.experimental_thread_store_endpoint.is_some() {
             return Err(std::io::Error::new(

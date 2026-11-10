@@ -1,5 +1,8 @@
 import importlib.util
 from pathlib import Path
+import subprocess
+import sys
+import tempfile
 import unittest
 
 SCRIPT = Path(__file__).parents[1] / "w14939-overlay-identities.py"
@@ -24,6 +27,18 @@ class OverlayIdentitiesTest(unittest.TestCase):
         ):
             with self.subTest(edit=edit), self.assertRaises(ValueError):
                 module.identity({"edits": [edit]}, b"synthetic")
+
+    def test_cli_does_not_echo_synthetic_inputs(self):
+        with tempfile.TemporaryDirectory() as temp:
+            path = Path(temp) / "plan.toml"
+            path.write_text('[model_baseline]\nedits = [{ op = "remove_exact_if_present", text = "synthetic private text", expected_matches = 1 }]\n')
+            result = subprocess.run([sys.executable, str(SCRIPT), "--plan-file", str(path)], input=b"synthetic baseline", capture_output=True, check=True)
+            self.assertNotIn(b"synthetic", result.stdout + result.stderr)
+            self.assertEqual(len(result.stdout.splitlines()), 2)
+            path.write_text('[model_baseline]\nedits = [{ op = "replace", text = "synthetic private text", expected_matches = 1 }]\n')
+            failed = subprocess.run([sys.executable, str(SCRIPT), "--plan-file", str(path)], input=b"synthetic baseline", capture_output=True)
+            self.assertNotEqual(failed.returncode, 0)
+            self.assertNotIn(b"synthetic", failed.stdout + failed.stderr)
 
 
 if __name__ == "__main__":

@@ -7,23 +7,37 @@ The existing candidate was merged with upstream
 `97f6c6b811cbda5aa618356e6761c541da2b5032`. Evidence from older commits and
 the preview artifact does not validate this merge or any later overlay draft.
 
-The overlay integration is unfinished. The draft deliberately rejects overlay
-configuration until request handling, origin fences and hosted validation are
-complete. Its historical adoption binds a local user authorization to one
+The overlay integration is unfinished and unqualified. Its historical adoption
+binds a local user authorization to one
 thread, the SHA-256 of the complete saved baseline and the SHA-256 of the exact
 model-baseline edit plan. Only unique, single-match exact removals qualify. It
 does not adopt known custom/protected provenance or authorize a different
 thread, component or plan. Unknown, protected, absent and ambiguous outcomes
 must be visible. The old installed engine and the w18679 source differ; their
 full compatibility and role precedence are still being reconciled.
+An adoption for a parent thread does not authorize a child or fork; each thread
+must meet its own identity and origin checks.
 
-`scripts/w14939-overlay-identities.py` computes the two hashes locally from a
+`scripts/w14939-overlay-identities.py` (Python 3.11 or later) computes the two hashes locally from a
 TOML fragment containing the effective `[model_baseline]` plan and the exact
 UTF-8 baseline bytes supplied on stdin. It outputs only hashes, never input
 text. A local operator must determine those bytes and verify that the fragment
 matches the effective plan; a mismatch fails closed. The helper is synthetic-test
 validated only, and no real thread, database, transcript or configuration has
 been accessed to establish this candidate.
+
+The proposed authorization belongs in the user's local config:
+
+```toml
+[historical_baseline_adoption]
+thread_id = "<exact-thread-id>"
+baseline_sha256 = "<hash-of-exact-saved-baseline>"
+plan_sha256 = "<hash-of-effective-model-baseline-plan>"
+```
+
+It is request-only and can be revoked by removing this table. Project, session,
+and managed config layers cannot supply this authorization. The helper and
+config format are draft interfaces and are not part of a qualified package.
 
 The state startup preflight requires a known successful migration prefix. It
 checks all identities before repairing the historical upstream recency-38

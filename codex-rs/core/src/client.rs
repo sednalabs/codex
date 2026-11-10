@@ -316,6 +316,7 @@ pub struct ModelClient {
     adopted_baseline_digests: Arc<AdoptedBaselineDigests>,
     client_owned_baseline_digest: Arc<AdoptedBaselineDigests>,
     model_baseline_editable: bool,
+    last_overlay_report: Arc<OverlayReportState>,
     request_contributors: Vec<Arc<dyn codex_extension_api::ModelRequestContributor>>,
     executed_tool_calls: Option<ExecutedToolCalls>,
     // Resolved once when the session is created, like other session feature flags.
@@ -325,6 +326,15 @@ pub struct ModelClient {
 
 #[derive(Default)]
 struct AdoptedBaselineDigests(Vec<String>);
+
+#[derive(Default)]
+struct OverlayReportState(StdMutex<Option<(String, &'static str)>>);
+
+impl std::fmt::Debug for OverlayReportState {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("<redacted>")
+    }
+}
 
 impl std::fmt::Debug for AdoptedBaselineDigests {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -667,6 +677,7 @@ impl ModelClient {
             adopted_baseline_digests: Arc::default(),
             client_owned_baseline_digest: Arc::default(),
             model_baseline_editable: false,
+            last_overlay_report: Arc::default(),
             request_contributors,
             executed_tool_calls: None,
             api_key_cyber_access_programs:
@@ -698,14 +709,33 @@ impl ModelClient {
     }
 
     fn report_instruction_overlay(&self, metadata: &CodexResponsesMetadata, outcome: &'static str) {
+        if matches!(
+            metadata.request_kind,
+            Some(crate::responses_metadata::CodexResponsesRequestKind::Prewarm)
+        ) {
+            return;
+        }
         tracing::info!(outcome, "instruction overlay outcome");
         if let (Some(sender), Some(turn_id)) = (&self.event_sender, &metadata.turn_id) {
-            let _ = sender.try_send(ProtocolEvent {
-                id: turn_id.clone(),
-                msg: EventMsg::Warning(WarningEvent {
-                    message: format!("Instruction overlay: {outcome}."),
-                }),
-            });
+            let Ok(mut last) = self.last_overlay_report.0.lock() else {
+                return;
+            };
+            if last.as_ref().is_some_and(|(prior_turn, prior_outcome)| {
+                prior_turn == turn_id && *prior_outcome == outcome
+            }) {
+                return;
+            }
+            if sender
+                .try_send(ProtocolEvent {
+                    id: turn_id.clone(),
+                    msg: EventMsg::Warning(WarningEvent {
+                        message: format!("Instruction overlay: {outcome}."),
+                    }),
+                })
+                .is_ok()
+            {
+                *last = Some((turn_id.clone(), outcome));
+            }
         }
     }
 
@@ -1232,6 +1262,17 @@ impl ModelClient {
             &self.instruction_overlays,
             &model_info.slug,
         );
+        if !active_overlay
+            && instruction_overlays::has_configured_plan(
+                &self.state.session_source,
+                &self.instruction_overlays,
+            )
+        {
+            self.report_instruction_overlay(
+                responses_metadata,
+                "not applicable to the selected model",
+            );
+        }
         let active_baseline_overlay = active_overlay
             && if review {
                 self.instruction_overlays.review_baseline.as_ref()
@@ -1243,19 +1284,22 @@ impl ModelClient {
             .overlay_base_instructions
             .as_ref()
             .unwrap_or(&prompt.base_instructions);
-        let authority_digest =
-            codex_config::HistoricalBaselineAdoption::baseline_digest(&authority.text);
-        let baseline_authorized = self
-            .client_owned_baseline_digest
-            .0
-            .contains(&authority_digest)
-            || self.state.provider.info().is_openai()
-                && ((self.model_baseline_editable
-                    && matches!(
-                        authority.provenance,
-                        Some(BaseInstructionsProvenance::Model { .. })
-                    ))
-                    || (!review && self.adopted_baseline_digests.0.contains(&authority_digest)));
+        let baseline_authorized = if active_baseline_overlay {
+            let authority_digest =
+                codex_config::HistoricalBaselineAdoption::baseline_digest(&authority.text);
+            self.client_owned_baseline_digest
+                .0
+                .contains(&authority_digest)
+                || self.state.provider.info().is_openai()
+                    && ((self.model_baseline_editable
+                        && matches!(
+                            authority.provenance,
+                            Some(BaseInstructionsProvenance::Model { .. })
+                        ))
+                        || (!review && self.adopted_baseline_digests.0.contains(&authority_digest)))
+        } else {
+            false
+        };
         if active_baseline_overlay {
             if !baseline_authorized {
                 self.report_instruction_overlay(
@@ -1281,9 +1325,27 @@ impl ModelClient {
                     current_template_without_plan.as_str(),
                 ]);
             }
-            if let Err(error) =
-                instruction_overlays::classify_retained_baseline(&mut input, &expected)
+            if !prompt.base_instructions.text.is_empty()
+                && !expected.contains(&prompt.base_instructions.text.as_str())
             {
+                self.report_instruction_overlay(responses_metadata, "blocked: ambiguous baseline");
+                return Err(CodexErr::InvalidRequest(
+                    "instruction overlay blocked: ambiguous baseline identity".into(),
+                ));
+            }
+            let baseline_plan = if review {
+                self.instruction_overlays.review_baseline.as_ref()
+            } else {
+                self.instruction_overlays.model_baseline.as_ref()
+            }
+            .expect("active baseline overlay has a plan");
+            let allow_multiple =
+                baseline_plan.selection == codex_config::InstructionOverlaySelection::AllClassified;
+            if let Err(error) = instruction_overlays::classify_retained_baseline(
+                &mut input,
+                &expected,
+                allow_multiple,
+            ) {
                 self.report_instruction_overlay(responses_metadata, "blocked: ambiguous baseline");
                 return Err(CodexErr::InvalidRequest(error.to_string()));
             }
@@ -1374,7 +1436,17 @@ impl ModelClient {
             };
             self.report_instruction_overlay(
                 responses_metadata,
-                if input == before { "absent" } else { "applied" },
+                if input != before {
+                    "applied at least one edit; other edits may be absent"
+                } else if instruction_overlays::only_optional_removals(
+                    &self.state.session_source,
+                    &self.instruction_overlays,
+                    &model_info.slug,
+                ) {
+                    "absent"
+                } else {
+                    "unchanged"
+                },
             );
         }
         if !model_info.use_responses_lite {

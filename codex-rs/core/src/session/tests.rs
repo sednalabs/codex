@@ -7253,7 +7253,30 @@ async fn make_session_with_history_source_and_config(
     agent_control: LocalAgentControl,
     configure: impl FnOnce(&mut Config),
 ) -> anyhow::Result<(Arc<Session>, async_channel::Receiver<Event>)> {
+    make_session_with_history_source_config_file(
+        initial_history,
+        session_source,
+        agent_control,
+        None,
+        configure,
+    )
+    .await
+}
+
+async fn make_session_with_history_source_config_file(
+    initial_history: InitialHistory,
+    session_source: SessionSource,
+    agent_control: LocalAgentControl,
+    config_contents: Option<&str>,
+    configure: impl FnOnce(&mut Config),
+) -> anyhow::Result<(Arc<Session>, async_channel::Receiver<Event>)> {
     let codex_home = tempfile::tempdir().expect("create temp dir");
+    if let Some(contents) = config_contents {
+        std::fs::write(
+            codex_home.path().join(codex_config::CONFIG_TOML_FILE),
+            contents,
+        )?;
+    }
     let mut config = build_test_config(codex_home.path()).await;
     config.ephemeral = true;
     configure(&mut config);
@@ -7434,20 +7457,20 @@ async fn historical_overlay_resume_to_serialized_request_is_identity_bound() -> 
     use codex_config::InstructionOverlayComponentToml;
     use codex_config::InstructionOverlayEdit;
     use codex_config::InstructionOverlayOnAbsent;
-    use codex_config::InstructionOverlaysToml;
     use codex_protocol::models::BaseInstructionsProvenance;
     use futures::StreamExt;
 
     let target = "synthetic obsolete guidance";
     let baseline = format!("before {target} after");
-    for (child, incremental, adopted, protected, absent) in [
-        (false, false, true, false, false),
-        (true, false, true, false, false),
-        (false, true, true, false, false),
-        (true, true, true, false, false),
-        (false, false, false, false, false),
-        (false, false, true, true, false),
-        (false, false, true, false, true),
+    for (child, incremental, adopted, protected, absent, fake_provider) in [
+        (false, false, true, false, false, false),
+        (true, false, true, false, false, false),
+        (false, true, true, false, false, false),
+        (true, true, true, false, false, false),
+        (false, false, false, false, false, false),
+        (false, false, true, true, false, false),
+        (false, false, true, false, true, false),
+        (false, false, true, false, false, true),
     ] {
         let server = start_mock_server().await;
         let requests = mount_sse_once(
@@ -7509,8 +7532,16 @@ async fn historical_overlay_resume_to_serialized_request_is_identity_bound() -> 
             baseline_sha256: HistoricalBaselineAdoption::baseline_digest(&baseline),
             plan_sha256: HistoricalBaselineAdoption::plan_digest(&plan),
         };
-        let plan_for_session = plan.clone();
-        let (session, events) = make_session_with_history_source_and_config(
+        let edit_target = if absent {
+            "missing synthetic target"
+        } else {
+            target
+        };
+        let config_contents = format!(
+            "[instruction_overlays.model_baseline]\non_absent = \"skip\"\nedits = [{{ op = \"remove_exact_if_present\", text = {edit_target:?}, expected_matches = 1 }}]\n[historical_baseline_adoption]\nthread_id = {:?}\nbaseline_sha256 = {:?}\nplan_sha256 = {:?}\n",
+            adoption.thread_id, adoption.baseline_sha256, adoption.plan_sha256,
+        );
+        let (session, events) = make_session_with_history_source_config_file(
             InitialHistory::Resumed(ResumedHistory {
                 history_revision: None,
                 conversation_id: thread_id,
@@ -7519,13 +7550,13 @@ async fn historical_overlay_resume_to_serialized_request_is_identity_bound() -> 
             }),
             source,
             LocalAgentControl::default(),
+            Some(&config_contents),
             move |config| {
                 config.model_provider = provider;
-                config.instruction_overlays = InstructionOverlaysToml {
-                    model_baseline: Some(plan_for_session),
-                    ..Default::default()
-                };
-                config.historical_baseline_adoption = Some(adoption);
+                if fake_provider {
+                    // A provider's display name is not proof of OpenAI ownership.
+                    config.model_provider_id = "synthetic-other-provider".into();
+                }
             },
         )
         .await?;
@@ -7573,7 +7604,7 @@ async fn historical_overlay_resume_to_serialized_request_is_identity_bound() -> 
                 &codex_rollout_trace::InferenceTraceContext::disabled(),
             )
             .await;
-        if adopted && !protected {
+        if adopted && !protected && !fake_provider {
             let mut stream = result?;
             while let Some(event) = stream.next().await {
                 event?;
@@ -7686,8 +7717,85 @@ async fn historical_overlay_uses_inferred_model_provenance_through_request() -> 
         &metadata,
         true,
     )?;
-    assert!(!serde_json::to_string(&request)?.contains(&target));
+    fn contains_text(value: &serde_json::Value, target: &str) -> bool {
+        match value {
+            serde_json::Value::String(text) => text.contains(target),
+            serde_json::Value::Array(values) => values.iter().any(|v| contains_text(v, target)),
+            serde_json::Value::Object(values) => values.values().any(|v| contains_text(v, target)),
+            _ => false,
+        }
+    }
+    let wire_value: serde_json::Value = serde_json::from_slice(&serde_json::to_vec(&request)?)?;
+    assert!(!contains_text(&wire_value, &target));
     assert_eq!(session.get_base_instructions().await.text, baseline);
+    Ok(())
+}
+
+#[tokio::test]
+async fn historical_overlay_accepts_inherited_model_provenance_for_spawned_child()
+-> anyhow::Result<()> {
+    use codex_config::{
+        InstructionOverlayComponentToml, InstructionOverlayEdit, InstructionOverlaysToml,
+    };
+    let source = SessionSource::SubAgent(SubAgentSource::ThreadSpawn {
+        parent_thread_id: ThreadId::new(),
+        depth: 1,
+        agent_path: None,
+        agent_nickname: None,
+        agent_role: None,
+    });
+    let (session, _) = make_session_with_history_source_and_config(
+        InitialHistory::New,
+        source,
+        LocalAgentControl::default(),
+        |config| {
+            config.base_instructions = Some("synthetic target and remainder".into());
+            config.base_instructions_provenance =
+                Some(codex_protocol::models::BaseInstructionsProvenance::Model {
+                    model: "synthetic-parent".into(),
+                });
+            config.instruction_overlays = InstructionOverlaysToml {
+                model_baseline: Some(InstructionOverlayComponentToml {
+                    edits: vec![InstructionOverlayEdit::RemoveExact {
+                        text: "synthetic target".into(),
+                        expected_matches: 1,
+                    }],
+                    ..Default::default()
+                }),
+                ..Default::default()
+            };
+        },
+    )
+    .await?;
+    let (turn, _) = session
+        .new_turn_with_sub_id(
+            "synthetic-child".into(),
+            SessionSettingsUpdate::default(),
+            Default::default(),
+        )
+        .await?;
+    let step = StepContext::for_test(turn);
+    let base = session.get_prompt_base_instructions().await;
+    let prompt = super::turn::build_prompt(Vec::new(), &step, base, false);
+    let metadata = session
+        .responses_metadata(&step, CodexResponsesRequestKind::Turn)
+        .await;
+    let request = session.services.model_client.build_responses_request(
+        &prompt,
+        &step.settings.model_info,
+        None,
+        codex_protocol::config_types::ReasoningSummary::None,
+        None,
+        &metadata,
+        true,
+    )?;
+    let serialized = serde_json::to_string(&request)?;
+    assert!(!serialized.contains("synthetic target"));
+    assert!(serialized.contains("and remainder"));
+    assert_eq!(
+        session.get_base_instructions().await.text,
+        "synthetic target and remainder"
+    );
     Ok(())
 }
 

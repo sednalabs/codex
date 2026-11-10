@@ -1969,8 +1969,10 @@ impl Session {
                 config.base_instructions.as_ref().filter(|_| config.client_owned_base_instructions)
                     .map(|text| vec![codex_config::HistoricalBaselineAdoption::baseline_digest(text)])
                     .unwrap_or_default(),
-                config.base_instructions.is_none()
-                    && config.model_provider_id == codex_model_provider_info::OPENAI_PROVIDER_ID,
+                config.model_provider_id == codex_model_provider_info::OPENAI_PROVIDER_ID
+                    && (config.base_instructions.is_none()
+                        || (matches!(session_configuration.session_source, SessionSource::SubAgent(SubAgentSource::ThreadSpawn { .. }))
+                            && matches!(config.base_instructions_provenance, Some(BaseInstructionsProvenance::Model { .. })))),
             )
             .with_restored_history(matches!(
                 &initial_history,

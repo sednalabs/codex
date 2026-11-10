@@ -282,6 +282,17 @@ async fn run_compact_task_inner_impl(
         turn_context.model_info().truncation_policy.into(),
     );
     let mut fallback_instructions = sess.get_prompt_base_instructions().await;
+    let resolved_overlay_base = (turn_context
+        .config
+        .instruction_overlays
+        .model_baseline
+        .is_some()
+        || turn_context
+            .config
+            .instruction_overlays
+            .review_baseline
+            .is_some())
+    .then(|| fallback_instructions.clone());
     if let Some(text) = history
         .raw_items()
         .find_map(BaseInstructionsFragment::text_from_item)
@@ -325,6 +336,7 @@ async fn run_compact_task_inner_impl(
         let prompt = Prompt {
             input: turn_input,
             base_instructions,
+            overlay_base_instructions: resolved_overlay_base.clone(),
             prompt_cache_ttl: turn_context.prompt_cache_ttl,
             cyber_access_program: turn_context.cyber_access_program,
             ..Default::default()
