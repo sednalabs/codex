@@ -204,6 +204,6 @@ log *args:
 log *args:
     $forwarded_args = @($args | Select-Object -Skip 1); if ($forwarded_args.Count -gt 0 -and $forwarded_args[0] -eq "--") { $forwarded_args = @($forwarded_args | Select-Object -Skip 1) }; cargo run -p codex-cli --bin logs_client -- @forwarded_args
 
-# Diagnostic-only real local/remote overlay compaction checks.
+# Diagnostic-only synthetic startup guard check.
 core-subagent-surface-targeted:
-    RUST_MIN_STACK=8388608 cargo test --locked -p codex-core --lib historical_overlay_compaction_uses_the_same_authorized_baseline -- --test-threads=1
+    cargo test --locked -p codex-state --lib unknown_high_state_ledger_fails_without_changing_synthetic_effects -- --test-threads=1
