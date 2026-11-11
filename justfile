@@ -204,10 +204,6 @@ log *args:
 log *args:
     $forwarded_args = @($args | Select-Object -Skip 1); if ($forwarded_args.Count -gt 0 -and $forwarded_args[0] -eq "--") { $forwarded_args = @($forwarded_args | Select-Object -Skip 1) }; cargo run -p codex-cli --bin logs_client -- @forwarded_args
 
-# Diagnostic-only prompt, compaction, and interruption checks.
+# Diagnostic-only real local/remote overlay compaction checks.
 core-subagent-surface-targeted:
-    RUST_MIN_STACK=8388608 cargo test --locked -p codex-core --lib historical_overlay_ -- --test-threads=1
-    RUST_MIN_STACK=8388608 cargo test --locked -p codex-core --lib retained_baseline_never_adopts_explicitly_protected_attribution -- --test-threads=1
-    RUST_MIN_STACK=8388608 cargo test --locked -p codex-core --lib interrupting_regular_turn_waiting_on_startup_prewarm_emits_turn_aborted -- --test-threads=1
-    RUST_MIN_STACK=8388608 cargo test --locked -p codex-core --lib native_wait_renews -- --test-threads=1
-    RUST_MIN_STACK=8388608 cargo test --locked -p codex-core --test all summarize_context_three_requests_and_instructions -- --test-threads=1
+    RUST_MIN_STACK=8388608 cargo test --locked -p codex-core --lib historical_overlay_compaction_uses_the_same_authorized_baseline -- --test-threads=1

@@ -7795,6 +7795,116 @@ async fn historical_overlay_resume_to_serialized_request_is_identity_bound() -> 
 }
 
 #[tokio::test]
+async fn historical_overlay_compaction_uses_the_same_authorized_baseline() -> anyhow::Result<()> {
+    use codex_config::{
+        HistoricalBaselineAdoption, InstructionOverlayComponentToml, InstructionOverlayEdit,
+        InstructionOverlayOnAbsent, InstructionOverlaysToml,
+    };
+    use codex_model_provider_info::{ModelProviderCapabilities, RemoteCompactionSupport};
+
+    for remote in [false, true] {
+        let server = start_mock_server().await;
+        let response = if remote {
+            sse(vec![
+                serde_json::json!({"type":"response.output_item.done","item":{"type":"compaction","encrypted_content":"synthetic-summary"}}),
+                ev_completed("synthetic-compact"),
+            ])
+        } else {
+            sse(vec![
+                ev_assistant_message("synthetic-summary", "synthetic summary"),
+                ev_completed("synthetic-compact"),
+            ])
+        };
+        let requests = mount_sse_once(&server, response).await;
+        let mut provider = built_in_model_providers(None)["openai"].clone();
+        provider.base_url = Some(format!("{}/v1", server.uri()));
+        provider.supports_websockets = false;
+        provider.capabilities = Some(ModelProviderCapabilities {
+            remote_compaction: Some(if remote {
+                RemoteCompactionSupport::V2
+            } else {
+                RemoteCompactionSupport::Unsupported
+            }),
+            ..Default::default()
+        });
+        let target = "synthetic exact wait rule";
+        let baseline = format!("before {target} after");
+        let plan = InstructionOverlayComponentToml {
+            on_absent: InstructionOverlayOnAbsent::Skip,
+            edits: vec![InstructionOverlayEdit::RemoveExactIfPresent {
+                text: target.into(),
+                expected_matches: 1,
+            }],
+            ..Default::default()
+        };
+        let thread_id = ThreadId::new();
+        let saved = Arc::new(vec![
+            RolloutItem::SessionMeta(Box::new(SessionMetaLine {
+                meta: SessionMeta {
+                    id: thread_id,
+                    session_id: thread_id.into(),
+                    base_instructions: Some(BaseInstructions {
+                        text: baseline.clone(),
+                        provenance: None,
+                    }),
+                    ..SessionMeta::default()
+                },
+                git: None,
+            })),
+            RolloutItem::ResponseItem(skill_message("synthetic user input").into()),
+        ]);
+        let saved_before = serde_json::to_value(saved.as_ref())?;
+        let adoption = HistoricalBaselineAdoption {
+            thread_id: thread_id.to_string(),
+            baseline_sha256: HistoricalBaselineAdoption::baseline_digest(&baseline),
+            plan_sha256: HistoricalBaselineAdoption::plan_digest(&plan),
+        };
+        let (session, events) = make_session_with_history_source_and_config(
+            InitialHistory::Resumed(ResumedHistory {
+                history_revision: None,
+                conversation_id: thread_id,
+                rollout_path: None,
+                history: Arc::clone(&saved),
+            }),
+            SessionSource::Cli,
+            LocalAgentControl::default(),
+            move |config| {
+                config.model_provider = provider;
+                config.features.disable(Feature::TokenBudget).unwrap();
+                config.instruction_overlays = InstructionOverlaysToml {
+                    model_baseline: Some(plan),
+                    ..Default::default()
+                };
+                config.historical_baseline_adoption = Some(adoption);
+            },
+        )
+        .await?;
+        super::handlers::compact(&session, "synthetic-compact".into()).await;
+        tokio::time::timeout(Duration::from_secs(30), async {
+            loop {
+                match events
+                    .recv()
+                    .await
+                    .expect("compaction event channel open")
+                    .msg
+                {
+                    EventMsg::TurnComplete(_) => break,
+                    EventMsg::Error(error) => panic!("synthetic compaction failed: {error:?}"),
+                    _ => {}
+                }
+            }
+        })
+        .await?;
+        let request = requests.single_request().body_json().to_string();
+        assert!(!request.contains(target), "remote={remote}");
+        assert!(request.contains("before  after"), "remote={remote}");
+        assert_eq!(serde_json::to_value(saved.as_ref())?, saved_before);
+        assert_eq!(session.get_base_instructions().await.text, baseline);
+    }
+    Ok(())
+}
+
+#[tokio::test]
 async fn historical_overlay_optional_failures_preserve_the_selected_baseline() -> anyhow::Result<()>
 {
     use codex_config::{
