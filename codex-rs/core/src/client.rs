@@ -316,6 +316,7 @@ pub struct ModelClient {
     adopted_baseline_digests: Arc<AdoptedBaselineDigests>,
     client_owned_baseline_digest: Arc<AdoptedBaselineDigests>,
     model_baseline_editable: bool,
+    explicit_model_instructions_file: bool,
     last_overlay_report: Arc<OverlayReportState>,
     request_contributors: Vec<Arc<dyn codex_extension_api::ModelRequestContributor>>,
     executed_tool_calls: Option<ExecutedToolCalls>,
@@ -677,6 +678,7 @@ impl ModelClient {
             adopted_baseline_digests: Arc::default(),
             client_owned_baseline_digest: Arc::default(),
             model_baseline_editable: false,
+            explicit_model_instructions_file: false,
             last_overlay_report: Arc::default(),
             request_contributors,
             executed_tool_calls: None,
@@ -698,6 +700,7 @@ impl ModelClient {
         adopted_baseline_digests: Vec<String>,
         client_owned_baseline_digest: Vec<String>,
         model_baseline_editable: bool,
+        explicit_model_instructions_file: bool,
     ) -> Self {
         self.instruction_overlays = Arc::new(overlays);
         self.instruction_overlay_origin_fences = origin_fences.into();
@@ -705,6 +708,7 @@ impl ModelClient {
         self.client_owned_baseline_digest =
             Arc::new(AdoptedBaselineDigests(client_owned_baseline_digest));
         self.model_baseline_editable = model_baseline_editable;
+        self.explicit_model_instructions_file = explicit_model_instructions_file;
         self
     }
 
@@ -1273,7 +1277,7 @@ impl ModelClient {
                 "not applicable to the selected model",
             );
         }
-        let active_baseline_overlay = active_overlay
+        let mut active_baseline_overlay = active_overlay
             && if review {
                 self.instruction_overlays.review_baseline.as_ref()
             } else {
@@ -1284,6 +1288,23 @@ impl ModelClient {
             .overlay_base_instructions
             .as_ref()
             .unwrap_or(&prompt.base_instructions);
+        let baseline_plan = if review {
+            self.instruction_overlays.review_baseline.as_ref()
+        } else {
+            self.instruction_overlays.model_baseline.as_ref()
+        };
+        let optional_baseline = baseline_plan.is_some_and(|plan| {
+            plan.on_absent == codex_config::InstructionOverlayOnAbsent::Skip
+                && !plan.edits.is_empty()
+                && plan.edits.iter().all(|edit| {
+                    matches!(
+                        edit,
+                        codex_config::InstructionOverlayEdit::RemoveExactIfPresent { .. }
+                    )
+                })
+        });
+        let original_input = (active_baseline_overlay && optional_baseline).then(|| input.clone());
+        let mut suppressed_baseline = false;
         let baseline_authorized = if active_baseline_overlay {
             let authority_digest =
                 codex_config::HistoricalBaselineAdoption::baseline_digest(&authority.text);
@@ -1300,6 +1321,24 @@ impl ModelClient {
         } else {
             false
         };
+        // A replacement file is an explicit escape hatch. Do not automatically
+        // alter it with an optional cleanup; explicitly required edits retain
+        // the existing overlay contract.
+        if active_baseline_overlay
+            && optional_baseline
+            && self.explicit_model_instructions_file
+            && matches!(
+                authority.provenance,
+                Some(BaseInstructionsProvenance::Custom)
+            )
+        {
+            self.report_instruction_overlay(
+                responses_metadata,
+                "not applied: explicit instructions file",
+            );
+            active_baseline_overlay = false;
+            suppressed_baseline = true;
+        }
         if active_baseline_overlay {
             if !baseline_authorized {
                 let outcome = match &authority.provenance {
@@ -1310,10 +1349,17 @@ impl ModelClient {
                     None => "blocked: unknown baseline",
                 };
                 self.report_instruction_overlay(responses_metadata, outcome);
-                return Err(CodexErr::InvalidRequest(format!(
-                    "instruction overlay {outcome}"
-                )));
+                if optional_baseline {
+                    active_baseline_overlay = false;
+                    suppressed_baseline = true;
+                } else {
+                    return Err(CodexErr::InvalidRequest(format!(
+                        "instruction overlay {outcome}"
+                    )));
+                }
             }
+        }
+        if active_baseline_overlay {
             let current_template = codex_prompts::render_model_instructions(model_info);
             let current_template_without_plan =
                 codex_prompts::without_update_plan_instructions(&current_template);
@@ -1333,33 +1379,107 @@ impl ModelClient {
                 && !expected.contains(&prompt.base_instructions.text.as_str())
             {
                 self.report_instruction_overlay(responses_metadata, "blocked: ambiguous baseline");
-                return Err(CodexErr::InvalidRequest(
-                    "instruction overlay blocked: ambiguous baseline identity".into(),
-                ));
+                if optional_baseline {
+                    active_baseline_overlay = false;
+                    suppressed_baseline = true;
+                } else {
+                    return Err(CodexErr::InvalidRequest(
+                        "instruction overlay blocked: ambiguous baseline identity".into(),
+                    ));
+                }
             }
-            let baseline_plan = if review {
-                self.instruction_overlays.review_baseline.as_ref()
-            } else {
-                self.instruction_overlays.model_baseline.as_ref()
-            }
-            .expect("active baseline overlay has a plan");
+            let baseline_plan = baseline_plan.expect("active baseline overlay has a plan");
             let allow_multiple =
                 baseline_plan.selection == codex_config::InstructionOverlaySelection::AllClassified;
-            if let Err(error) = instruction_overlays::classify_retained_baseline(
-                &mut input,
-                &expected,
-                allow_multiple,
-            ) {
+            if active_baseline_overlay
+                && let Err(error) = instruction_overlays::classify_retained_baseline(
+                    &mut input,
+                    &expected,
+                    allow_multiple,
+                )
+            {
                 self.report_instruction_overlay(responses_metadata, "blocked: ambiguous baseline");
-                return Err(CodexErr::InvalidRequest(error.to_string()));
+                if optional_baseline {
+                    active_baseline_overlay = false;
+                    suppressed_baseline = true;
+                } else {
+                    return Err(CodexErr::InvalidRequest(error.to_string()));
+                }
             }
-            if !prompt.base_instructions.text.is_empty() {
+            if active_baseline_overlay && !prompt.base_instructions.text.is_empty() {
                 instruction_overlays::remove_duplicate_retained_baseline(
                     &mut input,
                     &prompt.base_instructions.text,
                 );
             }
+            if active_baseline_overlay && optional_baseline {
+                // Check the exact selected request copy before changing it. A
+                // duplicate/misaligned optional target must not block a turn or
+                // partially apply a multi-edit plan.
+                let mut trial = input.clone();
+                if !prompt.base_instructions.text.is_empty() {
+                    let mut fragment = ContextualUserFragment::into(BaseInstructionsFragment(
+                        prompt.base_instructions.text.clone(),
+                    ));
+                    if let ResponseItem::Message {
+                        internal_chat_message_metadata_passthrough: Some(metadata),
+                        ..
+                    } = &mut fragment
+                        && let Some(kind) = metadata
+                            .content_item_kinds
+                            .as_mut()
+                            .and_then(|kinds| kinds.first_mut())
+                    {
+                        *kind = ContentItemKind("client.base_instructions".to_string());
+                    }
+                    trial.insert(0, fragment);
+                }
+                let mut baseline_only = codex_config::InstructionOverlaysToml::default();
+                if review {
+                    baseline_only.review_baseline = Some(baseline_plan.clone());
+                } else {
+                    baseline_only.model_baseline = Some(baseline_plan.clone());
+                }
+                if instruction_overlays::transform_request(
+                    &self.state.session_source,
+                    &baseline_only,
+                    &model_info.slug,
+                    true,
+                    &[],
+                    trial,
+                )
+                .is_err()
+                {
+                    self.report_instruction_overlay(
+                        responses_metadata,
+                        "blocked: optional baseline mismatch",
+                    );
+                    active_baseline_overlay = false;
+                    suppressed_baseline = true;
+                }
+            }
         }
+        if suppressed_baseline && let Some(original) = original_input {
+            input = original;
+        }
+        let mut filtered_overlays = None;
+        if suppressed_baseline {
+            let mut overlays = self.instruction_overlays.as_ref().clone();
+            if review {
+                overlays.review_baseline = None;
+            } else {
+                overlays.model_baseline = None;
+            }
+            filtered_overlays = Some(overlays);
+        }
+        let overlays = filtered_overlays
+            .as_ref()
+            .unwrap_or(self.instruction_overlays.as_ref());
+        let active_overlay = instruction_overlays::has_eligible_plan(
+            &self.state.session_source,
+            overlays,
+            &model_info.slug,
+        );
         if !self.reasoning_effort_override_enabled(model_info) {
             // Unsupported models and disabled overrides must also accept saved history.
             // Filter only the request copy; persisted history remains unchanged.
@@ -1426,7 +1546,7 @@ impl ModelClient {
             let before = input.clone();
             input = match instruction_overlays::transform_request(
                 &self.state.session_source,
-                &self.instruction_overlays,
+                overlays,
                 &model_info.slug,
                 baseline_authorized,
                 &self.instruction_overlay_origin_fences,
@@ -1444,7 +1564,7 @@ impl ModelClient {
                     "applied at least one edit; other edits may be absent"
                 } else if instruction_overlays::only_optional_removals(
                     &self.state.session_source,
-                    &self.instruction_overlays,
+                    overlays,
                     &model_info.slug,
                 ) {
                     "absent"

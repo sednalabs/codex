@@ -2015,6 +2015,7 @@ impl Session {
                     && (config.base_instructions.is_none()
                         || (matches!(session_configuration.session_source, SessionSource::SubAgent(SubAgentSource::ThreadSpawn { .. }))
                             && matches!(config.base_instructions_provenance, Some(BaseInstructionsProvenance::Model { .. })))),
+                config.config_layer_stack.effective_config().get("model_instructions_file").is_some(),
             )
             .with_restored_history(matches!(
                 &initial_history,
