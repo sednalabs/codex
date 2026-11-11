@@ -47,7 +47,7 @@ pub(super) async fn fork_source(
         session_source: SessionSource::Exec,
         enable_codex_api_key_env: true,
         client_name: "codex_exec".to_string(),
-        client_version: env!("CARGO_PKG_VERSION").to_string(),
+        client_version: crate::CODEX_RELEASE_VERSION.to_string(),
         experimental_api: true,
         mcp_server_openai_form_elicitation: false,
         opt_out_notification_methods: Vec::new(),

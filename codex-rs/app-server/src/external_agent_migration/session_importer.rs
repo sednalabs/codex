@@ -536,7 +536,7 @@ impl ExternalAgentSessionImporter {
             agent_role: Some(source.get_agent_role()),
             agent_path: Some(source.get_agent_path().map(Into::into)),
             cwd: Some(cwd),
-            cli_version: Some(env!("CARGO_PKG_VERSION").to_string()),
+            cli_version: Some(crate::CODEX_RELEASE_VERSION.to_string()),
             first_user_message,
             memory_mode: Some(memory_mode),
             ..Default::default()

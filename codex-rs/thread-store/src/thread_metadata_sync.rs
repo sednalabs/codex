@@ -88,7 +88,12 @@ impl ThreadMetadataSync {
             agent_role: Some(params.source.get_agent_role()),
             agent_path: Some(params.source.get_agent_path().map(Into::into)),
             cwd: Some(cwd.clone()),
-            cli_version: Some(env!("CARGO_PKG_VERSION").to_string()),
+            cli_version: Some(
+                option_env!("CODEX_RELEASE_VERSION")
+                    .filter(|version| !version.is_empty())
+                    .unwrap_or(env!("CARGO_PKG_VERSION"))
+                    .to_string(),
+            ),
             git_info: git_info.map(git_info_patch_from_observation),
             memory_mode: Some(params.metadata.memory_mode),
             ..Default::default()

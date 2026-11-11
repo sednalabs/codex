@@ -92,7 +92,12 @@ impl RuntimeAuthManager {
             chatgpt_base_url.to_owned(),
             RuntimeRegistrationMetadata {
                 harness: Some("codex".to_string()),
-                harness_version: Some(env!("CARGO_PKG_VERSION").to_string()),
+                harness_version: Some(
+                    option_env!("CODEX_RELEASE_VERSION")
+                        .filter(|version| !version.is_empty())
+                        .unwrap_or(env!("CARGO_PKG_VERSION"))
+                        .to_string(),
+                ),
                 role: crate::RuntimeRole::Orchestrator,
             },
         )

@@ -4816,7 +4816,7 @@ impl Config {
                 Some(required) => required.value,
                 None => resolve_cli_auth_credentials_store_mode(
                     cfg.cli_auth_credentials_store.unwrap_or_default(),
-                    env!("CARGO_PKG_VERSION"),
+                    crate::CODEX_RELEASE_VERSION,
                 ),
             },
             mcp_servers,
@@ -4826,7 +4826,7 @@ impl Config {
             // is important in code to differentiate the mode from the store implementation.
             mcp_oauth_credentials_store_mode: resolve_mcp_oauth_credentials_store_mode(
                 cfg.mcp_oauth_credentials_store.unwrap_or_default(),
-                env!("CARGO_PKG_VERSION"),
+                crate::CODEX_RELEASE_VERSION,
             ),
             mcp_oauth_callback_port: cfg.mcp_oauth_callback_port,
             mcp_oauth_callback_url: cfg.mcp_oauth_callback_url.clone(),

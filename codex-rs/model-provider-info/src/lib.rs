@@ -582,9 +582,15 @@ other non-default provider fields are not supported"
             wire_api: WireApi::Responses,
             query_params: None,
             http_headers: Some(
-                [("version".to_string(), env!("CARGO_PKG_VERSION").into())]
-                    .into_iter()
-                    .collect(),
+                [(
+                    "version".to_string(),
+                    option_env!("CODEX_RELEASE_VERSION")
+                        .filter(|version| !version.is_empty())
+                        .unwrap_or(env!("CARGO_PKG_VERSION"))
+                        .into(),
+                )]
+                .into_iter()
+                .collect(),
             ),
             env_http_headers: Some(
                 [

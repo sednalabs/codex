@@ -6986,7 +6986,7 @@ fn build_thread_from_snapshot(
         status: ThreadStatus::NotLoaded,
         path,
         cwd: config_snapshot.cwd().clone(),
-        cli_version: env!("CARGO_PKG_VERSION").to_string(),
+        cli_version: crate::CODEX_RELEASE_VERSION.to_string(),
         originator: (!config_snapshot.originator.is_empty())
             .then(|| config_snapshot.originator.clone()),
         agent_nickname: config_snapshot.session_source.get_nickname(),

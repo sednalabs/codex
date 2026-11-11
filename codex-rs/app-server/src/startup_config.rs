@@ -163,7 +163,7 @@ async fn read_startup_config(
     );
     let requirements = config.config_layer_stack.requirements_toml();
     Ok(StartupConfig {
-        app_server_version: env!("CARGO_PKG_VERSION"),
+        app_server_version: crate::CODEX_RELEASE_VERSION,
         config_requirements: ConfigRequirementsReadResponse {
             supports_independent_speed_modes: Some(true),
             requirements: map_requirements_to_api(

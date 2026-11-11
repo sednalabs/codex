@@ -43,8 +43,9 @@ prints its path after the package is built.
 
 The `--variant` flag selects the package entrypoint. Supported variants are
 `codex` and `codex-app-server`. The `--package-version` flag sets the version in
-`codex-package.json`; it defaults to `[workspace.package].version` in
-`codex-rs/Cargo.toml`.
+`codex-package.json` and passes the same value as `CODEX_RELEASE_VERSION` to
+source builds; it defaults to `[workspace.package].version` in
+`codex-rs/Cargo.toml`. A prebuilt entrypoint must already report that version.
 
 ## Source-built artifacts
 

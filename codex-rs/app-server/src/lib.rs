@@ -652,7 +652,7 @@ pub async fn run_main_with_transport_options(
 
     let otel = codex_core::otel_init::build_provider(
         &config,
-        env!("CARGO_PKG_VERSION"),
+        crate::CODEX_RELEASE_VERSION,
         Some(OTEL_SERVICE_NAME),
         default_analytics_enabled,
     )
@@ -1601,3 +1601,9 @@ fn analytics_rpc_transport(transport: &AppServerTransport) -> AppServerRpcTransp
 #[cfg(test)]
 #[path = "lib_tests.rs"]
 mod tests;
+
+/// The release identity embedded at build time by the package pipeline.
+pub const CODEX_RELEASE_VERSION: &str = match option_env!("CODEX_RELEASE_VERSION") {
+    Some(version) if !version.is_empty() => version,
+    _ => env!("CARGO_PKG_VERSION"),
+};

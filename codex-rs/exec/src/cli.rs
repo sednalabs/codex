@@ -9,7 +9,7 @@ use std::path::PathBuf;
 
 #[derive(Parser, Debug)]
 #[command(
-    version,
+    version = crate::CODEX_RELEASE_VERSION,
     override_usage = "codex exec [OPTIONS] [PROMPT]\n       codex exec [OPTIONS] <COMMAND> [ARGS]"
 )]
 pub struct Cli {

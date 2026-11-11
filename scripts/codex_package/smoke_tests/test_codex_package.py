@@ -59,10 +59,23 @@ def test_cli_public_commands(
 
 
 def test_cli_version_matches_release_manifest(package: SmokePackage) -> None:
-    """The compiled banner must match the package's declared release version."""
+    """Both compiled entrypoints must match their declared release version."""
     manifest = json.loads((package.cli_root / "codex-package.json").read_text())
     version = manifest["version"]
     assert package.run("--version").stdout == f"codex-cli {version}\n"
+    server_manifest = json.loads(
+        (package.app_server_root / "codex-package.json").read_text()
+    )
+    assert server_manifest["version"] == version
+    server_version = subprocess.run(
+        [str(package.app_server), "--version"],
+        cwd=package.directory,
+        env=package.environment,
+        capture_output=True,
+        text=True,
+        check=True,
+    )
+    assert server_version.stdout == f"codex-app-server {version}\n"
 
 
 @pytest.mark.parametrize("variant", ["cli_root", "app_server_root"])

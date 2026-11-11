@@ -717,7 +717,7 @@ pub async fn run_main(cli: Cli, arg0_paths: Arg0DispatchPaths) -> anyhow::Result
     let otel = match std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
         codex_core::otel_init::build_provider(
             &config,
-            env!("CARGO_PKG_VERSION"),
+            crate::CODEX_RELEASE_VERSION,
             /*service_name_override*/ None,
             DEFAULT_ANALYTICS_ENABLED,
         )
@@ -809,7 +809,7 @@ pub async fn run_main(cli: Cli, arg0_paths: Arg0DispatchPaths) -> anyhow::Result
         session_source: SessionSource::Exec,
         enable_codex_api_key_env: true,
         client_name: "codex_exec".to_string(),
-        client_version: env!("CARGO_PKG_VERSION").to_string(),
+        client_version: crate::CODEX_RELEASE_VERSION.to_string(),
         experimental_api: true,
         mcp_server_openai_form_elicitation: false,
         opt_out_notification_methods: Vec::new(),
@@ -2586,3 +2586,9 @@ fn build_review_request(args: &ReviewArgs) -> anyhow::Result<ReviewRequest> {
 #[cfg(test)]
 #[path = "lib_tests.rs"]
 mod tests;
+
+/// The release identity embedded at build time by the package pipeline.
+pub const CODEX_RELEASE_VERSION: &str = match option_env!("CODEX_RELEASE_VERSION") {
+    Some(version) if !version.is_empty() => version,
+    _ => env!("CARGO_PKG_VERSION"),
+};

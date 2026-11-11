@@ -497,7 +497,10 @@ fn agent_identity_authapi_url(agent_identity_authapi_base_url: &str, api_path: &
 
 pub fn build_abom(session_source: SessionSource) -> AgentBillOfMaterials {
     AgentBillOfMaterials {
-        agent_version: env!("CARGO_PKG_VERSION").to_string(),
+        agent_version: option_env!("CODEX_RELEASE_VERSION")
+            .filter(|version| !version.is_empty())
+            .unwrap_or(env!("CARGO_PKG_VERSION"))
+            .to_string(),
         agent_harness_id: match &session_source {
             SessionSource::VSCode => "codex-app".to_string(),
             SessionSource::Cli

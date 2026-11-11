@@ -981,7 +981,10 @@ impl RolloutRecorder {
                     account_scoped,
                     creator_user_id,
                     creator_account_id,
-                    cli_version: env!("CARGO_PKG_VERSION").to_string(),
+                    cli_version: option_env!("CODEX_RELEASE_VERSION")
+                        .filter(|version| !version.is_empty())
+                        .unwrap_or(env!("CARGO_PKG_VERSION"))
+                        .to_string(),
                     agent_nickname: source.get_nickname(),
                     agent_role: source.get_agent_role(),
                     agent_path: source.get_agent_path().map(Into::into),
