@@ -7763,8 +7763,13 @@ async fn historical_overlay_resume_to_serialized_request_is_identity_bound() -> 
             }
             assert!(saw_outcome);
         } else {
-            assert!(result.is_err());
-            assert!(requests.requests().is_empty());
+            let mut stream = result?;
+            while let Some(event) = stream.next().await {
+                event?;
+            }
+            let serialized = requests.single_request().body_json().to_string();
+            assert!(serialized.contains(target));
+            assert!(serialized.contains("protected synthetic guidance"));
             let mut saw_blocked = false;
             let expected_outcome = if protected {
                 "Instruction overlay: blocked: protected baseline"
@@ -7786,6 +7791,220 @@ async fn historical_overlay_resume_to_serialized_request_is_identity_bound() -> 
         );
         assert_eq!(session.get_base_instructions().await.text, baseline);
     }
+    Ok(())
+}
+
+#[tokio::test]
+async fn historical_overlay_optional_failures_preserve_the_selected_baseline() -> anyhow::Result<()>
+{
+    use codex_config::{
+        InstructionOverlayComponentToml, InstructionOverlayEdit, InstructionOverlayOnAbsent,
+        InstructionOverlaysToml,
+    };
+    use codex_protocol::models::BaseInstructionsProvenance;
+
+    let target = "synthetic exact wait rule";
+    for (name, baseline, provenance, optional, expected_error, expected_outcome) in [
+        (
+            "unknown",
+            "before synthetic exact wait rule after",
+            None,
+            true,
+            false,
+            "blocked: unknown baseline",
+        ),
+        (
+            "duplicate",
+            "before synthetic exact wait rule synthetic exact wait rule after",
+            Some(BaseInstructionsProvenance::Model {
+                model: "synthetic-model".into(),
+            }),
+            true,
+            false,
+            "blocked: optional baseline mismatch",
+        ),
+        (
+            "absent",
+            "before after",
+            Some(BaseInstructionsProvenance::Model {
+                model: "synthetic-model".into(),
+            }),
+            true,
+            false,
+            "absent",
+        ),
+        (
+            "required",
+            "before synthetic exact wait rule synthetic exact wait rule after",
+            Some(BaseInstructionsProvenance::Model {
+                model: "synthetic-model".into(),
+            }),
+            false,
+            true,
+            "blocked",
+        ),
+    ] {
+        let thread_id = ThreadId::new();
+        let history = InitialHistory::Resumed(ResumedHistory {
+            history_revision: None,
+            conversation_id: thread_id,
+            rollout_path: None,
+            history: Arc::new(vec![RolloutItem::SessionMeta(Box::new(SessionMetaLine {
+                meta: SessionMeta {
+                    id: thread_id,
+                    session_id: thread_id.into(),
+                    base_instructions: Some(BaseInstructions {
+                        text: baseline.into(),
+                        provenance,
+                    }),
+                    ..SessionMeta::default()
+                },
+                git: None,
+            }))]),
+        });
+        let (session, events) = make_session_with_history_source_and_config(
+            history,
+            SessionSource::Cli,
+            LocalAgentControl::default(),
+            |config| {
+                let edit = if optional {
+                    InstructionOverlayEdit::RemoveExactIfPresent {
+                        text: target.into(),
+                        expected_matches: 1,
+                    }
+                } else {
+                    InstructionOverlayEdit::RemoveExact {
+                        text: target.into(),
+                        expected_matches: 1,
+                    }
+                };
+                config.instruction_overlays = InstructionOverlaysToml {
+                    model_baseline: Some(InstructionOverlayComponentToml {
+                        on_absent: InstructionOverlayOnAbsent::Skip,
+                        edits: vec![edit],
+                        ..Default::default()
+                    }),
+                    ..Default::default()
+                };
+            },
+        )
+        .await?;
+        let (turn, _) = session
+            .new_turn_with_sub_id(
+                name.into(),
+                SessionSettingsUpdate::default(),
+                Default::default(),
+            )
+            .await?;
+        let step = StepContext::for_test(turn);
+        let prompt = super::turn::build_prompt(
+            Vec::new(),
+            &step,
+            session.get_prompt_base_instructions().await,
+            false,
+        );
+        let metadata = session
+            .responses_metadata(&step, CodexResponsesRequestKind::Turn)
+            .await;
+        let result = session.services.model_client.build_responses_request(
+            &prompt,
+            &step.settings.model_info,
+            None,
+            codex_protocol::config_types::ReasoningSummary::None,
+            None,
+            &metadata,
+            true,
+        );
+        if expected_error {
+            assert!(result.is_err(), "{name}");
+        } else {
+            let wire = serde_json::to_string(&result?)?;
+            assert!(wire.contains(baseline), "{name}");
+        }
+        let mut observed = false;
+        while let Ok(event) = events.try_recv() {
+            observed |= matches!(event.msg, EventMsg::Warning(warning) if warning.message.starts_with(&format!("Instruction overlay: {expected_outcome}")));
+        }
+        assert!(observed, "missing outcome for {name}");
+        assert_eq!(session.get_base_instructions().await.text, baseline);
+    }
+    Ok(())
+}
+
+#[tokio::test]
+async fn historical_overlay_optional_cleanup_respects_explicit_file_on_resume() -> anyhow::Result<()>
+{
+    let home = tempfile::tempdir()?;
+    let path = home.path().join("synthetic-instructions.md");
+    let replacement = "explicit before synthetic exact wait rule after";
+    std::fs::write(&path, replacement)?;
+    let thread_id = ThreadId::new();
+    let saved = "saved historical baseline";
+    let history = InitialHistory::Resumed(ResumedHistory {
+        history_revision: None,
+        conversation_id: thread_id,
+        rollout_path: None,
+        history: Arc::new(vec![RolloutItem::SessionMeta(Box::new(SessionMetaLine {
+            meta: SessionMeta {
+                id: thread_id,
+                session_id: thread_id.into(),
+                base_instructions: Some(BaseInstructions {
+                    text: saved.into(),
+                    provenance: None,
+                }),
+                ..SessionMeta::default()
+            },
+            git: None,
+        }))]),
+    });
+    let config_contents = format!(
+        "model_instructions_file = {:?}\n[instruction_overlays.model_baseline]\non_absent = \"skip\"\nedits = [{{ op = \"remove_exact_if_present\", text = \"synthetic exact wait rule\", expected_matches = 1 }}]\n",
+        path.to_str().unwrap()
+    );
+    let (session, events) = make_session_with_history_source_config_file_in_home(
+        history,
+        SessionSource::Cli,
+        LocalAgentControl::default(),
+        Some(&config_contents),
+        home.path(),
+        |_| {},
+    )
+    .await?;
+    assert_eq!(session.get_base_instructions().await.text, replacement);
+    let (turn, _) = session
+        .new_turn_with_sub_id(
+            "explicit-file".into(),
+            SessionSettingsUpdate::default(),
+            Default::default(),
+        )
+        .await?;
+    let step = StepContext::for_test(turn);
+    let prompt = super::turn::build_prompt(
+        Vec::new(),
+        &step,
+        session.get_prompt_base_instructions().await,
+        false,
+    );
+    let metadata = session
+        .responses_metadata(&step, CodexResponsesRequestKind::Turn)
+        .await;
+    let request = session.services.model_client.build_responses_request(
+        &prompt,
+        &step.settings.model_info,
+        None,
+        codex_protocol::config_types::ReasoningSummary::None,
+        None,
+        &metadata,
+        true,
+    )?;
+    let wire = serde_json::to_string(&request)?;
+    assert!(wire.contains(replacement));
+    assert!(!wire.contains(saved));
+    let mut observed = false;
+    while let Ok(event) = events.try_recv() {
+        observed |= matches!(event.msg, EventMsg::Warning(warning) if warning.message == "Instruction overlay: not applied: explicit instructions file.");
+    }
+    assert!(observed);
     Ok(())
 }
 
