@@ -27,7 +27,6 @@ use anyhow::Result;
 use rama_core::Service;
 use rama_core::error::BoxError;
 use rama_core::extensions::Extensions;
-use rama_core::extensions::ExtensionsMut;
 use rama_core::extensions::ExtensionsRef;
 use rama_core::service::BoxService;
 use rama_core::service::service_fn;
@@ -43,8 +42,8 @@ use rama_socks5::server::DefaultConnector;
 use rama_socks5::server::DefaultUdpRelay;
 use rama_socks5::server::udp::RelayRequest;
 use rama_socks5::server::udp::RelayResponse;
+use rama_net::client::Request as TcpRequest;
 use rama_tcp::TcpStream;
-use rama_tcp::client::Request as TcpRequest;
 use rama_tcp::server::TcpListener;
 use std::io;
 use std::net::SocketAddr;
@@ -559,15 +558,6 @@ impl ExtensionsRef for Socks5TcpConnection {
     }
 }
 
-impl ExtensionsMut for Socks5TcpConnection {
-    fn extensions_mut(&mut self) -> &mut Extensions {
-        match self {
-            Self::Direct(stream) => stream.extensions_mut(),
-            Self::Mitm { extensions, .. } | Self::DetectTls { extensions, .. } => extensions,
-        }
-    }
-}
-
 async fn proxy_socks5_tcp(
     request: ProxyRequest<TcpStream, Socks5TcpConnection>,
 ) -> Result<(), BoxError> {
@@ -580,9 +570,9 @@ async fn proxy_socks5_tcp(
         Socks5TcpConnection::Mitm {
             target, mode, mitm, ..
         } => {
-            source.extensions_mut().insert(ProxyTarget(target));
-            source.extensions_mut().insert(mode);
-            source.extensions_mut().insert(mitm);
+            source.extensions().insert(ProxyTarget(target));
+            source.extensions().insert(mode);
+            source.extensions().insert(mitm);
             mitm::mitm_stream(source).await.map_err(Into::into)
         }
         Socks5TcpConnection::DetectTls {
@@ -592,9 +582,9 @@ async fn proxy_socks5_tcp(
             state,
             ..
         } => {
-            source.extensions_mut().insert(ProxyTarget(target.clone()));
-            source.extensions_mut().insert(mode);
-            source.extensions_mut().insert(mitm);
+            source.extensions().insert(ProxyTarget(target.clone()));
+            source.extensions().insert(mode);
+            source.extensions().insert(mitm);
             let (is_tls, source) = mitm::peek_tls_prefix(source)
                 .await
                 .map_err(|err| -> BoxError { err.into() })?;
@@ -830,7 +820,6 @@ mod tests {
     use crate::state::build_config_state;
     use pretty_assertions::assert_eq;
     use rama_core::extensions::Extensions;
-    use rama_core::extensions::ExtensionsMut;
     use rama_net::address::HostWithPort;
     use rama_net::address::SocketAddress;
     use rama_socks5::server::udp::RelayDirection;
@@ -882,7 +871,7 @@ mod tests {
         });
         let mut request =
             TcpRequest::new(HostWithPort::try_from("example.com:443").expect("valid authority"));
-        request.extensions_mut().insert(state.clone());
+        request.extensions().insert(state.clone());
 
         let (result, events) = capture_events(|| async {
             handle_socks5_tcp(
@@ -927,7 +916,7 @@ mod tests {
         let state = state_for_settings(settings);
         let mut request =
             TcpRequest::new(HostWithPort::try_from("example.com:443").expect("valid authority"));
-        request.extensions_mut().insert(state.clone());
+        request.extensions().insert(state.clone());
 
         let result = handle_socks5_tcp(
             request,
@@ -952,7 +941,7 @@ mod tests {
         let state = state_for_settings(settings);
         let mut request =
             TcpRequest::new(HostWithPort::try_from("example.com:80").expect("valid authority"));
-        request.extensions_mut().insert(state.clone());
+        request.extensions().insert(state.clone());
 
         let (result, events) = capture_events(|| async {
             handle_socks5_tcp(
@@ -1004,7 +993,7 @@ mod tests {
         let mut request = TcpRequest::new(
             HostWithPort::try_from("api.openai.com:8443").expect("valid authority"),
         );
-        request.extensions_mut().insert(state.clone());
+        request.extensions().insert(state.clone());
 
         let result = handle_socks5_tcp(
             request,
@@ -1029,7 +1018,7 @@ mod tests {
         let state = state_for_settings(settings);
         let mut request =
             TcpRequest::new(HostWithPort::try_from("example.com:443").expect("valid authority"));
-        request.extensions_mut().insert(state.clone());
+        request.extensions().insert(state.clone());
 
         let err = handle_socks5_tcp(
             request,
@@ -1067,7 +1056,7 @@ mod tests {
         let state = state_for_settings(settings);
         let mut request =
             TcpRequest::new(HostWithPort::try_from("api.github.com:443").expect("valid authority"));
-        request.extensions_mut().insert(state.clone());
+        request.extensions().insert(state.clone());
 
         let result = handle_socks5_tcp(
             request,
@@ -1102,7 +1091,7 @@ mod tests {
         let state = state_for_settings(settings);
         let mut request =
             TcpRequest::new(HostWithPort::try_from("api.github.com:80").expect("valid authority"));
-        request.extensions_mut().insert(state.clone());
+        request.extensions().insert(state.clone());
 
         let err = handle_socks5_tcp(
             request,

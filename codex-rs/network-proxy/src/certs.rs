@@ -3,7 +3,6 @@ use anyhow::Result;
 use anyhow::anyhow;
 use base64::Engine as _;
 use codex_utils_home_dir::find_codex_home;
-use rama_net::tls::ApplicationProtocol;
 use rama_tls_rustls::dep::pki_types::CertificateDer;
 use rama_tls_rustls::dep::pki_types::PrivateKeyDer;
 use rama_tls_rustls::dep::pki_types::pem::PemObject;
@@ -108,10 +107,7 @@ impl ManagedMitmCa {
                 .with_no_client_auth()
                 .with_single_cert(vec![cert], key)
                 .context("failed to build rustls server config")?;
-        server_config.alpn_protocols = vec![
-            ApplicationProtocol::HTTP_2.as_bytes().to_vec(),
-            ApplicationProtocol::HTTP_11.as_bytes().to_vec(),
-        ];
+        server_config.alpn_protocols = vec![b"h2".to_vec(), b"http/1.1".to_vec()];
 
         Ok(TlsAcceptorData::from(server_config))
     }

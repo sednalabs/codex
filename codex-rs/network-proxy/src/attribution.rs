@@ -1,7 +1,7 @@
 use crate::state::NetworkProxyState;
 use rama_core::Service;
 use rama_core::error::BoxError;
-use rama_core::extensions::ExtensionsMut;
+use rama_core::extensions::ExtensionsRef;
 use rama_tcp::TcpStream;
 use std::io;
 use std::io::Write;
@@ -66,7 +66,7 @@ where
             )
             .into());
         }
-        stream.extensions_mut().insert(Arc::new(state));
+        stream.extensions().insert(Arc::new(state));
         self.inner.serve(stream).await.map_err(Into::into)
     }
 }
