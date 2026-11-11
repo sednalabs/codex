@@ -1,3 +1,6 @@
+use crate::context::ContextualUserFragment;
+use crate::context::ModelInstructions;
+use crate::context::ModelSwitchInstructions;
 use anyhow::Result;
 use codex_config::InstructionOverlayComponent;
 use codex_config::InstructionOverlaySelection;
@@ -69,6 +72,149 @@ pub(super) fn only_optional_removals(
                 })
             })
     })
+}
+
+/// Apply a baseline cleanup to a model-transition fragment only when its
+/// complete typed payload is exactly the selected, trusted model template.
+/// Other transitions can belong to old models or independent sources.
+pub(super) fn transform_current_model_transitions(
+    plan: &InstructionOverlaysToml,
+    model: &codex_protocol::openai_models::ModelInfo,
+    input: &mut [ResponseItem],
+) -> Result<(bool, bool)> {
+    if !input.iter().any(|item| matches!(item,
+        ResponseItem::Message { role, internal_chat_message_metadata_passthrough: Some(metadata), .. }
+            if role == "developer" && metadata.content_item_kinds.as_ref().is_some_and(|kinds| kinds.iter().any(|kind|
+                matches!(kind.as_str(), "model_switch.instructions" | "model.instructions")))
+    )) {
+        return Ok((false, false));
+    }
+    let rendered = codex_prompts::render_model_instructions(model);
+    let without_plan = codex_prompts::without_update_plan_instructions(&rendered);
+    let mut changed = false;
+    for template in [&rendered, &without_plan] {
+        for (kind, model_name) in [
+            ("model_switch.instructions", None),
+            ("model.instructions", None),
+            ("model.instructions", Some(model.slug.as_str())),
+        ] {
+            if kind == "model_switch.instructions"
+                && plan.model_switch_guidance.as_ref().is_some_and(|part| {
+                    !part.edits.is_empty() && part.applies_to_model(&model.slug)
+                })
+            {
+                continue;
+            }
+            let fragment = |body: &str| -> ResponseItem {
+                if kind == "model_switch.instructions" {
+                    ContextualUserFragment::into(ModelSwitchInstructions::new(body))
+                } else {
+                    ContextualUserFragment::into(ModelInstructions {
+                        model: model_name.map(str::to_owned),
+                        instructions: Some(body.to_owned()),
+                    })
+                }
+            };
+            let text = |item: ResponseItem| -> String {
+                let ResponseItem::Message { mut content, .. } = item else {
+                    unreachable!()
+                };
+                let ContentItem::InputText { text } = content.remove(0) else {
+                    unreachable!()
+                };
+                text
+            };
+            let expected = text(fragment(template));
+            for item in input.iter_mut() {
+                let ResponseItem::Message {
+                    id,
+                    role,
+                    content,
+                    internal_chat_message_metadata_passthrough: Some(metadata),
+                    ..
+                } = item
+                else {
+                    continue;
+                };
+                if role != "developer" {
+                    continue;
+                }
+                let Some(kinds) = metadata.content_item_kinds.as_ref() else {
+                    continue;
+                };
+                if kinds.len() != content.len() {
+                    continue;
+                }
+                for (kind_tag, content) in kinds.iter().zip(content.iter_mut()) {
+                    let ContentItem::InputText { text: current } = content else {
+                        continue;
+                    };
+                    if kind_tag.as_str() != kind || current != &expected {
+                        continue;
+                    }
+                    let updated = plan
+                        .apply_component(
+                            InstructionOverlayComponent::ModelBaseline,
+                            Some(template),
+                        )?
+                        .expect("present baseline stays present");
+                    if updated != *template {
+                        *current = text(fragment(&updated));
+                        *id = None;
+                        changed = true;
+                    }
+                }
+            }
+        }
+    }
+    // A tagged transition that still contains one of the exact requested
+    // literals did not match the trusted current template. Leave it intact
+    // and report the boundary instead of implying every instance was edited.
+    let blocked = input.iter().any(|item| {
+        let ResponseItem::Message {
+            role,
+            content,
+            internal_chat_message_metadata_passthrough: Some(metadata),
+            ..
+        } = item
+        else {
+            return false;
+        };
+        if role != "developer" {
+            return false;
+        }
+        let Some(kinds) = metadata.content_item_kinds.as_ref() else {
+            return false;
+        };
+        kinds.iter().zip(content).any(|(kind, content)| {
+            if kind.as_str() == "model_switch.instructions"
+                && plan.model_switch_guidance.as_ref().is_some_and(|part| {
+                    !part.edits.is_empty() && part.applies_to_model(&model.slug)
+                })
+            {
+                return false;
+            }
+            if !matches!(
+                kind.as_str(),
+                "model_switch.instructions" | "model.instructions"
+            ) {
+                return false;
+            }
+            let ContentItem::InputText { text } = content else {
+                return false;
+            };
+            plan.model_baseline.as_ref().is_some_and(|part| {
+                part.edits.iter().any(|edit| match edit {
+                    codex_config::InstructionOverlayEdit::RemoveExactIfPresent {
+                        text: target,
+                        ..
+                    } => text.contains(target),
+                    _ => false,
+                })
+            })
+        })
+    });
+    Ok((changed, blocked))
 }
 
 /// Classify exactly one retained baseline by its complete text, on the request copy.

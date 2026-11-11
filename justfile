@@ -204,6 +204,8 @@ log *args:
 log *args:
     $forwarded_args = @($args | Select-Object -Skip 1); if ($forwarded_args.Count -gt 0 -and $forwarded_args[0] -eq "--") { $forwarded_args = @($forwarded_args | Select-Object -Skip 1) }; cargo run -p codex-cli --bin logs_client -- @forwarded_args
 
-# Diagnostic-only resumed-session instruction checks.
+# Diagnostic-only prompt and existing interruption checks.
 core-subagent-surface-targeted:
     RUST_MIN_STACK=8388608 cargo test --locked -p codex-core --lib historical_overlay_ -- --test-threads=1
+    RUST_MIN_STACK=8388608 cargo test --locked -p codex-core --lib interrupting_regular_turn_waiting_on_startup_prewarm_emits_turn_aborted -- --test-threads=1
+    RUST_MIN_STACK=8388608 cargo test --locked -p codex-core --lib native_wait_renews -- --test-threads=1
