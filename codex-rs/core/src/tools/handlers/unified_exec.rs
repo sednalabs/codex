@@ -12,10 +12,20 @@ use crate::tools::handlers::parse_arguments;
 use crate::tools::handlers::resolve_tool_environment;
 use crate::tools::hook_names::HookToolName;
 use crate::tools::registry::PostToolUsePayload;
+use crate::unified_exec::MIN_YIELD_TIME_MS;
+use crate::unified_exec::UnifiedExecContext;
+use crate::unified_exec::UnifiedExecError;
+use crate::unified_exec::UnifiedExecProcessManager;
+use crate::unified_exec::WriteStdinRequest;
+use crate::unified_exec::output::CapturedStream;
+use crate::unified_exec::resolve_max_tokens;
+use crate::unified_exec::UNIFIED_EXEC_OUTPUT_MAX_BYTES;
+use codex_utils_head_tail_buffer::HeadTailBuffer;
 use codex_protocol::models::AdditionalPermissionProfile;
 use codex_utils_path_uri::PathUri;
 use futures::future::BoxFuture;
 use serde::Deserialize;
+use std::num::NonZeroUsize;
 use std::path::PathBuf;
 use std::sync::Arc;
 
@@ -79,6 +89,12 @@ pub(crate) struct ExecCommandArgs {
     #[serde(default)]
     max_output_tokens: Option<usize>,
     #[serde(default)]
+    wait_until_terminal: bool,
+    #[serde(default)]
+    max_wait_ms: Option<u64>,
+    #[serde(default)]
+    heartbeat_interval_ms: Option<u64>,
+    #[serde(default)]
     sandbox_permissions: Option<SandboxPermissions>,
     #[serde(default)]
     additional_permissions: Option<AdditionalPermissionProfile>,
@@ -120,6 +136,122 @@ fn default_write_stdin_yield_time_ms() -> u64 {
 
 fn default_tty() -> bool {
     false
+}
+
+const MAX_TERMINAL_WAIT_WINDOW_MS: u64 = 2 * 60 * 60 * 1_000;
+const APPROX_BYTES_PER_TOKEN: usize = 4;
+
+#[derive(Debug, Default, Clone, Copy, Deserialize)]
+pub(crate) struct TerminalWaitArgs {
+    #[serde(default)]
+    pub(crate) wait_until_terminal: bool,
+    #[serde(default)]
+    pub(crate) max_wait_ms: Option<u64>,
+    #[serde(default)]
+    pub(crate) heartbeat_interval_ms: Option<u64>,
+}
+
+fn resolve_terminal_wait_window_ms(args: TerminalWaitArgs, fallback_ms: u64) -> u64 {
+    args.heartbeat_interval_ms
+        .or(args.max_wait_ms)
+        .unwrap_or(fallback_ms)
+        .max(MIN_YIELD_TIME_MS)
+        .min(MAX_TERMINAL_WAIT_WINDOW_MS)
+}
+
+/// Keep repeated internal polls bounded while leaving the process and its session resumable.
+struct TerminalWaitOutput {
+    bytes: HeadTailBuffer,
+    original_tokens: usize,
+    omitted_bytes: usize,
+}
+
+impl TerminalWaitOutput {
+    fn new(max_bytes: usize) -> Self {
+        Self {
+            bytes: HeadTailBuffer::new(max_bytes.max(1)),
+            original_tokens: 0,
+            omitted_bytes: 0,
+        }
+    }
+
+    fn record_response(&mut self, response: &mut crate::tools::context::ExecCommandToolOutput) {
+        let captured = std::mem::replace(
+            &mut response.raw_output,
+            CapturedStream {
+                text: String::new(),
+                omitted_bytes: 0,
+            },
+        );
+        self.original_tokens = self.original_tokens.saturating_add(
+            response
+                .original_token_count
+                .unwrap_or_else(|| captured.text.len().div_ceil(APPROX_BYTES_PER_TOKEN)),
+        );
+        self.omitted_bytes = self.omitted_bytes.saturating_add(captured.omitted_bytes);
+        self.bytes.push_chunk(captured.text.into_bytes());
+    }
+
+    fn finish(self, response: &mut crate::tools::context::ExecCommandToolOutput) {
+        let omitted_bytes = self
+            .omitted_bytes
+            .saturating_add(self.bytes.omitted_bytes());
+        response.raw_output = CapturedStream {
+            text: String::from_utf8_lossy(&self.bytes.to_bytes()).into_owned(),
+            omitted_bytes,
+        };
+        response.original_token_count = Some(self.original_tokens);
+    }
+}
+
+pub(crate) async fn complete_terminal_wait(
+    manager: &UnifiedExecProcessManager,
+    context: &UnifiedExecContext,
+    initial_response: crate::tools::context::ExecCommandToolOutput,
+    args: TerminalWaitArgs,
+    fallback_yield_time_ms: u64,
+) -> Result<crate::tools::context::ExecCommandToolOutput, UnifiedExecError> {
+    if !args.wait_until_terminal || initial_response.process_id.is_none() {
+        return Ok(initial_response);
+    }
+
+    let wait_window_ms = resolve_terminal_wait_window_ms(args, fallback_yield_time_ms);
+    let max_output_bytes = resolve_max_tokens(initial_response.max_output_tokens)
+        .saturating_mul(APPROX_BYTES_PER_TOKEN)
+        .min(UNIFIED_EXEC_OUTPUT_MAX_BYTES);
+    let mut output = TerminalWaitOutput::new(max_output_bytes);
+    let mut response = initial_response;
+    let mut wall_time = response.wall_time;
+    output.record_response(&mut response);
+
+    while let Some(process_id) = response.process_id {
+        let terminal = manager.resolve_terminal(process_id).await?;
+        let next = tokio::select! {
+            _ = context.cancellation_token.cancelled() => break,
+            result = manager.write_stdin(
+                context,
+                WriteStdinRequest {
+                    terminal: &terminal,
+                    input: "",
+                    yield_time_ms: wait_window_ms,
+                    max_output_tokens: response.max_output_tokens,
+                    truncation_policy: response.truncation_policy,
+                    interaction_event: None,
+                },
+            ) => result,
+        };
+        response = match next {
+            Ok(response) => response,
+            Err(_) if context.cancellation_token.is_cancelled() => break,
+            Err(err) => return Err(err),
+        };
+        wall_time += response.wall_time;
+        output.record_response(&mut response);
+    }
+
+    response.wall_time = wall_time;
+    output.finish(&mut response);
+    Ok(response)
 }
 
 #[derive(Debug)]

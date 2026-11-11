@@ -20,6 +20,8 @@ use serde::Deserialize;
 
 use super::super::shell_spec::create_write_stdin_tool;
 use super::post_unified_exec_tool_use_payload;
+use super::TerminalWaitArgs;
+use super::complete_terminal_wait;
 
 #[derive(Debug, Deserialize)]
 struct WriteStdinArgs {
@@ -29,6 +31,12 @@ struct WriteStdinArgs {
     yield_time_ms: u64,
     #[serde(default)]
     max_output_tokens: Option<usize>,
+    #[serde(default)]
+    wait_until_terminal: bool,
+    #[serde(default)]
+    max_wait_ms: Option<u64>,
+    #[serde(default)]
+    heartbeat_interval_ms: Option<u64>,
 }
 
 impl WriteStdinArgs {
@@ -87,9 +95,16 @@ impl WriteStdinHandler {
             ));
         };
         let args = WriteStdinArgs::parse(&payload)?;
+        let terminal_wait = TerminalWaitArgs {
+            wait_until_terminal: args.wait_until_terminal,
+            max_wait_ms: args.max_wait_ms,
+            heartbeat_interval_ms: args.heartbeat_interval_ms,
+        };
+        let fallback_yield_time_ms = args.yield_time_ms;
+        let manager = &session.services.unified_exec_manager;
         let context =
             UnifiedExecContext::new(session.clone(), step_context, cancellation_token, call_id);
-        let response = session
+        let response = manager
             .services
             .unified_exec_manager
             .write_stdin(
@@ -124,6 +139,20 @@ impl WriteStdinHandler {
                 };
                 FunctionCallError::RespondToModel(message)
             })?;
+
+        let response = complete_terminal_wait(
+            manager,
+            &context,
+            response,
+            terminal_wait,
+            fallback_yield_time_ms,
+        )
+        .await
+        .map_err(|err| {
+            FunctionCallError::RespondToModel(format!(
+                "write_stdin failed while waiting: {err}"
+            ))
+        })?;
 
         Ok(boxed_tool_output(response))
     }
