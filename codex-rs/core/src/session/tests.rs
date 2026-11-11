@@ -7843,6 +7843,16 @@ async fn historical_overlay_optional_failures_preserve_the_selected_baseline() -
             true,
             "blocked",
         ),
+        (
+            "mixed-required",
+            "before synthetic exact wait rule synthetic exact wait rule after",
+            Some(BaseInstructionsProvenance::Model {
+                model: "synthetic-model".into(),
+            }),
+            true,
+            true,
+            "blocked: optional baseline mismatch",
+        ),
     ] {
         let thread_id = ThreadId::new();
         let history = InitialHistory::Resumed(ResumedHistory {
@@ -7886,6 +7896,16 @@ async fn historical_overlay_optional_failures_preserve_the_selected_baseline() -
                     }),
                     ..Default::default()
                 };
+                if name == "mixed-required" {
+                    config.instruction_overlays.developer_guidance =
+                        Some(InstructionOverlayComponentToml {
+                            edits: vec![InstructionOverlayEdit::RemoveExact {
+                                text: "required independent edit".into(),
+                                expected_matches: 1,
+                            }],
+                            ..Default::default()
+                        });
+                }
             },
         )
         .await?;
@@ -8182,6 +8202,29 @@ async fn historical_overlay_public_models_keep_unrelated_instructions() -> anyho
                 model: Some(slug.into()),
                 instructions: Some(current_baseline.clone()),
             });
+        let mut protected_transition: ResponseItem = ContextualUserFragment::into(
+            crate::context::ModelSwitchInstructions::new(current_baseline.clone()),
+        );
+        if let ResponseItem::Message {
+            internal_chat_message_metadata_passthrough: Some(metadata),
+            ..
+        } = &mut protected_transition
+        {
+            metadata.content_item_metadata.as_mut().unwrap()[0].provenance =
+                codex_protocol::models::ContentItemProvenance::DeveloperInstructions {
+                    from_additional_requirements: true,
+                };
+        }
+        let mut unknown_origin_transition: ResponseItem = ContextualUserFragment::into(
+            crate::context::ModelSwitchInstructions::new(current_baseline.clone()),
+        );
+        if let ResponseItem::Message {
+            internal_chat_message_metadata_passthrough: Some(metadata),
+            ..
+        } = &mut unknown_origin_transition
+        {
+            metadata.content_item_metadata = None;
+        }
         let unknown_transition: ResponseItem = ContextualUserFragment::into(
             crate::context::ModelSwitchInstructions::new(format!("unclassified {WAIT}")),
         );
@@ -8200,6 +8243,8 @@ async fn historical_overlay_public_models_keep_unrelated_instructions() -> anyho
                 protected_item,
                 transition,
                 incremental_transition,
+                protected_transition,
+                unknown_origin_transition,
                 unknown_transition,
             ],
             &step,
@@ -8241,6 +8286,12 @@ async fn historical_overlay_public_models_keep_unrelated_instructions() -> anyho
             ))
         ));
         assert!(has_text(&request, &unknown_text));
+        assert!(has_text(
+            &request,
+            &fragment_text(&ContextualUserFragment::into(
+                crate::context::ModelSwitchInstructions::new(current_baseline.clone()),
+            ))
+        ));
         let mut saw_blocked_transition = false;
         while let Ok(event) = events.try_recv() {
             saw_blocked_transition |= matches!(event.msg, EventMsg::Warning(warning) if warning.message == "Instruction overlay: blocked: unclassified model transition.");

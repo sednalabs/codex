@@ -142,10 +142,21 @@ pub(super) fn transform_current_model_transitions(
                 let Some(kinds) = metadata.content_item_kinds.as_ref() else {
                     continue;
                 };
-                if kinds.len() != content.len() {
+                let Some(sources) = metadata.content_item_metadata.as_ref() else {
+                    continue;
+                };
+                if kinds.len() != content.len() || sources.len() != content.len() {
                     continue;
                 }
-                for (kind_tag, content) in kinds.iter().zip(content.iter_mut()) {
+                for ((kind_tag, source), content) in
+                    kinds.iter().zip(sources).zip(content.iter_mut())
+                {
+                    if !matches!(
+                        source.provenance,
+                        ContentItemProvenance::Harness { hook: false }
+                    ) {
+                        continue;
+                    }
                     let ContentItem::InputText { text: current } = content else {
                         continue;
                     };
@@ -257,12 +268,24 @@ pub(super) fn classify_retained_baseline(
         {
             anyhow::bail!("instruction overlay blocked: misaligned baseline metadata");
         }
-        for (kind, content) in kinds.iter_mut().zip(content.iter()) {
+        for (index, (kind, content)) in kinds.iter_mut().zip(content.iter()).enumerate() {
             if !matches!(
                 kind.as_str(),
                 "model.base_instructions" | "client.base_instructions"
             ) {
                 continue;
+            }
+            if metadata
+                .content_item_metadata
+                .as_ref()
+                .is_some_and(|sources| {
+                    !matches!(
+                        sources[index].provenance,
+                        ContentItemProvenance::Harness { hook: false }
+                    )
+                })
+            {
+                anyhow::bail!("instruction overlay blocked: protected baseline source");
             }
             let ContentItem::InputText { text } = content else {
                 anyhow::bail!("instruction overlay blocked: baseline is not text");
@@ -971,6 +994,26 @@ mod tests {
         assert_eq!(original, vec![retained("other baseline")]);
         let mut duplicate = vec![retained("expected baseline"), retained("expected baseline")];
         assert!(classify_retained_baseline(&mut duplicate, &["expected baseline"], false).is_err());
+    }
+
+    #[test]
+    fn retained_baseline_never_adopts_explicitly_protected_attribution() {
+        let mut protected = retained("expected baseline");
+        let ResponseItem::Message {
+            internal_chat_message_metadata_passthrough: Some(metadata),
+            ..
+        } = &mut protected
+        else {
+            unreachable!()
+        };
+        metadata.content_item_metadata.as_mut().unwrap()[0].provenance =
+            ContentItemProvenance::DeveloperInstructions {
+                from_additional_requirements: true,
+            };
+        let mut request = vec![protected];
+        let before = request.clone();
+        assert!(classify_retained_baseline(&mut request, &["expected baseline"], false).is_err());
+        assert_eq!(request, before);
     }
 
     #[test]
