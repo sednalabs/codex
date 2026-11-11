@@ -36,7 +36,7 @@ pub(crate) async fn record_command(
     let Ok(Ok(Some(otel))) = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
         codex_core::otel_init::build_provider(
             &config,
-            env!("CARGO_PKG_VERSION"),
+            crate::CODEX_CLI_VERSION,
             /*service_name_override*/ None,
             analytics_default_enabled,
         )

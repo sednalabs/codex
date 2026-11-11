@@ -47,7 +47,7 @@ pub(super) async fn record_start(
     let Ok(Ok(Some(otel))) = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
         codex_app_server_client::build_otel_provider(
             config,
-            env!("CARGO_PKG_VERSION"),
+            crate::version::CODEX_CLI_VERSION,
             /*service_name_override*/ None,
             /*default_analytics_enabled*/ true,
         )

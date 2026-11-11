@@ -28,7 +28,7 @@ pub(super) fn runtime_check() -> DoctorCheck {
     let platform = format!("{os}-{arch}");
     let install_method = install_method_name(&install_context);
     let mut details = vec![
-        format!("version: {}", env!("CARGO_PKG_VERSION")),
+        format!("version: {}", crate::CODEX_CLI_VERSION),
         format!("platform: {platform}"),
         format!(
             "install method: {}",
