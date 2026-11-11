@@ -36,6 +36,7 @@ on:
         options:
           - prepare
           - package
+          - convergence-package
 
 concurrency:
   group: sedna-first-package-${{ github.event.pull_request.number || github.ref }}-${{ inputs.operation || 'package' }}
@@ -89,6 +90,28 @@ jobs:
             echo "The identity checkout does not match the workflow host SHA." >&2
             exit 1
           fi
+          # Only this explicitly pinned convergence candidate is eligible.
+          # Main remains the workflow host; no branch or caller-supplied SHA is trusted.
+          convergence_package=false
+          if [[ "${EVENT_NAME}" == "workflow_dispatch" && "${OPERATION_INPUT}" == "convergence-package" ]]; then
+            if [[ "${EVENT_REF}" != "refs/heads/main" || "${SOURCE_SHA}" != "${WORKFLOW_HOST_SHA}" ]]; then
+              echo "Convergence packages must use protected main as workflow host." >&2
+              exit 1
+            fi
+            approved_source=413530dc8106c710c1cd7711b2d18e9af4788d98
+            approved_tree=b8ec87b1c4bec855116be5d8e6568cf68b318f4d
+            approved_upstream=b32ada5320b043bde03a10edab6b88fc126812b4
+            git fetch --no-tags origin refs/heads/work/w14939-upstream-convergence-20261109
+            if ! git merge-base --is-ancestor "${approved_source}" FETCH_HEAD ||
+               ! git merge-base --is-ancestor "${approved_upstream}" "${approved_source}" ||
+               [[ "$(git rev-parse "${approved_source}^{tree}")" != "${approved_tree}" ]]; then
+              echo "Approved convergence source, tree, branch or upstream ancestry mismatch." >&2
+              exit 1
+            fi
+            SOURCE_SHA="${approved_source}"
+            convergence_package=true
+          fi
+
           if ! git cat-file -e "${SOURCE_SHA}^{commit}"; then
             echo "The event source commit is not present in the workflow-host checkout." >&2
             exit 1
@@ -134,15 +157,16 @@ jobs:
                 ;;
             esac
           elif [[ "${EVENT_NAME}" == "workflow_dispatch" ]]; then
-            if [[ "${EVENT_REF}" != "refs/heads/main" || "${SOURCE_SHA}" != "${WORKFLOW_HOST_SHA}" ]]; then
-              echo "Manual runs must use this protected main workflow-host commit as their source." >&2
+            if [[ "${EVENT_REF}" != "refs/heads/main" ]] ||
+               { [[ "${convergence_package}" != true ]] && [[ "${SOURCE_SHA}" != "${WORKFLOW_HOST_SHA}" ]]; }; then
+              echo "Manual runs require protected main and a permitted exact source." >&2
               exit 1
             fi
-            if [[ "${OPERATION_INPUT}" != "prepare" && "${OPERATION_INPUT}" != "package" ]]; then
-              echo "Manual operation must be prepare or package." >&2
+            if [[ "${OPERATION_INPUT}" != "prepare" && "${OPERATION_INPUT}" != "package" && "${OPERATION_INPUT}" != "convergence-package" ]]; then
+              echo "Manual operation must be prepare, package, or convergence-package." >&2
               exit 1
             fi
-            if ! git merge-base --is-ancestor "${SELECTED_BASE_SHA}" "${SOURCE_SHA}"; then
+            if [[ "${convergence_package}" != true ]] && ! git merge-base --is-ancestor "${SELECTED_BASE_SHA}" "${SOURCE_SHA}"; then
               package_lineage_eligible=false
             fi
           else
@@ -231,6 +255,9 @@ jobs:
             echo "The preparation checkout does not match the frozen workflow-host identity." >&2
             exit 1
           fi
+          if ! git cat-file -e "${SOURCE_SHA}^{commit}" 2>/dev/null; then
+            git fetch --no-tags origin refs/heads/work/w14939-upstream-convergence-20261109
+          fi
           if [[ "$(git rev-parse "${SOURCE_SHA}^{tree}")" != "${SOURCE_TREE}" ]]; then
             echo "The preparation source does not match the frozen source tree." >&2
             exit 1
@@ -241,10 +268,18 @@ jobs:
             exit 1
           fi
 
-      - name: Set up standard CI tools and Bazel
-        uses: ./.github/actions/setup-bazel-ci
+      - name: Set up standard CI tools
+        id: setup_ci
+        uses: ./.github/actions/setup-ci
+
+      - name: Set up Bazel
+        uses: bazel-contrib/setup-bazel@c5acdfb288317d0b5c0bbd7a396a3dc868bb0f86 # 0.19.0
         with:
-          target: x86_64-unknown-linux-gnu
+          bazelisk-version: 1.28.1
+          output-base: ${{ steps.setup_ci.outputs.bazel-output-base }}
+          bazelisk-cache: true
+          disk-cache: ${{ github.workflow }}
+          cache-save: ${{ github.event_name == 'push' && (github.ref == 'refs/heads/main' || github.ref == 'refs/heads/upstream-main') }}
 
       - uses: dtolnay/rust-toolchain@e081816240890017053eacbb1bdf337761dc5582 # 1.95.0
         with:
@@ -361,7 +396,7 @@ jobs:
 
   build-package:
     name: Build exact Linux package pair (${{ matrix.target }})
-    if: ${{ needs.identity.outputs.package_available == 'true' && needs.prepare-source.outputs.source_ready == 'true' && (github.event_name == 'pull_request' || (github.event_name == 'workflow_dispatch' && inputs.operation == 'package')) }}
+    if: ${{ needs.identity.outputs.package_available == 'true' && needs.prepare-source.outputs.source_ready == 'true' && (github.event_name == 'pull_request' || (github.event_name == 'workflow_dispatch' && (inputs.operation == 'package' || inputs.operation == 'convergence-package'))) }}
     needs:
       - identity
       - prepare-source
@@ -410,6 +445,9 @@ jobs:
           if [[ "$(git rev-parse HEAD)" != "${WORKFLOW_HOST_SHA}" || "$(git rev-parse HEAD^{tree})" != "${WORKFLOW_HOST_TREE}" ]]; then
             echo "The package checkout does not match the frozen workflow-host identity." >&2
             exit 1
+          fi
+          if ! git cat-file -e "${SOURCE_SHA}^{commit}" 2>/dev/null; then
+            git fetch --no-tags origin refs/heads/work/w14939-upstream-convergence-20261109
           fi
           if [[ "$(git rev-parse "${SOURCE_SHA}^{tree}")" != "${SOURCE_TREE}" ]]; then
             echo "The package source does not match the frozen source tree." >&2
@@ -551,7 +589,7 @@ jobs:
 
   consume-package:
     name: Consume exact downloaded packages (${{ matrix.target }})
-    if: ${{ needs.identity.outputs.package_available == 'true' && needs.prepare-source.outputs.source_ready == 'true' && (github.event_name == 'pull_request' || (github.event_name == 'workflow_dispatch' && inputs.operation == 'package')) }}
+    if: ${{ needs.identity.outputs.package_available == 'true' && needs.prepare-source.outputs.source_ready == 'true' && (github.event_name == 'pull_request' || (github.event_name == 'workflow_dispatch' && (inputs.operation == 'package' || inputs.operation == 'convergence-package'))) }}
     needs:
       - identity
       - prepare-source
@@ -599,6 +637,9 @@ jobs:
           if [[ "$(git rev-parse HEAD)" != "${WORKFLOW_HOST_SHA}" || "$(git rev-parse HEAD^{tree})" != "${WORKFLOW_HOST_TREE}" ]]; then
             echo "The consumer checkout does not match the frozen workflow-host identity." >&2
             exit 1
+          fi
+          if ! git cat-file -e "${SOURCE_SHA}^{commit}" 2>/dev/null; then
+            git fetch --no-tags origin refs/heads/work/w14939-upstream-convergence-20261109
           fi
           if [[ "$(git rev-parse "${SOURCE_SHA}^{tree}")" != "${SOURCE_TREE}" ]]; then
             echo "The consumer source does not match the frozen source tree." >&2
