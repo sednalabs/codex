@@ -245,7 +245,7 @@ jobs:
           else
             probe_status=$?
           fi
-          probe_output="$(printf '%s' "${probe_output}" | LC_ALL=C tr -cd '\\11\\12\\15\\40-\\176' | tr '\\r\\n' ' ' | cut -c1-300)"
+          probe_output="$(printf '%s' "${probe_output}" | LC_ALL=C tr -cd '[:print:]' | cut -c1-300)"
           printf 'unshare -Ur true exit=%s\n' "${probe_status}"
           if [[ -n "${probe_output}" ]]; then
             printf 'unshare -Ur true output=%s\n' "${probe_output}"
