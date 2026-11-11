@@ -406,6 +406,45 @@ async fn known_high_state_ledger_preserves_synthetic_effects_and_rejects_mismatc
     );
     pool.close().await;
 
+    // Ordinary thread metadata writes must not reset columns owned by the
+    // accepted extension, or delete its independently stored tool metadata.
+    let runtime = crate::StateRuntime::init(sqlite.clone(), "synthetic-provider".into())
+        .await
+        .unwrap();
+    let thread_id = codex_protocol::ThreadId::default();
+    let metadata = crate::ThreadMetadataBuilder::new(
+        thread_id,
+        sqlite_home.path().join("synthetic-rollout.jsonl"),
+        chrono::Utc::now(),
+        codex_protocol::protocol::SessionSource::Cli,
+    )
+    .build("synthetic-provider");
+    runtime.upsert_thread(&metadata).await.unwrap();
+    let pool = sqlite
+        .open_read_write_pool(&sqlite.state_db_path())
+        .await
+        .unwrap();
+    sqlx::query("UPDATE threads SET configured_identity_provenance = 2 WHERE id = ?")
+        .bind(thread_id.to_string())
+        .execute(&pool)
+        .await
+        .unwrap();
+    sqlx::query("INSERT INTO thread_dynamic_tools (thread_id, position, name, description, input_schema, persist_on_resume, capability_json, namespace_description) VALUES (?, 0, 'tool', 'description', '{}', 0, '{\"k\":1}', 'namespace')")
+        .bind(thread_id.to_string()).execute(&pool).await.unwrap();
+    runtime.upsert_thread(&metadata).await.unwrap();
+    let identity: i64 =
+        sqlx::query_scalar("SELECT configured_identity_provenance FROM threads WHERE id = ?")
+            .bind(thread_id.to_string())
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+    let tool: (bool, String, String) = sqlx::query_as("SELECT persist_on_resume, capability_json, namespace_description FROM thread_dynamic_tools WHERE thread_id = ?")
+        .bind(thread_id.to_string()).fetch_one(&pool).await.unwrap();
+    assert_eq!(identity, 2);
+    assert_eq!(tool, (false, "{\"k\":1}".into(), "namespace".into()));
+    pool.close().await;
+    drop(runtime);
+
     // Each identity is individually required, and rejection happens before
     // any migration can mutate the ledger or stored witness.
     for offset in 0..7_i64 {
