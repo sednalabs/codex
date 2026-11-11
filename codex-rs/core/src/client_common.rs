@@ -36,6 +36,9 @@ pub struct Prompt {
     /// where `base_instructions` is intentionally empty and the text is in history.
     pub(crate) overlay_base_instructions: Option<BaseInstructions>,
 
+    /// The selected turn still uses the trusted built-in model source.
+    pub(crate) overlay_current_model_trusted: bool,
+
     /// Optional the output schema for the model's response.
     pub output_schema: Option<Value>,
 
@@ -55,6 +58,7 @@ impl Default for Prompt {
             parallel_tool_calls: false,
             base_instructions: BaseInstructions::default(),
             overlay_base_instructions: None,
+            overlay_current_model_trusted: false,
             output_schema: None,
             output_schema_strict: true,
             prompt_cache_ttl: None,

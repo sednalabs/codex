@@ -337,6 +337,9 @@ async fn run_compact_task_inner_impl(
             input: turn_input,
             base_instructions,
             overlay_base_instructions: resolved_overlay_base.clone(),
+            overlay_current_model_trusted: crate::session::session::trusted_model_overlay_source(
+                &turn_context.config,
+            ),
             prompt_cache_ttl: turn_context.prompt_cache_ttl,
             cyber_access_program: turn_context.cyber_access_program,
             ..Default::default()

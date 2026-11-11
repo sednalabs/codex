@@ -8248,11 +8248,37 @@ async fn historical_overlay_public_models_keep_unrelated_instructions() -> anyho
         assert!(saw_blocked_transition);
         let repeat = serde_json::to_value(make_request(&model)?)?;
         assert!(has_text(&repeat, &expected));
+        while let Ok(event) = events.try_recv() {
+            assert!(
+                !matches!(event.msg, EventMsg::Warning(warning) if warning.message.starts_with("Instruction overlay:")),
+                "the same outcomes must not be repeated within a turn"
+            );
+        }
         let mut other = model.clone();
         other.slug = "different-model".into();
         let changed_model_request = serde_json::to_value(make_request(&other)?)?;
         assert!(has_text(&changed_model_request, &baseline));
         assert!(has_text(&changed_model_request, &protected));
+        let mut untrusted_prompt = prompt.clone();
+        untrusted_prompt.overlay_current_model_trusted = false;
+        let untrusted = session.services.model_client.build_responses_request(
+            &untrusted_prompt,
+            &model,
+            None,
+            codex_protocol::config_types::ReasoningSummary::None,
+            None,
+            &metadata,
+            true,
+        )?;
+        let untrusted = serde_json::to_value(untrusted)?;
+        assert!(has_text(&untrusted, &baseline));
+        assert!(has_text(&untrusted, &protected));
+        assert!(has_text(
+            &untrusted,
+            &fragment_text(&ContextualUserFragment::into(
+                crate::context::ModelSwitchInstructions::new(current_baseline.clone()),
+            ))
+        ));
         assert_eq!(session.get_base_instructions().await.text, baseline);
     }
     Ok(())
