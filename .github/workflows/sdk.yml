@@ -74,25 +74,8 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          # Match the current ubuntu-24.04 hosted-image policy: one retry lets
-          # apt advance past a stalled mirror instead of spending the default retries there.
-          apt_args=(
-            -o Acquire::Retries=1
-            -o Acquire::http::Timeout=15
-            -o Acquire::https::Timeout=15
-          )
-          echo "Runner apt defaults (per-command overrides follow):"
-          apt-config dump Acquire::Retries Acquire::http::Timeout Acquire::https::Timeout
-          echo "Per-command apt overrides: retries=1, HTTP timeout=15s, HTTPS timeout=15s"
-          for host in azure.archive.ubuntu.com archive.ubuntu.com security.ubuntu.com packages.microsoft.com; do
-            if getent ahostsv4 "${host}" >/dev/null 2>&1; then
-              echo "DNS resolved: ${host}"
-            else
-              echo "DNS unresolved: ${host}"
-            fi
-          done
-          sudo apt-get "${apt_args[@]}" update -y
-          sudo DEBIAN_FRONTEND=noninteractive apt-get "${apt_args[@]}" install -y --no-install-recommends pkg-config libcap-dev
+          sudo apt-get update -y
+          sudo DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends pkg-config libcap-dev
 
       - name: Setup pnpm
         uses: pnpm/action-setup@0ebf47130e4866e96fce0953f49152a61190b271 # v5
