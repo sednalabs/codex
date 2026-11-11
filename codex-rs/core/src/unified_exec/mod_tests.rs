@@ -132,6 +132,7 @@ async fn exec_command_with_tty(
         let entry = ProcessEntry {
             process: Arc::clone(&process),
             call_id: context.call_id.clone(),
+            turn_id: context.turn.sub_id.clone(),
             process_id,
             cwd: cwd.clone().into(),
             initial_exec_command_active: Arc::new(std::sync::atomic::AtomicBool::new(true)),
@@ -668,6 +669,7 @@ async fn terminating_initial_exec_command_rechecks_initial_response_state() -> a
         ProcessEntry {
             process,
             call_id: "call".to_string(),
+            turn_id: turn.sub_id.clone(),
             process_id,
             cwd: cwd.into(),
             initial_exec_command_active: Arc::new(std::sync::atomic::AtomicBool::new(true)),
@@ -742,6 +744,7 @@ async fn terminating_during_stdin_poll_returns_exited_response() -> anyhow::Resu
         ProcessEntry {
             process: Arc::clone(&process),
             call_id: "call".to_string(),
+            turn_id: turn.sub_id.clone(),
             process_id,
             cwd: cwd.into(),
             initial_exec_command_active: Arc::new(std::sync::atomic::AtomicBool::new(false)),

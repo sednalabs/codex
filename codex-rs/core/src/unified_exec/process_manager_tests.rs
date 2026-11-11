@@ -291,10 +291,57 @@ async fn first_output_wait_returns_for_live_process_and_times_out_without_output
     .expect("output should wake before the deadline");
     assert!(early);
     assert_eq!(collected.to_bytes(), b"ready".to_vec());
+
+    output.lock().await.push_chunk(b"already ready".to_vec());
+    let (collected, early) = UnifiedExecProcessManager::collect_output_until_deadline(
+        &output,
+        &notify,
+        &closed,
+        &closed_notify,
+        &cancel,
+        /*pause_state*/ None,
+        Instant::now(),
+        /*return_on_output*/ true,
+    )
+    .await;
+    assert!(early);
+    assert_eq!(collected.to_bytes(), b"already ready".to_vec());
+}
+
+#[tokio::test(start_paused = true)]
+async fn quiet_output_collection_survives_five_minutes_and_wakes_on_exit() {
+    let output = Arc::new(tokio::sync::Mutex::new(HeadTailBuffer::default()));
+    let notify = Arc::new(Notify::new());
+    let closed = Arc::new(AtomicBool::new(false));
+    let closed_notify = Arc::new(Notify::new());
+    let cancel = CancellationToken::new();
+    let collect = UnifiedExecProcessManager::collect_output_until_deadline(
+        &output,
+        &notify,
+        &closed,
+        &closed_notify,
+        &cancel,
+        /*pause_state*/ None,
+        Instant::now() + Duration::from_secs(3_600),
+        /*return_on_output*/ false,
+    );
+    tokio::pin!(collect);
+
+    tokio::select! {
+        _ = &mut collect => panic!("quiet wait returned before its configured deadline"),
+        _ = tokio::time::sleep(Duration::from_secs(301)) => {}
+    }
+
+    closed.store(true, Ordering::Release);
+    cancel.cancel();
+    closed_notify.notify_waiters();
+    let (collected, returned_on_output) = collect.await;
+    assert_eq!(collected.total_bytes(), 0);
+    assert!(!returned_on_output);
 }
 
 #[tokio::test]
-async fn output_collection_stays_bounded_across_repeated_drains() {
+async fn quiet_output_collection_stays_bounded_until_exit() {
     let output_buffer = Arc::new(tokio::sync::Mutex::new(HeadTailBuffer::default()));
     let output_notify = Arc::new(Notify::new());
     let output_closed = Arc::new(AtomicBool::new(false));
@@ -317,16 +364,6 @@ async fn output_collection_stays_bounded_across_repeated_drains() {
                 vec![byte; crate::unified_exec::UNIFIED_EXEC_OUTPUT_MAX_BYTES],
             );
             output_notify.notify_one();
-            tokio::time::timeout(Duration::from_secs(1), async {
-                loop {
-                    if output_buffer.lock().await.retained_bytes() == 0 {
-                        break;
-                    }
-                    tokio::task::yield_now().await;
-                }
-            })
-            .await
-            .expect("collector should drain each chunk");
         }
 
         output_closed.store(true, Ordering::Release);
@@ -345,6 +382,54 @@ async fn output_collection_stays_bounded_across_repeated_drains() {
         ]);
     }
     assert_eq!(collected, expected);
+}
+
+#[tokio::test]
+async fn dropping_quiet_output_collection_preserves_buffer_for_next_wait() {
+    let output = Arc::new(tokio::sync::Mutex::new(HeadTailBuffer::default()));
+    let notify = Arc::new(Notify::new());
+    let closed = Arc::new(AtomicBool::new(false));
+    let closed_notify = Arc::new(Notify::new());
+    let cancel = CancellationToken::new();
+    output
+        .lock()
+        .await
+        .push_chunk(b"recoverable output".to_vec());
+
+    {
+        let collect = UnifiedExecProcessManager::collect_output_until_deadline(
+            &output,
+            &notify,
+            &closed,
+            &closed_notify,
+            &cancel,
+            /*pause_state*/ None,
+            Instant::now() + Duration::from_secs(60),
+            /*return_on_output*/ false,
+        );
+        tokio::pin!(collect);
+        tokio::select! {
+            biased;
+            _ = &mut collect => panic!("quiet collection returned before exit"),
+            _ = tokio::task::yield_now() => {}
+        }
+    }
+
+    closed.store(true, Ordering::Release);
+    cancel.cancel();
+    let (recovered, early) = UnifiedExecProcessManager::collect_output_until_deadline(
+        &output,
+        &notify,
+        &closed,
+        &closed_notify,
+        &cancel,
+        /*pause_state*/ None,
+        Instant::now() + Duration::from_secs(1),
+        /*return_on_output*/ false,
+    )
+    .await;
+    assert!(!early);
+    assert_eq!(recovered.to_bytes(), b"recoverable output".to_vec());
 }
 
 #[tokio::test]
@@ -590,6 +675,83 @@ fn pruning_protects_recent_processes_even_if_exited() {
 
 #[cfg(unix)]
 #[tokio::test]
+async fn interrupted_exec_lookup_is_scoped_to_turn_and_call() {
+    let process = Arc::new(
+        crate::unified_exec::process_tests::remote_process(
+            codex_exec_server::WriteStatus::Accepted,
+            /*terminate_error*/ None,
+        )
+        .await,
+    );
+    let manager = UnifiedExecProcessManager::default();
+    let cwd = PathUri::parse("file:///tmp").expect("test cwd should be valid");
+    {
+        let mut store = manager.process_store.lock().await;
+        for (process_id, turn_id) in [(1, "turn-a"), (2, "turn-b")] {
+            store.processes.insert(
+                process_id,
+                ProcessEntry {
+                    process: Arc::clone(&process),
+                    call_id: "shared-call".to_string(),
+                    turn_id: turn_id.to_string(),
+                    process_id,
+                    cwd: cwd.clone(),
+                    initial_exec_command_active: Arc::new(AtomicBool::new(false)),
+                    hook_command: String::new(),
+                    tty: false,
+                    network_approval: None,
+                    session: std::sync::Weak::new(),
+                    last_used: Instant::now(),
+                    completion_cause: Arc::new(std::sync::atomic::AtomicU8::new(0)),
+                },
+            );
+        }
+    }
+    assert_eq!(
+        manager
+            .interrupted_exec_process_id("turn-a", "shared-call")
+            .await,
+        Some(1)
+    );
+    assert_eq!(
+        manager
+            .interrupted_exec_process_id("other-turn", "shared-call")
+            .await,
+        None
+    );
+    assert_eq!(
+        manager
+            .interrupted_exec_process_id("turn-a", "other-call")
+            .await,
+        None
+    );
+    manager.process_store.lock().await.processes.insert(
+        3,
+        ProcessEntry {
+            process,
+            call_id: "shared-call".to_string(),
+            turn_id: "turn-a".to_string(),
+            process_id: 3,
+            cwd,
+            initial_exec_command_active: Arc::new(AtomicBool::new(false)),
+            hook_command: String::new(),
+            tty: false,
+            network_approval: None,
+            session: std::sync::Weak::new(),
+            last_used: Instant::now(),
+            completion_cause: Arc::new(std::sync::atomic::AtomicU8::new(0)),
+        },
+    );
+    assert_eq!(
+        manager
+            .interrupted_exec_process_id("turn-a", "shared-call")
+            .await,
+        None
+    );
+}
+
+#[cfg(unix)]
+#[tokio::test]
 async fn pruning_does_not_evict_live_process_while_exited_process_is_finalizing() {
     let exited_process = Arc::new(
         crate::unified_exec::process_tests::remote_process(
@@ -627,6 +789,7 @@ async fn pruning_does_not_evict_live_process_while_exited_process_is_finalizing(
                     Arc::clone(&live_process)
                 },
                 call_id: format!("call-{process_id}"),
+                turn_id: "turn".to_string(),
                 process_id,
                 cwd: cwd.clone(),
                 initial_exec_command_active: Arc::new(AtomicBool::new(false)),

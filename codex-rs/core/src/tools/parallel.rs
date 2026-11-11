@@ -59,6 +59,50 @@ fn is_multi_agent_spawn_call(call: &ToolCall, multi_agent_v2_namespace: Option<&
         && matches!(&call.payload, ToolPayload::Function { .. })
 }
 
+fn is_terminal_exec_call(call: &ToolCall) -> bool {
+    if call.tool_name.namespace.is_some() || call.tool_name.name != "exec_command" {
+        return false;
+    }
+    let ToolPayload::Function { arguments } = &call.payload else {
+        return false;
+    };
+    serde_json::from_str::<serde_json::Value>(arguments)
+        .ok()
+        .and_then(|args| {
+            args.get("wait_until_terminal")
+                .and_then(serde_json::Value::as_bool)
+        })
+        .unwrap_or(false)
+}
+
+fn terminal_stdin_has_input(call: &ToolCall) -> Option<bool> {
+    if call.tool_name.namespace.is_some() || call.tool_name.name != "write_stdin" {
+        return None;
+    }
+    let ToolPayload::Function { arguments } = &call.payload else {
+        return None;
+    };
+    serde_json::from_str::<serde_json::Value>(arguments)
+        .ok()
+        .and_then(|args| {
+            if args
+                .get("wait_until_terminal")
+                .and_then(serde_json::Value::as_bool)
+                != Some(true)
+            {
+                return None;
+            }
+            match args.get("chars") {
+                None => Some(false),
+                Some(value) => value.as_str().map(|input| !input.is_empty()),
+            }
+        })
+}
+
+fn is_empty_terminal_stdin_call(call: &ToolCall) -> bool {
+    terminal_stdin_has_input(call) == Some(false)
+}
+
 impl SpawnPublicationGuard {
     fn begin(
         session: &Session,
@@ -243,7 +287,40 @@ impl ToolCallRuntime {
                     } else {
                         let secs = started.elapsed().as_secs_f32().max(0.1);
                         abort_dispatch_span.record("aborted", true);
-                        if wait_for_runtime_cancellation {
+                        let started_terminal_exec = if is_terminal_exec_call(&call) {
+                            abort_session
+                                .services
+                                .unified_exec_manager
+                                .interrupted_exec_process_id(&abort_turn.sub_id, &call.call_id)
+                                .await
+                                .is_some()
+                        } else {
+                            false
+                        };
+                        if !wait_for_runtime_cancellation
+                            && (started_terminal_exec || is_empty_terminal_stdin_call(&call))
+                        {
+                            // Let an already-started wait return its collected output after
+                            // cancellation. Never wait indefinitely for a stuck handler.
+                            match tokio::time::timeout(
+                                std::time::Duration::from_secs(2),
+                                &mut dispatch_handle,
+                            )
+                            .await
+                            {
+                                Ok(Ok(result)) => return result,
+                                Ok(Err(err)) if err.is_cancelled() => {}
+                                Ok(Err(err)) => return Err(Self::tool_task_join_error(err)),
+                                Err(_) => {
+                                    dispatch_handle.abort();
+                                    match dispatch_handle.await {
+                                        Ok(result) => return result,
+                                        Err(err) if err.is_cancelled() => {}
+                                        Err(err) => return Err(Self::tool_task_join_error(err)),
+                                    }
+                                }
+                            }
+                        } else if wait_for_runtime_cancellation {
                             if terminal_outcome_reached.swap(true, Ordering::AcqRel) {
                                 return dispatch_handle.await.map_err(Self::tool_task_join_error)?;
                             }
@@ -262,7 +339,16 @@ impl ToolCallRuntime {
                                 Err(err) => return Err(Self::tool_task_join_error(err)),
                             }
                         }
-                        let response = Self::aborted_response(&call, secs);
+                        let recovery_process_id = if is_terminal_exec_call(&call) {
+                            abort_session
+                                .services
+                                .unified_exec_manager
+                                .interrupted_exec_process_id(&abort_turn.sub_id, &call.call_id)
+                                .await
+                        } else {
+                            None
+                        };
+                        let response = Self::aborted_response(&call, secs, recovery_process_id);
                         notify_tool_aborted(
                             abort_session.as_ref(),
                             abort_turn.as_ref(),
@@ -313,13 +399,29 @@ impl ToolCallRuntime {
         }
     }
 
-    fn aborted_response(call: &ToolCall, secs: f32) -> AnyToolResult {
+    fn aborted_response(
+        call: &ToolCall,
+        secs: f32,
+        recovery_process_id: Option<i32>,
+    ) -> AnyToolResult {
+        let mut message = Self::abort_message(call, secs);
+        if let Some(process_id) = recovery_process_id {
+            message.push_str(&format!(
+                "\nBackground session ID: {process_id}. It may already have exited. Check it with write_stdin using empty input; earlier output may be incomplete."
+            ));
+        } else if is_terminal_exec_call(call) {
+            message.push_str(
+                "\nThe launch may have taken effect, but no session handle could be recovered. Check before retrying.",
+            );
+        } else if terminal_stdin_has_input(call) == Some(true) {
+            message.push_str(
+                "\nInput may already have been sent. Check the session before sending it again.",
+            );
+        }
         AnyToolResult {
             call_id: call.call_id.clone(),
             payload: call.payload.clone(),
-            result: Box::new(AbortedToolOutput {
-                message: Self::abort_message(call, secs),
-            }),
+            result: Box::new(AbortedToolOutput { message }),
             post_tool_use_payload: None,
         }
     }
@@ -618,6 +720,56 @@ mod tests {
         }
     }
 
+    #[test]
+    fn interrupted_terminal_exec_response_exposes_only_a_known_handle() {
+        let mut call = tool_call("exec_command");
+        call.payload = ToolPayload::Function {
+            arguments: r#"{"wait_until_terminal":true}"#.to_string(),
+        };
+        assert!(is_terminal_exec_call(&call));
+        let ResponseInputItem::FunctionCallOutput { output, .. } =
+            ToolCallRuntime::aborted_response(&call, /*secs*/ 1.0, Some(123)).into_response()
+        else {
+            panic!("expected function output");
+        };
+        let FunctionCallOutputBody::Text(message) = output.body else {
+            panic!("expected text output");
+        };
+        assert!(message.contains("Background session ID: 123"));
+        assert!(message.contains("may already have exited"));
+
+        call.tool_name = ToolName::namespaced("other", "exec_command");
+        assert!(!is_terminal_exec_call(&call));
+    }
+
+    #[test]
+    fn cooperative_stdin_wait_requires_empty_input() {
+        let mut call = tool_call("write_stdin");
+        call.payload = ToolPayload::Function {
+            arguments: r#"{"session_id":1,"wait_until_terminal":true}"#.to_string(),
+        };
+        assert!(is_empty_terminal_stdin_call(&call));
+        call.payload = ToolPayload::Function {
+            arguments: r#"{"session_id":1,"chars":"yes","wait_until_terminal":true}"#.to_string(),
+        };
+        assert!(!is_empty_terminal_stdin_call(&call));
+        let ResponseInputItem::FunctionCallOutput { output, .. } =
+            ToolCallRuntime::aborted_response(
+                &call, /*secs*/ 1.0, /*recovery_process_id*/ None,
+            )
+            .into_response()
+        else {
+            panic!("expected function output");
+        };
+        let FunctionCallOutputBody::Text(message) = output.body else {
+            panic!("expected text output");
+        };
+        assert!(message.contains("Input may already have been sent"));
+        assert!(!message.contains("yes"));
+        call.tool_name = ToolName::namespaced("other", "write_stdin");
+        assert!(!is_empty_terminal_stdin_call(&call));
+    }
+
     struct ImmediateHandler {
         tool_name: codex_tools::ToolName,
     }
@@ -652,6 +804,7 @@ mod tests {
 
     struct CancellationCleanupHandler {
         tool_name: codex_tools::ToolName,
+        waits_for_cleanup: bool,
         started: std::sync::Mutex<Option<oneshot::Sender<()>>>,
         cleanup_started: std::sync::Mutex<Option<oneshot::Sender<()>>>,
         allow_cleanup: Arc<Notify>,
@@ -710,7 +863,7 @@ mod tests {
 
     impl CoreToolRuntime for CancellationCleanupHandler {
         fn waits_for_runtime_cancellation(&self) -> bool {
-            true
+            self.waits_for_cleanup
         }
     }
 
@@ -1373,6 +1526,63 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn cancelled_empty_terminal_wait_returns_cooperative_output() -> anyhow::Result<()> {
+        let (session, turn_context) = crate::session::tests::make_session_and_context().await;
+        let session = Arc::new(session);
+        let turn_context = Arc::new(turn_context);
+        let tool_name = codex_tools::ToolName::plain("write_stdin");
+        let (started_tx, started_rx) = oneshot::channel();
+        let (cleanup_started_tx, cleanup_started_rx) = oneshot::channel();
+        let allow_cleanup = Arc::new(Notify::new());
+        let handler = Arc::new(CancellationCleanupHandler {
+            tool_name: tool_name.clone(),
+            waits_for_cleanup: false,
+            started: std::sync::Mutex::new(Some(started_tx)),
+            cleanup_started: std::sync::Mutex::new(Some(cleanup_started_tx)),
+            allow_cleanup: Arc::clone(&allow_cleanup),
+        }) as Arc<dyn CoreToolRuntime>;
+        let step_context = StepContext::for_test(Arc::clone(&turn_context));
+        let router = Arc::new(ToolRouter::from_parts(
+            ToolRegistry::from_tools([handler]),
+            Vec::new(),
+        ));
+        let tracker = Arc::new(tokio::sync::Mutex::new(TurnDiffTracker::new()));
+        let runtime = ToolCallRuntime::new(router, session, step_context, tracker);
+        let cancellation_token = CancellationToken::new();
+        let call = ToolCall {
+            tool_name,
+            call_id: "call-1".to_string(),
+            payload: ToolPayload::Function {
+                arguments: r#"{"session_id":1,"wait_until_terminal":true}"#.to_string(),
+            },
+        };
+
+        let response_task =
+            tokio::spawn(runtime.handle_tool_call(call, cancellation_token.clone()));
+        started_rx.await.expect("handler should start");
+        cancellation_token.cancel();
+        tokio::time::timeout(Duration::from_secs(1), cleanup_started_rx)
+            .await
+            .expect("handler should receive cancellation")
+            .expect("handler should begin cleanup");
+        tokio::time::sleep(Duration::from_millis(10)).await;
+        allow_cleanup.notify_one();
+
+        let response = tokio::time::timeout(Duration::from_secs(1), response_task)
+            .await
+            .expect("timed out waiting for tool response")
+            .expect("tool response task should join")?;
+        let ResponseInputItem::FunctionCallOutput { output, .. } = response else {
+            anyhow::bail!("cancelled tool should return function output");
+        };
+        let FunctionCallOutputBody::Text(text) = output.body else {
+            anyhow::bail!("cancelled tool output should be text");
+        };
+        assert_eq!(text, "cleanup complete");
+        Ok(())
+    }
+
+    #[tokio::test]
     async fn cancellation_waiting_for_runtime_cleanup_emits_only_aborted_lifecycle()
     -> anyhow::Result<()> {
         let (mut session, turn_context) = crate::session::tests::make_session_and_context().await;
@@ -1392,6 +1602,7 @@ mod tests {
         let allow_cleanup = Arc::new(Notify::new());
         let handler = Arc::new(CancellationCleanupHandler {
             tool_name: tool_name.clone(),
+            waits_for_cleanup: true,
             started: std::sync::Mutex::new(Some(started_tx)),
             cleanup_started: std::sync::Mutex::new(Some(cleanup_started_tx)),
             allow_cleanup: Arc::clone(&allow_cleanup),
