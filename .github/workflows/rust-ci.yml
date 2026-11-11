@@ -483,8 +483,24 @@ jobs:
         working-directory: codex-rs
         run: |
           set -euo pipefail
-          sudo apt-get update -y
-          sudo DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends pkg-config libcap-dev
+          # Match the current ubuntu-24.04 hosted-image policy: bound retries so the
+          # mirror list advances past a stalled Azure mirror, while retaining apt signature checks.
+          apt_args=(
+            -o Acquire::Retries=1
+            -o Acquire::http::Timeout=15
+            -o Acquire::https::Timeout=15
+          )
+          echo "Effective runner-image apt acquire configuration:"
+          apt-config dump Acquire::Retries Acquire::http::Timeout Acquire::https::Timeout
+          for host in azure.archive.ubuntu.com archive.ubuntu.com security.ubuntu.com packages.microsoft.com; do
+            if getent ahostsv4 "${host}" >/dev/null 2>&1; then
+              echo "DNS resolved: ${host}"
+            else
+              echo "DNS unresolved: ${host}"
+            fi
+          done
+          sudo apt-get "${apt_args[@]}" update -y
+          sudo DEBIAN_FRONTEND=noninteractive apt-get "${apt_args[@]}" install -y --no-install-recommends pkg-config libcap-dev
 
       - name: Configure rusty_v8 artifacts for targeted Clippy
         if: ${{ steps.targeted_clippy_packages.outputs.packages != '[]' }}
