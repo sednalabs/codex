@@ -329,7 +329,7 @@ pub struct ModelClient {
 struct AdoptedBaselineDigests(Vec<String>);
 
 #[derive(Default)]
-struct OverlayReportState(StdMutex<Option<(String, &'static str)>>);
+struct OverlayReportState(StdMutex<Option<(String, Vec<&'static str>)>>);
 
 impl std::fmt::Debug for OverlayReportState {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -724,8 +724,8 @@ impl ModelClient {
             let Ok(mut last) = self.last_overlay_report.0.lock() else {
                 return;
             };
-            if last.as_ref().is_some_and(|(prior_turn, prior_outcome)| {
-                prior_turn == turn_id && *prior_outcome == outcome
+            if last.as_ref().is_some_and(|(prior_turn, prior_outcomes)| {
+                prior_turn == turn_id && prior_outcomes.contains(&outcome)
             }) {
                 return;
             }
@@ -738,7 +738,13 @@ impl ModelClient {
                 })
                 .is_ok()
             {
-                *last = Some((turn_id.clone(), outcome));
+                if let Some((prior_turn, outcomes)) = last.as_mut()
+                    && prior_turn == turn_id
+                {
+                    outcomes.push(outcome);
+                } else {
+                    *last = Some((turn_id.clone(), vec![outcome]));
+                }
             }
         }
     }
@@ -1312,6 +1318,7 @@ impl ModelClient {
                 .0
                 .contains(&authority_digest)
                 || self.state.provider.info().is_openai()
+                    && prompt.overlay_current_model_trusted
                     && ((self.model_baseline_editable
                         && matches!(
                             authority.provenance,
@@ -1442,6 +1449,7 @@ impl ModelClient {
                 }
                 let transitions_ok = review
                     || !self.model_baseline_editable
+                    || !prompt.overlay_current_model_trusted
                     || instruction_overlays::transform_current_model_transitions(
                         &baseline_only,
                         model_info,
@@ -1557,6 +1565,7 @@ impl ModelClient {
                 && optional_baseline
                 && !review
                 && self.model_baseline_editable
+                && prompt.overlay_current_model_trusted
             {
                 let mut trial = input.clone();
                 match instruction_overlays::transform_current_model_transitions(

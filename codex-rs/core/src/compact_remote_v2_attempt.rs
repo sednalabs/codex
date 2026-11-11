@@ -212,6 +212,9 @@ pub(super) async fn run_remote_compact_v2_attempt(
         },
         parallel_tool_calls: true,
         overlay_base_instructions,
+        overlay_current_model_trusted: crate::session::session::trusted_model_overlay_source(
+            &turn_context.config,
+        ),
         base_instructions,
         output_schema: None,
         output_schema_strict: true,

@@ -1873,6 +1873,9 @@ pub(crate) fn build_prompt(
                     .review_baseline
                     .is_some()))
         .then(|| base_instructions.clone()),
+        overlay_current_model_trusted: super::session::trusted_model_overlay_source(
+            &turn_context.config,
+        ),
         base_instructions: if incremental_tools {
             BaseInstructions {
                 text: String::new(),

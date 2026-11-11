@@ -62,7 +62,7 @@ use tokio_util::task::TaskTracker;
 type McpToolApprovalMetadataMap =
     HashMap<(String, String), std::sync::Weak<McpToolApprovalContext>>;
 
-pub(super) fn trusted_model_overlay_source(config: &Config) -> bool {
+pub(crate) fn trusted_model_overlay_source(config: &Config) -> bool {
     if config.model_provider_id != codex_model_provider_info::OPENAI_PROVIDER_ID
         || config.model_catalog.is_some()
     {
