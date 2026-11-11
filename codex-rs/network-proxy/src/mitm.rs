@@ -21,7 +21,6 @@ use rama_core::Layer;
 use rama_core::Service;
 use rama_core::bytes::Bytes;
 use rama_core::error::BoxError;
-use rama_core::extensions::ExtensionsMut;
 use rama_core::extensions::ExtensionsRef;
 use rama_core::futures::stream::Stream as FuturesStream;
 use rama_core::rt::Executor;
@@ -104,7 +103,7 @@ const TLS_PREFIX_FIRST_BYTE_TIMEOUT: Duration = Duration::from_millis(250);
 /// interception. Every byte read is replayed through `TlsPeekStream`.
 pub(crate) async fn peek_tls_prefix<S>(mut stream: S) -> Result<(bool, TlsPeekStream<S>)>
 where
-    S: Stream + Unpin + ExtensionsMut,
+    S: Stream + Unpin + ExtensionsRef,
 {
     let mut peek_buf = [0_u8; TLS_PREFIX_LEN];
     let mut bytes_read =
@@ -187,7 +186,7 @@ impl MitmState {
 /// Terminate a raw client stream with a generated leaf cert and proxy inner HTTPS traffic.
 pub(crate) async fn mitm_stream<S>(stream: S) -> Result<()>
 where
-    S: Stream + Unpin + ExtensionsMut,
+    S: Stream + Unpin + ExtensionsRef,
 {
     let mitm = stream
         .extensions()

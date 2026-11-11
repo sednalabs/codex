@@ -5,9 +5,8 @@ use codex_utils_rustls_provider::ensure_rustls_crypto_provider;
 use rama_core::Layer;
 use rama_core::Service;
 use rama_core::error::BoxError;
-use rama_core::error::ErrorExt as _;
+use rama_core::error::ErrorContext as _;
 use rama_core::error::OpaqueError;
-use rama_core::extensions::ExtensionsMut;
 use rama_core::extensions::ExtensionsRef;
 use rama_core::service::BoxService;
 use rama_http::Body;
@@ -15,7 +14,7 @@ use rama_http::Request;
 use rama_http::Response;
 use rama_http::layer::version_adapter::RequestVersionAdapter;
 use rama_http_backend::client::HttpClientService;
-use rama_http_backend::client::HttpConnector;
+use rama_http_backend::client::HttpConnectorLayer;
 use rama_http_backend::client::proxy::layer::HttpProxyConnectorLayer;
 use rama_net::address::HostWithPort;
 use rama_net::address::ProxyAddress;
@@ -196,7 +195,7 @@ impl Service<Request<Body>> for UpstreamClient {
             None => info!("HTTP upstream route selected (target={authority}, route=direct)"),
         }
         if let Some(proxy) = proxy {
-            req.extensions_mut().insert(proxy);
+            req.extensions().insert(proxy);
         }
 
         let uri = req.uri().clone();
@@ -221,7 +220,7 @@ impl Service<Request<Body>> for UpstreamClient {
             }
         };
 
-        req.extensions_mut()
+        req.extensions()
             .extend(http_connection.extensions().clone());
 
         let request_started_at = Instant::now();
@@ -265,7 +264,7 @@ fn build_http_connector(
         .with_connector_data(tls_config)
         .into_layer(proxy);
     let tls = RequestVersionAdapter::new(tls);
-    let connector = HttpConnector::new(tls);
+    let connector = HttpConnectorLayer::<Body>::default().into_layer(tls);
     connector.boxed()
 }
 
@@ -282,6 +281,6 @@ fn build_unix_connector(
     BoxError,
 > {
     let transport = UnixConnector::fixed(path);
-    let connector = HttpConnector::new(transport);
+    let connector = HttpConnectorLayer::<Body>::default().into_layer(transport);
     connector.boxed()
 }
