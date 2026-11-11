@@ -36,6 +36,7 @@ def build_source_binaries(
     bwrap_bin: Path | None,
     codex_command_runner_bin: Path | None,
     codex_windows_sandbox_setup_bin: Path | None,
+    release_version: str | None = None,
 ) -> SourceBuildOutputs:
     validate_prebuilt_resource_inputs(
         spec,
@@ -66,7 +67,9 @@ def build_source_binaries(
         for binary in binaries:
             cmd.extend(["--bin", binary])
 
-        cargo_env = None
+        cargo_env = os.environ.copy()
+        if release_version is not None:
+            cargo_env["CODEX_RELEASE_VERSION"] = release_version
         if (
             entrypoint_bin is None
             or code_mode_host_bin is None
@@ -74,7 +77,7 @@ def build_source_binaries(
         ):
             codex_v8_env = resolve_codex_v8_cargo_env(spec)
             if codex_v8_env:
-                cargo_env = {**os.environ, **codex_v8_env}
+                cargo_env.update(codex_v8_env)
 
         print("+", " ".join(cmd))
         subprocess.run(

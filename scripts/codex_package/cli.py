@@ -205,6 +205,7 @@ def assemble_package(args: argparse.Namespace) -> Path:
         variant,
         cargo=args.cargo,
         profile=args.cargo_profile,
+        release_version=args.package_version,
         entrypoint_bin=resolve_optional_input_path(
             args.entrypoint_bin,
             "prebuilt entrypoint executable",

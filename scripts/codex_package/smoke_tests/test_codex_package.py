@@ -24,7 +24,6 @@ import re
 import shutil
 import subprocess
 import sys
-import tomllib
 from concurrent.futures import ThreadPoolExecutor
 from datetime import UTC, datetime
 from pathlib import Path
@@ -59,15 +58,10 @@ def test_cli_public_commands(
     assert expected in output
 
 
-def test_cli_version_matches_release_sources(package: SmokePackage) -> None:
-    """Verify the compiled banner against the sources used to package the release."""
-    root = next(
-        parent
-        for parent in Path(__file__).resolve().parents
-        if (parent / "codex-rs/Cargo.toml").is_file()
-    )
-    manifest = tomllib.loads((root / "codex-rs/Cargo.toml").read_text())
-    version = manifest["workspace"]["package"]["version"]
+def test_cli_version_matches_release_manifest(package: SmokePackage) -> None:
+    """The compiled banner must match the package's declared release version."""
+    manifest = json.loads((package.cli_root / "codex-package.json").read_text())
+    version = manifest["version"]
     assert package.run("--version").stdout == f"codex-cli {version}\n"
 
 

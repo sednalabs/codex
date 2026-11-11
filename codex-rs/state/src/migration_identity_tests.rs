@@ -7,7 +7,7 @@ use sqlx::SqlitePool;
 use sqlx::migrate::Migration;
 use sqlx::migrate::Migrator;
 
-type Ledger = Vec<(i64, String, bool, Vec<u8>, i64)>;
+type Ledger = Vec<(i64, String, bool, Vec<u8>, i64, String)>;
 type Schema = Vec<(String, String, Option<String>)>;
 
 #[tokio::test]
@@ -45,7 +45,7 @@ async fn thread_history_prefixes_upgrade_and_unknown_identities_fail_closed() {
         assert_eq!(witness, "{\"text\":\"preserve-me\"}");
         sqlx::query("INSERT INTO _sqlx_migrations (version, description, success, checksum, execution_time) VALUES (9999, 'unknown', 1, x'01', 0)")
             .execute(&pool).await.unwrap();
-        let before: Ledger = sqlx::query_as("SELECT version, description, success, checksum, execution_time FROM _sqlx_migrations ORDER BY version")
+        let before: Ledger = sqlx::query_as("SELECT version, description, success, checksum, execution_time, CAST(installed_on AS TEXT) FROM _sqlx_migrations ORDER BY version")
             .fetch_all(&pool).await.unwrap();
         pool.close().await;
 
@@ -58,7 +58,7 @@ async fn thread_history_prefixes_upgrade_and_unknown_identities_fail_closed() {
             .open_read_write_pool(&sqlite.thread_history_db_path())
             .await
             .unwrap();
-        let after: Ledger = sqlx::query_as("SELECT version, description, success, checksum, execution_time FROM _sqlx_migrations ORDER BY version")
+        let after: Ledger = sqlx::query_as("SELECT version, description, success, checksum, execution_time, CAST(installed_on AS TEXT) FROM _sqlx_migrations ORDER BY version")
             .fetch_all(&pool).await.unwrap();
         assert_eq!(after, before);
         let witness: String =
@@ -72,7 +72,7 @@ async fn thread_history_prefixes_upgrade_and_unknown_identities_fail_closed() {
 }
 
 async fn snapshot(pool: &SqlitePool) -> (Ledger, Schema, String) {
-    let ledger = sqlx::query_as("SELECT version, description, success, checksum, execution_time FROM _sqlx_migrations ORDER BY version")
+    let ledger = sqlx::query_as("SELECT version, description, success, checksum, execution_time, CAST(installed_on AS TEXT) FROM _sqlx_migrations ORDER BY version")
         .fetch_all(pool).await.unwrap();
     let schema = sqlx::query_as("SELECT type, name, sql FROM sqlite_master ORDER BY type, name")
         .fetch_all(pool)
@@ -198,13 +198,13 @@ async fn recorded_source_prefixes_migrate_without_losing_witness() {
             }
             sqlx::query("INSERT INTO threads (id, rollout_path, created_at, updated_at, source, model_provider, cwd, title, sandbox_policy, approval_mode) VALUES ('synthetic-thread', '/synthetic', 1, 2, 'cli', 'test', '/synthetic', 'preserve-me', 'read-only', 'never')")
                 .execute(&pool).await.unwrap();
-            let before: Ledger = sqlx::query_as("SELECT version, description, success, checksum, execution_time FROM _sqlx_migrations ORDER BY version").fetch_all(&pool).await.unwrap();
+            let before: Ledger = sqlx::query_as("SELECT version, description, success, checksum, execution_time, CAST(installed_on AS TEXT) FROM _sqlx_migrations ORDER BY version").fetch_all(&pool).await.unwrap();
             pool.close().await;
             let pool = sqlite
                 .open_state_db(&STATE_MIGRATOR, /*telemetry_override*/ None)
                 .await
                 .unwrap();
-            let after: Ledger = sqlx::query_as("SELECT version, description, success, checksum, execution_time FROM _sqlx_migrations WHERE version <= ? ORDER BY version").bind(through).fetch_all(&pool).await.unwrap();
+            let after: Ledger = sqlx::query_as("SELECT version, description, success, checksum, execution_time, CAST(installed_on AS TEXT) FROM _sqlx_migrations WHERE version <= ? ORDER BY version").bind(through).fetch_all(&pool).await.unwrap();
             assert_eq!(after, before);
             let witness: String =
                 sqlx::query_scalar("SELECT title FROM threads WHERE id = 'synthetic-thread'")
@@ -215,6 +215,320 @@ async fn recorded_source_prefixes_migrate_without_losing_witness() {
             pool.close().await;
         }
     }
+}
+
+#[tokio::test]
+async fn known_high_state_ledger_preserves_synthetic_effects_and_rejects_mismatches() {
+    // All seven identities were compared locally to public SQL. The ledger
+    // construction and witness data are synthetic: this does
+    // not claim the historical SQLs were applied sequentially.
+    const FIRST_HIGH_VERSION: i64 = 8_000_000_000_000_000;
+    let sqlite_home = tempfile::TempDir::new().unwrap();
+    let sqlite = crate::SqliteConfig::new_for_testing(sqlite_home.path().abs());
+    let pool = sqlite
+        .open_read_write_pool(&sqlite.state_db_path())
+        .await
+        .unwrap();
+    STATE_MIGRATOR.run(&pool).await.unwrap();
+    sqlx::query("INSERT INTO threads (id, rollout_path, created_at, updated_at, source, model_provider, cwd, title, sandbox_policy, approval_mode) VALUES ('synthetic-thread', '/synthetic', 1, 2, 'cli', 'test', '/synthetic', 'preserve-me', 'read-only', 'never')")
+        .execute(&pool).await.unwrap();
+    sqlx::query("INSERT INTO threads (id, rollout_path, created_at, updated_at, source, model_provider, cwd, title, sandbox_policy, approval_mode) VALUES ('synthetic-child', '/synthetic-child', 1, 2, ?, 'test', '/synthetic', 'child', 'read-only', 'never')")
+        .bind(r#"{"subagent":{"thread_spawn":{"parent_thread_id":"synthetic-thread"}}}"#)
+        .execute(&pool).await.unwrap();
+    let fixture: Value = serde_json::from_str(include_str!(
+        "../tests/fixtures/w14939-sedna-migrations.json"
+    ))
+    .unwrap();
+    for prefix in ["0038_", "0045_", "0024_", "0050_"] {
+        let migration = fixture["migrations"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|entry| entry["filename"].as_str().unwrap().starts_with(prefix))
+            .unwrap();
+        sqlx::raw_sql(sqlx::AssertSqlSafe(migration["sql"].as_str().unwrap()))
+            .execute(&pool)
+            .await
+            .unwrap();
+    }
+    // Public 0058 adds both columns also present in 0027/0028, so those two
+    // SQL files cannot be replayed afterward against the same table. Record
+    // their ledger identities below without asserting the actual history.
+    sqlx::raw_sql(include_str!(
+        "../tests/fixtures/w14939-dynamic-tools-state.sql"
+    ))
+    .execute(&pool)
+    .await
+    .unwrap();
+    sqlx::query("INSERT INTO phase2_attestation_roots VALUES ('synthetic-root', 1, 2)")
+        .execute(&pool)
+        .await
+        .unwrap();
+    sqlx::query("INSERT INTO phase2_attested_baselines VALUES ('synthetic-root', 'synthetic-tree', 1, 'selection', 'inputs', 'consolidator', 2, 3, 4)")
+        .execute(&pool).await.unwrap();
+    sqlx::query(
+        "UPDATE threads SET configured_identity_provenance = 2 WHERE id = 'synthetic-thread'",
+    )
+    .execute(&pool)
+    .await
+    .unwrap();
+    sqlx::query("INSERT INTO thread_dynamic_tools (thread_id, position, name, description, input_schema, persist_on_resume, capability_json, namespace_description) VALUES ('synthetic-thread', 0, 'synthetic-tool', 'synthetic', '{}', 0, '{\"synthetic\":true}', 'synthetic namespace')")
+        .execute(&pool).await.unwrap();
+    sqlx::query("CREATE TABLE synthetic_extension_effects (version INTEGER PRIMARY KEY, marker TEXT NOT NULL)")
+        .execute(&pool).await.unwrap();
+    let public_candidates = [
+        Some("0038_"),
+        Some("0045_"),
+        None,
+        Some("0024_"),
+        Some("0027_"),
+        Some("0028_"),
+        Some("0050_"),
+    ];
+    for (offset, candidate) in public_candidates.into_iter().enumerate() {
+        let offset = offset as i64;
+        let version = FIRST_HIGH_VERSION + offset;
+        let (description, checksum) = if let Some(prefix) = candidate {
+            let entry = fixture["migrations"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .find(|entry| entry["filename"].as_str().unwrap().starts_with(prefix))
+                .unwrap();
+            let filename = entry["filename"].as_str().unwrap();
+            let description = filename
+                .trim_end_matches(".sql")
+                .split_once('_')
+                .unwrap()
+                .1
+                .replace('_', " ");
+            let checksum = entry["sha384"]
+                .as_str()
+                .unwrap()
+                .as_bytes()
+                .chunks_exact(2)
+                .map(|pair| u8::from_str_radix(std::str::from_utf8(pair).unwrap(), 16).unwrap())
+                .collect::<Vec<_>>();
+            (description, checksum)
+        } else {
+            let checksum = "448d0f4ab51b856fc182d97e5e408861630fc387d7316473426771c298581881016018a34d45145e0e503179dc7efd84"
+                .as_bytes().chunks_exact(2)
+                .map(|pair| u8::from_str_radix(std::str::from_utf8(pair).unwrap(), 16).unwrap())
+                .collect::<Vec<_>>();
+            ("thread dynamic tools state".to_string(), checksum)
+        };
+        sqlx::query("INSERT INTO _sqlx_migrations (version, description, success, checksum, execution_time) VALUES (?, ?, 1, ?, 0)")
+            .bind(version)
+            .bind(description)
+            .bind(checksum)
+            .execute(&pool).await.unwrap();
+        sqlx::query("INSERT INTO synthetic_extension_effects VALUES (?, ?)")
+            .bind(version)
+            .bind(format!("synthetic-marker-{offset}"))
+            .execute(&pool)
+            .await
+            .unwrap();
+    }
+    let before = snapshot(&pool).await;
+    let effects_before: Vec<(i64, String)> =
+        sqlx::query_as("SELECT version, marker FROM synthetic_extension_effects ORDER BY version")
+            .fetch_all(&pool)
+            .await
+            .unwrap();
+    pool.close().await;
+
+    let runtime = crate::StateRuntime::init(sqlite.clone(), "synthetic-provider".to_string())
+        .await
+        .expect("exact known state extension should open");
+    drop(runtime);
+    let runtime = crate::StateRuntime::init(sqlite.clone(), "synthetic-provider".to_string())
+        .await
+        .expect("known state extension should reopen");
+    drop(runtime);
+    let pool = sqlite
+        .open_read_write_pool(&sqlite.state_db_path())
+        .await
+        .unwrap();
+    assert_eq!(snapshot(&pool).await, before);
+    let effects_after: Vec<(i64, String)> =
+        sqlx::query_as("SELECT version, marker FROM synthetic_extension_effects ORDER BY version")
+            .fetch_all(&pool)
+            .await
+            .unwrap();
+    assert_eq!(effects_after, effects_before);
+    let identity: i64 = sqlx::query_scalar(
+        "SELECT configured_identity_provenance FROM threads WHERE id = 'synthetic-thread'",
+    )
+    .fetch_one(&pool)
+    .await
+    .unwrap();
+    assert_eq!(identity, 2);
+    let tool: (bool, String, String) = sqlx::query_as("SELECT persist_on_resume, capability_json, namespace_description FROM thread_dynamic_tools WHERE thread_id = 'synthetic-thread'")
+        .fetch_one(&pool).await.unwrap();
+    assert_eq!(
+        tool,
+        (
+            false,
+            r#"{"synthetic":true}"#.to_string(),
+            "synthetic namespace".to_string()
+        )
+    );
+    let edge: (String, String, String) = sqlx::query_as("SELECT parent_thread_id, child_thread_id, status FROM thread_spawn_edges WHERE child_thread_id = 'synthetic-child'")
+        .fetch_one(&pool).await.unwrap();
+    assert_eq!(
+        edge,
+        (
+            "synthetic-thread".to_string(),
+            "synthetic-child".to_string(),
+            "open".to_string()
+        )
+    );
+    let roots: (String, i64, i64) = sqlx::query_as(
+        "SELECT memory_root_key, required_since, updated_at FROM phase2_attestation_roots",
+    )
+    .fetch_one(&pool)
+    .await
+    .unwrap();
+    assert_eq!(roots, ("synthetic-root".to_string(), 1, 2));
+    let baselines: (String, String, i64) = sqlx::query_as(
+        "SELECT memory_root_key, output_tree_sha256, attested_at FROM phase2_attested_baselines",
+    )
+    .fetch_one(&pool)
+    .await
+    .unwrap();
+    assert_eq!(
+        baselines,
+        (
+            "synthetic-root".to_string(),
+            "synthetic-tree".to_string(),
+            4
+        )
+    );
+    pool.close().await;
+
+    // Each identity is individually required, and rejection happens before
+    // any migration can mutate the ledger or stored witness.
+    for offset in 0..7_i64 {
+        let pool = sqlite
+            .open_read_write_pool(&sqlite.state_db_path())
+            .await
+            .unwrap();
+        sqlx::query("UPDATE _sqlx_migrations SET checksum = X'00' WHERE version = ?")
+            .bind(FIRST_HIGH_VERSION + offset)
+            .execute(&pool)
+            .await
+            .unwrap();
+        let rejected_before = snapshot(&pool).await;
+        pool.close().await;
+        let error = crate::StateRuntime::init(sqlite.clone(), "synthetic-provider".into())
+            .await
+            .err()
+            .expect("altered extension identity must reject startup");
+        assert!(format!("{error:#}").contains("unrecognized state migration identity"));
+        let pool = sqlite
+            .open_read_write_pool(&sqlite.state_db_path())
+            .await
+            .unwrap();
+        assert_eq!(snapshot(&pool).await, rejected_before);
+        let original = &before.0[62 + offset as usize].3;
+        sqlx::query("UPDATE _sqlx_migrations SET checksum = ? WHERE version = ?")
+            .bind(original)
+            .bind(FIRST_HIGH_VERSION + offset)
+            .execute(&pool)
+            .await
+            .unwrap();
+        pool.close().await;
+    }
+    let pool = sqlite
+        .open_read_write_pool(&sqlite.state_db_path())
+        .await
+        .unwrap();
+    sqlx::query("INSERT INTO _sqlx_migrations (version, description, success, checksum, execution_time) VALUES (?, 'unknown', 1, X'00', 0)")
+        .bind(FIRST_HIGH_VERSION + 7).execute(&pool).await.unwrap();
+    let rejected_before = snapshot(&pool).await;
+    pool.close().await;
+    let error = crate::StateRuntime::init(sqlite.clone(), "synthetic-provider".into())
+        .await
+        .err()
+        .expect("additional extension must reject startup");
+    assert!(format!("{error:#}").contains("unrecognized or incomplete state migration history"));
+    let pool = sqlite
+        .open_read_write_pool(&sqlite.state_db_path())
+        .await
+        .unwrap();
+    assert_eq!(snapshot(&pool).await, rejected_before);
+    sqlx::query("DELETE FROM _sqlx_migrations WHERE version = ?")
+        .bind(FIRST_HIGH_VERSION + 7)
+        .execute(&pool)
+        .await
+        .unwrap();
+    pool.close().await;
+    let pool = sqlite
+        .open_read_write_pool(&sqlite.state_db_path())
+        .await
+        .unwrap();
+    sqlx::query("ALTER TABLE thread_dynamic_tools RENAME COLUMN namespace_description TO missing_namespace_description")
+        .execute(&pool).await.unwrap();
+    let rejected_before = snapshot(&pool).await;
+    pool.close().await;
+    let error = crate::StateRuntime::init(sqlite.clone(), "synthetic-provider".into())
+        .await
+        .err()
+        .expect("extension schema mismatch must reject startup");
+    assert!(format!("{error:#}").contains("state extension schema mismatch"));
+    let pool = sqlite
+        .open_read_write_pool(&sqlite.state_db_path())
+        .await
+        .unwrap();
+    assert_eq!(snapshot(&pool).await, rejected_before);
+    pool.close().await;
+}
+
+#[tokio::test]
+async fn sqlx_applies_a_pending_low_version_without_rewriting_unknown_high_rows() {
+    // Exercise SQLx in isolation, bypassing the production preflight: this is
+    // not permission to open a database with an unidentified migration.
+    let home = tempfile::TempDir::new().unwrap();
+    let sqlite = crate::SqliteConfig::new_for_testing(home.path().abs());
+    let pool = sqlite
+        .open_read_write_pool(&sqlite.state_db_path())
+        .await
+        .unwrap();
+    let prefix = Migrator::with_migrations(
+        STATE_MIGRATOR
+            .migrations
+            .iter()
+            .filter(|migration| migration.version <= 61)
+            .cloned()
+            .collect(),
+    );
+    prefix.run(&pool).await.unwrap();
+    sqlx::query("CREATE TABLE synthetic_extension (marker TEXT NOT NULL)")
+        .execute(&pool)
+        .await
+        .unwrap();
+    sqlx::query("INSERT INTO synthetic_extension VALUES ('preserve-me')")
+        .execute(&pool)
+        .await
+        .unwrap();
+    sqlx::query("INSERT INTO _sqlx_migrations (version, description, success, checksum, execution_time) VALUES (8000000000000000, 'synthetic unknown', 1, X'0102', 17)").execute(&pool).await.unwrap();
+    let before: Ledger = sqlx::query_as("SELECT version, description, success, checksum, execution_time, CAST(installed_on AS TEXT) FROM _sqlx_migrations ORDER BY version").fetch_all(&pool).await.unwrap();
+    super::runtime_state_migrator().run(&pool).await.unwrap();
+    let after: Ledger = sqlx::query_as("SELECT version, description, success, checksum, execution_time, CAST(installed_on AS TEXT) FROM _sqlx_migrations WHERE version != 62 ORDER BY version").fetch_all(&pool).await.unwrap();
+    assert_eq!(after, before);
+    let applied: bool = sqlx::query_scalar(
+        "SELECT EXISTS(SELECT 1 FROM _sqlx_migrations WHERE version = 62 AND success = 1)",
+    )
+    .fetch_one(&pool)
+    .await
+    .unwrap();
+    assert!(applied);
+    let marker: String = sqlx::query_scalar("SELECT marker FROM synthetic_extension")
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+    assert_eq!(marker, "preserve-me");
+    pool.close().await;
 }
 
 #[tokio::test]

@@ -43,6 +43,11 @@ use std::path::PathBuf;
 use std::sync::Arc;
 use supports_color::Stream;
 
+const CODEX_CLI_VERSION: &str = match option_env!("CODEX_RELEASE_VERSION") {
+    Some(version) if !version.is_empty() => version,
+    _ => env!("CARGO_PKG_VERSION"),
+};
+
 #[cfg(all(
     target_os = "linux",
     target_env = "musl",
@@ -116,7 +121,7 @@ use codex_terminal_detection::TerminalName;
 #[derive(Debug, Parser)]
 #[clap(
     author,
-    version,
+    version = CODEX_CLI_VERSION,
     // If a sub‑command is given, ignore requirements of the default args.
     subcommand_negates_reqs = true,
     // The executable is sometimes invoked via a platform‑specific name like
