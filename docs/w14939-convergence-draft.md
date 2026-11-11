@@ -14,7 +14,40 @@ metadata discovery and was merged in `55bde4a290f9562b147ccbc10e955539176d904c`.
 That upstream helper intentionally treats device-only metadata as unavailable;
 runtime device refresh must use the separately routed issuer-bound path.
 
-The overlay integration is unqualified. Its historical adoption
+The overlay integration is unqualified. Upstream's `model_instructions_file`
+is a useful explicit override, but using it by default would freeze a complete
+prompt and require maintaining separate replacements as model templates change.
+The narrower option uses the existing opt-in model-baseline overlay with exact
+optional removals, retaining the selected model's other instruction bytes. For
+the public wait-guidance literals, an operator can configure:
+
+```toml
+[instruction_overlays.model_baseline]
+on_absent = "skip"
+edits = [
+  { op = "remove_exact_if_present", text = "If the user's request requires calling tools, start with a message in the `commentary` channel. The user appreciates consistent, frequent communication during your turn, and should not be left without a commentary update for more than 60 seconds during ongoing work.", expected_matches = 1 },
+  { op = "remove_exact_if_present", text = "- Avoid performing blocking sleep or wait calls longer than 60 seconds, as they may prevent you from communicating with the user for their duration.", expected_matches = 1 },
+]
+```
+
+These are optional exact removals, not fuzzy matching. A missing literal is
+reported as absent; an ambiguous, unknown, protected, or otherwise inapplicable
+baseline is reported as blocked and remains unchanged. An explicit
+`model_instructions_file` takes precedence over this optional cleanup. A plan
+with required edits or a required component keeps its strict error behavior.
+Independent managed, provider, tool and system material is not a target.
+The existing broader overlay support has independent users and is not removed.
+
+For a genuinely unknown saved baseline, the optional edit remains blocked
+until the local operator explicitly authorizes its exact identity as described
+below; an explicit replacement file remains the alternative. Once a compatible
+package is qualified, the workstation owner can configure the plan, perform any
+necessary local authorization, resume the intended session, and inspect the
+applied/absent/blocked outcome and actual behavior. Cloud tests do not establish
+that installed-session acceptance. Keep the existing scoped replacement until
+that check succeeds; removing it is a local operator decision.
+
+Its historical adoption
 binds a local user authorization to one
 thread, the SHA-256 of the complete saved baseline and the SHA-256 of the exact
 model-baseline edit plan. Only unique, single-match exact removals qualify. It

@@ -8009,6 +8009,256 @@ async fn historical_overlay_optional_cleanup_respects_explicit_file_on_resume() 
 }
 
 #[tokio::test]
+async fn historical_overlay_fresh_session_uses_current_model_baseline() -> anyhow::Result<()> {
+    use codex_config::{
+        InstructionOverlayComponentToml, InstructionOverlayEdit, InstructionOverlayOnAbsent,
+        InstructionOverlaysToml,
+    };
+    const TARGET: &str = "- Be concise and factual — no filler or conversational commentary and avoid unnecessary repetition";
+    let (session, _) = make_session_with_history_source_and_config(
+        InitialHistory::New,
+        SessionSource::Cli,
+        LocalAgentControl::default(),
+        |config| {
+            config.update_plan_enabled = true;
+            config.instruction_overlays = InstructionOverlaysToml {
+                model_baseline: Some(InstructionOverlayComponentToml {
+                    on_absent: InstructionOverlayOnAbsent::Skip,
+                    edits: vec![InstructionOverlayEdit::RemoveExactIfPresent {
+                        text: TARGET.into(),
+                        expected_matches: 1,
+                    }],
+                    ..Default::default()
+                }),
+                ..Default::default()
+            };
+        },
+    )
+    .await?;
+    let baseline = session.get_prompt_base_instructions().await;
+    assert_eq!(baseline.text.matches(TARGET).count(), 1);
+    let (turn, _) = session
+        .new_turn_with_sub_id(
+            "fresh-model".into(),
+            SessionSettingsUpdate::default(),
+            Default::default(),
+        )
+        .await?;
+    let step = StepContext::for_test(turn);
+    let prompt = super::turn::build_prompt(Vec::new(), &step, baseline.clone(), false);
+    let metadata = session
+        .responses_metadata(&step, CodexResponsesRequestKind::Turn)
+        .await;
+    let request = session.services.model_client.build_responses_request(
+        &prompt,
+        &step.settings.model_info,
+        None,
+        codex_protocol::config_types::ReasoningSummary::None,
+        None,
+        &metadata,
+        true,
+    )?;
+    let expected = baseline.text.replace(TARGET, "");
+    let request = serde_json::to_value(request)?;
+    assert!(request["input"].as_array().unwrap().iter().any(|item| {
+        item["content"]
+            .as_array()
+            .is_some_and(|content| content.iter().any(|part| part["text"] == expected))
+    }));
+    assert_eq!(session.get_base_instructions().await.text, baseline.text);
+    Ok(())
+}
+
+#[tokio::test]
+async fn historical_overlay_public_models_keep_unrelated_instructions() -> anyhow::Result<()> {
+    use codex_config::{
+        InstructionOverlayComponentToml, InstructionOverlayEdit, InstructionOverlayOnAbsent,
+        InstructionOverlaysToml,
+    };
+    use codex_protocol::models::BaseInstructionsProvenance;
+    const CADENCE: &str = "If the user's request requires calling tools, start with a message in the `commentary` channel. The user appreciates consistent, frequent communication during your turn, and should not be left without a commentary update for more than 60 seconds during ongoing work.";
+    const WAIT: &str = "- Avoid performing blocking sleep or wait calls longer than 60 seconds, as they may prevent you from communicating with the user for their duration.";
+    let catalogue: serde_json::Value =
+        serde_json::from_str(include_str!("../../../models-manager/models.json"))?;
+    fn has_text(value: &serde_json::Value, text: &str) -> bool {
+        match value {
+            serde_json::Value::String(s) => s == text,
+            serde_json::Value::Array(items) => items.iter().any(|item| has_text(item, text)),
+            serde_json::Value::Object(items) => items.values().any(|item| has_text(item, text)),
+            _ => false,
+        }
+    }
+    for slug in ["gpt-6.1-terra", "gpt-6.1-sol"] {
+        let model: codex_protocol::openai_models::ModelInfo = serde_json::from_value(
+            catalogue["models"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .find(|m| m["slug"] == slug)
+                .unwrap()
+                .clone(),
+        )?;
+        let current_baseline = render_model_instructions(&model);
+        let previous_slug = if slug == "gpt-6.1-terra" {
+            "gpt-6.1-sol"
+        } else {
+            "gpt-6.1-terra"
+        };
+        let previous: codex_protocol::openai_models::ModelInfo = serde_json::from_value(
+            catalogue["models"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .find(|m| m["slug"] == previous_slug)
+                .unwrap()
+                .clone(),
+        )?;
+        let baseline = render_model_instructions(&previous);
+        for text in [&baseline, &current_baseline] {
+            assert_eq!(text.matches(CADENCE).count(), 1);
+            assert_eq!(text.matches(WAIT).count(), 1);
+        }
+        let thread_id = ThreadId::new();
+        let history = InitialHistory::Resumed(ResumedHistory {
+            history_revision: None,
+            conversation_id: thread_id,
+            rollout_path: None,
+            history: Arc::new(vec![RolloutItem::SessionMeta(Box::new(SessionMetaLine {
+                meta: SessionMeta {
+                    id: thread_id,
+                    session_id: thread_id.into(),
+                    base_instructions: Some(BaseInstructions {
+                        text: baseline.clone(),
+                        provenance: Some(BaseInstructionsProvenance::Model {
+                            model: previous_slug.into(),
+                        }),
+                    }),
+                    ..SessionMeta::default()
+                },
+                git: None,
+            }))]),
+        });
+        let (session, events) = make_session_with_history_source_and_config(
+            history,
+            SessionSource::Cli,
+            LocalAgentControl::default(),
+            |config| {
+                config.update_plan_enabled = true;
+                config.instruction_overlays = InstructionOverlaysToml {
+                    model_baseline: Some(InstructionOverlayComponentToml {
+                        on_absent: InstructionOverlayOnAbsent::Skip,
+                        models: Some(vec!["gpt-6.1-terra".into(), "gpt-6.1-sol".into()]),
+                        edits: [CADENCE, WAIT]
+                            .into_iter()
+                            .map(|text| InstructionOverlayEdit::RemoveExactIfPresent {
+                                text: text.into(),
+                                expected_matches: 1,
+                            })
+                            .collect(),
+                        ..Default::default()
+                    }),
+                    ..Default::default()
+                };
+            },
+        )
+        .await?;
+        let (turn, _) = session
+            .new_turn_with_sub_id(
+                "public-model".into(),
+                SessionSettingsUpdate::default(),
+                Default::default(),
+            )
+            .await?;
+        let step = StepContext::for_test(turn);
+        let protected = format!("independent managed layer: {WAIT}");
+        let protected_item: ResponseItem = serde_json::from_value(
+            serde_json::json!({"type":"message","role":"developer","content":[{"type":"input_text","text":protected}]}),
+        )?;
+        let transition: ResponseItem = ContextualUserFragment::into(
+            crate::context::ModelSwitchInstructions::new(current_baseline.clone()),
+        );
+        let incremental_transition: ResponseItem =
+            ContextualUserFragment::into(crate::context::ModelInstructions {
+                model: Some(slug.into()),
+                instructions: Some(current_baseline.clone()),
+            });
+        let unknown_transition: ResponseItem = ContextualUserFragment::into(
+            crate::context::ModelSwitchInstructions::new(format!("unclassified {WAIT}")),
+        );
+        let fragment_text = |item: &ResponseItem| -> String {
+            let ResponseItem::Message { content, .. } = item else {
+                unreachable!()
+            };
+            let [ContentItem::InputText { text }] = content.as_slice() else {
+                unreachable!()
+            };
+            text.clone()
+        };
+        let unknown_text = fragment_text(&unknown_transition);
+        let prompt = super::turn::build_prompt(
+            vec![
+                protected_item,
+                transition,
+                incremental_transition,
+                unknown_transition,
+            ],
+            &step,
+            session.get_prompt_base_instructions().await,
+            false,
+        );
+        let metadata = session
+            .responses_metadata(&step, CodexResponsesRequestKind::Turn)
+            .await;
+        let make_request = |model: &codex_protocol::openai_models::ModelInfo| {
+            session.services.model_client.build_responses_request(
+                &prompt,
+                model,
+                None,
+                codex_protocol::config_types::ReasoningSummary::None,
+                None,
+                &metadata,
+                true,
+            )
+        };
+        let expected = baseline.replace(CADENCE, "").replace(WAIT, "");
+        let expected_current = current_baseline.replace(CADENCE, "").replace(WAIT, "");
+        let request = serde_json::to_value(make_request(&model)?)?;
+        assert!(has_text(&request, &expected));
+        assert!(has_text(&request, &protected));
+        assert!(has_text(
+            &request,
+            &fragment_text(&ContextualUserFragment::into(
+                crate::context::ModelSwitchInstructions::new(expected_current.clone()),
+            ))
+        ));
+        assert!(has_text(
+            &request,
+            &fragment_text(&ContextualUserFragment::into(
+                crate::context::ModelInstructions {
+                    model: Some(slug.into()),
+                    instructions: Some(expected_current.clone())
+                },
+            ))
+        ));
+        assert!(has_text(&request, &unknown_text));
+        let mut saw_blocked_transition = false;
+        while let Ok(event) = events.try_recv() {
+            saw_blocked_transition |= matches!(event.msg, EventMsg::Warning(warning) if warning.message == "Instruction overlay: blocked: unclassified model transition.");
+        }
+        assert!(saw_blocked_transition);
+        let repeat = serde_json::to_value(make_request(&model)?)?;
+        assert!(has_text(&repeat, &expected));
+        let mut other = model.clone();
+        other.slug = "different-model".into();
+        let changed_model_request = serde_json::to_value(make_request(&other)?)?;
+        assert!(has_text(&changed_model_request, &baseline));
+        assert!(has_text(&changed_model_request, &protected));
+        assert_eq!(session.get_base_instructions().await.text, baseline);
+    }
+    Ok(())
+}
+
+#[tokio::test]
 async fn historical_overlay_uses_inferred_model_provenance_through_request() -> anyhow::Result<()> {
     use codex_config::InstructionOverlayComponentToml;
     use codex_config::InstructionOverlayEdit;

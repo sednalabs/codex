@@ -1440,15 +1440,24 @@ impl ModelClient {
                 } else {
                     baseline_only.model_baseline = Some(baseline_plan.clone());
                 }
-                if instruction_overlays::transform_request(
-                    &self.state.session_source,
-                    &baseline_only,
-                    &model_info.slug,
-                    true,
-                    &[],
-                    trial,
-                )
-                .is_err()
+                let transitions_ok = review
+                    || !self.model_baseline_editable
+                    || instruction_overlays::transform_current_model_transitions(
+                        &baseline_only,
+                        model_info,
+                        &mut trial,
+                    )
+                    .is_ok();
+                if !transitions_ok
+                    || instruction_overlays::transform_request(
+                        &self.state.session_source,
+                        &baseline_only,
+                        &model_info.slug,
+                        true,
+                        &[],
+                        trial,
+                    )
+                    .is_err()
                 {
                     self.report_instruction_overlay(
                         responses_metadata,
@@ -1544,6 +1553,30 @@ impl ModelClient {
         input.splice(0..0, prefix);
         if active_overlay {
             let before = input.clone();
+            if active_baseline_overlay
+                && optional_baseline
+                && !review
+                && self.model_baseline_editable
+            {
+                let mut trial = input.clone();
+                match instruction_overlays::transform_current_model_transitions(
+                    overlays, model_info, &mut trial,
+                ) {
+                    Ok((_, blocked)) => {
+                        input = trial;
+                        if blocked {
+                            self.report_instruction_overlay(
+                                responses_metadata,
+                                "blocked: unclassified model transition",
+                            );
+                        }
+                    }
+                    Err(_) => self.report_instruction_overlay(
+                        responses_metadata,
+                        "blocked: optional model transition mismatch",
+                    ),
+                }
+            }
             input = match instruction_overlays::transform_request(
                 &self.state.session_source,
                 overlays,
