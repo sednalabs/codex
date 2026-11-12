@@ -31,8 +31,10 @@ jobs:
   test:
     # PRs use the sharded Windows cross-compiled test jobs below. Post-merge
     # pushes to main also run the native Windows test job for broader Windows
-    # signal without putting PR latency back on the critical path.
-    timeout-minutes: 30
+    # signal without putting PR latency back on the critical path. The focused
+    # process-wait target needs a longer cold-build window than the full-suite
+    # job's PR latency budget.
+    timeout-minutes: ${{ inputs.test_suite == 'terminal-wait' && 60 || 30 }}
     strategy:
       fail-fast: false
       matrix:
