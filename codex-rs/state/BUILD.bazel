@@ -9,6 +9,7 @@ codex_rust_crate(
         "migrations/**",
         "queue_migrations/**",
         "thread_history_migrations/**",
+        "tests/fixtures/w14939-dynamic-tools-state.sql",
         "tests/fixtures/w14939-sedna-migrations.json",
         "tests/fixtures/w14939-oci-source-migrations.json",
         "tests/fixtures/w14939-workstation-source-migrations.json",

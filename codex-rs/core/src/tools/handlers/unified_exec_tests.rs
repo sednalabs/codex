@@ -13,6 +13,7 @@ use crate::environment_selection::TurnEnvironmentState;
 use crate::function_tool::FunctionCallError;
 use crate::session::step_context::StepContext;
 use crate::session::tests::make_session_and_context;
+use crate::session::tests::make_session_and_context_with_auth_and_config_and_rx;
 use crate::tools::context::ExecCommandToolOutput;
 use crate::tools::context::ToolCallSource;
 use crate::tools::context::ToolInvocation;
@@ -34,6 +35,41 @@ async fn invocation_for_payload(
     let turn = Arc::new(turn);
     ToolInvocation {
         session: session.into(),
+        step_context: StepContext::for_test(Arc::clone(&turn)),
+        turn,
+        cancellation_token: tokio_util::sync::CancellationToken::new(),
+        tracker: Arc::new(Mutex::new(TurnDiffTracker::new())),
+        call_id: call_id.to_string(),
+        tool_name: codex_tools::ToolName::plain(tool_name),
+        source: ToolCallSource::Direct,
+        payload,
+        native_call: None,
+        environments: Default::default(),
+    }
+}
+
+#[cfg(unix)]
+async fn invocation_for_payload_with_linux_sandbox(
+    tool_name: &str,
+    call_id: &str,
+    payload: ToolPayload,
+) -> ToolInvocation {
+    let (session, turn, _rx) = make_session_and_context_with_auth_and_config_and_rx(
+        codex_login::CodexAuth::from_api_key("Test API Key"),
+        Vec::new(),
+        |config| {
+            #[cfg(target_os = "linux")]
+            {
+                config.codex_linux_sandbox_exe = Some(
+                    codex_utils_cargo_bin::cargo_bin("codex-linux-sandbox")
+                        .expect("core Bazel tests provide codex-linux-sandbox"),
+                );
+            }
+        },
+    )
+    .await;
+    ToolInvocation {
+        session,
         step_context: StepContext::for_test(Arc::clone(&turn)),
         turn,
         cancellation_token: tokio_util::sync::CancellationToken::new(),
@@ -330,6 +366,164 @@ fn test_get_command_rejects_explicit_login_when_disallowed() -> anyhow::Result<(
     Ok(())
 }
 
+#[test]
+fn terminal_wait_output_bounds_multi_window_output_and_keeps_omission_accounting() {
+    let mut output = TerminalWaitOutput::new();
+    let chunk = "x".repeat(UNIFIED_EXEC_OUTPUT_MAX_BYTES);
+    let mut first = ExecCommandToolOutput {
+        event_call_id: "exec-call".to_string(),
+        chunk_id: "first".to_string(),
+        wall_time: std::time::Duration::ZERO,
+        raw_output: CapturedStream {
+            text: chunk.clone(),
+            omitted_bytes: 0,
+        },
+        truncation_policy: TEST_TRUNCATION_POLICY,
+        max_output_tokens: Some(2),
+        process_id: Some(7),
+        exit_code: None,
+        original_token_count: Some(2),
+        hook_command: Some("command".to_string()),
+        tool_cwd: None,
+    };
+    let mut final_response = ExecCommandToolOutput {
+        event_call_id: "exec-call".to_string(),
+        chunk_id: "last".to_string(),
+        wall_time: std::time::Duration::ZERO,
+        raw_output: CapturedStream {
+            text: chunk,
+            omitted_bytes: 0,
+        },
+        truncation_policy: TEST_TRUNCATION_POLICY,
+        max_output_tokens: Some(2),
+        process_id: None,
+        exit_code: Some(0),
+        original_token_count: Some(2),
+        hook_command: Some("command".to_string()),
+        tool_cwd: None,
+    };
+
+    output.record_response(&mut first);
+    output.record_response(&mut final_response);
+    output.finish(&mut final_response);
+
+    assert!(final_response.raw_output.text.len() <= UNIFIED_EXEC_OUTPUT_MAX_BYTES);
+    assert_eq!(final_response.original_token_count, Some(4));
+    assert!(final_response.raw_output.omitted_bytes > 0);
+}
+
+#[test]
+fn terminal_wait_window_respects_max_wait_when_heartbeat_is_set() {
+    let args = TerminalWaitArgs {
+        wait_until_terminal: true,
+        max_wait_ms: Some(2_000),
+        heartbeat_interval_ms: Some(10_000),
+    };
+
+    assert_eq!(resolve_terminal_wait_window_ms(args, 60_000), 2_000);
+}
+
+#[test]
+fn terminal_wait_output_estimates_tokens_from_omitted_bytes() {
+    let mut output = TerminalWaitOutput::new();
+    let mut response = ExecCommandToolOutput {
+        event_call_id: "exec-call".to_string(),
+        chunk_id: "first".to_string(),
+        wall_time: std::time::Duration::ZERO,
+        raw_output: CapturedStream {
+            text: "abcd".to_string(),
+            omitted_bytes: 8,
+        },
+        truncation_policy: TEST_TRUNCATION_POLICY,
+        max_output_tokens: None,
+        process_id: None,
+        exit_code: Some(0),
+        original_token_count: None,
+        hook_command: None,
+        tool_cwd: None,
+    };
+
+    output.record_response(&mut response);
+    output.finish(&mut response);
+
+    assert_eq!(response.original_token_count, Some(3));
+    assert_eq!(response.raw_output.omitted_bytes, 8);
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn exec_command_wait_until_terminal_returns_final_process_output() {
+    let payload = ToolPayload::Function {
+        arguments: serde_json::json!({
+            "cmd": "sleep 1; printf terminal-wait-complete",
+            "yield_time_ms": 250,
+            "wait_until_terminal": true,
+            "max_wait_ms": 60000,
+            "heartbeat_interval_ms": 10000,
+        })
+        .to_string(),
+    };
+    let invocation =
+        invocation_for_payload_with_linux_sandbox("exec_command", "terminal-wait", payload).await;
+    let output = ExecCommandHandler::default()
+        .handle(invocation)
+        .await
+        .expect("terminal wait should return the completed command");
+    let rendered = output.log_output();
+
+    assert!(rendered.contains("terminal-wait-complete"));
+    assert!(!rendered.contains("Process running with session ID"));
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn exec_command_terminal_wait_cancellation_returns_live_session() {
+    use tokio_util::sync::CancellationToken;
+
+    let cancellation_token = CancellationToken::new();
+    let mut invocation = invocation_for_payload_with_linux_sandbox(
+        "exec_command",
+        "terminal-wait-cancel",
+        ToolPayload::Function {
+            arguments: serde_json::json!({
+                "cmd": "sleep 30",
+                "yield_time_ms": 250,
+                "wait_until_terminal": true,
+            })
+            .to_string(),
+        },
+    )
+    .await;
+    invocation.cancellation_token = cancellation_token.clone();
+    let session = Arc::clone(&invocation.session);
+    let handler = ExecCommandHandler::default();
+    let wait = handler.handle(invocation);
+    tokio::pin!(wait);
+    let early = tokio::select! {
+        result = &mut wait => Some(result),
+        _ = tokio::time::sleep(std::time::Duration::from_secs(1)) => {
+            cancellation_token.cancel();
+            None
+        }
+    };
+    let was_pending_until_cancellation = early.is_none();
+    let result = match early {
+        Some(result) => result,
+        None => wait.await,
+    };
+    let rendered = result
+        .as_ref()
+        .expect("cancellation should return the live terminal state")
+        .log_output();
+    session
+        .services
+        .unified_exec_manager
+        .terminate_all_processes()
+        .await;
+
+    assert!(was_pending_until_cancellation);
+    assert!(rendered.contains("Process running with session ID"));
+}
 #[tokio::test]
 async fn exec_command_rejects_login_when_selected_environment_disallows_it() {
     let (session, mut turn) = make_session_and_context().await;

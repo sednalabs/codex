@@ -5,7 +5,21 @@ name: Bazel
 
 on:
   workflow_call:
+    inputs:
+      test_suite:
+        required: false
+        type: string
+        default: full
   workflow_dispatch:
+    inputs:
+      test_suite:
+        description: Select the full matrix or the focused Linux process-wait regression.
+        type: choice
+        required: true
+        default: full
+        options:
+          - full
+          - terminal-wait
 
 concurrency:
   # Cancel previous actions from the same PR or branch except 'main' branch.
@@ -17,29 +31,14 @@ jobs:
   test:
     # PRs use the sharded Windows cross-compiled test jobs below. Post-merge
     # pushes to main also run the native Windows test job for broader Windows
-    # signal without putting PR latency back on the critical path.
-    timeout-minutes: 30
+    # signal without putting PR latency back on the critical path. The focused
+    # process-wait target needs a longer cold-build window than the full-suite
+    # job's PR latency budget.
+    timeout-minutes: ${{ inputs.test_suite == 'terminal-wait' && 60 || 30 }}
     strategy:
       fail-fast: false
       matrix:
-        include:
-          # macOS
-          - os: macos-15-xlarge
-            target: aarch64-apple-darwin
-          - os: macos-15-xlarge
-            target: x86_64-apple-darwin
-
-          # Linux
-          - os: ubuntu-24.04
-            target: x86_64-unknown-linux-gnu
-          - os: ubuntu-24.04
-            target: x86_64-unknown-linux-musl
-          # 2026-02-27 Bazel tests have been flaky on arm in CI.
-          # Disable until we can investigate and stabilize them.
-          # - os: ubuntu-24.04-arm
-          #   target: aarch64-unknown-linux-musl
-          # - os: ubuntu-24.04-arm
-          #   target: aarch64-unknown-linux-gnu
+        include: ${{ fromJSON(inputs.test_suite == 'terminal-wait' && '[{"os":"ubuntu-24.04","target":"x86_64-unknown-linux-gnu"}]' || '[{"os":"macos-15-xlarge","target":"aarch64-apple-darwin"},{"os":"macos-15-xlarge","target":"x86_64-apple-darwin"},{"os":"ubuntu-24.04","target":"x86_64-unknown-linux-gnu"},{"os":"ubuntu-24.04","target":"x86_64-unknown-linux-musl"}]') }}
 
     runs-on: ${{ matrix.os }}
 
@@ -102,6 +101,16 @@ jobs:
             --test_verbose_timeout_warnings
             --build_metadata=COMMIT_SHA=${GITHUB_SHA}
           )
+
+          if [[ "${{ github.event_name }}" == "workflow_dispatch" && "${{ inputs.test_suite }}" == "terminal-wait" ]]; then
+            bazel_targets=(//codex-rs/core:core-unit-tests)
+            bazel_test_args+=(
+              --test_arg=terminal
+              --test_sharding_strategy=disabled
+              --test_output=all
+            )
+          fi
+
           ./.github/scripts/run-bazel-ci.sh \
             "${bazel_wrapper_args[@]}" \
             -- \
@@ -133,6 +142,7 @@ jobs:
         uses: ./.github/actions/check-clean-worktree
 
   test-windows-shard:
+    if: ${{ github.event_name != 'workflow_dispatch' || inputs.test_suite != 'terminal-wait' }}
     # Build and test Windows shards on separate Windows runners.
     timeout-minutes: 30
     strategy:
@@ -240,7 +250,7 @@ jobs:
   test-windows:
     # Preserve the existing required-check surface while the real work happens
     # in the sharded Windows jobs above.
-    if: always()
+    if: always() && (github.event_name != 'workflow_dispatch' || inputs.test_suite != 'terminal-wait')
     needs: test-windows-shard
     runs-on: ubuntu-24.04
     name: Bazel test on windows-latest for x86_64-pc-windows-gnullvm
@@ -258,7 +268,7 @@ jobs:
     # Native Windows Bazel tests are slower and frequently approach the
     # 30-minute PR budget. Run this only for post-merge commits to main and give
     # it a larger timeout. Also allow manual runs for native toolchain changes.
-    if: (github.event_name == 'push' && github.ref == 'refs/heads/main') || github.event_name == 'workflow_dispatch'
+    if: (github.event_name == 'push' && github.ref == 'refs/heads/main') || (github.event_name == 'workflow_dispatch' && inputs.test_suite != 'terminal-wait')
     timeout-minutes: 40
     runs-on:
       group: ${{ github.event.repository.name }}-runners
@@ -341,6 +351,7 @@ jobs:
         uses: ./.github/actions/check-clean-worktree
 
   clippy:
+    if: ${{ github.event_name != 'workflow_dispatch' || inputs.test_suite != 'terminal-wait' }}
     timeout-minutes: 30
     strategy:
       fail-fast: false
@@ -446,6 +457,7 @@ jobs:
         uses: ./.github/actions/check-clean-worktree
 
   verify-release-build:
+    if: ${{ github.event_name != 'workflow_dispatch' || inputs.test_suite != 'terminal-wait' }}
     timeout-minutes: 30
     strategy:
       fail-fast: false

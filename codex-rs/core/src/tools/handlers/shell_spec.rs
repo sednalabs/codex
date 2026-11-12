@@ -10,6 +10,27 @@ pub struct CommandToolOptions {
     pub exec_permission_approvals_enabled: bool,
 }
 
+fn add_terminal_wait_properties(properties: &mut BTreeMap<String, JsonSchema>) {
+    properties.insert(
+        "wait_until_terminal".to_string(),
+        JsonSchema::boolean(Some(
+            "When true, keep this tool call pending while Codex internally polls until the process exits. Cancellation or the caller's tool-transport deadline may still return a live session ID.".to_string(),
+        )),
+    );
+    properties.insert(
+        "max_wait_ms".to_string(),
+        JsonSchema::number(Some(
+            "Maximum duration of each internal poll window, in milliseconds; capped at 7200000. This is not a total wait deadline.".to_string(),
+        )),
+    );
+    properties.insert(
+        "heartbeat_interval_ms".to_string(),
+        JsonSchema::number(Some(
+            "Requested interval for internal polling while waiting. Polling stays inside this tool call and does not make additional provider calls.".to_string(),
+        )),
+    );
+}
+
 #[cfg(test)]
 pub fn create_exec_command_tool(options: CommandToolOptions) -> ToolSpec {
     create_exec_command_tool_with_environment_id(
@@ -59,6 +80,7 @@ pub(crate) fn create_exec_command_tool_with_environment_id(
             )),
         ),
     ]);
+    add_terminal_wait_properties(&mut properties);
     properties.insert(
         "shell".to_string(),
         JsonSchema::string(Some(
@@ -108,7 +130,7 @@ pub(crate) fn create_exec_command_tool_with_environment_id(
 }
 
 pub fn create_write_stdin_tool() -> ToolSpec {
-    let properties = BTreeMap::from([
+    let mut properties = BTreeMap::from([
         (
             "session_id".to_string(),
             JsonSchema::number(Some(
@@ -134,6 +156,7 @@ pub fn create_write_stdin_tool() -> ToolSpec {
             )),
         ),
     ]);
+    add_terminal_wait_properties(&mut properties);
 
     ToolSpec::Function(ResponsesApiTool {
         name: "write_stdin".to_string(),

@@ -261,7 +261,11 @@ impl HistoricalBaselineAdoption {
         let mut hasher = Sha256::new();
         hasher.update(b"codex-historical-model-baseline-overlay-v1\0");
         // This type contains only infallibly serialized structs, strings and integers.
-        hasher.update(serde_json::to_vec(plan).expect("overlay plan serializes"));
+        let serialized_plan = match serde_json::to_vec(plan) {
+            Ok(serialized_plan) => serialized_plan,
+            Err(error) => unreachable!("overlay plans serialize infallibly: {error}"),
+        };
+        hasher.update(serialized_plan);
         format!("{:x}", hasher.finalize())
     }
 

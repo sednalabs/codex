@@ -40,6 +40,8 @@ use super::super::shell_spec::CommandToolOptions;
 use super::super::shell_spec::create_exec_command_tool_with_environment_id;
 use super::ExecCommandArgs;
 use super::ExecCommandWorkdirArgs;
+use super::TerminalWaitArgs;
+use super::complete_terminal_wait;
 use super::post_unified_exec_tool_use_payload;
 use super::preparation::ExecCommandLifetime;
 use super::preparation::ParsedExecCommand;
@@ -165,6 +167,11 @@ impl ExecCommandHandler {
         let turn_environment = selected_executor(&environments, &step_context.environments)?;
         let parsed =
             ParsedExecCommand::parse(&arguments, &session, &step_context, turn_environment)?;
+        let terminal_wait = TerminalWaitArgs {
+            wait_until_terminal: parsed.args.wait_until_terminal,
+            max_wait_ms: parsed.args.max_wait_ms,
+            heartbeat_interval_ms: parsed.args.heartbeat_interval_ms,
+        };
         maybe_emit_implicit_skill_invocation(
             &session,
             &step_context,
@@ -176,6 +183,7 @@ impl ExecCommandHandler {
         .await;
         let prepared = parsed.prepare(self.lifetime)?;
         let max_output_tokens = prepared.max_output_tokens;
+        let wait_fallback_yield_time_ms = prepared.yield_time_ms;
         let fs = prepared.turn_environment.environment().get_filesystem();
         let intercepted_patch = intercept_apply_patch(
             &prepared.resolved.command,
@@ -237,7 +245,22 @@ impl ExecCommandHandler {
             None => manager.exec_command(request, &context).await,
         };
         match result {
-            Ok(response) => Ok(boxed_tool_output(response)),
+            Ok(response) => {
+                let response = complete_terminal_wait(
+                    manager,
+                    &context,
+                    response,
+                    terminal_wait,
+                    wait_fallback_yield_time_ms,
+                )
+                .await
+                .map_err(|err| {
+                    FunctionCallError::RespondToModel(format!(
+                        "exec_command failed while waiting: {err}"
+                    ))
+                })?;
+                Ok(boxed_tool_output(response))
+            }
             Err(UnifiedExecError::SandboxDenied {
                 output,
                 original_token_count,
