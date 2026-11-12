@@ -8,6 +8,8 @@ mod auth;
 #[cfg(target_os = "linux")]
 pub mod launcher;
 #[cfg(target_os = "linux")]
+mod mcp_broker;
+#[cfg(target_os = "linux")]
 mod mcp_oauth;
 #[cfg(target_os = "linux")]
 mod outcome_projection;
@@ -21,7 +23,6 @@ mod tests;
 
 pub use auth::McpRedactionContext;
 pub use signer::ExecutionNonce;
-pub use signer::sign_protected_mcp_proof;
 pub use wire::RESERVED_META_KEY;
 pub const HOLDER_CONFLICT_ERROR_CODE: &str = "work_item_execution.holder_conflict";
 pub const HOLDER_CONFLICT_MESSAGE: &str =
@@ -32,6 +33,20 @@ pub fn bearer_for_mcp(
     recipient: &str,
 ) -> anyhow::Result<Option<zeroize::Zeroizing<String>>> {
     auth::bearer_for_mcp(server, recipient)
+}
+
+#[cfg(target_os = "linux")]
+pub async fn broker_protected_mcp_http_request(
+    request: codex_exec_server_protocol::HttpRequestParams,
+) -> anyhow::Result<codex_exec_server_protocol::HttpRequestResponse> {
+    mcp_broker::request(request).await
+}
+
+#[cfg(not(target_os = "linux"))]
+pub async fn broker_protected_mcp_http_request(
+    _request: codex_exec_server_protocol::HttpRequestParams,
+) -> anyhow::Result<codex_exec_server_protocol::HttpRequestResponse> {
+    anyhow::bail!("protected MCP broker is only supported on Linux")
 }
 
 pub fn is_protected_mcp_target(server: &str, recipient: &str) -> anyhow::Result<bool> {

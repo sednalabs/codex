@@ -76,7 +76,6 @@ fn invalidation_between_getter_precheck_and_lock_still_fails_closed() {
         recipient: "https://ops.example/mcp".to_string(),
         provider_recipient: "https://api.example/v1".to_string(),
         expires_at: i64::MAX,
-        bearer: Zeroizing::new("synthetic protected credential".to_string()),
     }));
     let (prechecked_tx, prechecked_rx) = mpsc::channel();
     let (continue_tx, continue_rx) = mpsc::channel();
@@ -115,7 +114,6 @@ fn invalidation_between_getter_precheck_and_lock_still_fails_closed() {
 #[test]
 fn redaction_scrubs_json_values_and_keys_without_overwriting_collisions() {
     let context = McpRedactionContext {
-        bearer: Zeroizing::new("private-bearer".to_string()),
         proof_tokens: vec![Zeroizing::new("private-proof".to_string())],
     };
     let mut value = serde_json::json!({
@@ -127,9 +125,9 @@ fn redaction_scrubs_json_values_and_keys_without_overwriting_collisions() {
     assert_eq!(
         value,
         serde_json::json!({
-            "[runtime secret redacted] 1": "[runtime secret redacted]",
+            "private-bearer": "[runtime secret redacted]",
             "[runtime secret redacted]": "keep",
-            "nested": [{"echo": "Bearer [runtime secret redacted]"}]
+            "nested": [{"echo": "Bearer private-bearer"}]
         })
     );
 }

@@ -1527,22 +1527,29 @@ fn mcp_tool_call_thread_id_meta_is_added_to_request_meta() {
                 "threadId": "stale-thread",
             })),
             "thread-live",
+            "nonce-live",
         ),
         Some(serde_json::json!({
             "source": "test-client",
             "threadId": "thread-live",
+            "runtime/execution-nonce": "nonce-live",
         }))
     );
 
     assert_eq!(
-        with_mcp_tool_call_thread_id_meta(/*meta*/ None, "thread-live"),
+        with_mcp_tool_call_thread_id_meta(/*meta*/ None, "thread-live", "nonce-live"),
         Some(serde_json::json!({
             "threadId": "thread-live",
+            "runtime/execution-nonce": "nonce-live",
         }))
     );
 
     assert_eq!(
-        with_mcp_tool_call_thread_id_meta(Some(serde_json::json!("invalid-meta")), "thread-live"),
+        with_mcp_tool_call_thread_id_meta(
+            Some(serde_json::json!("invalid-meta")),
+            "thread-live",
+            "nonce-live",
+        ),
         Some(serde_json::json!("invalid-meta"))
     );
 }

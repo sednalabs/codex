@@ -413,7 +413,7 @@ struct HistoricalExecutionReceipt {
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum ExecutionReceiptResolution {
+pub(crate) enum ExecutionReceiptResolution {
     Recorded,
     Unresolved,
 }
@@ -495,6 +495,27 @@ async fn read_execution_receipt_async(
         response_body.extend_from_slice(&chunk);
     }
     parse_execution_receipt(&response_body, expected_work_item_ref, request_id)
+}
+
+pub(crate) fn read_execution_receipt(
+    bearer: &SecretString,
+    project_id: u64,
+    expected_work_item_ref: &str,
+    request_id: Uuid,
+) -> Result<ExecutionReceiptResolution> {
+    let client = api_http_client()?;
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .map_err(|_| anyhow::anyhow!("build fixed Ops API receipt runtime"))?;
+    runtime.block_on(read_execution_receipt_async(
+        &client,
+        API_RECIPIENT,
+        bearer,
+        project_id,
+        expected_work_item_ref,
+        request_id,
+    ))
 }
 
 async fn send_claim_to_async(
