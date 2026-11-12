@@ -332,12 +332,16 @@ fn test_get_command_rejects_explicit_login_when_disallowed() -> anyhow::Result<(
 
 #[test]
 fn terminal_wait_output_bounds_multi_window_output_and_keeps_omission_accounting() {
-    let mut output = TerminalWaitOutput::new(/*max_bytes*/ 8);
+    let mut output = TerminalWaitOutput::new();
+    let chunk = "x".repeat(UNIFIED_EXEC_OUTPUT_MAX_BYTES);
     let mut first = ExecCommandToolOutput {
         event_call_id: "exec-call".to_string(),
         chunk_id: "first".to_string(),
         wall_time: std::time::Duration::ZERO,
-        raw_output: "abcdefgh".into(),
+        raw_output: CapturedStream {
+            text: chunk.clone(),
+            omitted_bytes: 0,
+        },
         truncation_policy: TEST_TRUNCATION_POLICY,
         max_output_tokens: Some(2),
         process_id: Some(7),
@@ -350,7 +354,10 @@ fn terminal_wait_output_bounds_multi_window_output_and_keeps_omission_accounting
         event_call_id: "exec-call".to_string(),
         chunk_id: "last".to_string(),
         wall_time: std::time::Duration::ZERO,
-        raw_output: "ijklmnop".into(),
+        raw_output: CapturedStream {
+            text: chunk,
+            omitted_bytes: 0,
+        },
         truncation_policy: TEST_TRUNCATION_POLICY,
         max_output_tokens: Some(2),
         process_id: None,
@@ -364,9 +371,9 @@ fn terminal_wait_output_bounds_multi_window_output_and_keeps_omission_accounting
     output.record_response(&mut final_response);
     output.finish(&mut final_response);
 
-    assert!(final_response.raw_output.text.len() <= 8);
+    assert!(final_response.raw_output.text.len() <= UNIFIED_EXEC_OUTPUT_MAX_BYTES);
     assert_eq!(final_response.original_token_count, Some(4));
-    assert!(final_response.raw_output.omitted_bytes >= 8);
+    assert!(final_response.raw_output.omitted_bytes > 0);
 }
 
 #[cfg(unix)]

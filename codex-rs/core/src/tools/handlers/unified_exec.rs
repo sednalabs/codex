@@ -18,14 +18,12 @@ use crate::unified_exec::UnifiedExecError;
 use crate::unified_exec::UnifiedExecProcessManager;
 use crate::unified_exec::WriteStdinRequest;
 use crate::unified_exec::output::CapturedStream;
-use crate::unified_exec::resolve_max_tokens;
 use crate::unified_exec::UNIFIED_EXEC_OUTPUT_MAX_BYTES;
 use codex_utils_head_tail_buffer::HeadTailBuffer;
 use codex_protocol::models::AdditionalPermissionProfile;
 use codex_utils_path_uri::PathUri;
 use futures::future::BoxFuture;
 use serde::Deserialize;
-use std::num::NonZeroUsize;
 use std::path::PathBuf;
 use std::sync::Arc;
 
@@ -161,15 +159,15 @@ fn resolve_terminal_wait_window_ms(args: TerminalWaitArgs, fallback_ms: u64) -> 
 
 /// Keep repeated internal polls bounded while leaving the process and its session resumable.
 struct TerminalWaitOutput {
-    bytes: HeadTailBuffer,
+    bytes: HeadTailBuffer<UNIFIED_EXEC_OUTPUT_MAX_BYTES>,
     original_tokens: usize,
     omitted_bytes: usize,
 }
 
 impl TerminalWaitOutput {
-    fn new(max_bytes: usize) -> Self {
+    fn new() -> Self {
         Self {
-            bytes: HeadTailBuffer::new(max_bytes.max(1)),
+            bytes: HeadTailBuffer::default(),
             original_tokens: 0,
             omitted_bytes: 0,
         }
@@ -216,10 +214,7 @@ pub(crate) async fn complete_terminal_wait(
     }
 
     let wait_window_ms = resolve_terminal_wait_window_ms(args, fallback_yield_time_ms);
-    let max_output_bytes = resolve_max_tokens(initial_response.max_output_tokens)
-        .saturating_mul(APPROX_BYTES_PER_TOKEN)
-        .min(UNIFIED_EXEC_OUTPUT_MAX_BYTES);
-    let mut output = TerminalWaitOutput::new(max_output_bytes);
+    let mut output = TerminalWaitOutput::new();
     let mut response = initial_response;
     let mut wall_time = response.wall_time;
     output.record_response(&mut response);

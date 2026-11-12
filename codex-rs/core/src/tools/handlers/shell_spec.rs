@@ -130,7 +130,7 @@ pub(crate) fn create_exec_command_tool_with_environment_id(
 }
 
 pub fn create_write_stdin_tool() -> ToolSpec {
-    let properties = BTreeMap::from([
+    let mut properties = BTreeMap::from([
         (
             "session_id".to_string(),
             JsonSchema::number(Some(

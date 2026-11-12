@@ -104,10 +104,7 @@ impl WriteStdinHandler {
         let manager = &session.services.unified_exec_manager;
         let context =
             UnifiedExecContext::new(session.clone(), step_context, cancellation_token, call_id);
-        let response = manager
-            .services
-            .unified_exec_manager
-            .write_stdin(
+        let response = manager.write_stdin(
                 &context,
                 WriteStdinRequest {
                     terminal: &terminal,
