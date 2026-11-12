@@ -438,17 +438,17 @@ class InstallShTest(unittest.TestCase):
             )
             self.assertEqual(first.returncode, 0, first.stderr)
             oldest = releases / f"{versions[0]}-{target}"
-            helper = oldest / "bin/codex-code-mode-host"
-            shutil.copy("/bin/sleep", helper)
+            sleep_helper = oldest / "bin/sleep"
+            shutil.copy("/bin/sleep", sleep_helper)
             if system.sysname == "Darwin":
                 # A copied macOS system binary cannot run with its platform signature.
                 subprocess.run(
-                    ["/usr/bin/codesign", "--force", "--sign", "-", str(helper)],
+                    ["/usr/bin/codesign", "--force", "--sign", "-", str(sleep_helper)],
                     check=True,
                     capture_output=True,
                 )
             # A helper can outlive its parent CLI; retain its whole release.
-            with subprocess.Popen(["sleep", "300"], executable=str(helper)) as running:
+            with subprocess.Popen([str(sleep_helper), "300"]) as running:
                 try:
                     second, _ = run_installer_in(
                         root, versions[1], **install_options[versions[1]]
@@ -510,7 +510,7 @@ class InstallShTest(unittest.TestCase):
                 fake_ps = root / "bin/ps"
                 foreign_uid = 0 if os.geteuid() != 0 else 501
                 try:
-                    for executable in (oldest / "bin/codex", helper):
+                    for executable in (oldest / "bin/codex", sleep_helper):
                         with self.subTest(foreign_executable=executable.name):
                             fake_ps.write_text(
                                 "#!/bin/sh\n"
@@ -563,7 +563,7 @@ class InstallShTest(unittest.TestCase):
                             readable, "installer did not attempt retirement"
                         )
                         self.assertEqual(os.read(ready_fd, 128), b"ready\n")
-                        with subprocess.Popen(["sleep", "300"], executable=str(helper)) as late_helper:
+                        with subprocess.Popen([str(sleep_helper), "300"]) as late_helper:
                             try:
                                 os.write(resume_fd, b"continue\n")
                                 raced, _ = installing.result(timeout=30)
