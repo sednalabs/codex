@@ -463,7 +463,8 @@ async fn exec_command_wait_until_terminal_returns_final_process_output() {
         })
         .to_string(),
     };
-    let invocation = invocation_for_payload_with_linux_sandbox("exec_command", "terminal-wait", payload).await;
+    let invocation =
+        invocation_for_payload_with_linux_sandbox("exec_command", "terminal-wait", payload).await;
     let output = ExecCommandHandler::default()
         .handle(invocation)
         .await

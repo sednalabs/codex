@@ -182,15 +182,15 @@ impl TerminalWaitOutput {
                 omitted_bytes: 0,
             },
         );
-        self.original_tokens = self.original_tokens.saturating_add(
-            response.original_token_count.unwrap_or_else(|| {
-                captured
-                    .text
-                    .len()
-                    .saturating_add(captured.omitted_bytes)
-                    .div_ceil(APPROX_BYTES_PER_TOKEN)
-            }),
-        );
+        self.original_tokens =
+            self.original_tokens
+                .saturating_add(response.original_token_count.unwrap_or_else(|| {
+                    captured
+                        .text
+                        .len()
+                        .saturating_add(captured.omitted_bytes)
+                        .div_ceil(APPROX_BYTES_PER_TOKEN)
+                }));
         self.omitted_bytes = self.omitted_bytes.saturating_add(captured.omitted_bytes);
         self.bytes.push_chunk(captured.text.as_bytes());
     }
