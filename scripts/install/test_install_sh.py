@@ -563,7 +563,9 @@ class InstallShTest(unittest.TestCase):
                             readable, "installer did not attempt retirement"
                         )
                         self.assertEqual(os.read(ready_fd, 128), b"ready\n")
-                        with subprocess.Popen([str(sleep_helper), "300"]) as late_helper:
+                        with subprocess.Popen(
+                            [str(sleep_helper), "300"]
+                        ) as late_helper:
                             try:
                                 os.write(resume_fd, b"continue\n")
                                 raced, _ = installing.result(timeout=30)
