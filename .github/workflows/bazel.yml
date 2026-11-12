@@ -5,6 +5,11 @@ name: Bazel
 
 on:
   workflow_call:
+    inputs:
+      test_suite:
+        required: false
+        type: string
+        default: full
   workflow_dispatch:
     inputs:
       test_suite:
