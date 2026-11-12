@@ -19,9 +19,9 @@ use codex_tools::ToolSpec;
 use serde::Deserialize;
 
 use super::super::shell_spec::create_write_stdin_tool;
-use super::post_unified_exec_tool_use_payload;
 use super::TerminalWaitArgs;
 use super::complete_terminal_wait;
+use super::post_unified_exec_tool_use_payload;
 
 #[derive(Debug, Deserialize)]
 struct WriteStdinArgs {
@@ -104,7 +104,8 @@ impl WriteStdinHandler {
         let manager = &session.services.unified_exec_manager;
         let context =
             UnifiedExecContext::new(session.clone(), step_context, cancellation_token, call_id);
-        let response = manager.write_stdin(
+        let response = manager
+            .write_stdin(
                 &context,
                 WriteStdinRequest {
                     terminal: &terminal,
@@ -146,9 +147,7 @@ impl WriteStdinHandler {
         )
         .await
         .map_err(|err| {
-            FunctionCallError::RespondToModel(format!(
-                "write_stdin failed while waiting: {err}"
-            ))
+            FunctionCallError::RespondToModel(format!("write_stdin failed while waiting: {err}"))
         })?;
 
         Ok(boxed_tool_output(response))

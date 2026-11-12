@@ -449,7 +449,11 @@ async fn exec_command_terminal_wait_cancellation_returns_live_session() {
         .as_ref()
         .expect("cancellation should return the live terminal state")
         .log_output();
-    session.services.unified_exec_manager.terminate_all_processes().await;
+    session
+        .services
+        .unified_exec_manager
+        .terminate_all_processes()
+        .await;
 
     assert!(was_pending_until_cancellation);
     assert!(rendered.contains("Process running with session ID"));
