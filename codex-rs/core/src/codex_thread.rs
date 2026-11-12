@@ -496,10 +496,25 @@ impl CodexThread {
         &self,
         request: impl Into<WithTurnExtensionData<TurnInputRequest>>,
     ) -> CodexResult<StartIfIdleSubmission> {
-        match self
-            .submit_turn_input_with_mode(request, TurnInputMode::StartIfIdle)
-            .await?
-        {
+        self.start_turn_if_idle_with_mode(request, TurnInputMode::StartIfIdle)
+            .await
+    }
+
+    /// Starts automatically only when idle and no explicit interrupt is pending.
+    pub async fn start_turn_if_idle_unless_interrupted(
+        &self,
+        request: impl Into<WithTurnExtensionData<TurnInputRequest>>,
+    ) -> CodexResult<StartIfIdleSubmission> {
+        self.start_turn_if_idle_with_mode(request, TurnInputMode::StartIfIdleUnlessInterrupted)
+            .await
+    }
+
+    async fn start_turn_if_idle_with_mode(
+        &self,
+        request: impl Into<WithTurnExtensionData<TurnInputRequest>>,
+        mode: TurnInputMode,
+    ) -> CodexResult<StartIfIdleSubmission> {
+        match self.submit_turn_input_with_mode(request, mode).await? {
             TurnInputSubmission::Started {
                 turn_id,
                 root_turn_id,
