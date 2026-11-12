@@ -1198,3 +1198,186 @@ def run_installer_in(
     else:
         env["CODEX_INSTALL_IF_LATEST"] = "0" if manual_update else "1"
         env["CODEX_UPDATE_FROM_RELEASE"] = update_guard_from_release
+    if old_updater_parent_pid is not None:
+        env["CODEX_TEST_PARENT_PID"] = str(old_updater_parent_pid)
+        env["CODEX_TEST_PARENT_START"] = process_start_time()
+    if use_mirror is None:
+        env.pop("CODEX_INSTALLER_USE_RELEASES_OPENAI_COM", None)
+    else:
+        env["CODEX_INSTALLER_USE_RELEASES_OPENAI_COM"] = (
+            "TRUE" if use_mirror else "false"
+        )
+    result = subprocess.run(
+        ["/bin/sh", str(installer_path)],
+        capture_output=True,
+        check=False,
+        env=env,
+        text=True,
+    )
+    requests = (
+        request_log.read_text(encoding="utf-8").splitlines()
+        if request_log.exists()
+        else []
+    )
+    return result, requests
+
+
+def process_start_time() -> str:
+    details = subprocess.check_output(
+        ["ps", "-p", str(os.getpid()), "-o", "stat=", "-o", "lstart="], text=True
+    ).strip()
+    return details.split(maxsplit=1)[1]
+
+
+def create_package_release(
+    root: Path,
+    *,
+    metadata_version: str = VERSION,
+    binary_version: str = VERSION,
+    target: str = "aarch64-apple-darwin",
+    include_exec_server: bool = False,
+) -> tuple[Path, Path, str]:
+    package_dir = root / "package"
+    (package_dir / "bin").mkdir(parents=True)
+    (package_dir / "codex-path").mkdir()
+    metadata = {"version": binary_version, "target": target, "entrypoint": "bin/codex"}
+    if include_exec_server:
+        metadata["execServer"] = "bin/codex-exec-server"
+        write_executable(package_dir / "bin/codex-exec-server", "#!/bin/sh\nexit 0\n")
+    (package_dir / "codex-package.json").write_text(
+        json.dumps(metadata),
+        encoding="utf-8",
+    )
+    write_executable(
+        package_dir / "bin" / "codex",
+        f"#!/bin/sh\nprintf 'codex-cli {binary_version}\\n'\n",
+    )
+    write_executable(
+        package_dir / "bin" / "codex-code-mode-host",
+        "#!/bin/sh\nexit 0\n",
+    )
+    write_executable(package_dir / "codex-path" / "rg", "#!/bin/sh\nexit 0\n")
+    if "linux" in target:
+        (package_dir / "codex-resources").mkdir()
+        write_executable(package_dir / "codex-resources/bwrap", "#!/bin/sh\nexit 0\n")
+
+    asset = f"codex-package-{target}.tar.gz"
+    archive_path = root / asset
+    with tarfile.open(archive_path, "w:gz") as archive:
+        for path in package_dir.iterdir():
+            archive.add(path, arcname=path.name)
+
+    archive_digest = hashlib.sha256(archive_path.read_bytes()).hexdigest()
+    checksum_path = root / "codex-package_SHA256SUMS"
+    checksum_path.write_text(f"{archive_digest}  {asset}\n", encoding="utf-8")
+    checksum_digest = hashlib.sha256(checksum_path.read_bytes()).hexdigest()
+    metadata_json = json.dumps(
+        {
+            "assets": [
+                {"name": asset, "digest": f"sha256:{archive_digest}"},
+                {
+                    "name": "codex-package_SHA256SUMS",
+                    "digest": f"sha256:{checksum_digest}",
+                },
+            ],
+            "tag_name": f"rust-v{metadata_version}",
+        },
+        indent=2,
+    )
+    return archive_path, checksum_path, metadata_json
+
+
+def create_legacy_release(root: Path) -> tuple[Path, str]:
+    package_dir = root / "legacy-package"
+    vendor_dir = package_dir / "package" / "vendor" / "aarch64-apple-darwin"
+    (vendor_dir / "codex").mkdir(parents=True)
+    (vendor_dir / "path").mkdir()
+    write_executable(
+        vendor_dir / "codex" / "codex",
+        f"#!/bin/sh\nprintf 'codex-cli {VERSION}\\n'\n",
+    )
+    write_executable(vendor_dir / "path" / "rg", "#!/bin/sh\nexit 0\n")
+
+    asset = f"codex-npm-darwin-arm64-{VERSION}.tgz"
+    archive_path = root / asset
+    with tarfile.open(archive_path, "w:gz") as archive:
+        archive.add(package_dir / "package", arcname="package")
+
+    archive_digest = hashlib.sha256(archive_path.read_bytes()).hexdigest()
+    metadata_json = json.dumps(
+        {
+            "assets": [{"name": asset, "digest": f"sha256:{archive_digest}"}],
+            "tag_name": f"rust-v{VERSION}",
+        },
+        indent=2,
+    )
+    return archive_path, metadata_json
+
+
+def write_executable(path: Path, contents: str) -> None:
+    path.write_text(contents, encoding="utf-8")
+    path.chmod(0o755)
+
+
+def release_metadata(*, compact: bool = False, reorder: bool = False) -> str:
+    assets = [
+        asset_metadata(
+            f"codex-package-{target}.tar.gz",
+            f"sha256:{'a' * 64}",
+            reorder=reorder,
+        )
+        for target in (
+            "aarch64-apple-darwin",
+            "x86_64-apple-darwin",
+            "aarch64-unknown-linux-musl",
+            "x86_64-unknown-linux-musl",
+        )
+    ]
+    assets.append(
+        asset_metadata(
+            "codex-package_SHA256SUMS",
+            f"sha256:{'b' * 64}",
+            reorder=reorder,
+        )
+    )
+    separators = (",", ":") if compact else None
+    return json.dumps(
+        {"assets": assets, "body": "braces: { } [ ]", "tag_name": f"rust-v{VERSION}"},
+        indent=None if compact else 2,
+        separators=separators,
+    )
+
+
+def asset_metadata(name: str, digest: str, *, reorder: bool) -> dict[str, str]:
+    if reorder:
+        return {"digest": digest, "name": name}
+    return {"name": name, "digest": digest}
+
+
+def legacy_release_metadata_with_decoys() -> str:
+    fake_digest = f"sha256:{'0' * 64}"
+    assets = [
+        {
+            "metadata": {
+                "name": "codex-package-x86_64-unknown-linux-musl.tar.gz",
+                "digest": fake_digest,
+            },
+            "digest": f"sha256:{'c' * 64}",
+            "name": f"codex-npm-{target}-{VERSION}.tgz",
+        }
+        for target in ("darwin-arm64", "darwin-x64", "linux-arm64", "linux-x64")
+    ]
+    return json.dumps(
+        {
+            "body": (
+                f'fake: {{"name":"codex-package_SHA256SUMS","digest":"{fake_digest}"}}'
+            ),
+            "assets": assets,
+            "tag_name": f"rust-v{VERSION}",
+        },
+        separators=(",", ":"),
+    )
+
+
+if __name__ == "__main__":
+    unittest.main()
