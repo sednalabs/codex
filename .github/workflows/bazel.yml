@@ -6,6 +6,15 @@ name: Bazel
 on:
   workflow_call:
   workflow_dispatch:
+    inputs:
+      test_suite:
+        description: Select the full matrix or the focused Linux process-wait regression.
+        type: choice
+        required: true
+        default: full
+        options:
+          - full
+          - terminal-wait
 
 concurrency:
   # Cancel previous actions from the same PR or branch except 'main' branch.
@@ -45,6 +54,7 @@ jobs:
 
     # Configure a human readable name for each job
     name: Bazel test on ${{ matrix.os }} for ${{ matrix.target }}
+    if: ${{ github.event_name != 'workflow_dispatch' || inputs.test_suite != 'terminal-wait' || matrix.target == 'x86_64-unknown-linux-gnu' }}
     environment:
       name: bazel
       deployment: false
@@ -102,6 +112,12 @@ jobs:
             --test_verbose_timeout_warnings
             --build_metadata=COMMIT_SHA=${GITHUB_SHA}
           )
+
+          if [[ "${{ github.event_name }}" == "workflow_dispatch" && "${{ inputs.test_suite }}" == "terminal-wait" ]]; then
+            bazel_targets=(//codex-rs/core:core-unit-tests)
+            bazel_test_args+=(--test_arg=exec_command_)
+          fi
+
           ./.github/scripts/run-bazel-ci.sh \
             "${bazel_wrapper_args[@]}" \
             -- \
@@ -133,6 +149,7 @@ jobs:
         uses: ./.github/actions/check-clean-worktree
 
   test-windows-shard:
+    if: ${{ github.event_name != 'workflow_dispatch' || inputs.test_suite != 'terminal-wait' }}
     # Build and test Windows shards on separate Windows runners.
     timeout-minutes: 30
     strategy:
@@ -240,7 +257,7 @@ jobs:
   test-windows:
     # Preserve the existing required-check surface while the real work happens
     # in the sharded Windows jobs above.
-    if: always()
+    if: always() && (github.event_name != 'workflow_dispatch' || inputs.test_suite != 'terminal-wait')
     needs: test-windows-shard
     runs-on: ubuntu-24.04
     name: Bazel test on windows-latest for x86_64-pc-windows-gnullvm
@@ -258,7 +275,7 @@ jobs:
     # Native Windows Bazel tests are slower and frequently approach the
     # 30-minute PR budget. Run this only for post-merge commits to main and give
     # it a larger timeout. Also allow manual runs for native toolchain changes.
-    if: (github.event_name == 'push' && github.ref == 'refs/heads/main') || github.event_name == 'workflow_dispatch'
+    if: (github.event_name == 'push' && github.ref == 'refs/heads/main') || (github.event_name == 'workflow_dispatch' && inputs.test_suite != 'terminal-wait')
     timeout-minutes: 40
     runs-on:
       group: ${{ github.event.repository.name }}-runners
@@ -341,6 +358,7 @@ jobs:
         uses: ./.github/actions/check-clean-worktree
 
   clippy:
+    if: ${{ github.event_name != 'workflow_dispatch' || inputs.test_suite != 'terminal-wait' }}
     timeout-minutes: 30
     strategy:
       fail-fast: false
@@ -446,6 +464,7 @@ jobs:
         uses: ./.github/actions/check-clean-worktree
 
   verify-release-build:
+    if: ${{ github.event_name != 'workflow_dispatch' || inputs.test_suite != 'terminal-wait' }}
     timeout-minutes: 30
     strategy:
       fail-fast: false
