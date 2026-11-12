@@ -13,6 +13,7 @@ use crate::environment_selection::TurnEnvironmentState;
 use crate::function_tool::FunctionCallError;
 use crate::session::step_context::StepContext;
 use crate::session::tests::make_session_and_context;
+use crate::session::tests::make_session_and_context_with_auth_and_config_and_rx;
 use crate::tools::context::ExecCommandToolOutput;
 use crate::tools::context::ToolCallSource;
 use crate::tools::context::ToolInvocation;
@@ -34,6 +35,42 @@ async fn invocation_for_payload(
     let turn = Arc::new(turn);
     ToolInvocation {
         session: session.into(),
+        step_context: StepContext::for_test(Arc::clone(&turn)),
+        turn,
+        cancellation_token: tokio_util::sync::CancellationToken::new(),
+        tracker: Arc::new(Mutex::new(TurnDiffTracker::new())),
+        call_id: call_id.to_string(),
+        tool_name: codex_tools::ToolName::plain(tool_name),
+        source: ToolCallSource::Direct,
+        payload,
+        native_call: None,
+        environments: Default::default(),
+    }
+}
+
+
+#[cfg(unix)]
+async fn invocation_for_payload_with_linux_sandbox(
+    tool_name: &str,
+    call_id: &str,
+    payload: ToolPayload,
+) -> ToolInvocation {
+    let (session, turn, _rx) = make_session_and_context_with_auth_and_config_and_rx(
+        codex_login::CodexAuth::from_api_key("Test API Key"),
+        Vec::new(),
+        |config| {
+            #[cfg(target_os = "linux")]
+            {
+                config.codex_linux_sandbox_exe = Some(
+                    codex_utils_cargo_bin::cargo_bin("codex-linux-sandbox")
+                        .expect("core Bazel tests provide codex-linux-sandbox"),
+                );
+            }
+        },
+    )
+    .await;
+    ToolInvocation {
+        session,
         step_context: StepContext::for_test(Arc::clone(&turn)),
         turn,
         cancellation_token: tokio_util::sync::CancellationToken::new(),
@@ -389,7 +426,12 @@ async fn exec_command_wait_until_terminal_returns_final_process_output() {
         })
         .to_string(),
     };
-    let invocation = invocation_for_payload("exec_command", "terminal-wait", payload).await;
+    let invocation = invocation_for_payload_with_linux_sandbox(
+        "exec_command",
+        "terminal-wait",
+        payload,
+    )
+    .await;
     let output = ExecCommandHandler::default()
         .handle(invocation)
         .await
@@ -405,20 +447,11 @@ async fn exec_command_wait_until_terminal_returns_final_process_output() {
 async fn exec_command_terminal_wait_cancellation_returns_live_session() {
     use tokio_util::sync::CancellationToken;
 
-    let (session, turn) = make_session_and_context().await;
-    let session: Arc<_> = session.into();
-    let turn = Arc::new(turn);
     let cancellation_token = CancellationToken::new();
-    let invocation = ToolInvocation {
-        session: Arc::clone(&session),
-        step_context: StepContext::for_test(Arc::clone(&turn)),
-        turn,
-        cancellation_token: cancellation_token.clone(),
-        tracker: Arc::new(Mutex::new(TurnDiffTracker::new())),
-        call_id: "terminal-wait-cancel".to_string(),
-        tool_name: codex_tools::ToolName::plain("exec_command"),
-        source: ToolCallSource::Direct,
-        payload: ToolPayload::Function {
+    let mut invocation = invocation_for_payload_with_linux_sandbox(
+        "exec_command",
+        "terminal-wait-cancel",
+        ToolPayload::Function {
             arguments: serde_json::json!({
                 "cmd": "sleep 30",
                 "yield_time_ms": 250,
@@ -426,9 +459,9 @@ async fn exec_command_terminal_wait_cancellation_returns_live_session() {
             })
             .to_string(),
         },
-        native_call: None,
-        environments: Default::default(),
-    };
+    )
+    .await;
+    invocation.cancellation_token = cancellation_token.clone();
     let session = Arc::clone(&invocation.session);
     let handler = ExecCommandHandler::default();
     let wait = handler.handle(invocation);
