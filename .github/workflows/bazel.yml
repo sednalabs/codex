@@ -42,7 +42,6 @@ jobs:
 
     # Configure a human readable name for each job
     name: Bazel test on ${{ matrix.os }} for ${{ matrix.target }}
-    if: ${{ github.event_name != 'workflow_dispatch' || inputs.test_suite != 'terminal-wait' }}
     environment:
       name: bazel
       deployment: false
