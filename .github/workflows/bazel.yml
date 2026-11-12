@@ -102,7 +102,11 @@ jobs:
 
           if [[ "${{ github.event_name }}" == "workflow_dispatch" && "${{ inputs.test_suite }}" == "terminal-wait" ]]; then
             bazel_targets=(//codex-rs/core:core-unit-tests)
-            bazel_test_args+=(--test_arg=exec_command_)
+            bazel_test_args+=(
+              --test_arg=exec_command_
+              --test_sharding_strategy=disabled
+              --test_output=all
+            )
           fi
 
           ./.github/scripts/run-bazel-ci.sh \
