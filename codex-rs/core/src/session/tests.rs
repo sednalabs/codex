@@ -7796,11 +7796,13 @@ async fn historical_overlay_resume_to_serialized_request_is_identity_bound() -> 
 
 #[tokio::test]
 async fn historical_overlay_compaction_uses_the_same_authorized_baseline() -> anyhow::Result<()> {
-    use codex_config::{
-        HistoricalBaselineAdoption, InstructionOverlayComponentToml, InstructionOverlayEdit,
-        InstructionOverlayOnAbsent, InstructionOverlaysToml,
-    };
-    use codex_model_provider_info::{ModelProviderCapabilities, RemoteCompactionSupport};
+    use codex_config::HistoricalBaselineAdoption;
+    use codex_config::InstructionOverlayComponentToml;
+    use codex_config::InstructionOverlayEdit;
+    use codex_config::InstructionOverlayOnAbsent;
+    use codex_config::InstructionOverlaysToml;
+    use codex_model_provider_info::ModelProviderCapabilities;
+    use codex_model_provider_info::RemoteCompactionSupport;
 
     for remote in [false, true] {
         let server = start_mock_server().await;
@@ -7907,10 +7909,10 @@ async fn historical_overlay_compaction_uses_the_same_authorized_baseline() -> an
 #[tokio::test]
 async fn historical_overlay_optional_failures_preserve_the_selected_baseline() -> anyhow::Result<()>
 {
-    use codex_config::{
-        InstructionOverlayComponentToml, InstructionOverlayEdit, InstructionOverlayOnAbsent,
-        InstructionOverlaysToml,
-    };
+    use codex_config::InstructionOverlayComponentToml;
+    use codex_config::InstructionOverlayEdit;
+    use codex_config::InstructionOverlayOnAbsent;
+    use codex_config::InstructionOverlaysToml;
     use codex_protocol::models::BaseInstructionsProvenance;
 
     let target = "synthetic exact wait rule";
@@ -8140,10 +8142,10 @@ async fn historical_overlay_optional_cleanup_respects_explicit_file_on_resume() 
 
 #[tokio::test]
 async fn historical_overlay_fresh_session_uses_current_model_baseline() -> anyhow::Result<()> {
-    use codex_config::{
-        InstructionOverlayComponentToml, InstructionOverlayEdit, InstructionOverlayOnAbsent,
-        InstructionOverlaysToml,
-    };
+    use codex_config::InstructionOverlayComponentToml;
+    use codex_config::InstructionOverlayEdit;
+    use codex_config::InstructionOverlayOnAbsent;
+    use codex_config::InstructionOverlaysToml;
     const TARGET: &str = "- Be concise and factual — no filler or conversational commentary and avoid unnecessary repetition";
     let (session, _) = make_session_with_history_source_and_config(
         InitialHistory::New,
@@ -8201,10 +8203,10 @@ async fn historical_overlay_fresh_session_uses_current_model_baseline() -> anyho
 
 #[tokio::test]
 async fn historical_overlay_public_models_keep_unrelated_instructions() -> anyhow::Result<()> {
-    use codex_config::{
-        InstructionOverlayComponentToml, InstructionOverlayEdit, InstructionOverlayOnAbsent,
-        InstructionOverlaysToml,
-    };
+    use codex_config::InstructionOverlayComponentToml;
+    use codex_config::InstructionOverlayEdit;
+    use codex_config::InstructionOverlayOnAbsent;
+    use codex_config::InstructionOverlaysToml;
     use codex_protocol::models::BaseInstructionsProvenance;
     const CADENCE: &str = "If the user's request requires calling tools, start with a message in the `commentary` channel. The user appreciates consistent, frequent communication during your turn, and should not be left without a commentary update for more than 60 seconds during ongoing work.";
     const WAIT: &str = "- Avoid performing blocking sleep or wait calls longer than 60 seconds, as they may prevent you from communicating with the user for their duration.";
@@ -8541,9 +8543,9 @@ async fn historical_overlay_uses_inferred_model_provenance_through_request() -> 
 #[tokio::test]
 async fn historical_overlay_accepts_inherited_model_provenance_for_spawned_child()
 -> anyhow::Result<()> {
-    use codex_config::{
-        InstructionOverlayComponentToml, InstructionOverlayEdit, InstructionOverlaysToml,
-    };
+    use codex_config::InstructionOverlayComponentToml;
+    use codex_config::InstructionOverlayEdit;
+    use codex_config::InstructionOverlaysToml;
     let source = SessionSource::SubAgent(SubAgentSource::ThreadSpawn {
         parent_thread_id: ThreadId::new(),
         depth: 1,

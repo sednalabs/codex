@@ -150,9 +150,10 @@ pub(crate) struct TerminalWaitArgs {
 }
 
 fn resolve_terminal_wait_window_ms(args: TerminalWaitArgs, fallback_ms: u64) -> u64 {
-    args.heartbeat_interval_ms
-        .or(args.max_wait_ms)
-        .unwrap_or(fallback_ms)
+    let requested_window_ms = args.heartbeat_interval_ms.unwrap_or(fallback_ms);
+    let max_wait_ms = args.max_wait_ms.unwrap_or(MAX_TERMINAL_WAIT_WINDOW_MS);
+    requested_window_ms
+        .min(max_wait_ms)
         .max(MIN_YIELD_TIME_MS)
         .min(MAX_TERMINAL_WAIT_WINDOW_MS)
 }
@@ -182,9 +183,13 @@ impl TerminalWaitOutput {
             },
         );
         self.original_tokens = self.original_tokens.saturating_add(
-            response
-                .original_token_count
-                .unwrap_or_else(|| captured.text.len().div_ceil(APPROX_BYTES_PER_TOKEN)),
+            response.original_token_count.unwrap_or_else(|| {
+                captured
+                    .text
+                    .len()
+                    .saturating_add(captured.omitted_bytes)
+                    .div_ceil(APPROX_BYTES_PER_TOKEN)
+            }),
         );
         self.omitted_bytes = self.omitted_bytes.saturating_add(captured.omitted_bytes);
         self.bytes.push_chunk(captured.text.as_bytes());
@@ -214,6 +219,8 @@ pub(crate) async fn complete_terminal_wait(
     }
 
     let wait_window_ms = resolve_terminal_wait_window_ms(args, fallback_yield_time_ms);
+    let max_output_tokens = initial_response.max_output_tokens;
+    let truncation_policy = initial_response.truncation_policy;
     let mut output = TerminalWaitOutput::new();
     let mut response = initial_response;
     let mut wall_time = response.wall_time;
@@ -229,8 +236,8 @@ pub(crate) async fn complete_terminal_wait(
                     terminal: &terminal,
                     input: "",
                     yield_time_ms: wait_window_ms,
-                    max_output_tokens: response.max_output_tokens,
-                    truncation_policy: response.truncation_policy,
+                    max_output_tokens,
+                    truncation_policy,
                     interaction_event: None,
                 },
             ) => result,

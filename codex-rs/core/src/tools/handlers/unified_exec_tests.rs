@@ -48,7 +48,6 @@ async fn invocation_for_payload(
     }
 }
 
-
 #[cfg(unix)]
 async fn invocation_for_payload_with_linux_sandbox(
     tool_name: &str,
@@ -413,6 +412,44 @@ fn terminal_wait_output_bounds_multi_window_output_and_keeps_omission_accounting
     assert!(final_response.raw_output.omitted_bytes > 0);
 }
 
+#[test]
+fn terminal_wait_window_respects_max_wait_when_heartbeat_is_set() {
+    let args = TerminalWaitArgs {
+        wait_until_terminal: true,
+        max_wait_ms: Some(2_000),
+        heartbeat_interval_ms: Some(10_000),
+    };
+
+    assert_eq!(resolve_terminal_wait_window_ms(args, 60_000), 2_000);
+}
+
+#[test]
+fn terminal_wait_output_estimates_tokens_from_omitted_bytes() {
+    let mut output = TerminalWaitOutput::new();
+    let mut response = ExecCommandToolOutput {
+        event_call_id: "exec-call".to_string(),
+        chunk_id: "first".to_string(),
+        wall_time: std::time::Duration::ZERO,
+        raw_output: CapturedStream {
+            text: "abcd".to_string(),
+            omitted_bytes: 8,
+        },
+        truncation_policy: TEST_TRUNCATION_POLICY,
+        max_output_tokens: None,
+        process_id: None,
+        exit_code: Some(0),
+        original_token_count: None,
+        hook_command: None,
+        tool_cwd: None,
+    };
+
+    output.record_response(&mut response);
+    output.finish(&mut response);
+
+    assert_eq!(response.original_token_count, Some(3));
+    assert_eq!(response.raw_output.omitted_bytes, 8);
+}
+
 #[cfg(unix)]
 #[tokio::test]
 async fn exec_command_wait_until_terminal_returns_final_process_output() {
@@ -426,12 +463,7 @@ async fn exec_command_wait_until_terminal_returns_final_process_output() {
         })
         .to_string(),
     };
-    let invocation = invocation_for_payload_with_linux_sandbox(
-        "exec_command",
-        "terminal-wait",
-        payload,
-    )
-    .await;
+    let invocation = invocation_for_payload_with_linux_sandbox("exec_command", "terminal-wait", payload).await;
     let output = ExecCommandHandler::default()
         .handle(invocation)
         .await
