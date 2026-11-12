@@ -187,7 +187,7 @@ impl TerminalWaitOutput {
                 .unwrap_or_else(|| captured.text.len().div_ceil(APPROX_BYTES_PER_TOKEN)),
         );
         self.omitted_bytes = self.omitted_bytes.saturating_add(captured.omitted_bytes);
-        self.bytes.push_chunk(captured.text.into_bytes());
+        self.bytes.push_chunk(captured.text.as_bytes());
     }
 
     fn finish(self, response: &mut crate::tools::context::ExecCommandToolOutput) {
