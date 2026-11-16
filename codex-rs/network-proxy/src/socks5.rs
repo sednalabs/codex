@@ -29,6 +29,8 @@ use anyhow::Context as _;
 use anyhow::Result;
 use rama_core::Service;
 use rama_core::error::BoxError;
+use rama_core::error::ErrorExt as _;
+use rama_core::rt::Executor;
 use rama_core::extensions::Extensions;
 use rama_core::extensions::ExtensionsRef;
 use rama_core::graceful::ShutdownGuard;
@@ -73,11 +75,12 @@ pub async fn run_socks5(
     enable_socks5_udp: bool,
     guard: ShutdownGuard,
 ) -> Result<()> {
-    let listener = TcpListener::build()
-        .bind(addr)
+    let executor = Executor::graceful(guard);
+    let listener = TcpListener::build(executor.clone())
+        .bind_address(addr)
         .await
         // See `http_proxy.rs` for details on why we wrap `BoxError` before converting to anyhow.
-        .map_err(rama_core::error::extra::OpaqueError::from)
+        .map_err(|err| err.into_opaque_error())
         .map_err(anyhow::Error::from)
         .with_context(|| format!("bind SOCKS5 proxy: {addr}"))?;
 
@@ -87,7 +90,7 @@ pub async fn run_socks5(
         policy_decider,
         environment_id,
         enable_socks5_udp,
-        guard,
+        executor,
     )
     .await
 }
@@ -100,15 +103,16 @@ pub async fn run_socks5_with_std_listener(
     enable_socks5_udp: bool,
     guard: ShutdownGuard,
 ) -> Result<()> {
-    let listener =
-        TcpListener::try_from(listener).context("convert std listener to SOCKS5 proxy listener")?;
+    let executor = Executor::graceful(guard);
+    let listener = TcpListener::try_from_std_tcp_listener(listener, executor.clone())
+        .context("convert std listener to SOCKS5 proxy listener")?;
     run_socks5_with_listener(
         state,
         listener,
         policy_decider,
         environment_id,
         enable_socks5_udp,
-        guard,
+        executor,
     )
     .await
 }
@@ -119,10 +123,9 @@ async fn run_socks5_with_listener(
     policy_decider: Option<Arc<dyn NetworkPolicyDecider>>,
     environment_id: Option<String>,
     enable_socks5_udp: bool,
-    guard: ShutdownGuard,
+    executor: Executor,
 ) -> Result<()> {
-    let addr = listener
-        .local_addr()
+    let addr = TcpListener::local_addr(&listener)
         .context("read SOCKS5 listener local addr")?;
 
     info!("SOCKS5 proxy listening on {addr}");
@@ -140,15 +143,16 @@ async fn run_socks5_with_listener(
     }
 
     listener
-        .serve_graceful(
-            guard,
-            CancelOnShutdown::new(socks5_proxy_service(
+        .serve(CancelOnShutdown::new(
+            socks5_proxy_service_with_executor(
                 state,
                 policy_decider,
                 environment_id,
                 enable_socks5_udp,
-            )),
-        )
+                executor.clone(),
+            ),
+            executor,
+        ))
         .await;
     Ok(())
 }
@@ -158,6 +162,18 @@ pub(crate) fn socks5_proxy_service(
     policy_decider: Option<Arc<dyn NetworkPolicyDecider>>,
     environment_id: Option<String>,
     enable_socks5_udp: bool,
+) -> BoxService<TcpStream, (), BoxError> {
+    socks5_proxy_service_with_executor(
+        state, policy_decider, environment_id, enable_socks5_udp, Executor::default(),
+    )
+}
+
+fn socks5_proxy_service_with_executor(
+    state: Arc<NetworkProxyState>,
+    policy_decider: Option<Arc<dyn NetworkPolicyDecider>>,
+    environment_id: Option<String>,
+    enable_socks5_udp: bool,
+    executor: Executor,
 ) -> BoxService<TcpStream, (), BoxError> {
     let policy_tcp_connector = service_fn({
         let policy_decider = policy_decider.clone();
@@ -169,11 +185,14 @@ pub(crate) fn socks5_proxy_service(
         }
     });
 
-    let socks_proxy = service_fn(|request| async move { proxy_socks5_tcp(request).await });
+    let socks_proxy = service_fn({
+        let executor = executor.clone();
+        move |request| proxy_socks5_tcp(request, executor.clone())
+    });
     let socks_connector = DefaultConnector::default()
         .with_connector(policy_tcp_connector)
         .with_service(socks_proxy);
-    let base = Socks5Acceptor::new().with_connector(socks_connector);
+    let base = Socks5Acceptor::new(executor).with_connector(socks_connector);
 
     if enable_socks5_udp {
         let udp_state = state.clone();
@@ -613,6 +632,7 @@ impl ExtensionsRef for Socks5TcpConnection {
 
 async fn proxy_socks5_tcp(
     request: BridgeIo<TcpStream, Socks5TcpConnection>,
+    executor: Executor,
 ) -> Result<(), BoxError> {
     let BridgeIo(mut source, target) = request;
     match target {
@@ -634,7 +654,7 @@ async fn proxy_socks5_tcp(
             source.extensions().insert(ProxyTarget(target));
             source.extensions().insert(mode);
             source.extensions().insert_arc(mitm);
-            mitm::mitm_stream(source, rama_net::Protocol::HTTPS)
+            mitm::mitm_stream(source, rama_net::Protocol::HTTPS, executor.clone())
                 .await
                 .map_err(Into::into)
         }
@@ -652,17 +672,17 @@ async fn proxy_socks5_tcp(
             source.extensions().insert(ProxyTarget(target.clone()));
             source.extensions().insert(mode);
             source.extensions().insert_arc(mitm);
-            let (protocol, source) = crate::brokered_tunnel::peek_protocol(source, protocols)
+            let (protocol, mut source) = crate::brokered_tunnel::peek_protocol(source, protocols)
                 .await
                 .map_err(|err| -> BoxError { err.into() })?;
             match protocol {
                 crate::brokered_tunnel::TunnelProtocol::Tls => {
-                    mitm::mitm_stream(source, rama_net::Protocol::HTTPS)
+                    mitm::mitm_stream(source, rama_net::Protocol::HTTPS, executor.clone())
                         .await
                         .map_err(Into::into)
                 }
                 crate::brokered_tunnel::TunnelProtocol::Http => {
-                    mitm::mitm_stream(source, rama_net::Protocol::HTTP)
+                    mitm::mitm_stream(source, rama_net::Protocol::HTTP, executor.clone())
                         .await
                         .map_err(Into::into)
                 }

@@ -11,6 +11,7 @@ use anyhow::ensure;
 use rama_core::Layer;
 use rama_core::Service;
 use rama_core::error::BoxError;
+use rama_core::error::ErrorExt as _;
 use rama_core::extensions::ExtensionsRef;
 use rama_core::io::rewind::Rewind;
 use rama_http::Body;
@@ -39,7 +40,7 @@ impl FromStr for TcpUpstreamProxy {
     type Err = anyhow::Error;
 
     fn from_str(raw: &str) -> Result<Self, Self::Err> {
-        let endpoint: HostWithPort = raw.parse()?;
+        let endpoint: HostWithPort = raw.parse().map_err(|err: BoxError| err.into_opaque_error())?;
         ensure!(
             endpoint.port != 0,
             "TCP upstream proxy port must be nonzero"

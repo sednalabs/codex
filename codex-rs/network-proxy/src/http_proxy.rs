@@ -41,7 +41,7 @@ use anyhow::Result;
 use codex_utils_rustls_provider::ensure_rustls_crypto_provider;
 use rama_core::Layer;
 use rama_core::Service;
-use rama_core::error::ErrorContext as _;
+use rama_core::error::ErrorExt as _;
 use rama_core::error::extra::OpaqueError;
 use rama_core::extensions::ExtensionsRef;
 use rama_core::graceful::ShutdownGuard;
@@ -98,6 +98,14 @@ enum ConnectMitmMode {
 
 impl rama_core::extensions::Extension for ConnectMitmMode {}
 
+fn opaque_display(message: impl Into<rama_core::error::BoxError>) -> OpaqueError {
+    message.into_opaque_error()
+}
+
+fn opaque_boxed(error: rama_core::error::BoxError) -> OpaqueError {
+    error.into_opaque_error()
+}
+
 // Preserve the alpha RequestContext's URI -> domain ProxyTarget -> SNI ->
 // Forwarded -> Host precedence, including its default-port behavior.
 struct RequestContext {
@@ -119,7 +127,7 @@ impl TryFrom<&Request> for RequestContext {
         } else {
             req.authority()
         }
-        .ok_or_else(|| OpaqueError::from_display("request authority is missing"))?;
+        .ok_or_else(|| opaque_display("request authority is missing"))?;
         Ok(Self { authority, protocol })
     }
 }
@@ -143,18 +151,19 @@ pub async fn run_http_proxy(
     environment_id: Option<String>,
     guard: ShutdownGuard,
 ) -> Result<()> {
-    let listener = TcpListener::build()
-        .bind(addr)
+    let executor = Executor::graceful(guard);
+    let listener = TcpListener::build(executor.clone())
+        .bind_address(addr)
         .await
         // Rama's `BoxError` is a `Box<dyn Error + Send + Sync>` without an explicit `'static`
         // lifetime bound, which means it doesn't satisfy `anyhow::Context`'s `StdError` constraint.
         // Wrap it in Rama's `OpaqueError` so we can preserve the original error as a source and
         // still use `anyhow` for chaining.
-        .map_err(rama_core::error::extra::OpaqueError::from)
+        .map_err(|err| err.into_opaque_error())
         .map_err(anyhow::Error::from)
         .with_context(|| format!("bind HTTP proxy: {addr}"))?;
 
-    run_http_proxy_with_listener(state, listener, policy_decider, environment_id, guard).await
+    run_http_proxy_with_listener(state, listener, policy_decider, environment_id, executor).await
 }
 
 pub async fn run_http_proxy_with_std_listener(
@@ -164,9 +173,10 @@ pub async fn run_http_proxy_with_std_listener(
     environment_id: Option<String>,
     guard: ShutdownGuard,
 ) -> Result<()> {
-    let listener =
-        TcpListener::try_from(listener).context("convert std listener to HTTP proxy listener")?;
-    run_http_proxy_with_listener(state, listener, policy_decider, environment_id, guard).await
+    let executor = Executor::graceful(guard);
+    let listener = TcpListener::try_from_std_tcp_listener(listener, executor.clone())
+        .context("convert std listener to HTTP proxy listener")?;
+    run_http_proxy_with_listener(state, listener, policy_decider, environment_id, executor).await
 }
 
 async fn run_http_proxy_with_listener(
@@ -174,19 +184,18 @@ async fn run_http_proxy_with_listener(
     listener: TcpListener,
     policy_decider: Option<Arc<dyn NetworkPolicyDecider>>,
     environment_id: Option<String>,
-    guard: ShutdownGuard,
+    executor: Executor,
 ) -> Result<()> {
-    let addr = listener
-        .local_addr()
+    let addr = TcpListener::local_addr(&listener)
         .context("read HTTP proxy listener local addr")?;
 
     info!("HTTP proxy listening on {addr}");
 
     listener
-        .serve_graceful(
-            guard,
-            CancelOnShutdown::new(http_proxy_service(state, policy_decider, environment_id)),
-        )
+        .serve(CancelOnShutdown::new(
+            http_proxy_service_with_executor(state, policy_decider, environment_id, executor.clone()),
+            executor,
+        ))
         .await;
     Ok(())
 }
@@ -196,16 +205,25 @@ pub(crate) fn http_proxy_service(
     policy_decider: Option<Arc<dyn NetworkPolicyDecider>>,
     environment_id: Option<String>,
 ) -> BoxService<TcpStream, (), rama_core::error::BoxError> {
+    http_proxy_service_with_executor(state, policy_decider, environment_id, Executor::default())
+}
+
+fn http_proxy_service_with_executor(
+    state: Arc<NetworkProxyState>,
+    policy_decider: Option<Arc<dyn NetworkPolicyDecider>>,
+    environment_id: Option<String>,
+    executor: Executor,
+) -> BoxService<TcpStream, (), rama_core::error::BoxError> {
     ensure_rustls_crypto_provider();
 
     // This proxy listener only needs HTTP/1 proxy semantics. Using Rama's auto builder
     // forces every accepted socket through the HTTP version sniffing pre-read path before proxy
     // request parsing, which can stall some local clients on macOS before CONNECT/absolute-form
     // handling runs at all.
-    let http_service = HttpServer::new_http1(Executor::default()).service(
+    let http_service = HttpServer::new_http1(executor.clone()).service(
         (
             UpgradeLayer::new(
-                Executor::default(),
+                executor.clone(),
                 MethodMatcher::CONNECT,
                 service_fn({
                     let policy_decider = policy_decider.clone();
@@ -224,7 +242,13 @@ pub(crate) fn http_proxy_service(
                         }
                     }
                 }),
-                CancelOnShutdown::new(service_fn(http_connect_proxy)),
+                CancelOnShutdown::new(
+                    service_fn({
+                        let executor = executor.clone();
+                        move |stream| http_connect_proxy(stream, executor.clone())
+                    }),
+                    executor.clone(),
+                ),
             ),
             RemoveResponseHeaderLayer::hop_by_hop(),
         )
@@ -446,7 +470,7 @@ async fn http_connect_accept(
     ))
 }
 
-async fn http_connect_proxy(upgraded: Upgraded) -> Result<(), Infallible> {
+async fn http_connect_proxy(upgraded: Upgraded, executor: Executor) -> Result<(), Infallible> {
     let mode = upgraded
         .extensions()
         .get_ref::<NetworkMode>()
@@ -459,29 +483,29 @@ async fn http_connect_proxy(upgraded: Upgraded) -> Result<(), Infallible> {
         .unwrap_or(ConnectMitmMode::Disabled);
     let result: Result<(), OpaqueError> = match connect_mitm_mode {
         ConnectMitmMode::Disabled => forward_connect_tunnel(upgraded).await,
-        ConnectMitmMode::Enabled => mitm_connect_tunnel(upgraded).await,
+        ConnectMitmMode::Enabled => mitm_connect_tunnel(upgraded, executor.clone()).await,
         ConnectMitmMode::DetectProtocol(protocols) => {
             match crate::brokered_tunnel::peek_protocol(upgraded, protocols).await {
                 Ok((crate::brokered_tunnel::TunnelProtocol::Tls, stream)) => {
-                    mitm_connect_tunnel(stream).await
+                    mitm_connect_tunnel(stream, executor.clone()).await
                 }
                 Ok((crate::brokered_tunnel::TunnelProtocol::Http, stream)) => {
-                    mitm::mitm_stream(stream, rama_net::Protocol::HTTP)
+                    mitm::mitm_stream(stream, rama_net::Protocol::HTTP, executor.clone())
                         .await
                         .map_err(|err| {
-                            OpaqueError::from_display(format!("HTTP tunnel error: {err}"))
+                            opaque_display(format!("HTTP tunnel error: {err}"))
                         })
                 }
                 Ok((crate::brokered_tunnel::TunnelProtocol::Opaque, stream)) => {
                     if mode == NetworkMode::Limited {
-                        Err(OpaqueError::from_display(
+                        Err(opaque_display(
                             "opaque tunnels are not allowed in limited mode",
                         ))
                     } else {
                         forward_connect_tunnel(stream).await
                     }
                 }
-                Err(err) => Err(OpaqueError::from_display(format!(
+                Err(err) => Err(opaque_display(format!(
                     "detect tunnel protocol: {err:#}"
                 ))),
             }
@@ -493,7 +517,7 @@ async fn http_connect_proxy(upgraded: Upgraded) -> Result<(), Infallible> {
     Ok(())
 }
 
-async fn mitm_connect_tunnel<S>(stream: S) -> Result<(), OpaqueError>
+async fn mitm_connect_tunnel<S>(stream: S, executor: Executor) -> Result<(), OpaqueError>
 where
     S: Io + Unpin + ExtensionsRef,
 {
@@ -501,7 +525,7 @@ where
         .extensions()
         .get_ref::<ProxyTarget>()
         .map(|target| target.0.clone())
-        .ok_or_else(|| OpaqueError::from_display("missing MITM authority"))?;
+        .ok_or_else(|| opaque_display("missing MITM authority"))?;
     let host = normalize_host(&target.host.to_string());
     let port = target.port;
     let mode = stream
@@ -510,15 +534,15 @@ where
         .copied()
         .unwrap_or(NetworkMode::Full);
     if stream.extensions().get_arc::<mitm::MitmState>().is_none() {
-        return Err(OpaqueError::from_display(format!(
+        return Err(opaque_display(format!(
             "cannot enable MITM without state (host={host}, port={port})"
         )));
     }
 
     info!("CONNECT MITM enabled (host={host}, port={port}, mode={mode:?})");
-    mitm::mitm_stream(stream, rama_net::Protocol::HTTPS)
+    mitm::mitm_stream(stream, rama_net::Protocol::HTTPS, executor)
         .await
-        .map_err(|err| OpaqueError::from_display(format!("MITM tunnel error: {err}")))
+        .map_err(|err| opaque_display(format!("MITM tunnel error: {err}")))
 }
 
 async fn forward_connect_tunnel<S>(upgraded: S) -> Result<(), OpaqueError>
@@ -529,11 +553,11 @@ where
         .extensions()
         .get_ref::<ProxyTarget>()
         .map(|target| target.0.clone())
-        .ok_or_else(|| OpaqueError::from_display("missing forward authority"))?;
+        .ok_or_else(|| opaque_display("missing forward authority"))?;
     let app_state = upgraded
         .extensions()
         .get_arc::<NetworkProxyState>()
-        .ok_or_else(|| OpaqueError::from_display("missing app state"))?;
+        .ok_or_else(|| opaque_display("missing app state"))?;
     let allow_upstream_proxy = match app_state.allow_upstream_proxy().await {
         Ok(allowed) => allowed,
         Err(err) => {
@@ -563,11 +587,11 @@ where
     }
 
     let req = TcpRequest::new_with_extensions(authority.clone(), extensions)
-        .with_application_protocol(Some(Protocol::HTTPS));
+        .with_application_protocol(Protocol::HTTPS);
     let proxy_connector = HttpProxyConnector::optional(TargetCheckedTcpConnector::new(app_state));
     let tls_config = TlsClientConfig::new().with_alpn_http_auto();
     let connector = TlsConnectorLayer::tunnel(None)
-        .with_base_config(Some(tls_config))
+        .with_base_config(tls_config)
         .into_layer(proxy_connector);
     info!("CONNECT upstream dial started (target={authority})");
     let connect_started_at = Instant::now();
@@ -584,8 +608,9 @@ where
                 "CONNECT upstream dial failed (target={authority}, elapsed_ms={})",
                 connect_started_at.elapsed().as_millis()
             );
-            return Err(OpaqueError::from_boxed(err)
-                .with_context(|| format!("establish CONNECT tunnel to {authority}")));
+            return Err(opaque_boxed(err)
+                .with_context(|| format!("establish CONNECT tunnel to {authority}"))
+                .into_opaque_error());
         }
     };
 
@@ -606,8 +631,9 @@ where
                 "CONNECT tunnel forwarding failed (target={authority}, elapsed_ms={})",
                 forward_started_at.elapsed().as_millis()
             );
-            OpaqueError::from_boxed(err.into())
+            opaque_boxed(err.into())
                 .with_context(|| format!("forward CONNECT tunnel to {authority}"))
+                .into_opaque_error()
         })
 }
 
@@ -1103,7 +1129,7 @@ async fn forward_request_credential_destinations(
     req: &Request,
 ) -> Result<Vec<String>> {
     let authority = context.host_with_port();
-    let scheme = req.uri().scheme().map(Protocol::as_str).unwrap_or("http");
+    let scheme = req.uri().scheme().map(|protocol| protocol.as_str()).unwrap_or("http");
     // Preserve the legacy parser's raw path for credential scoping.
     let raw_uri = req.uri().as_str();
     let legacy_uri: http::Uri = raw_uri.parse().context("invalid credential destination URI")?;

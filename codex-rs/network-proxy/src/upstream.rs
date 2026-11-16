@@ -5,8 +5,7 @@ use crate::state::NetworkProxyState;
 use codex_utils_rustls_provider::ensure_rustls_crypto_provider;
 use rama_core::Layer;
 use rama_core::Service;
-use rama_core::error::BoxError;
-use rama_core::error::ErrorContext as _;
+use rama_core::error::ErrorExt as _;
 use rama_core::error::extra::OpaqueError;
 use rama_core::extensions::ExtensionsRef;
 use rama_core::service::BoxService;
@@ -121,7 +120,7 @@ pub(crate) struct UpstreamClient {
     connector: BoxService<
         Request<Body>,
         EstablishedClientConnection<HttpClientService<Body>, Request<Body>>,
-        BoxError,
+        OpaqueError,
     >,
     proxy_config: ProxyConfig,
 }
@@ -244,7 +243,7 @@ impl Service<Request<Body>> for UpstreamClient {
                     "HTTP upstream connection failed (target={authority}, elapsed_ms={})",
                     connect_started_at.elapsed().as_millis()
                 );
-                return Err(OpaqueError::from_boxed(err));
+                return Err(err);
             }
         };
 
@@ -265,7 +264,7 @@ impl Service<Request<Body>> for UpstreamClient {
                     "HTTP upstream response headers failed (target={authority}, elapsed_ms={})",
                     request_started_at.elapsed().as_millis()
                 );
-                Err(OpaqueError::from_boxed(err).context("HTTP upstream request failed"))
+                Err(err.context("HTTP upstream request failed").into_opaque_error())
             }
         }
     }
@@ -277,7 +276,7 @@ fn build_http_connector(
 ) -> BoxService<
     Request<Body>,
     EstablishedClientConnection<HttpClientService<Body>, Request<Body>>,
-    BoxError,
+    OpaqueError,
 > {
     ensure_rustls_crypto_provider();
     let proxy = HttpProxyConnectorLayer::optional().into_layer(transport);
@@ -288,7 +287,7 @@ fn build_http_connector(
     let tls_config = TlsClientConfig::new()
         .with_modify_rustls_config(move |_| Ok(client_config.clone()));
     let tls = TlsConnectorLayer::auto()
-        .with_base_config(Some(tls_config))
+        .with_base_config(tls_config)
         .into_layer(proxy);
     let tls = RequestVersionAdapter::new(tls).with_default_version(Version::HTTP_11);
     let connector = HttpConnectorLayer::<Body>::default().into_layer(tls);
@@ -305,7 +304,7 @@ fn build_unix_connector(
 ) -> BoxService<
     Request<Body>,
     EstablishedClientConnection<HttpClientService<Body>, Request<Body>>,
-    BoxError,
+    OpaqueError,
 > {
     let transport = UnixConnector::fixed(path);
     let connector = HttpConnectorLayer::<Body>::default().into_layer(transport);

@@ -191,7 +191,7 @@ impl MitmState {
 }
 
 /// Proxy inner HTTP traffic, terminating TLS with a generated leaf certificate for HTTPS.
-pub(crate) async fn mitm_stream<S>(stream: S, scheme: Scheme) -> Result<()>
+pub(crate) async fn mitm_stream<S>(stream: S, scheme: Scheme, executor: Executor) -> Result<()>
 where
     S: Io + Unpin + ExtensionsRef,
 {
@@ -247,12 +247,6 @@ where
         mitm,
         upstream,
     });
-
-    let executor = stream
-        .extensions()
-        .get_ref::<Executor>()
-        .cloned()
-        .unwrap_or_default();
 
     let http_service = HttpServer::auto(executor).service(
         (request_ctx.policy.scheme == Scheme::HTTPS)

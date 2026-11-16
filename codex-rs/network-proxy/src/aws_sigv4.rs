@@ -362,8 +362,8 @@ impl AwsSigV4Signer {
     pub(crate) fn plan(&self, req: &Request) -> Result<Option<GuestSignature>> {
         let placeholder = &self.config.placeholder_access_key_id;
         let selects_pair = |scope: &str| scope.split('/').next() == Some(placeholder.as_str());
-        let mut query =
-            url::form_urlencoded::parse(req.uri().query().unwrap_or_default().as_bytes());
+        let query_text = req.uri().query().map(|query| query.as_encoded_str()).unwrap_or_default();
+        let mut query = url::form_urlencoded::parse(query_text.as_bytes());
         ensure!(
             !query.clone().any(|(key, value)| {
                 key.eq_ignore_ascii_case("x-amz-credential") && selects_pair(&value)

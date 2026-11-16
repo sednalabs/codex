@@ -13,7 +13,7 @@ use crate::state::NetworkProxyState;
 use crate::system_dns::SystemDnsResolver;
 use rama_core::Service;
 use rama_core::error::BoxError;
-use rama_core::error::ErrorContext as _;
+use rama_core::error::ErrorExt as _;
 use rama_core::error::extra::OpaqueError;
 use rama_dns::client::DnsConnector;
 #[cfg(not(target_os = "macos"))]
@@ -44,9 +44,7 @@ fn system_hickory_dns_resolver() -> Result<HickoryDnsResolver, BoxError> {
     }
 
     let resolver = HickoryDnsResolver::try_new_system().map_err(|err| {
-        OpaqueError::from_boxed(err)
-            .context("initialize system Hickory DNS resolver")
-            .into_boxed()
+        err.context("initialize system Hickory DNS resolver")
     })?;
     let _ = RESOLVER.set(resolver.clone());
     Ok(RESOLVER.get().cloned().unwrap_or(resolver))
@@ -160,7 +158,7 @@ where
 
         let target = input
             .connector_target()
-            .ok_or_else(|| OpaqueError::from_display("network target is missing a host or port"))?;
+            .ok_or_else(|| OpaqueError::from_static_str("network target is missing a host or port"))?;
 
         let policy = DialPolicy::for_target(input.extensions(), &target).cloned();
         let attempts = Arc::new(AtomicU8::new(0));
@@ -252,9 +250,7 @@ impl TargetCheckedStreamConnector {
     async fn allows_non_public_target(&self, addr: SocketAddr) -> Result<bool, BoxError> {
         if self.state.allow_local_binding().await.map_err(|err| {
             let err: BoxError = err.into();
-            OpaqueError::from_boxed(err)
-                .context("read network proxy config")
-                .into_boxed()
+            err.context("read network proxy config")
         })? {
             return Ok(true);
         }
@@ -274,9 +270,7 @@ impl TargetCheckedStreamConnector {
             .map(|decision| decision == HostBlockDecision::Allowed)
             .map_err(|err| {
                 let err: BoxError = err.into();
-                OpaqueError::from_boxed(err)
-                    .context("evaluate network proxy target")
-                    .into_boxed()
+                err.context("evaluate network proxy target")
             })
     }
 }
@@ -288,6 +282,7 @@ pub(crate) fn is_non_public_target(host: &Host) -> bool {
             .as_str()
             .trim_end_matches('.')
             .eq_ignore_ascii_case("localhost"),
+        _ => true,
     }
 }
 
@@ -300,6 +295,7 @@ fn target_matches_non_public_addr(host: &Host, addr: std::net::IpAddr) -> bool {
                 .eq_ignore_ascii_case("localhost")
                 && addr.is_loopback()
         }
+        _ => false,
     }
 }
 

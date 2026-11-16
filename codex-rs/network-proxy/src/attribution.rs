@@ -68,7 +68,7 @@ where
             )
             .into());
         }
-        stream.extensions().insert_arc(state);
+        stream.extensions().insert_arc(Arc::new(state));
         self.inner.serve(stream).await.map_err(Into::into)
     }
 }

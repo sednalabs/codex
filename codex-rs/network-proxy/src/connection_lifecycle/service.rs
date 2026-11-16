@@ -1,34 +1,30 @@
 //! Cancels connection work when its executor's proxy scope ends, including HTTP upgrades.
 
 use rama_core::Service;
-use rama_core::extensions::ExtensionsRef;
 use rama_core::rt::Executor;
 
 #[derive(Clone)]
 pub(crate) struct CancelOnShutdown<S> {
     inner: S,
+    executor: Executor,
 }
 
 impl<S> CancelOnShutdown<S> {
-    pub(crate) fn new(inner: S) -> Self {
-        Self { inner }
+    pub(crate) fn new(inner: S, executor: Executor) -> Self {
+        Self { inner, executor }
     }
 }
 
 impl<S, Request> Service<Request> for CancelOnShutdown<S>
 where
     S: Service<Request, Output = ()>,
-    Request: ExtensionsRef + Send + 'static,
+    Request: Send + 'static,
 {
     type Output = ();
     type Error = S::Error;
 
     async fn serve(&self, request: Request) -> Result<(), Self::Error> {
-        let guard = request
-            .extensions()
-            .get_ref::<Executor>()
-            .and_then(Executor::guard)
-            .cloned();
+        let guard = self.executor.guard().cloned();
         match guard {
             Some(guard) => {
                 tokio::select! {
