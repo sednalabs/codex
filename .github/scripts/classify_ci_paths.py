@@ -55,9 +55,7 @@ FULL_BLOCKING_PATHS = {
     ".github/scripts/test_classify_ci_paths.py",
 }
 
-FULL_CODEQL_PREFIXES = (
-    ".github/codeql/",
-)
+FULL_CODEQL_PREFIXES = (".github/codeql/",)
 FULL_CODEQL_PATHS = {
     ".github/workflows/codeql.yml",
     ".github/scripts/classify_ci_paths.py",
@@ -190,7 +188,8 @@ def classify(paths: Iterable[str]) -> Scope:
 
         if (
             path == ".github/workflows/repo-checks.yml"
-            or path in {
+            or path
+            in {
                 ".github/scripts/verify_cargo_workspace_manifests.py",
                 ".github/scripts/verify_tui_core_boundary.py",
                 ".github/scripts/verify_bazel_clippy_lints.py",
@@ -217,7 +216,8 @@ def classify(paths: Iterable[str]) -> Scope:
         if (
             path == ".github/workflows/repo-checks.yml"
             or path in PACKAGE_ROOT_PATHS
-            or path in {
+            or path
+            in {
                 "justfile",
                 ".prettierignore",
                 ".prettierrc",
@@ -272,15 +272,13 @@ def classify(paths: Iterable[str]) -> Scope:
         ):
             codeql.add("javascript-typescript")
 
-        if (
-            suffix == ".py"
-            or name in {"pyproject.toml", "uv.lock", "requirements.txt"}
-        ):
+        if suffix == ".py" or name in {"pyproject.toml", "uv.lock", "requirements.txt"}:
             codeql.add("python")
 
         if (
             suffix == ".rs"
-            or name in {
+            or name
+            in {
                 "Cargo.toml",
                 "Cargo.lock",
                 "rust-toolchain",
