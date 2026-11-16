@@ -1868,6 +1868,41 @@ impl Session {
                 );
             let reasoning_effort_override_enabled =
                 config.features.enabled(Feature::ReasoningEffortOverride) && !title_request;
+            // Match the first baseline-bearing metadata used by get_base_instructions:
+            // a saved baseline must not gain authority from a different current provider.
+            let recorded_provider_is_compatible = initial_history
+                .get_rollout_items()
+                .iter()
+                .find_map(|item| match item {
+                    RolloutItem::SessionMeta(meta) if meta.meta.base_instructions.is_some() => {
+                        Some(meta.meta.model_provider.as_deref())
+                    }
+                    _ => None,
+                })
+                .flatten()
+                .is_none_or(|provider| provider == codex_model_provider_info::OPENAI_PROVIDER_ID);
+            let trusted_model_source =
+                trusted_model_overlay_source(&config) && recorded_provider_is_compatible;
+            let mut adopted_baseline_digests = Vec::new();
+            if config.base_instructions.is_none()
+                && trusted_model_source
+                && let (Some(adoption), Some(plan), Some(historical)) = (
+                    config.historical_baseline_adoption.as_ref(),
+                    config.instruction_overlays.model_baseline.as_ref(),
+                    initial_history.get_base_instructions(),
+                )
+                && historical.provenance.is_none()
+                && adoption.matches(&thread_id.to_string(), &historical.text, plan)
+            {
+                adopted_baseline_digests.push(
+                    codex_config::HistoricalBaselineAdoption::baseline_digest(&historical.text),
+                );
+                adopted_baseline_digests.push(
+                    codex_config::HistoricalBaselineAdoption::baseline_digest(
+                        &codex_prompts::without_update_plan_instructions(&historical.text),
+                    ),
+                );
+            }
             let model_client = ModelClient::new(
                 Arc::clone(&session_configuration.provider),
                 if config.features.enabled(Feature::UseAgentIdentity) {
@@ -1897,6 +1932,37 @@ impl Session {
             )
             .with_budget_policy(budget_policy.clone())
             .with_executed_tool_calls(executed_tool_calls.clone())
+            .with_instruction_overlays(
+                config.instruction_overlays.clone(),
+                if config.instruction_overlays == Default::default() {
+                    Vec::new()
+                } else {
+                    config.instruction_overlay_origin_fences(&session_configuration.session_source)
+                },
+                adopted_baseline_digests,
+                config
+                    .base_instructions
+                    .as_ref()
+                    .filter(|_| config.client_owned_base_instructions)
+                    .map(|text| {
+                        vec![codex_config::HistoricalBaselineAdoption::baseline_digest(text)]
+                    })
+                    .unwrap_or_default(),
+                trusted_model_source
+                    && (config.base_instructions.is_none()
+                        || (matches!(
+                            session_configuration.session_source,
+                            SessionSource::SubAgent(SubAgentSource::ThreadSpawn { .. })
+                        ) && matches!(
+                            config.base_instructions_provenance,
+                            Some(BaseInstructionsProvenance::Model { .. })
+                        ))),
+                config
+                    .config_layer_stack
+                    .effective_config()
+                    .get("model_instructions_file")
+                    .is_some(),
+            )
             .with_restored_history(matches!(
                 &initial_history,
                 InitialHistory::Resumed(_) | InitialHistory::Forked(_)

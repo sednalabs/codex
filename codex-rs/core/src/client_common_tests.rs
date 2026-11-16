@@ -17,6 +17,41 @@ fn empty_tools() -> Arc<RawValue> {
     Arc::from(RawValue::from_string("[]".to_string()).expect("valid tool JSON"))
 }
 
+#[test]
+fn prompt_overlay_authority_is_fail_closed_and_not_serialized() {
+    let default_prompt = Prompt::default();
+    assert!(default_prompt.overlay_base_instructions.is_none());
+    assert!(!default_prompt.overlay_current_model_trusted);
+
+    let authority = BaseInstructions {
+        text: "synthetic retained baseline".to_string(),
+        provenance: Some(codex_protocol::models::BaseInstructionsProvenance::Model {
+            model: "synthetic-model".to_string(),
+        }),
+    };
+    let prompt = Prompt {
+        overlay_base_instructions: Some(authority.clone()),
+        overlay_current_model_trusted: true,
+        ..Default::default()
+    };
+    let copied = prompt.clone();
+    let copied_authority = copied
+        .overlay_base_instructions
+        .as_ref()
+        .expect("request copies must retain baseline authority");
+    assert_eq!(copied_authority.text, authority.text);
+    assert!(matches!(
+        &copied_authority.provenance,
+        Some(codex_protocol::models::BaseInstructionsProvenance::Model { model })
+            if model == "synthetic-model"
+    ));
+    assert!(copied.overlay_current_model_trusted);
+    assert!(copied.base_instructions.text.is_empty());
+    let trace = serde_json::to_value(&copied).expect("prompt trace should serialize");
+    assert!(trace.get("overlay_base_instructions").is_none());
+    assert!(trace.get("overlay_current_model_trusted").is_none());
+}
+
 fn prompt_with_image_outputs(detail: Option<ImageDetail>) -> Prompt {
     Prompt {
         input: vec![

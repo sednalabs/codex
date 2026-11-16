@@ -1017,7 +1017,7 @@ impl ToolRegistry {
                     let handler =
                         handle_any_tool(tool.as_ref(), invocation.clone(), call_state.as_deref());
                     if tool.manages_handler_cancellation() && !finish_handler_on_cancel {
-                        handler.or_cancel_tool(&cancellation_token).await
+                        handler.or_cancel_tool(&cancellation_token).await?
                     } else {
                         handler.await
                     }
@@ -1059,7 +1059,7 @@ impl ToolRegistry {
                 &hook_ids,
             );
             Some(if finish_handler_on_cancel {
-                hooks.await?
+                hooks.await
             } else {
                 hooks.or_cancel_tool(&cancellation_token).await?
             })
@@ -1073,7 +1073,7 @@ impl ToolRegistry {
                 outcome.additional_contexts.clone(),
             );
             if finish_handler_on_cancel {
-                record.await?;
+                record.await;
             } else {
                 record.or_cancel_tool(&cancellation_token).await?;
             }

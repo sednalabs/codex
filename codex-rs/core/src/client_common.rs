@@ -35,6 +35,15 @@ pub struct Prompt {
 
     pub base_instructions: BaseInstructions,
 
+    /// Unmodified baseline authority, including incremental windows where the
+    /// request baseline is empty and the instructions remain in history.
+    #[serde(skip)]
+    pub(crate) overlay_base_instructions: Option<BaseInstructions>,
+
+    /// Whether this request still uses the trusted built-in model source.
+    #[serde(skip)]
+    pub(crate) overlay_current_model_trusted: bool,
+
     /// Optional the output schema for the model's response.
     pub output_schema: Option<Value>,
 
@@ -53,6 +62,8 @@ impl Default for Prompt {
             tools: Arc::default(),
             parallel_tool_calls: false,
             base_instructions: BaseInstructions::default(),
+            overlay_base_instructions: None,
+            overlay_current_model_trusted: false,
             output_schema: None,
             output_schema_strict: true,
             prompt_cache_ttl: None,
