@@ -28,6 +28,74 @@ async function installWrapper(directory, executable) {
   return wrapper;
 }
 
+async function runWithVitePlusInstallId(installId) {
+  const root = await mkdtemp(path.join(tmpdir(), "codex-vite-plus-id-"));
+  const packagesDir = path.join(root, "packages");
+  const packageRoot = path.join(packagesDir, "@openai", "codex");
+  try {
+    const wrapper = await installWrapper(packageRoot, process.execPath);
+    const metadata = { name: "@openai/codex" };
+    if (installId !== undefined) {
+      metadata.installId = installId;
+    }
+    await writeFile(
+      path.join(packagesDir, "@openai", "codex.json"),
+      JSON.stringify(metadata),
+    );
+    const id = installId ?? "";
+    const installDir = id.startsWith("#")
+      ? path.join(packagesDir, `@openai/codex${id}`)
+      : path.join(packagesDir, "@openai", "codex", id);
+    const packageAlias = path.join(
+      installDir,
+      "lib",
+      "node_modules",
+      "@openai",
+      "codex",
+    );
+    await mkdir(path.dirname(packageAlias), { recursive: true });
+    await symlink(packageRoot, packageAlias);
+    return execFileSync(
+      process.execPath,
+      [
+        wrapper,
+        "-e",
+        'process.stdout.write(process.env.CODEX_MANAGED_BY_VITE_PLUS || "not-vite-plus")',
+      ],
+      {
+        encoding: "utf8",
+        env: {
+          ...process.env,
+          npm_config_user_agent: "",
+          npm_execpath: "",
+        },
+      },
+    ).trim();
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+}
+
+test(
+  "Vite+ install IDs are validated before resolving package paths",
+  { skip: process.platform === "win32" },
+  async () => {
+    const uuid = "550e8400-e29b-41d4-a716-446655440000";
+    for (const installId of [undefined, "", uuid, `#${uuid}`]) {
+      assert.equal(
+        await runWithVitePlusInstallId(installId),
+        "1",
+        `expected Vite+ ownership for install ID ${installId ?? "(missing)"}`,
+      );
+    }
+    assert.equal(
+      await runWithVitePlusInstallId("../../../"),
+      "not-vite-plus",
+      "path traversal in local package metadata must not claim Vite+ ownership",
+    );
+  },
+);
+
 test(
   "the npm spawn fallback forwards a second SIGTERM to a running child",
   { skip: process.platform === "win32" },

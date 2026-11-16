@@ -40,13 +40,13 @@ use crate::oauth_client_credentials::OAuthClientCredentials;
 use crate::oauth_http_client::PROACTIVE_REFRESH_TIMEOUT;
 
 use super::RefreshCredentialLock;
-use super::resolve_refresh_metadata;
 use super::ResolvedOAuthCredentialStore;
 use super::StoredOAuthTokens;
 use super::WrappedOAuthTokenResponse;
 use super::normalized_oauth_credentials;
 use super::refresh_expires_in_from_timestamp;
 use super::refresh_transaction::REFRESH_REQUEST_TIMEOUT;
+use super::resolve_refresh_metadata;
 use super::resolved_store::Backend;
 use super::token_needs_refresh;
 use super::validate_refresh_token_issuer;

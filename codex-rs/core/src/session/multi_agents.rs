@@ -21,9 +21,7 @@ pub(super) fn multi_agent_mode_is_client_owned(step_context: &StepContext) -> bo
         .multi_agent_v2
         .multi_agent_mode_hint_text
         .as_deref()
-        .map(|text| {
-            config.multi_agent_text_is_client_owned("multi_agent_mode_hint_text", text)
-        });
+        .map(|text| config.multi_agent_text_is_client_owned("multi_agent_mode_hint_text", text));
     let model_messages = if config.multi_agent_v2.disable_native_tools {
         ResolvedModelMessages::bundled()
     } else {
@@ -43,7 +41,8 @@ pub(super) fn multi_agent_mode_is_client_owned(step_context: &StepContext) -> bo
 pub(super) fn usage_hint_is_client_owned(step_context: &StepContext) -> bool {
     let turn = step_context.turn.as_ref();
     let config = &turn.config;
-    let messages = ResolvedModelMessages::from_model(&step_context.settings.model_info).multi_agent();
+    let messages =
+        ResolvedModelMessages::from_model(&step_context.settings.model_info).multi_agent();
     let (key, text, message) = if matches!(
         &turn.session_source,
         SessionSource::SubAgent(SubAgentSource::ThreadSpawn { .. })
@@ -248,8 +247,18 @@ mod tests {
     #[test]
     fn instruction_overlay_ownership_tracks_configured_and_resolved_message_sources() {
         for (configured_origin, message, trusted_catalog, expected) in [
-            (Some(true), ResolvedMessage::Catalog("same text"), false, true),
-            (Some(false), ResolvedMessage::Bundled("same text"), true, false),
+            (
+                Some(true),
+                ResolvedMessage::Catalog("same text"),
+                false,
+                true,
+            ),
+            (
+                Some(false),
+                ResolvedMessage::Bundled("same text"),
+                true,
+                false,
+            ),
             (None, ResolvedMessage::Bundled("same text"), false, true),
             (None, ResolvedMessage::Catalog("same text"), false, false),
             (None, ResolvedMessage::Catalog("same text"), true, true),

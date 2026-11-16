@@ -70,6 +70,16 @@ pub(crate) trait CoreToolRuntime: ToolExecutor<ToolInvocation> {
         false
     }
 
+    /// Transfer handler cancellation to the registry after pre-hook argument changes.
+    fn manages_handler_cancellation(&self) -> bool {
+        false
+    }
+
+    /// Whether this final payload must finish its handler after cancellation.
+    fn handler_finishes_on_cancellation(&self, _payload: &ToolPayload) -> bool {
+        false
+    }
+
     /// Whether this built-in control tool needs a structured tool-call event.
     fn is_builtin_control_tool(&self) -> bool {
         false
@@ -994,6 +1004,8 @@ impl ToolRegistry {
 
         let log_payload = tool_log_payload(&invocation.payload, &invocation.source);
 
+        let finish_handler_on_cancel = tool.manages_handler_cancellation()
+            && tool.handler_finishes_on_cancellation(&invocation.payload);
         let result = otel
             .log_tool_result_with_tags(
                 &tool_name,
@@ -1001,7 +1013,15 @@ impl ToolRegistry {
                 log_payload.as_ref(),
                 &tool_result_tags,
                 &extra_trace_fields,
-                || handle_any_tool(tool.as_ref(), invocation.clone(), call_state.as_deref()),
+                || async {
+                    let handler =
+                        handle_any_tool(tool.as_ref(), invocation.clone(), call_state.as_deref());
+                    if tool.manages_handler_cancellation() && !finish_handler_on_cancel {
+                        handler.or_cancel_tool(&cancellation_token).await
+                    } else {
+                        handler.await
+                    }
+                },
                 |result| {
                     (
                         result.result.log_output(),
@@ -1031,32 +1051,37 @@ impl ToolRegistry {
             None
         };
         let post_tool_use_outcome = if let Some(post_tool_use_payload) = post_tool_use_payload {
-            Some(
-                run_post_tool_use_hooks(
-                    &invocation.session,
-                    invocation.step_context.as_ref(),
-                    post_tool_use_payload,
-                    &invocation.environments.hook_ids(),
-                )
-                .or_cancel_tool(&cancellation_token)
-                .await?,
-            )
+            let hook_ids = invocation.environments.hook_ids();
+            let hooks = run_post_tool_use_hooks(
+                &invocation.session,
+                invocation.step_context.as_ref(),
+                post_tool_use_payload,
+                &hook_ids,
+            );
+            Some(if finish_handler_on_cancel {
+                hooks.await?
+            } else {
+                hooks.or_cancel_tool(&cancellation_token).await?
+            })
         } else {
             None
         };
         if let Some(outcome) = &post_tool_use_outcome {
-            record_additional_contexts(
+            let record = record_additional_contexts(
                 &invocation.session,
                 &invocation.turn,
                 outcome.additional_contexts.clone(),
-            )
-            .or_cancel_tool(&cancellation_token)
-            .await?;
+            );
+            if finish_handler_on_cancel {
+                record.await?;
+            } else {
+                record.or_cancel_tool(&cancellation_token).await?;
+            }
         }
 
         // A PostToolUse block rejects the result, not the already-completed tool execution.
         let lifecycle_outcome = match &result {
-            _ if tool.finishes_on_cancellation()
+            _ if (tool.finishes_on_cancellation() || finish_handler_on_cancel)
                 && invocation.cancellation_token.is_cancelled() =>
             {
                 ToolCallOutcome::Aborted

@@ -5192,16 +5192,25 @@ mod tests {
     #[test]
     fn inter_agent_communication_intent_is_backward_compatible() {
         let legacy = InterAgentCommunication::new(
-            AgentPath::root(), AgentPath::root().join("worker").unwrap(),
-            Vec::new(), "progress".to_string(), true,
+            AgentPath::root(),
+            AgentPath::root().join("worker").unwrap(),
+            Vec::new(),
+            "progress".to_string(),
+            true,
         );
         let encoded = serde_json::to_value(&legacy).unwrap();
         assert!(encoded.get("intent").is_none());
         let decoded: InterAgentCommunication = serde_json::from_value(encoded).unwrap();
         assert_eq!(decoded.resolved_intent(), AgentMessageIntent::Progress);
         assert!(!decoded.resolved_intent().wakes_native_wait());
-        for intent in [AgentMessageIntent::ActionRequired, AgentMessageIntent::ResultReady] {
-            let explicit = InterAgentCommunication { intent: Some(intent), ..legacy.clone() };
+        for intent in [
+            AgentMessageIntent::ActionRequired,
+            AgentMessageIntent::ResultReady,
+        ] {
+            let explicit = InterAgentCommunication {
+                intent: Some(intent),
+                ..legacy.clone()
+            };
             let encoded = serde_json::to_value(explicit).unwrap();
             let decoded: InterAgentCommunication = serde_json::from_value(encoded).unwrap();
             assert!(decoded.resolved_intent().wakes_native_wait());

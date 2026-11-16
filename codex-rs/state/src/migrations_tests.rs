@@ -1112,25 +1112,55 @@ async fn runtime_migrator_applies_pending_migrations_with_high_extension_rows() 
     // Synthetic ledger and effects do not establish an actual database history.
     let home = tempfile::TempDir::new().unwrap();
     let sqlite = crate::SqliteConfig::new_for_testing(home.path().abs());
-    let pool = sqlite.open_read_write_pool(&sqlite.state_db_path()).await.unwrap();
+    let pool = sqlite
+        .open_read_write_pool(&sqlite.state_db_path())
+        .await
+        .unwrap();
     migrator_through(62).run(&pool).await.unwrap();
     sqlx::query("CREATE TABLE synthetic_extension (marker TEXT NOT NULL)")
-        .execute(&pool).await.unwrap();
+        .execute(&pool)
+        .await
+        .unwrap();
     sqlx::query("INSERT INTO synthetic_extension VALUES ('preserve-me')")
-        .execute(&pool).await.unwrap();
+        .execute(&pool)
+        .await
+        .unwrap();
 
     // Known high-version identities; do not replay their potentially overlapping SQL.
     let identities = [
-        ("phase2 attested baselines", "c021f9cc67108fe6dfbbc58a40d20ffeb716724f1283681eb23e6f639b48a1739a7eb1ea222ed3679941d48f72101284"),
-        ("threads configured identity provenance", "dd42ba9960d4e01c554bfac6a27c67f3c21e80bdc8e0dd928a90d208e1e680976a3ea356a9f9360f9760a5ca42659053"),
-        ("thread dynamic tools state", "448d0f4ab51b856fc182d97e5e408861630fc387d7316473426771c298581881016018a34d45145e0e503179dc7efd84"),
-        ("phase2 attestation roots", "f0392a5480c11466f48752cdad6e1bcd05fafa3c17ba0e54f04b02dbd9b5bf9976c107d8159abc225e1a4dc0191065bf"),
-        ("thread dynamic tools persist on resume", "d391b088bc785fcc6d8e61abbf2702e65175ec0e2d30df51e4ff6e51d1ed5659839058ef82d046683ebb8009c5ba1317"),
-        ("thread dynamic tools capability json", "f1db36e9fbf40560e028c5c606f821cbf6040932a7a37d3bf47da118c7622c97789a25636376b9ed1da38e3ba8b3856d"),
-        ("backfill thread spawn edges", "e3dcfd70c67f1ec352fd635f7e633d246e1d8ad70668eb482ca201c5688b435028b6bbe603d5eb23c4397c6f2184b7d6"),
+        (
+            "phase2 attested baselines",
+            "c021f9cc67108fe6dfbbc58a40d20ffeb716724f1283681eb23e6f639b48a1739a7eb1ea222ed3679941d48f72101284",
+        ),
+        (
+            "threads configured identity provenance",
+            "dd42ba9960d4e01c554bfac6a27c67f3c21e80bdc8e0dd928a90d208e1e680976a3ea356a9f9360f9760a5ca42659053",
+        ),
+        (
+            "thread dynamic tools state",
+            "448d0f4ab51b856fc182d97e5e408861630fc387d7316473426771c298581881016018a34d45145e0e503179dc7efd84",
+        ),
+        (
+            "phase2 attestation roots",
+            "f0392a5480c11466f48752cdad6e1bcd05fafa3c17ba0e54f04b02dbd9b5bf9976c107d8159abc225e1a4dc0191065bf",
+        ),
+        (
+            "thread dynamic tools persist on resume",
+            "d391b088bc785fcc6d8e61abbf2702e65175ec0e2d30df51e4ff6e51d1ed5659839058ef82d046683ebb8009c5ba1317",
+        ),
+        (
+            "thread dynamic tools capability json",
+            "f1db36e9fbf40560e028c5c606f821cbf6040932a7a37d3bf47da118c7622c97789a25636376b9ed1da38e3ba8b3856d",
+        ),
+        (
+            "backfill thread spawn edges",
+            "e3dcfd70c67f1ec352fd635f7e633d246e1d8ad70668eb482ca201c5688b435028b6bbe603d5eb23c4397c6f2184b7d6",
+        ),
     ];
     for (offset, (description, checksum)) in identities.into_iter().enumerate() {
-        let checksum: Vec<u8> = checksum.as_bytes().chunks_exact(2)
+        let checksum: Vec<u8> = checksum
+            .as_bytes()
+            .chunks_exact(2)
             .map(|pair| u8::from_str_radix(std::str::from_utf8(pair).unwrap(), 16).unwrap())
             .collect();
         sqlx::query("INSERT INTO _sqlx_migrations (version, description, success, checksum, execution_time) VALUES (?, ?, 1, ?, 17)")
@@ -1148,13 +1178,23 @@ async fn runtime_migrator_applies_pending_migrations_with_high_extension_rows() 
         .fetch_all(&pool).await.unwrap();
     assert_eq!(applied, vec![63, 64]);
     let marker: String = sqlx::query_scalar("SELECT marker FROM synthetic_extension")
-        .fetch_one(&pool).await.unwrap();
+        .fetch_one(&pool)
+        .await
+        .unwrap();
     assert_eq!(marker, "preserve-me");
 
     // Unknown high rows are tolerated, but known migration checksum changes fail.
     sqlx::query("UPDATE _sqlx_migrations SET checksum = X'00' WHERE version = 63")
-        .execute(&pool).await.unwrap();
-    let error = super::runtime_state_migrator().run(&pool).await.unwrap_err();
-    assert!(matches!(error, sqlx::migrate::MigrateError::VersionMismatch(63)));
+        .execute(&pool)
+        .await
+        .unwrap();
+    let error = super::runtime_state_migrator()
+        .run(&pool)
+        .await
+        .unwrap_err();
+    assert!(matches!(
+        error,
+        sqlx::migrate::MigrateError::VersionMismatch(63)
+    ));
     pool.close().await;
 }

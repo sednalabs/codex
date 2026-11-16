@@ -148,6 +148,14 @@ pub(crate) struct TerminalWaitArgs {
     pub(crate) heartbeat_interval_ms: Option<u64>,
 }
 
+fn requests_terminal_wait(payload: &ToolPayload) -> bool {
+    let ToolPayload::Function { arguments } = payload else {
+        return false;
+    };
+    serde_json::from_str::<TerminalWaitArgs>(arguments)
+        .is_ok_and(|args| args.wait_until_terminal)
+}
+
 fn resolve_terminal_wait_window_ms(args: TerminalWaitArgs, _fallback_ms: u64) -> u64 {
     // Accept the requested bounds for compatibility. The manager's empty
     // poll minimum is also the maximum we can safely wait on cancellation.

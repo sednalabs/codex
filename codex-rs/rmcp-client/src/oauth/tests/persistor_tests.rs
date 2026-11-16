@@ -57,14 +57,14 @@ use crate::oauth::compute_store_key;
 use crate::oauth::delete_oauth_tokens;
 use crate::oauth::install_tokens_in_manager;
 use crate::oauth::load_oauth_tokens_from_file;
-use crate::oauth::resolve_refresh_metadata;
-use crate::oauth::validate_refresh_token_issuer;
 use crate::oauth::normalized_oauth_credentials;
 use crate::oauth::read_fallback_file_unlocked;
 use crate::oauth::refresh_lock::RefreshCredentialLock;
+use crate::oauth::resolve_refresh_metadata;
 use crate::oauth::save_oauth_tokens;
 use crate::oauth::save_oauth_tokens_to_file;
 use crate::oauth::stored_oauth_credentials;
+use crate::oauth::validate_refresh_token_issuer;
 use crate::oauth::write_fallback_file;
 use crate::oauth_http_client::OAuthHttpClientAdapter;
 use crate::oauth_http_client::PROACTIVE_REFRESH_TIMEOUT;
@@ -118,16 +118,14 @@ async fn device_only_refresh_uses_issuer_bound_metadata_in_both_modes() -> Resul
         assert!(manager.get_authorization_url(&[]).await.is_err());
         let manager = Arc::new(TokioMutex::new(manager));
         let runtime = match mode {
-            crate::McpOAuthRefreshMode::Legacy => OAuthRuntime::Legacy(
-                OAuthPersistor::new(
-                    tokens.server_name.clone(),
-                    url.clone(),
-                    manager,
-                    ResolvedOAuthCredentialStore::file(),
-                    Some(tokens.clone()),
-                    None,
-                ),
-            ),
+            crate::McpOAuthRefreshMode::Legacy => OAuthRuntime::Legacy(OAuthPersistor::new(
+                tokens.server_name.clone(),
+                url.clone(),
+                manager,
+                ResolvedOAuthCredentialStore::file(),
+                Some(tokens.clone()),
+                None,
+            )),
             crate::McpOAuthRefreshMode::Coordinated => {
                 let store = OAuthCredentialStore::new(
                     tokens.clone(),
@@ -161,7 +159,6 @@ async fn device_only_refresh_uses_issuer_bound_metadata_in_both_modes() -> Resul
     server.verify().await;
     Ok(())
 }
-
 
 const REFRESH_LOCK_CONTENTION_EVENT_TARGET: &str =
     "codex_rmcp_client::oauth::refresh_lock::contention";

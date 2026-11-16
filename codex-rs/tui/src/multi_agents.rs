@@ -441,28 +441,27 @@ fn waiting_end(
     if let Some(line) = completed_target_line(completed_target_thread_ids, agent_metadata) {
         details.push(line);
     }
-    details.extend(wait_complete_lines(receiver_thread_ids, agents_states, agent_metadata));
-    collab_event(title_text(wait_completion_title(completion_reason)), details)
+    details.extend(wait_complete_lines(
+        receiver_thread_ids,
+        agents_states,
+        agent_metadata,
+    ));
+    collab_event(
+        title_text(wait_completion_title(completion_reason)),
+        details,
+    )
 }
 
-fn terminal_condition_line(
-    return_when: Option<&CollabAgentWaitReturnWhen>,
-) -> Line<'static> {
+fn terminal_condition_line(return_when: Option<&CollabAgentWaitReturnWhen>) -> Line<'static> {
     let condition = match return_when {
-        Some(CollabAgentWaitReturnWhen::Any) => {
-            "Terminal condition: any selected target completes"
-        }
-        Some(CollabAgentWaitReturnWhen::All) => {
-            "Terminal condition: all selected targets complete"
-        }
+        Some(CollabAgentWaitReturnWhen::Any) => "Terminal condition: any selected target completes",
+        Some(CollabAgentWaitReturnWhen::All) => "Terminal condition: all selected targets complete",
         None => "Terminal condition unavailable",
     };
     Line::from(Span::from(condition).dim())
 }
 
-fn wait_completion_title(
-    reason: Option<&CollabAgentWaitCompletionReason>,
-) -> &'static str {
+fn wait_completion_title(reason: Option<&CollabAgentWaitCompletionReason>) -> &'static str {
     match reason {
         Some(CollabAgentWaitCompletionReason::AnyTargetCompleted) => {
             "Wait ended · any target completed"
@@ -473,9 +472,7 @@ fn wait_completion_title(
         Some(CollabAgentWaitCompletionReason::ActionableMessage) => {
             "Wait woke · actionable message"
         }
-        Some(CollabAgentWaitCompletionReason::UserInput) => {
-            "Wait woke · user input"
-        }
+        Some(CollabAgentWaitCompletionReason::UserInput) => "Wait woke · user input",
         Some(CollabAgentWaitCompletionReason::TimedOut) => "Wait ended · timeout",
         None => "Wait ended · wake reason unavailable",
     }
@@ -500,7 +497,10 @@ fn completed_target_line(
                 .unwrap_or_else(|| thread_id.clone())
         })
         .collect::<Vec<_>>();
-    Some(Line::from(format!("Completed targets: {}", targets.join(", "))))
+    Some(Line::from(format!(
+        "Completed targets: {}",
+        targets.join(", ")
+    )))
 }
 
 fn agent_label_text(agent: AgentLabel<'_>) -> String {
@@ -720,10 +720,7 @@ fn status_summary_line(status: Option<&CollabAgentState>, fallback_error: &str) 
     }
 }
 
-fn status_summary_spans(
-    status: &CollabAgentState,
-    include_details: bool,
-) -> Vec<Span<'static>> {
+fn status_summary_spans(status: &CollabAgentState, include_details: bool) -> Vec<Span<'static>> {
     match status.status {
         CollabAgentStatus::PendingInit => vec![Span::from("Pending init").fg(accent_color())],
         CollabAgentStatus::Running => vec![Span::from("Running").fg(accent_color()).bold()],
@@ -906,7 +903,10 @@ mod tests {
                 agents_states: HashMap::from([
                     (
                         robie_id.to_string(),
-                        agent_state(CollabAgentStatus::Completed, Some("PRIVATE_WAIT_RESPONSE_BODY")),
+                        agent_state(
+                            CollabAgentStatus::Completed,
+                            Some("PRIVATE_WAIT_RESPONSE_BODY"),
+                        ),
                     ),
                     (
                         bob_id.to_string(),

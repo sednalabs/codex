@@ -328,6 +328,15 @@ fn one_shot_exec_command_spec(spec: ToolSpec) -> ToolSpec {
 }
 
 impl CoreToolRuntime for ExecCommandHandler {
+    fn manages_handler_cancellation(&self) -> bool {
+        true
+    }
+
+    fn handler_finishes_on_cancellation(&self, payload: &ToolPayload) -> bool {
+        matches!(self.lifetime, ExecCommandLifetime::Interactive)
+            && super::requests_terminal_wait(payload)
+    }
+
     fn telemetry_tags(&self, invocation: &ToolInvocation) -> ToolTelemetryTags {
         // Record the configured mode so fallback calls remain in their rollout cohort.
         // This does not indicate whether the command actually used a snapshot.

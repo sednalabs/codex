@@ -208,7 +208,9 @@ impl ToolCallRuntime {
             .map(|tool| Arc::clone(&tool.runtime));
         let finishes_on_cancellation = tool_runtime
             .as_ref()
-            .is_some_and(|runtime| runtime.finishes_on_cancellation());
+            .is_some_and(|runtime| {
+                runtime.finishes_on_cancellation() || runtime.manages_handler_cancellation()
+            });
         let router = Arc::clone(router);
         let session = Arc::clone(&self.session);
         let turn = Arc::clone(&step_context.turn);
@@ -661,6 +663,105 @@ mod tests {
     use pretty_assertions::assert_eq;
     use tokio::sync::Notify;
     use tracing_test::internal::MockWriter;
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn terminal_wait_cancellation_through_dispatch_preserves_output_and_session() {
+        let (session, turn, _rx) =
+            crate::session::tests::make_session_and_context_with_auth_and_config_and_rx(
+                codex_login::CodexAuth::from_api_key("Test API Key"),
+                Vec::new(),
+                |config| {
+                    #[cfg(target_os = "linux")]
+                    {
+                        config.codex_linux_sandbox_exe = Some(
+                            codex_utils_cargo_bin::cargo_bin("codex-linux-sandbox")
+                                .expect("core Bazel tests provide codex-linux-sandbox"),
+                        );
+                    }
+                },
+            )
+            .await;
+        let handler: Arc<dyn CoreToolRuntime> = Arc::new(
+            crate::tools::handlers::unified_exec::ExecCommandHandler::default(),
+        );
+        let router = Arc::new(ToolRouter::from_parts(
+            ToolRegistry::from_tools([handler]),
+            Vec::new(),
+            ToolMode::Direct,
+            BTreeMap::new(),
+            /*exec_definitions*/ None,
+            /*tool_namespaces_info*/ None,
+            &[],
+        ));
+        let step = StepContext::for_test(turn).with_tool_router_for_test(router);
+        let tracker = Arc::new(tokio::sync::Mutex::new(TurnDiffTracker::new()));
+        let runtime = ToolCallRuntime::new(Arc::clone(&session), step, tracker);
+        let cancellation = CancellationToken::new();
+        let call = ToolCall {
+            tool_name: codex_tools::ToolName::plain("exec_command"),
+            call_id: "terminal-wait-dispatch".to_string(),
+            payload: ToolPayload::Function {
+                arguments: serde_json::json!({
+                    "cmd": "printf first-marker; sleep 1; printf second-marker; sleep 30",
+                    "yield_time_ms": 250,
+                    "wait_until_terminal": true,
+                }).to_string(),
+            },
+            encrypted_function_args: None,
+            native_call: None,
+        };
+        let response = runtime.clone().handle_tool_call(call, cancellation.clone());
+        tokio::pin!(response);
+        tokio::select! {
+            result = &mut response => panic!("terminal wait returned before cancellation: {result:?}"),
+            _ = tokio::time::sleep(Duration::from_secs(2)) => cancellation.cancel(),
+        }
+        let response = tokio::time::timeout(Duration::from_secs(12), response)
+            .await
+            .expect("bounded poll must complete after cancellation")
+            .expect("dispatch must return a tool response");
+        let ResponseInputItem::FunctionCallOutput { output, .. } = response.item else {
+            panic!("expected function output");
+        };
+        let FunctionCallOutputBody::Text(rendered) = output.body else {
+            panic!("expected text output");
+        };
+        assert!(rendered.contains("first-marker"), "{rendered}");
+        assert!(rendered.contains("second-marker"), "{rendered}");
+        assert!(rendered.contains("Process running with session ID"), "{rendered}");
+        let process_id: i32 = rendered
+            .split("Process running with session ID ")
+            .nth(1)
+            .expect("session ID")
+            .split_whitespace()
+            .next()
+            .expect("session ID value")
+            .parse()
+            .expect("numeric session ID");
+        assert!(session.services.unified_exec_manager.resolve_terminal(process_id).await.is_ok());
+        let ordinary_cancellation = CancellationToken::new();
+        let ordinary = ToolCall {
+            tool_name: codex_tools::ToolName::plain("exec_command"),
+            call_id: "ordinary-dispatch".to_string(),
+            payload: ToolPayload::Function {
+                arguments: serde_json::json!({"cmd": "sleep 30", "yield_time_ms": 10000}).to_string(),
+            },
+            encrypted_function_args: None,
+            native_call: None,
+        };
+        let ordinary_response = runtime.handle_tool_call(ordinary, ordinary_cancellation.clone());
+        tokio::pin!(ordinary_response);
+        tokio::select! {
+            result = &mut ordinary_response => panic!("ordinary command returned early: {result:?}"),
+            _ = tokio::time::sleep(Duration::from_secs(1)) => ordinary_cancellation.cancel(),
+        }
+        tokio::time::timeout(Duration::from_secs(2), ordinary_response)
+            .await
+            .expect("ordinary cancellation must remain prompt")
+            .expect("ordinary cancellation must return a response");
+        session.services.unified_exec_manager.terminate_all_processes().await;
+    }
 
     #[test]
     fn direct_tool_support_follows_namespace_resolution() {

@@ -155,6 +155,14 @@ impl WriteStdinHandler {
 }
 
 impl CoreToolRuntime for WriteStdinHandler {
+    fn manages_handler_cancellation(&self) -> bool {
+        true
+    }
+
+    fn handler_finishes_on_cancellation(&self, payload: &ToolPayload) -> bool {
+        super::requests_terminal_wait(payload)
+    }
+
     fn live_environment_resolver(&self) -> Option<LiveEnvironmentResolver> {
         Some(super::terminal_session_for_input)
     }

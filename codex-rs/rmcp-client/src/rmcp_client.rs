@@ -95,8 +95,8 @@ use crate::oauth::ResolvedOAuthCredentialStore;
 use crate::oauth::ResolvedOAuthTokens;
 use crate::oauth::StoredOAuthTokens;
 use crate::oauth::install_tokens_in_manager;
-use crate::oauth::resolve_refresh_metadata;
 use crate::oauth::resolve_oauth_tokens_from_store_policy;
+use crate::oauth::resolve_refresh_metadata;
 use crate::oauth::validate_refresh_token_issuer;
 use crate::oauth_client_credentials::OAuthClientCredentials;
 use crate::oauth_http_client::OAuthHttpClientAdapter;
@@ -2028,14 +2028,10 @@ async fn create_oauth_transport_and_runtime(
     )
     .await?;
     manager.set_allow_missing_issuer(true);
-    let metadata = resolve_refresh_metadata(
-        &manager,
-        url,
-        Some(&oauth_http_client),
-        &initial_tokens,
-    )
-    .await
-    .context("failed to resolve OAuth metadata before using stored credentials")?;
+    let metadata =
+        resolve_refresh_metadata(&manager, url, Some(&oauth_http_client), &initial_tokens)
+            .await
+            .context("failed to resolve OAuth metadata before using stored credentials")?;
     let use_stored_access_token_only =
         match validate_refresh_token_issuer(&metadata, &initial_tokens) {
             Ok(()) => false,
