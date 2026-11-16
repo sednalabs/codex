@@ -5,7 +5,6 @@ use crate::aws_sigv4::ProxySecretSource;
 use anyhow::Result;
 use anyhow::anyhow;
 use codex_utils_absolute_path::AbsolutePathBuf;
-use rama_core::extensions::ExtensionsMut;
 use rama_core::extensions::ExtensionsRef;
 use rama_http::Body;
 use rama_http::HeaderMap;
@@ -22,14 +21,16 @@ const MAX_SUBSTITUTION_SEARCH_BYTES: usize = 256 * 1024 * 1024;
 #[derive(Clone, Copy, Debug)]
 struct OriginalBodyHeadersSupported(bool);
 
+impl rama_core::extensions::Extension for OriginalBodyHeadersSupported {}
+
 pub(crate) fn preserve_body_substitution_headers(req: &mut Request) {
     if req
         .extensions()
-        .get::<OriginalBodyHeadersSupported>()
+        .get_ref::<OriginalBodyHeadersSupported>()
         .is_none()
     {
         let supported = body_substitution_headers_supported(req.headers());
-        req.extensions_mut()
+        req.extensions()
             .insert(OriginalBodyHeadersSupported(supported));
     }
 }
@@ -171,7 +172,7 @@ impl BodySecretSubstitution {
         }
         if req
             .extensions()
-            .get::<OriginalBodyHeadersSupported>()
+            .get_ref::<OriginalBodyHeadersSupported>()
             .is_some_and(|original| !original.0)
             || !body_substitution_headers_supported(req.headers())
         {

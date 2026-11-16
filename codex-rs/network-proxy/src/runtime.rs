@@ -322,6 +322,8 @@ impl std::fmt::Debug for NetworkProxyState {
     }
 }
 
+impl rama_core::extensions::Extension for NetworkProxyState {}
+
 impl Clone for NetworkProxyState {
     fn clone(&self) -> Self {
         Self {

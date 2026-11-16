@@ -4,16 +4,15 @@
 use anyhow::Context;
 use anyhow::Result;
 use rama_core::Service;
-use rama_core::extensions::ExtensionsMut;
 use rama_core::extensions::ExtensionsRef;
-use rama_core::stream::PeekStream;
-use rama_core::stream::Stream;
+use rama_core::io::PrefixedIo;
+use rama_core::io::Io;
 use rama_http::HeaderValue;
 use rama_http::Method;
 use rama_http::Request;
 use rama_http::Response;
 use rama_http::StatusCode;
-use rama_http::Uri;
+use rama_net::uri::Uri;
 use rama_http::header::CONNECTION;
 use rama_http::header::PROXY_AUTHENTICATE;
 use rama_http::header::UPGRADE;
@@ -43,9 +42,9 @@ const MAX_REQUEST_LINE: usize = 8192;
 pub(crate) async fn peek_protocol<S>(
     mut stream: S,
     protocols: BrokeredProtocols,
-) -> Result<(TunnelProtocol, PeekStream<Cursor<Vec<u8>>, S>)>
+) -> Result<(TunnelProtocol, PrefixedIo<Cursor<Vec<u8>>, S>)>
 where
-    S: Stream + Unpin + ExtensionsMut,
+    S: Io + Unpin + ExtensionsRef,
 {
     let mut prefix = Vec::new();
     let mut buf = [0_u8; 5];
@@ -84,7 +83,13 @@ where
                     let version = parts.next()?;
                     return (parts.next().is_none()
                         && Method::from_bytes(method.as_bytes()).is_ok()
-                        && target.parse::<Uri>().is_ok()
+                        && (if method == "CONNECT" {
+                            Uri::parse_authority_form(target).is_ok()
+                        } else {
+                            Uri::parse(target).is_ok_and(|uri| {
+                                uri.scheme().is_none() || uri.authority().is_some()
+                            })
+                        })
                         && (matches!(version, "HTTP/1.0" | "HTTP/1.1")
                             || (method == "PRI" && target == "*" && version == "HTTP/2.0")))
                         .then_some(());
@@ -112,7 +117,7 @@ where
     } else {
         TunnelProtocol::Opaque
     };
-    Ok((protocol, PeekStream::new(Cursor::new(prefix), stream)))
+    Ok((protocol, PrefixedIo::new(Cursor::new(prefix), stream)))
 }
 
 /// Preserve HTTP/1 upgrades on an already-authorized tunnel without interpreting upgraded bytes.
@@ -129,7 +134,7 @@ pub(crate) async fn forward_http_request(
             })
         })
     });
-    let downstream_upgrade = req.extensions().get::<OnUpgrade>().cloned();
+    let downstream_upgrade = req.extensions().get_ref::<OnUpgrade>().cloned();
     let h2c_settings = if upgrade.as_ref().is_some_and(|value| {
         value.to_str().is_ok_and(|value| {
             value
@@ -183,7 +188,7 @@ pub(crate) async fn forward_http_request(
         let downstream = downstream_upgrade.context("missing downstream HTTP upgrade")?;
         let upstream = response
             .extensions()
-            .get::<OnUpgrade>()
+            .get_ref::<OnUpgrade>()
             .cloned()
             .context("missing upstream HTTP upgrade")?;
         tokio::spawn(async move {

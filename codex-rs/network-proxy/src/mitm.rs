@@ -27,7 +27,7 @@ use rama_core::extensions::ExtensionsRef;
 use rama_core::futures::stream::Stream as FuturesStream;
 use rama_core::rt::Executor;
 use rama_core::service::service_fn;
-use rama_core::stream::Stream;
+use rama_core::io::Io;
 use rama_http::Body;
 use rama_http::BodyDataStream;
 use rama_http::HeaderMap;
@@ -35,16 +35,16 @@ use rama_http::HeaderValue;
 use rama_http::Request;
 use rama_http::Response;
 use rama_http::StatusCode;
-use rama_http::Uri;
+use rama_net::uri::Uri;
 use rama_http::header::HOST;
 use rama_http::layer::remove_header::RemoveRequestHeaderLayer;
 use rama_http::layer::remove_header::RemoveResponseHeaderLayer;
-use rama_http::uri::Scheme;
+use rama_net::Protocol as Scheme;
 use rama_http_backend::server::HttpServer;
-use rama_net::proxy::ProxyTarget;
+use crate::ProxyTarget;
 use rama_net::stream::SocketInfo;
 use rama_tls_rustls::dep::rustls;
-use rama_tls_rustls::server::TlsAcceptorData;
+use rama_tls::server::TlsServerConfig;
 use rama_tls_rustls::server::TlsAcceptorLayer;
 use std::pin::Pin;
 use std::sync::Arc;
@@ -149,6 +149,8 @@ impl std::fmt::Debug for MitmState {
     }
 }
 
+impl rama_core::extensions::Extension for MitmState {}
+
 impl MitmState {
     pub(crate) fn new(config: MitmUpstreamConfig) -> Result<Self> {
         ensure_rustls_crypto_provider();
@@ -175,7 +177,7 @@ impl MitmState {
         })
     }
 
-    fn tls_acceptor_data_for_host(&self, host: &str) -> Result<TlsAcceptorData> {
+    fn tls_acceptor_data_for_host(&self, host: &str) -> Result<TlsServerConfig> {
         self.ca.tls_acceptor_data_for_host(host)
     }
 
@@ -191,17 +193,15 @@ impl MitmState {
 /// Proxy inner HTTP traffic, terminating TLS with a generated leaf certificate for HTTPS.
 pub(crate) async fn mitm_stream<S>(stream: S, scheme: Scheme) -> Result<()>
 where
-    S: Stream + Unpin + ExtensionsRef,
+    S: Io + Unpin + ExtensionsRef,
 {
     let mitm = stream
         .extensions()
-        .get_ref::<Arc<MitmState>>()
-        .cloned()
+        .get_arc::<MitmState>()
         .context("missing MITM state")?;
     let app_state = stream
         .extensions()
-        .get_ref::<Arc<NetworkProxyState>>()
-        .cloned()
+        .get_arc::<NetworkProxyState>()
         .context("missing app state")?;
     let target = stream
         .extensions()
@@ -345,11 +345,12 @@ async fn forward_request(req: Request, request_ctx: &MitmRequestContext) -> Resu
 
     let (mut parts, body) = req.into_parts();
     let authority = authority_header_value(&target_host, target_port, &request_ctx.policy.scheme);
-    parts.uri = Uri::builder()
-        .scheme(request_ctx.policy.scheme.clone())
+    let upstream_uri = http::Uri::builder()
+        .scheme(request_ctx.policy.scheme.as_str())
         .authority(authority.as_str())
         .path_and_query(path.as_str())
         .build()?;
+    parts.uri = Uri::parse(upstream_uri.to_string())?;
     apply_request_credentials(
         &mut parts.headers,
         hook_actions.as_ref(),
@@ -426,24 +427,25 @@ async fn evaluate_mitm_policy(
     policy: &MitmPolicyContext,
 ) -> Result<MitmPolicyDecision> {
     if policy.scheme == Scheme::HTTP {
-        let matches_target = |authority: &rama_http::uri::Authority| {
+        let matches_target = |authority: &http::uri::Authority| {
             !authority.as_str().contains('@')
                 && normalize_host(authority.host()) == policy.target_host
                 && authority.port_u16().unwrap_or(80) == policy.target_port
         };
+        let raw_uri = req.uri().as_str();
+        let legacy_uri = raw_uri.parse::<http::Uri>();
         let invalid_destination = req
             .uri()
             .scheme()
             .is_some_and(|scheme| scheme != &Scheme::HTTP)
-            || req
-                .uri()
-                .authority()
-                .is_some_and(|authority| !matches_target(authority))
+            || legacy_uri
+                .as_ref()
+                .map_or(true, |uri| uri.authority().is_some_and(|authority| !matches_target(authority)))
             || req.headers().get_all(HOST).iter().any(|value| {
                 value
                     .to_str()
                     .ok()
-                    .and_then(|value| value.parse::<rama_http::uri::Authority>().ok())
+                    .and_then(|value| value.parse::<http::uri::Authority>().ok())
                     .is_none_or(|authority| !matches_target(&authority))
             });
         if invalid_destination {
@@ -702,7 +704,7 @@ fn extract_request_host(req: &Request) -> Option<String> {
         .get(HOST)
         .and_then(|v| v.to_str().ok())
         .map(ToString::to_string)
-        .or_else(|| req.uri().authority().map(|a| a.as_str().to_string()))
+        .or_else(|| req.uri().authority().map(|a| a.to_string()))
 }
 
 fn authority_header_value(host: &str, port: u16, scheme: &Scheme) -> String {
@@ -722,14 +724,19 @@ fn authority_header_value(host: &str, port: u16, scheme: &Scheme) -> String {
 }
 
 fn path_and_query(uri: &Uri) -> String {
-    uri.path_and_query()
-        .map(rama_http::uri::PathAndQuery::as_str)
-        .unwrap_or("/")
-        .to_string()
+    if uri.as_str() == "*" {
+        return "*".to_string();
+    }
+    let mut path = uri.path_ref_or_root().as_encoded_str().into_owned();
+    if let Some(query) = uri.query() {
+        path.push('?');
+        path.push_str(&query.as_encoded_str());
+    }
+    path
 }
 
 fn path_for_log(uri: &Uri) -> String {
-    uri.path().to_string()
+    uri.path_ref_or_root().as_encoded_str().into_owned()
 }
 
 #[cfg(test)]

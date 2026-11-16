@@ -156,7 +156,7 @@ fn github_host_hint(env: &HashMap<String, String>) -> Option<String> {
     } else {
         value.to_string()
     };
-    let parsed = authority.parse::<rama_http::uri::Authority>().ok()?;
+    let parsed = authority.parse::<http::uri::Authority>().ok()?;
     let suffix = authority.strip_prefix(parsed.host())?;
     if !suffix.is_empty() {
         suffix.strip_prefix(':')?.parse::<u16>().ok()?;

@@ -39,6 +39,12 @@ mod windows_proxy_ingress;
 #[cfg(target_os = "windows")]
 mod windows_tcp_attribution;
 
+/// Authorized logical tunnel target carried across HTTP and SOCKS upgrades.
+#[derive(Clone, Debug)]
+pub(crate) struct ProxyTarget(pub(crate) rama_net::address::HostWithPort);
+
+impl rama_core::extensions::Extension for ProxyTarget {}
+
 pub use attribution::PROXY_ATTRIBUTION_TOKEN_ENV_KEY;
 pub use attribution::write_attribution_frame;
 pub use aws_sigv4::AwsSigV4Config;

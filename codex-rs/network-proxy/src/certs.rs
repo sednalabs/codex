@@ -4,22 +4,24 @@ use anyhow::Result;
 use anyhow::anyhow;
 use base64::Engine as _;
 use codex_utils_home_dir::find_codex_home;
-use rama_tls_rustls::dep::pki_types::CertificateDer;
-use rama_tls_rustls::dep::pki_types::PrivateKeyDer;
-use rama_tls_rustls::dep::pki_types::pem::PemObject;
-use rama_tls_rustls::dep::rcgen::BasicConstraints;
-use rama_tls_rustls::dep::rcgen::CertificateParams;
-use rama_tls_rustls::dep::rcgen::DistinguishedName;
-use rama_tls_rustls::dep::rcgen::DnType;
-use rama_tls_rustls::dep::rcgen::ExtendedKeyUsagePurpose;
-use rama_tls_rustls::dep::rcgen::IsCa;
-use rama_tls_rustls::dep::rcgen::Issuer;
-use rama_tls_rustls::dep::rcgen::KeyPair;
-use rama_tls_rustls::dep::rcgen::KeyUsagePurpose;
-use rama_tls_rustls::dep::rcgen::PKCS_ECDSA_P256_SHA256;
-use rama_tls_rustls::dep::rcgen::SanType;
+use rama_crypto::pki_types::CertificateDer;
+use rama_crypto::pki_types::PrivateKeyDer;
+use rama_crypto::pki_types::pem::PemObject;
+use rama_crypto::dep::rcgen::BasicConstraints;
+use rama_crypto::dep::rcgen::CertificateParams;
+use rama_crypto::dep::rcgen::DistinguishedName;
+use rama_crypto::dep::rcgen::DnType;
+use rama_crypto::dep::rcgen::ExtendedKeyUsagePurpose;
+use rama_crypto::dep::rcgen::IsCa;
+use rama_crypto::dep::rcgen::Issuer;
+use rama_crypto::dep::rcgen::KeyPair;
+use rama_crypto::dep::rcgen::KeyUsagePurpose;
+use rama_crypto::dep::rcgen::PKCS_ECDSA_P256_SHA256;
+use rama_crypto::dep::rcgen::SanType;
 use rama_tls_rustls::dep::rustls;
-use rama_tls_rustls::server::TlsAcceptorData;
+use rama_tls::server::TlsServerConfig;
+use rama_tls::server::ServerAuthData;
+use rama_tls_rustls::server::RustlsServerConfigExt;
 use sha2::Digest as _;
 use sha2::Sha256;
 use std::collections::HashMap;
@@ -164,12 +166,13 @@ impl ManagedMitmCa {
         &self.certificate_path
     }
 
-    pub(super) fn tls_acceptor_data_for_host(&self, host: &str) -> Result<TlsAcceptorData> {
+    pub(super) fn tls_acceptor_data_for_host(&self, host: &str) -> Result<TlsServerConfig> {
         let (cert_pem, key_pem) = issue_host_certificate_pem(host, &self.issuer)?;
         let cert = CertificateDer::from_pem_slice(cert_pem.as_bytes())
             .context("failed to parse host cert PEM")?;
         let key = PrivateKeyDer::from_pem_slice(key_pem.as_bytes())
             .context("failed to parse host key PEM")?;
+        let server_auth = ServerAuthData::new(vec![cert.clone()], key.clone_key());
         let mut server_config =
             rustls::ServerConfig::builder_with_protocol_versions(rustls::ALL_VERSIONS)
                 .with_no_client_auth()
@@ -177,7 +180,9 @@ impl ManagedMitmCa {
                 .context("failed to build rustls server config")?;
         server_config.alpn_protocols = vec![b"h2".to_vec(), b"http/1.1".to_vec()];
 
-        Ok(TlsAcceptorData::from(server_config))
+        Ok(TlsServerConfig::new()
+            .with_server_auth(server_auth)
+            .with_modify_rustls_config(move |_| Ok(server_config.clone())))
     }
 }
 

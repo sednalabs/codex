@@ -287,7 +287,7 @@ pub(super) fn select_credentials<'a>(
         )
     }) && let Some(request) = request.as_ref()
     {
-        let Ok(raw_request) = destination.parse::<rama_http::Uri>() else {
+        let Ok(raw_request) = destination.parse::<http::Uri>() else {
             return Vec::new();
         };
         let raw_path = raw_request.path();

@@ -8,22 +8,23 @@ use crate::policy::normalize_host;
 use crate::policy::numeric_host_address;
 use crate::state::NetworkProxyState;
 use anyhow::ensure;
+use rama_core::Layer;
 use rama_core::Service;
 use rama_core::error::BoxError;
 use rama_core::extensions::ExtensionsRef;
-use rama_core::stream::rewind::Rewind;
+use rama_core::io::rewind::Rewind;
 use rama_http::Body;
 use rama_http::Method;
 use rama_http::Request;
 use rama_http::Version;
 use rama_http::header::HOST;
 use rama_http::io::upgrade;
-use rama_http_backend::client::HttpConnector;
+use rama_http_backend::client::HttpConnectorLayer;
 use rama_net::Protocol;
 use rama_net::address::HostWithPort;
 use rama_net::address::ProxyAddress;
 use rama_net::client::EstablishedClientConnection;
-use rama_net::stream::ClientSocketInfo;
+use rama_net::stream::SocketInfo;
 use rama_tcp::TcpStream;
 use std::pin::Pin;
 use std::str::FromStr;
@@ -86,7 +87,7 @@ impl TcpUpstreamProxy {
         let request = Request::builder()
             .method(Method::CONNECT)
             .version(Version::HTTP_11)
-            .uri(&authority)
+            .uri(rama_net::uri::Uri::parse_authority_form_strict(authority.as_str())?)
             .header(HOST, &authority)
             .extension(ProxyAddress {
                 protocol: Some(Protocol::HTTP),
@@ -97,17 +98,17 @@ impl TcpUpstreamProxy {
         // A fresh request carries only the trusted next hop. Rama dials that endpoint and
         // retains bytes read past the CONNECT headers in the upgraded stream.
         tokio::time::timeout(Duration::from_secs(10), async {
-            let connector = HttpConnector::new(TargetCheckedTcpConnector::new(state.clone()));
+            let connector = HttpConnectorLayer::<Body>::default()
+                .into_layer(TargetCheckedTcpConnector::new(state.clone()));
             let EstablishedClientConnection { input, conn } = connector.serve(request).await?;
             // Also reject the proxy's actual IP when provisioning supplied a hostname.
             if same_port && let Some(ip) = target_ip {
                 let peer = conn
                     .extensions()
-                    .get::<ClientSocketInfo>()
+                    .get_ref::<SocketInfo>()
                     .ok_or("missing TCP upstream peer address")?
-                    .0
                     .peer_addr();
-                if ip.to_canonical() == peer.ip().to_canonical() {
+                if ip.to_canonical() == peer.ip_addr.to_canonical() {
                     return Err("cannot tunnel back into the TCP upstream proxy".into());
                 }
             }

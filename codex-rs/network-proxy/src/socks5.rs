@@ -34,12 +34,12 @@ use rama_core::extensions::ExtensionsRef;
 use rama_core::graceful::ShutdownGuard;
 use rama_core::service::BoxService;
 use rama_core::service::service_fn;
-use rama_core::stream::rewind::Rewind;
+use rama_core::io::rewind::Rewind;
+use rama_core::io::BridgeIo;
 use rama_net::address::HostWithPort;
 use rama_net::client::EstablishedClientConnection;
-use rama_net::proxy::ProxyRequest;
-use rama_net::proxy::ProxyTarget;
-use rama_net::proxy::StreamForwardService;
+use crate::ProxyTarget;
+use rama_net::address::SocketAddress;
 use rama_net::stream::Socket;
 use rama_net::stream::SocketInfo;
 use rama_socks5::Socks5Acceptor;
@@ -77,7 +77,7 @@ pub async fn run_socks5(
         .bind(addr)
         .await
         // See `http_proxy.rs` for details on why we wrap `BoxError` before converting to anyhow.
-        .map_err(rama_core::error::OpaqueError::from)
+        .map_err(rama_core::error::extra::OpaqueError::from)
         .map_err(anyhow::Error::from)
         .with_context(|| format!("bind SOCKS5 proxy: {addr}"))?;
 
@@ -204,8 +204,7 @@ async fn handle_socks5_tcp(
 ) -> Result<EstablishedClientConnection<Socks5TcpConnection, TcpRequest>, BoxError> {
     let app_state = req
         .extensions()
-        .get_ref::<Arc<NetworkProxyState>>()
-        .cloned()
+        .get_arc::<NetworkProxyState>()
         .ok_or_else(|| io::Error::other("missing state"))?;
 
     let host = normalize_host(&req.authority.host.to_string());
@@ -580,21 +579,23 @@ impl AsyncWrite for Socks5TcpConnection {
     }
 }
 
+impl rama_core::extensions::Extension for NetworkMode {}
+
 impl Socket for Socks5TcpConnection {
-    fn local_addr(&self) -> io::Result<SocketAddr> {
+    fn local_addr(&self) -> io::Result<SocketAddress> {
         match self {
             Self::Direct(stream) => stream.local_addr(),
             Self::Tunnel(_) | Self::Mitm { .. } | Self::DetectProtocol { .. } => {
-                Ok(SocketAddr::from(([0, 0, 0, 0], 0)))
+                Ok(SocketAddr::from(([0, 0, 0, 0], 0)).into())
             }
         }
     }
 
-    fn peer_addr(&self) -> io::Result<SocketAddr> {
+    fn peer_addr(&self) -> io::Result<SocketAddress> {
         match self {
             Self::Direct(stream) => stream.peer_addr(),
             Self::Tunnel(_) | Self::Mitm { .. } | Self::DetectProtocol { .. } => {
-                Ok(SocketAddr::from(([0, 0, 0, 0], 0)))
+                Ok(SocketAddr::from(([0, 0, 0, 0], 0)).into())
             }
         }
     }
@@ -611,14 +612,14 @@ impl ExtensionsRef for Socks5TcpConnection {
 }
 
 async fn proxy_socks5_tcp(
-    request: ProxyRequest<TcpStream, Socks5TcpConnection>,
+    request: BridgeIo<TcpStream, Socks5TcpConnection>,
 ) -> Result<(), BoxError> {
-    let ProxyRequest { mut source, target } = request;
+    let BridgeIo(mut source, target) = request;
     match target {
-        target @ (Socks5TcpConnection::Direct(_) | Socks5TcpConnection::Tunnel(_)) => {
-            StreamForwardService::default()
-                .serve(ProxyRequest { source, target })
+        mut target @ (Socks5TcpConnection::Direct(_) | Socks5TcpConnection::Tunnel(_)) => {
+            tokio::io::copy_bidirectional(&mut source, &mut target)
                 .await
+                .map(|_| ())
                 .map_err(Into::into)
         }
         Socks5TcpConnection::Mitm {
@@ -632,8 +633,8 @@ async fn proxy_socks5_tcp(
             }
             source.extensions().insert(ProxyTarget(target));
             source.extensions().insert(mode);
-            source.extensions().insert(mitm);
-            mitm::mitm_stream(source, rama_http::uri::Scheme::HTTPS)
+            source.extensions().insert_arc(mitm);
+            mitm::mitm_stream(source, rama_net::Protocol::HTTPS)
                 .await
                 .map_err(Into::into)
         }
@@ -650,18 +651,18 @@ async fn proxy_socks5_tcp(
             }
             source.extensions().insert(ProxyTarget(target.clone()));
             source.extensions().insert(mode);
-            source.extensions().insert(mitm);
+            source.extensions().insert_arc(mitm);
             let (protocol, source) = crate::brokered_tunnel::peek_protocol(source, protocols)
                 .await
                 .map_err(|err| -> BoxError { err.into() })?;
             match protocol {
                 crate::brokered_tunnel::TunnelProtocol::Tls => {
-                    mitm::mitm_stream(source, rama_http::uri::Scheme::HTTPS)
+                    mitm::mitm_stream(source, rama_net::Protocol::HTTPS)
                         .await
                         .map_err(Into::into)
                 }
                 crate::brokered_tunnel::TunnelProtocol::Http => {
-                    mitm::mitm_stream(source, rama_http::uri::Scheme::HTTP)
+                    mitm::mitm_stream(source, rama_net::Protocol::HTTP)
                         .await
                         .map_err(Into::into)
                 }
@@ -675,7 +676,7 @@ async fn proxy_socks5_tcp(
                     }
                     info!("SOCKS opaque upstream dial started (target={target})");
                     let connect_started_at = Instant::now();
-                    let EstablishedClientConnection { conn: upstream, .. } = connect_opaque_tcp(
+                    let EstablishedClientConnection { conn: mut upstream, .. } = connect_opaque_tcp(
                         state,
                         TcpRequest::new_with_extensions(target.clone(), extensions),
                     )
@@ -684,12 +685,9 @@ async fn proxy_socks5_tcp(
                         "SOCKS opaque upstream dial established (target={target}, elapsed_ms={})",
                         connect_started_at.elapsed().as_millis()
                     );
-                    StreamForwardService::default()
-                        .serve(ProxyRequest {
-                            source,
-                            target: upstream,
-                        })
+                    tokio::io::copy_bidirectional(&mut source, &mut upstream)
                         .await
+                        .map(|_| ())
                         .map_err(Into::into)
                 }
             }
@@ -717,7 +715,7 @@ async fn inspect_socks5_udp(
     }
 
     let client = extensions
-        .get::<SocketInfo>()
+        .get_ref::<SocketInfo>()
         .map(|info| info.peer_addr().to_string());
 
     match state.enabled().await {
@@ -960,7 +958,7 @@ mod tests {
         });
         let mut request =
             TcpRequest::new(HostWithPort::try_from("example.com:443").expect("valid authority"));
-        request.extensions().insert(state.clone());
+        request.extensions().insert_arc(state.clone());
 
         let (result, events) = capture_events(|| async {
             handle_socks5_tcp(
@@ -1003,7 +1001,7 @@ mod tests {
         let state = state_for_settings(settings);
         let mut request =
             TcpRequest::new(HostWithPort::try_from("example.com:443").expect("valid authority"));
-        request.extensions().insert(state.clone());
+        request.extensions().insert_arc(state.clone());
 
         let result = handle_socks5_tcp(
             request, /*policy_decider*/ None, /*environment_id*/ None,
@@ -1025,7 +1023,7 @@ mod tests {
         let state = state_for_settings(settings);
         let mut request =
             TcpRequest::new(HostWithPort::try_from("example.com:80").expect("valid authority"));
-        request.extensions().insert(state.clone());
+        request.extensions().insert_arc(state.clone());
 
         let (result, events) = capture_events(|| async {
             handle_socks5_tcp(
@@ -1076,7 +1074,7 @@ mod tests {
         let mut request = TcpRequest::new(
             HostWithPort::try_from("api.openai.com:8443").expect("valid authority"),
         );
-        request.extensions().insert(state.clone());
+        request.extensions().insert_arc(state.clone());
 
         let result = handle_socks5_tcp(
             request, /*policy_decider*/ None, /*environment_id*/ None,
@@ -1102,7 +1100,7 @@ mod tests {
         let state = state_for_settings(settings);
         let mut request =
             TcpRequest::new(HostWithPort::try_from("example.com:443").expect("valid authority"));
-        request.extensions().insert(state.clone());
+        request.extensions().insert_arc(state.clone());
 
         let err = handle_socks5_tcp(
             request, /*policy_decider*/ None, /*environment_id*/ None,
@@ -1138,7 +1136,7 @@ mod tests {
         let state = state_for_settings(settings);
         let mut request =
             TcpRequest::new(HostWithPort::try_from("api.github.com:443").expect("valid authority"));
-        request.extensions().insert(state.clone());
+        request.extensions().insert_arc(state.clone());
 
         let result = handle_socks5_tcp(
             request, /*policy_decider*/ None, /*environment_id*/ None,
@@ -1171,7 +1169,7 @@ mod tests {
         let state = state_for_settings(settings);
         let mut request =
             TcpRequest::new(HostWithPort::try_from("api.github.com:80").expect("valid authority"));
-        request.extensions().insert(state.clone());
+        request.extensions().insert_arc(state.clone());
 
         let err = handle_socks5_tcp(
             request, /*policy_decider*/ None, /*environment_id*/ None,

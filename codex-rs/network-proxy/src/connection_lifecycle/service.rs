@@ -26,7 +26,7 @@ where
     async fn serve(&self, request: Request) -> Result<(), Self::Error> {
         let guard = request
             .extensions()
-            .get::<Executor>()
+            .get_ref::<Executor>()
             .and_then(Executor::guard)
             .cloned();
         match guard {

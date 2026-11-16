@@ -18,7 +18,6 @@ use aws_sigv4::http_request::sign;
 use aws_sigv4::sign::v4;
 use codex_utils_absolute_path::AbsolutePathBuf;
 use rama_core::bytes::Bytes;
-use rama_core::extensions::ExtensionsMut;
 use rama_core::extensions::ExtensionsRef;
 use rama_http::Body;
 use rama_http::HeaderMap;
@@ -169,6 +168,8 @@ impl AwsSigV4Config {
 #[derive(Clone)]
 struct UnsupportedSigningKeys(Vec<String>);
 
+impl rama_core::extensions::Extension for UnsupportedSigningKeys {}
+
 impl std::fmt::Debug for UnsupportedSigningKeys {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.write_str("UnsupportedSigningKeys")
@@ -191,7 +192,7 @@ pub(crate) fn preserve_signing_headers(req: &mut Request) {
             .flat_map(authorization_keys)
             .map(str::to_owned)
             .collect();
-        req.extensions_mut().insert(UnsupportedSigningKeys(keys));
+        req.extensions().insert(UnsupportedSigningKeys(keys));
     }
 }
 
@@ -371,7 +372,7 @@ impl AwsSigV4Signer {
         );
         ensure!(
             req.extensions()
-                .get::<UnsupportedSigningKeys>()
+                .get_ref::<UnsupportedSigningKeys>()
                 .is_none_or(|keys| !keys.0.contains(placeholder)),
             "unsupported AWS signing headers"
         );

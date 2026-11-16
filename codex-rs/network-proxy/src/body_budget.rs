@@ -4,7 +4,6 @@
 use anyhow::Result;
 use anyhow::anyhow;
 use rama_core::bytes::Bytes;
-use rama_core::extensions::ExtensionsMut;
 use rama_core::extensions::ExtensionsRef;
 use rama_http::Body;
 use rama_http::HeaderMap;
@@ -31,6 +30,8 @@ static BUFFER_SLOTS: LazyLock<Arc<Semaphore>> =
 #[derive(Debug, Clone)]
 struct BufferLease(Weak<OwnedSemaphorePermit>);
 
+impl rama_core::extensions::Extension for BufferLease {}
+
 pub(crate) async fn reserve(req: &mut Request) -> Result<Arc<OwnedSemaphorePermit>> {
     reserve_in(req, &BUFFER_SLOTS).await
 }
@@ -41,7 +42,7 @@ async fn reserve_in(
 ) -> Result<Arc<OwnedSemaphorePermit>> {
     if let Some(permit) = req
         .extensions()
-        .get::<BufferLease>()
+        .get_ref::<BufferLease>()
         .and_then(|lease| lease.0.upgrade())
     {
         return Ok(permit);
@@ -51,7 +52,7 @@ async fn reserve_in(
         .map_err(|_| anyhow!("request buffer capacity unavailable"))?
         .map_err(|_| anyhow!("request buffer budget closed"))?;
     let permit = Arc::new(permit);
-    req.extensions_mut()
+    req.extensions()
         .insert(BufferLease(Arc::downgrade(&permit)));
     Ok(permit)
 }
@@ -183,7 +184,7 @@ pub(crate) fn retain(req: Request) -> Request {
     let (parts, body) = req.into_parts();
     let lease = parts
         .extensions
-        .get::<BufferLease>()
+        .get_ref::<BufferLease>()
         .and_then(|lease| lease.0.upgrade());
     // Keep exact sizing, and retain the lease in data frames queued after the body is dropped.
     let body = Body::new(RetainedBody { body, lease });

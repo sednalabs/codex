@@ -181,7 +181,7 @@ pub type MitmHooksByHost = BTreeMap<String, Vec<MitmHook>>;
 
 /// The authenticated tunnel destination, independent of guest HTTP authority headers.
 pub(crate) struct MitmHookOrigin {
-    pub scheme: rama_http::uri::Scheme,
+    pub scheme: rama_net::Protocol,
     pub port: u16,
 }
 
@@ -483,8 +483,8 @@ fn hook_matches(hook: &MitmHook, req: &Request, origin: &MitmHookOrigin) -> bool
         return false;
     }
 
-    let path = req.uri().path();
-    if !is_safe_for_authorization(path) || !path_matches(&hook.matcher.path_prefixes, path) {
+    let path = req.uri().path_ref_or_root().as_encoded_str();
+    if !is_safe_for_authorization(&path) || !path_matches(&hook.matcher.path_prefixes, &path) {
         return false;
     }
 
@@ -500,7 +500,7 @@ fn query_matches(query_constraints: &[QueryConstraint], req: &Request) -> bool {
         return true;
     }
 
-    let actual_query = req.uri().query().unwrap_or_default();
+    let actual_query = req.uri().query().map(|query| query.as_encoded_str()).unwrap_or_default();
     let mut actual_values: BTreeMap<String, Vec<String>> = BTreeMap::new();
     for (name, value) in form_urlencoded::parse(actual_query.as_bytes()) {
         actual_values
@@ -790,7 +790,7 @@ mod tests {
             host,
             request,
             &super::MitmHookOrigin {
-                scheme: rama_http::uri::Scheme::HTTPS,
+                scheme: rama_net::Protocol::HTTPS,
                 port: 443,
             },
         )
@@ -970,8 +970,8 @@ mod tests {
         );
         assert!(!format!("{actions:?}").contains("Bearer abc"));
         for (scheme, port) in [
-            (rama_http::uri::Scheme::HTTP, 443),
-            (rama_http::uri::Scheme::HTTPS, 8443),
+            (rama_net::Protocol::HTTP, 443),
+            (rama_net::Protocol::HTTPS, 8443),
         ] {
             let origin = MitmHookOrigin { scheme, port };
             let HookEvaluation::Matched { actions } =

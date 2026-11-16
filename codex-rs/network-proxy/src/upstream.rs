@@ -7,7 +7,7 @@ use rama_core::Layer;
 use rama_core::Service;
 use rama_core::error::BoxError;
 use rama_core::error::ErrorContext as _;
-use rama_core::error::OpaqueError;
+use rama_core::error::extra::OpaqueError;
 use rama_core::extensions::ExtensionsRef;
 use rama_core::service::BoxService;
 use rama_http::Body;
@@ -22,8 +22,10 @@ use rama_net::address::Host;
 use rama_net::address::HostWithPort;
 use rama_net::address::ProxyAddress;
 use rama_net::client::EstablishedClientConnection;
-use rama_net::http::RequestContext;
-use rama_tls_rustls::client::TlsConnectorDataBuilder;
+use rama_net::AuthorityInputExt;
+use rama_net::ProtocolInputExt;
+use rama_tls_rustls::client::RustlsClientConfigExt;
+use rama_tls_rustls::types::client::TlsClientConfig;
 use rama_tls_rustls::client::TlsConnectorLayer;
 use rama_tls_rustls::client::client_root_certs;
 use rama_tls_rustls::dep::rustls;
@@ -190,17 +192,29 @@ impl Service<Request<Body>> for UpstreamClient {
     type Error = OpaqueError;
 
     async fn serve(&self, mut req: Request<Body>) -> Result<Self::Output, Self::Error> {
-        let request_context = RequestContext::try_from(&req).ok();
-        let authority = request_context
+        let protocol = req.protocol();
+        let secure = protocol.is_some_and(|protocol| protocol.is_secure());
+        let default_port = protocol
+            .and_then(|protocol| protocol.default_port())
+            .unwrap_or(80);
+        // The alpha request context preferred a domain ProxyTarget after the
+        // URI authority and before TLS SNI, Forwarded, and Host fallback.
+        let target = if req.uri().host().is_none() {
+            req.extensions()
+                .get_ref::<crate::ProxyTarget>()
+                .filter(|target| matches!(&target.0.host, Host::Name(_)))
+                .map(|target| target.0.clone())
+                .or_else(|| req.authority().map(|authority| authority.into_host_with_port_or(default_port)))
+        } else {
+            req.authority().map(|authority| authority.into_host_with_port_or(default_port))
+        };
+        let authority = target
             .as_ref()
-            .map(|ctx| ctx.host_with_port().to_string())
+            .map(ToString::to_string)
             .unwrap_or_else(|| "<unknown>".to_string());
-        let proxy = request_context.as_ref().map_or_else(
+        let proxy = target.as_ref().map_or_else(
             || self.proxy_config.proxy_for_protocol(/*is_secure*/ false),
-            |ctx| {
-                self.proxy_config
-                    .proxy_for_target(&ctx.host_with_port(), ctx.protocol.is_secure())
-            },
+            |target| self.proxy_config.proxy_for_target(target, secure),
         );
         match proxy.as_ref() {
             Some(proxy) => info!(
@@ -267,14 +281,14 @@ fn build_http_connector(
 > {
     ensure_rustls_crypto_provider();
     let proxy = HttpProxyConnectorLayer::optional().into_layer(transport);
-    let client_config = rustls::ClientConfig::builder_with_protocol_versions(rustls::ALL_VERSIONS)
+    let mut client_config = rustls::ClientConfig::builder_with_protocol_versions(rustls::ALL_VERSIONS)
         .with_root_certificates(tls_root_store)
         .with_no_client_auth();
-    let tls_config = TlsConnectorDataBuilder::from(client_config)
-        .with_alpn_protocols_http_auto()
-        .build();
+    client_config.alpn_protocols = vec![b"h2".to_vec(), b"http/1.1".to_vec()];
+    let tls_config = TlsClientConfig::new()
+        .with_modify_rustls_config(move |_| Ok(client_config.clone()));
     let tls = TlsConnectorLayer::auto()
-        .with_connector_data(tls_config)
+        .with_base_config(Some(tls_config))
         .into_layer(proxy);
     let tls = RequestVersionAdapter::new(tls).with_default_version(Version::HTTP_11);
     let connector = HttpConnectorLayer::<Body>::default().into_layer(tls);

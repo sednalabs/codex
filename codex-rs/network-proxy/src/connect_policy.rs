@@ -14,7 +14,7 @@ use crate::system_dns::SystemDnsResolver;
 use rama_core::Service;
 use rama_core::error::BoxError;
 use rama_core::error::ErrorContext as _;
-use rama_core::error::OpaqueError;
+use rama_core::error::extra::OpaqueError;
 use rama_dns::client::DnsConnector;
 #[cfg(not(target_os = "macos"))]
 use rama_dns::client::HickoryDnsResolver;
@@ -81,6 +81,8 @@ pub(crate) struct DialPolicy {
     client: Option<String>,
     method: Option<String>,
 }
+impl rama_core::extensions::Extension for DialPolicy {}
+
 impl DialPolicy {
     pub(crate) fn new(
         target: &HostWithPort,
