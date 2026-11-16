@@ -701,6 +701,19 @@ class CollabAgentToolCallStatus(Enum):
     interrupted = "interrupted"
 
 
+class CollabAgentWaitCompletionReason(Enum):
+    any_target_completed = "any_target_completed"
+    all_targets_completed = "all_targets_completed"
+    actionable_message = "actionable_message"
+    user_input = "user_input"
+    timed_out = "timed_out"
+
+
+class CollabAgentWaitReturnWhen(Enum):
+    any = "any"
+    all = "all"
+
+
 class ListFilesCommandAction(BaseModel):
     model_config = ConfigDict(
         populate_by_name=True,
@@ -11133,6 +11146,17 @@ class CollabAgentToolCallThreadItem(BaseModel):
             description="Unix timestamp in milliseconds when the item completed, if recorded.",
         ),
     ] = None
+    completed_target_thread_ids: Annotated[
+        list[str] | None,
+        Field(
+            alias="completedTargetThreadIds",
+            description="Selected targets observed complete when target completion ended the wait.",
+        ),
+    ] = []
+    completion_reason: Annotated[
+        CollabAgentWaitCompletionReason | None,
+        Field(alias="completionReason", description="Why a wait completed, when known."),
+    ] = None
     id: Annotated[str, Field(description="Unique identifier for this collab tool call.")]
     model: Annotated[
         str | None, Field(description="Model requested for the spawned agent, when applicable.")
@@ -11155,6 +11179,12 @@ class CollabAgentToolCallThreadItem(BaseModel):
             description="Thread ID of the receiving agent, when applicable. In case of spawn operation, this corresponds to the newly spawned agent.",
         ),
     ]
+    return_when: Annotated[
+        CollabAgentWaitReturnWhen | None,
+        Field(
+            alias="returnWhen", description="Selected completion condition for a wait, when known."
+        ),
+    ] = None
     sender_thread_id: Annotated[
         str,
         Field(

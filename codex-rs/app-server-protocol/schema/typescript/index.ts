@@ -11,6 +11,8 @@ export type { ClientInfo } from "./ClientInfo";
 export type { ClientNotification } from "./ClientNotification";
 export type { ClientRequest } from "./ClientRequest";
 export type { CodexResponseHandoffMode } from "./CodexResponseHandoffMode";
+export type { CollabAgentWaitCompletionReason } from "./CollabAgentWaitCompletionReason";
+export type { CollabAgentWaitReturnWhen } from "./CollabAgentWaitReturnWhen";
 export type { CollaborationMode } from "./CollaborationMode";
 export type { ConfigurationReasoning } from "./ConfigurationReasoning";
 export type { ContentItem } from "./ContentItem";

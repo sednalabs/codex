@@ -1064,6 +1064,24 @@
       ],
       "type": "string"
     },
+    "CollabAgentWaitCompletionReason": {
+      "description": "Why a wait completed, without exposing message contents or senders.",
+      "enum": [
+        "any_target_completed",
+        "all_targets_completed",
+        "actionable_message",
+        "user_input",
+        "timed_out"
+      ],
+      "type": "string"
+    },
+    "CollabAgentWaitReturnWhen": {
+      "enum": [
+        "any",
+        "all"
+      ],
+      "type": "string"
+    },
     "CollaborationMode": {
       "description": "Collaboration mode for a Codex session.",
       "properties": {
@@ -5455,6 +5473,26 @@
               "description": "Last known status of the target agents, when available.",
               "type": "object"
             },
+            "completedTargetThreadIds": {
+              "default": [],
+              "description": "Selected targets observed complete when target completion ended the wait.",
+              "items": {
+                "type": "string"
+              },
+              "type": "array"
+            },
+            "completionReason": {
+              "anyOf": [
+                {
+                  "$ref": "#/definitions/CollabAgentWaitCompletionReason"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "description": "Why a wait completed, when known."
+            },
             "id": {
               "description": "Unique identifier for this collab tool call.",
               "type": "string"
@@ -5490,6 +5528,18 @@
                 "type": "string"
               },
               "type": "array"
+            },
+            "returnWhen": {
+              "anyOf": [
+                {
+                  "$ref": "#/definitions/CollabAgentWaitReturnWhen"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "description": "Selected completion condition for a wait, when known."
             },
             "senderThreadId": {
               "description": "Thread ID of the agent issuing the collab request.",
