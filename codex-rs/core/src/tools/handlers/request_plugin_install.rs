@@ -8,6 +8,7 @@ use codex_analytics::build_track_events_context;
 use codex_config::types::ToolSuggestDisabledTool;
 use codex_core_plugins::remote::REMOTE_GLOBAL_MARKETPLACE_NAME;
 use codex_mcp::CODEX_APPS_MCP_SERVER_NAME;
+use codex_mcp::McpServerKey;
 use codex_rmcp_client::ElicitationAction;
 use codex_rmcp_client::ElicitationResponse;
 use codex_tools::DiscoverableTool;
@@ -35,7 +36,6 @@ use crate::config::edit::ConfigEditsBuilder;
 use crate::connectors;
 use crate::connectors::AppInfo;
 use crate::function_tool::FunctionCallError;
-use crate::session::turn::CachedEndpointRecommendedPluginCandidates;
 use crate::tools::context::FunctionToolOutput;
 use crate::tools::context::ToolInvocation;
 use crate::tools::context::ToolPayload;
@@ -83,7 +83,10 @@ impl ToolExecutor<ToolInvocation> for RequestPluginInstallHandler {
         false
     }
 
-    fn handle(&self, invocation: ToolInvocation) -> codex_tools::ToolExecutorFuture<'_> {
+    fn handle<'a>(&'a self, invocation: ToolInvocation) -> codex_tools::ToolExecutorFuture<'a>
+    where
+        ToolInvocation: 'a,
+    {
         Box::pin(self.handle_call(invocation))
     }
 }
@@ -111,6 +114,12 @@ impl RequestPluginInstallHandler {
                 )));
             }
         };
+
+        if turn.root_capabilities_restricted {
+            return Err(FunctionCallError::RespondToModel(
+                "request_plugin_install can only be used by the root thread".to_string(),
+            ));
+        }
 
         let (requested_tool_id, requested_tool_type, suggest_reason) = match self.presentation {
             ToolSuggestPresentation::ListTool => {
@@ -178,6 +187,34 @@ impl RequestPluginInstallHandler {
                     "{argument_name} must match one of {source}"
                 ))
             })?;
+        let tool = if self.presentation == ToolSuggestPresentation::RecommendationContext {
+            let plugin_id = tool.id().to_string();
+            let auth = session.services.auth_manager.auth().await;
+            let plugins_config = turn.config.plugins_config_input();
+            match codex_core_plugins::hydrate_selected_recommended_plugin_install_metadata(
+                &session
+                    .services
+                    .plugins_manager
+                    .remote_plugin_service_config(&plugins_config),
+                auth.as_ref(),
+                tool,
+            )
+            .await
+            {
+                Ok(Some(tool)) => tool,
+                Ok(None) => return Err(recommended_plugins_no_longer_available()),
+                Err(err) => {
+                    warn!(
+                        plugin_id,
+                        error = %err,
+                        "failed to hydrate selected recommended plugin install metadata"
+                    );
+                    return Err(recommended_plugin_metadata_retryable());
+                }
+            }
+        } else {
+            tool
+        };
         let tool_type = tool.tool_type();
 
         let suggestion_id = format!("request_plugin_install_{call_id}");
@@ -193,10 +230,11 @@ impl RequestPluginInstallHandler {
                 .analytics_events_client
                 .track_plugin_install_requested(
                     build_track_events_context(
-                        turn.model_info.slug.clone(),
+                        step_context.settings.model_info.slug.clone(),
                         session.thread_id.to_string(),
                         turn.sub_id.clone(),
                         turn.originator.clone(),
+                        /*turn_metadata*/ None,
                     ),
                     PluginInstallRequested {
                         suggestion_id: suggestion_id.clone(),
@@ -211,17 +249,17 @@ impl RequestPluginInstallHandler {
                 );
         }
 
+        let request =
+            build_request_plugin_install_elicitation_request(suggest_reason, &tool, &suggestion_id);
         let request_id = RequestId::String(suggestion_id.into());
-        let request = build_request_plugin_install_elicitation_request(suggest_reason, &tool);
-        let elicitation = session
+        let response = session
             .request_mcp_server_elicitation(
                 turn.as_ref(),
-                CODEX_APPS_MCP_SERVER_NAME.to_string(),
+                McpServerKey::unscoped(CODEX_APPS_MCP_SERVER_NAME),
                 request_id,
                 request,
             )
             .await;
-        let response = elicitation.response;
         if let Some(response) = response.as_ref() {
             maybe_persist_disabled_install_request(&session, &turn, &tool, response).await;
         }
@@ -237,33 +275,39 @@ impl RequestPluginInstallHandler {
             false
         };
 
+        if completed {
+            // Skills-only installs have no connector tools to refresh. Dirty discovery too,
+            // so the next step can see the newly installed plugin and its skills.
+            session.request_mcp_runtime_refresh(crate::McpRefreshReason::PluginInstalled);
+        }
+
         if completed && let DiscoverableTool::Connector(connector) = &tool {
             session
                 .merge_connector_selection(HashSet::from([connector.id.clone()]))
                 .await;
         }
 
-        if elicitation.sent {
-            let tool_type = match tool_type {
-                DiscoverableToolType::Connector => "connector",
-                DiscoverableToolType::Plugin => "plugin",
-            };
-            let response_action = match response.as_ref().map(|response| &response.action) {
-                Some(ElicitationAction::Accept) => "accept",
-                Some(ElicitationAction::Decline) => "decline",
-                Some(ElicitationAction::Cancel) => "cancel",
-                Some(_) => "unavailable",
-                None => "unavailable",
-            };
-            turn.session_telemetry.record_plugin_install_suggestion(
-                tool_type,
+        let telemetry_tool_type = match tool_type {
+            DiscoverableToolType::Connector => "connector",
+            DiscoverableToolType::Plugin => "plugin",
+        };
+        let response_action = match response.as_ref().map(|response| &response.action) {
+            Some(ElicitationAction::Accept) => "accept",
+            Some(ElicitationAction::Decline) => "decline",
+            Some(ElicitationAction::Cancel) => "cancel",
+            Some(_) => "unknown",
+            None => "unavailable",
+        };
+        step_context
+            .session_telemetry
+            .record_plugin_install_suggestion(
+                telemetry_tool_type,
                 tool.id(),
                 tool.name(),
                 response_action,
                 user_confirmed,
                 completed,
             );
-        }
 
         let content = serde_json::to_string(&RequestPluginInstallResult {
             completed,
@@ -285,6 +329,18 @@ impl RequestPluginInstallHandler {
             Some(true),
         )))
     }
+}
+
+fn recommended_plugins_no_longer_available() -> FunctionCallError {
+    FunctionCallError::RespondToModel(
+        "The recommended plugins for this turn are no longer available.".to_string(),
+    )
+}
+
+fn recommended_plugin_metadata_retryable() -> FunctionCallError {
+    FunctionCallError::RespondToModel(
+        "The selected recommended plugin could not be verified right now. Retry request_plugin_install with the same plugin_id.".to_string(),
+    )
 }
 
 impl CoreToolRuntime for RequestPluginInstallHandler {}
@@ -370,7 +426,7 @@ async fn verify_request_plugin_install_completed(
         }),
         DiscoverableTool::Plugin(plugin) => {
             if is_remote_plugin_install_suggestion(&plugin.id) {
-                let (remote_installed_plugins_refreshed, accessible_connectors) = tokio::join!(
+                let (_, accessible_connectors) = tokio::join!(
                     refresh_remote_installed_plugins_cache_after_install(
                         session,
                         turn,
@@ -386,9 +442,6 @@ async fn verify_request_plugin_install_completed(
                         plugin.id.as_str(),
                     )
                 );
-                if remote_installed_plugins_refreshed {
-                    remove_cached_endpoint_recommended_plugin_candidate(turn, plugin.id.as_str());
-                }
                 return accessible_connectors.is_some_and(|accessible_connectors| {
                     all_requested_connectors_picked_up(
                         &plugin.app_connector_ids,
@@ -423,7 +476,7 @@ async fn refresh_remote_installed_plugins_cache_after_install(
     turn: &crate::session::turn_context::TurnContext,
     auth: Option<&codex_login::CodexAuth>,
     tool_id: &str,
-) -> bool {
+) {
     let plugins_manager = &session.services.plugins_manager;
     let plugins_config = turn.config.plugins_config_input();
     if let Err(err) = plugins_manager
@@ -438,41 +491,6 @@ async fn refresh_remote_installed_plugins_cache_after_install(
         warn!(
             "failed to refresh remote installed plugins cache after plugin install request for {tool_id}: {err:#}"
         );
-        return false;
-    }
-    true
-}
-
-fn remove_cached_endpoint_recommended_plugin_candidate(
-    turn: &crate::session::turn_context::TurnContext,
-    installed_plugin_id: &str,
-) {
-    let Some(cached) = turn
-        .extension_data
-        .get::<CachedEndpointRecommendedPluginCandidates>()
-    else {
-        return;
-    };
-
-    let mut tools = cached.tools.clone();
-    let original_len = tools.len();
-    tools.retain(|tool| !discoverable_tool_has_plugin_id(tool, installed_plugin_id));
-    if tools.len() == original_len {
-        return;
-    }
-    if tools.is_empty() {
-        turn.extension_data
-            .remove::<CachedEndpointRecommendedPluginCandidates>();
-    } else {
-        turn.extension_data
-            .insert(CachedEndpointRecommendedPluginCandidates { tools });
-    }
-}
-
-fn discoverable_tool_has_plugin_id(tool: &DiscoverableTool, plugin_id: &str) -> bool {
-    match tool {
-        DiscoverableTool::Plugin(plugin) => plugin.id == plugin_id,
-        _ => false,
     }
 }
 
@@ -495,20 +513,15 @@ async fn refresh_missing_requested_connectors(
     }
 
     let mcp_tools = mcp.tools();
-    let accessible_connectors = connectors::with_app_enabled_state(
-        connectors::accessible_connectors_from_mcp_tools(mcp_tools),
-        &turn.config,
-    );
+    let accessible_connectors = connectors::accessible_connectors_from_mcp_tools(mcp_tools);
     if all_requested_connectors_picked_up(expected_connector_ids, &accessible_connectors) {
         return Some(accessible_connectors);
     }
 
     match session.hard_refresh_latest_codex_apps_tools().await {
         Ok(mcp_tools) => {
-            let accessible_connectors = connectors::with_app_enabled_state(
-                connectors::accessible_connectors_from_mcp_tools(&mcp_tools),
-                &turn.config,
-            );
+            let accessible_connectors =
+                connectors::accessible_connectors_from_mcp_tools(&mcp_tools);
             connectors::refresh_accessible_connectors_cache_from_mcp_tools(
                 &turn.config,
                 auth,

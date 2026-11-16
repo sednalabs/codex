@@ -1,56 +1,73 @@
 use std::collections::HashMap;
-use std::collections::HashSet;
+use std::ffi::OsStr;
 use std::ffi::OsString;
 use std::future::Future;
 use std::io;
 use std::sync::Arc;
+use std::sync::Mutex as StdMutex;
 use std::sync::OnceLock;
+use std::sync::PoisonError;
+use std::sync::atomic::AtomicBool;
+use std::sync::atomic::AtomicU64;
 use std::sync::atomic::AtomicUsize;
 use std::sync::atomic::Ordering;
 use std::time::Duration;
 use std::time::Instant;
 
+use crate::AuthProviderResolver;
+use anyhow::Context;
 use anyhow::Result;
 use anyhow::anyhow;
-use codex_api::SharedAuthProvider;
+use codex_config::McpServerOAuthConfig;
 use codex_config::types::AuthKeyringBackendKind;
 use codex_config::types::McpServerEnvVar;
 use codex_exec_server::HttpClient;
 use codex_keyring_store::DefaultKeyringStore;
+use codex_otel::auth_storage::AuthStorageOriginator;
 use futures::FutureExt;
 use futures::future::BoxFuture;
+use http::HeaderMap;
+use http::header::AUTHORIZATION;
 use oauth2::TokenResponse;
-use reqwest::header::AUTHORIZATION;
-use reqwest::header::HeaderMap;
 use rmcp::model::CallToolRequestParams;
 use rmcp::model::CallToolResult;
 use rmcp::model::ClientNotification;
 use rmcp::model::ClientRequest;
+use rmcp::model::ContentBlock;
 use rmcp::model::CustomNotification;
-use rmcp::model::CustomRequest;
 use rmcp::model::ElicitRequestParams;
 use rmcp::model::ElicitResult;
 use rmcp::model::ElicitationAction;
 use rmcp::model::Extensions;
 use rmcp::model::InitializeRequestParams;
-use rmcp::model::InitializeResult;
+use rmcp::model::ListResourceTemplatesRequest;
 use rmcp::model::ListResourceTemplatesResult;
+use rmcp::model::ListResourcesRequest;
 use rmcp::model::ListResourcesResult;
+use rmcp::model::ListToolsRequest;
 use rmcp::model::ListToolsResult;
+use rmcp::model::MetaObject;
 use rmcp::model::PaginatedRequestParams;
+use rmcp::model::ProtocolVersion;
 use rmcp::model::ReadResourceRequestParams;
 use rmcp::model::ReadResourceResult;
 use rmcp::model::RequestId;
+use rmcp::model::RequestMetaObject;
 use rmcp::model::RequestParamsMeta;
+use rmcp::model::ServerPeerInfo;
 use rmcp::model::ServerResult;
 use rmcp::model::Tool;
+use rmcp::service::ClientCacheConfig;
 use rmcp::service::ClientServiceExt;
+use rmcp::service::RequestHandle;
 use rmcp::service::RoleClient;
 use rmcp::service::RunningService;
+use rmcp::service::ServiceError;
+use rmcp::transport::AuthorizationManager;
+use rmcp::transport::IntoTransport;
 use rmcp::transport::StreamableHttpClientTransport;
 use rmcp::transport::auth::AuthClient;
 use rmcp::transport::auth::AuthError;
-use rmcp::transport::auth::AuthorizationManager;
 use rmcp::transport::streamable_http_client::StreamableHttpClientTransportConfig;
 use rmcp::transport::streamable_http_client::StreamableHttpError;
 use serde::Deserialize;
@@ -64,38 +81,49 @@ use tracing::instrument;
 use tracing::warn;
 
 use crate::elicitation_client_service::ElicitationClientService;
+use crate::event_notification_transport::capture_event_notifications;
+use crate::event_notification_transport::event_notification_channel;
 use crate::http_client_adapter::StreamableHttpClientAdapter;
 use crate::http_client_adapter::StreamableHttpClientAdapterError;
-use crate::http_client_adapter::is_bearer_invalid_token_challenge;
+use crate::http_client_adapter::StreamableHttpRedirectMode;
 use crate::in_process_transport::InProcessTransportFactory;
+use crate::oauth::OAuthCredentialStore;
 use crate::oauth::OAuthPersistor;
+use crate::oauth::OAuthRuntime;
+use crate::oauth::OAuthStreamableHttpClient;
 use crate::oauth::ResolvedOAuthCredentialStore;
 use crate::oauth::ResolvedOAuthTokens;
 use crate::oauth::StoredOAuthTokens;
+use crate::oauth::install_tokens_in_manager;
+use crate::oauth::resolve_refresh_metadata;
 use crate::oauth::resolve_oauth_tokens_from_store_policy;
+use crate::oauth::validate_refresh_token_issuer;
+use crate::oauth_client_credentials::OAuthClientCredentials;
 use crate::oauth_http_client::OAuthHttpClientAdapter;
-use crate::oauth_metadata::discover_metadata;
+use crate::oauth_refresh_mode::McpOAuthRefreshMode;
+use crate::ordered_byte_transport::OrderedByteTransport;
 use crate::protocol_mode::McpProtocolMode;
-use crate::request_cancellation_guard::RequestCancellationGuard;
-use crate::single_attempt_oauth_client::SingleAttemptOAuthClient;
+use crate::request_cancellation::RequestCancellation;
+use crate::startup_error::is_authentication_required_error;
+use crate::stdio_server_launcher::StdioProcessSlot;
 use crate::stdio_server_launcher::StdioServerCommand;
 use crate::stdio_server_launcher::StdioServerLauncher;
-use crate::stdio_server_launcher::StdioServerProcessHandle;
 use crate::stdio_server_launcher::StdioServerTransport;
+use crate::stdio_server_launcher::StdioTermination;
+use crate::tool_list_changes::track_tool_list_changes;
 use crate::utils::build_default_headers;
 use codex_config::types::OAuthCredentialsStoreMode;
 
-const MAX_TOOLS_LIST_PAGES: usize = 64;
-const MAX_TOOLS_LIST_ITEMS: usize = 10_000;
-const MAX_TOOLS_LIST_SNAPSHOT_ATTEMPTS: usize = 3;
-
+#[path = "stdio_handshake.rs"]
+mod stdio_handshake;
 #[path = "streamable_http_retry.rs"]
 mod streamable_http_retry;
 
 use self::streamable_http_retry::HandshakeError;
 use self::streamable_http_retry::STREAMABLE_HTTP_RETRY_DELAYS_MS;
-use self::streamable_http_retry::remaining_initialize_timeout;
 use self::streamable_http_retry::sleep_with_retry_deadline;
+
+const READ_ONLY_TOOLS_META_KEY: &str = "openai/readOnly";
 
 enum PendingTransport {
     InProcess {
@@ -108,9 +136,11 @@ enum PendingTransport {
         transport: StreamableHttpClientTransport<StreamableHttpClientAdapter>,
     },
     StreamableHttpWithOAuth {
-        transport:
-            StreamableHttpClientTransport<SingleAttemptOAuthClient<StreamableHttpClientAdapter>>,
-        oauth_persistor: OAuthPersistor,
+        transport: StreamableHttpClientTransport<OAuthStreamableHttpClient>,
+        oauth_runtime: OAuthRuntime,
+    },
+    StreamableHttpWithAccessTokenOnly {
+        transport: StreamableHttpClientTransport<AuthClient<StreamableHttpClientAdapter>>,
     },
 }
 
@@ -120,12 +150,18 @@ enum ClientState {
     },
     Ready {
         service: Arc<RunningService<RoleClient, ElicitationClientService>>,
-        oauth: Option<OAuthPersistor>,
-    },
-    Expired {
-        oauth: Option<OAuthPersistor>,
+        oauth: Option<OAuthRuntime>,
     },
     Closed,
+}
+
+/// Bearer authentication applied directly or by the selected HTTP transport.
+#[derive(Clone)]
+pub enum StreamableHttpBearerToken {
+    /// A token already resolved in the current process.
+    Resolved(String),
+    /// The HTTP client attaches credentials when it sends each request.
+    ProvidedByHttpClient,
 }
 
 #[derive(Clone)]
@@ -140,22 +176,37 @@ enum TransportRecipe {
     StreamableHttp {
         server_name: String,
         url: String,
-        bearer_token: Option<String>,
+        bearer_token: Option<StreamableHttpBearerToken>,
         http_headers: Option<HashMap<String, String>>,
         env_http_headers: Option<HashMap<String, String>>,
+        oauth_config: Option<Arc<McpServerOAuthConfig>>,
         store_mode: OAuthCredentialsStoreMode,
         keyring_backend_kind: AuthKeyringBackendKind,
         pinned_credential_store: Arc<OnceLock<ResolvedOAuthCredentialStore>>,
+        originator: AuthStorageOriginator,
         http_client: Arc<dyn HttpClient>,
-        auth_provider: Option<SharedAuthProvider>,
-        protected_output: bool,
+        auth_provider: Option<Arc<dyn AuthProviderResolver>>,
+        redirect_mode: StreamableHttpRedirectMode,
+        oauth_refresh_mode: McpOAuthRefreshMode,
+        initialize_deadline: Arc<StdMutex<Option<Instant>>>,
     },
+}
+
+struct InitializeDeadlineGuard {
+    deadline: Arc<StdMutex<Option<Instant>>>,
+}
+
+impl Drop for InitializeDeadlineGuard {
+    fn drop(&mut self) {
+        *self.deadline.lock().unwrap_or_else(PoisonError::into_inner) = None;
+    }
 }
 
 #[derive(Clone)]
 struct InitializeContext {
     timeout: Option<Duration>,
-    client_service: ElicitationClientService,
+    client_info: InitializeRequestParams,
+    send_elicitation: Arc<SendElicitation>,
 }
 
 #[derive(Clone)]
@@ -165,7 +216,7 @@ pub(crate) struct ElicitationPauseState {
 }
 
 impl ElicitationPauseState {
-    fn new() -> Self {
+    pub(crate) fn new() -> Self {
         let (paused, _rx) = watch::channel(false);
         Self {
             active_count: Arc::new(AtomicUsize::new(0)),
@@ -246,58 +297,11 @@ where
 }
 
 #[derive(Debug, thiserror::Error)]
-enum ClientOperationError {
+pub(crate) enum ClientOperationError {
     #[error(transparent)]
     Service(#[from] rmcp::service::ServiceError),
-    #[error("MCP request outcome is uncertain: {source}")]
-    UncertainService {
-        #[source]
-        source: rmcp::service::ServiceError,
-    },
-    #[error(
-        "code=mcp_oauth_invalid_token_refreshed_no_replay; auth=refreshed; outcome=unknown; retry=read_only_only. The server returned an invalid-token denial and this request was not replayed. Do not repeat a mutation; submit a new request only when the operation is independently known to be read-only."
-    )]
-    OAuthTokenRefreshed {
-        #[source]
-        source: rmcp::service::ServiceError,
-    },
-    #[error(
-        "MCP session expired during tools/call; this invocation was not retried and its result is unknown. The expired session was retired if it was still current. Make a separate independent call to continue; it will initialize a fresh session if needed. Do not repeat this call unless its operation is independently known to be read-only."
-    )]
-    ExpiredSessionUncertain {
-        #[source]
-        source: rmcp::service::ServiceError,
-    },
     #[error("timed out awaiting {label} after {duration:.0?}")]
     Timeout { label: String, duration: Duration },
-}
-
-/// Returns true only for the fixed Agent Ops active-holder rejection carried
-/// by the remote MCP error response. This keeps the closed discriminator
-/// available to callers without exposing arbitrary remote error contents.
-pub fn is_ops_holder_conflict_error(error: &(dyn std::error::Error + 'static)) -> bool {
-    let Some(error) = error.downcast_ref::<ClientOperationError>() else {
-        return false;
-    };
-    let service_error = match error {
-        ClientOperationError::Service(error)
-        | ClientOperationError::UncertainService { source: error }
-        | ClientOperationError::OAuthTokenRefreshed { source: error }
-        | ClientOperationError::ExpiredSessionUncertain { source: error } => error,
-        _ => return false,
-    };
-    let rmcp::service::ServiceError::McpError(error) = service_error else {
-        return false;
-    };
-    error.code == rmcp::model::ErrorCode::INTERNAL_ERROR
-        && error.message.as_ref()
-            == "work_item_execution.holder_conflict: another active execution holds this work item."
-        && error
-            .data
-            .as_ref()
-            .and_then(|data| data.get("code"))
-            .and_then(serde_json::Value::as_str)
-            == Some("work_item_execution.holder_conflict")
 }
 
 fn remaining_operation_timeout(
@@ -319,12 +323,6 @@ fn remaining_operation_timeout(
     }
 }
 
-fn extend_operation_deadline(deadline: &mut Option<Instant>, excluded_time: Duration) {
-    if let Some(deadline) = deadline.as_mut() {
-        *deadline += excluded_time;
-    }
-}
-
 #[derive(Debug, Clone, PartialEq)]
 pub enum Elicitation {
     Mcp(ElicitRequestParams),
@@ -333,13 +331,28 @@ pub enum Elicitation {
         message: String,
         requested_schema: serde_json::Value,
     },
+    OpenAiElicitationForm {
+        meta: Option<serde_json::Value>,
+        message: String,
+        requested_schema: serde_json::Value,
+    },
+    UserVerification {
+        meta: Option<serde_json::Value>,
+        title: String,
+        description: String,
+        challenge: String,
+    },
 }
 
 impl Elicitation {
     pub fn meta(&self) -> Option<&serde_json::Map<String, serde_json::Value>> {
         match self {
             Self::Mcp(request) => request.meta().map(|meta| &meta.0.0),
-            Self::OpenAiForm { meta, .. } => meta.as_ref().and_then(serde_json::Value::as_object),
+            Self::OpenAiForm { meta, .. }
+            | Self::OpenAiElicitationForm { meta, .. }
+            | Self::UserVerification { meta, .. } => {
+                meta.as_ref().and_then(serde_json::Value::as_object)
+            }
         }
     }
 }
@@ -358,7 +371,7 @@ impl From<ElicitResult> for ElicitationResponse {
         Self {
             action: value.action,
             content: value.content,
-            meta: None,
+            meta: value.meta.map(|meta| Value::Object(meta.0)),
         }
     }
 }
@@ -367,6 +380,10 @@ impl From<ElicitationResponse> for ElicitResult {
     fn from(value: ElicitationResponse) -> Self {
         let mut result = Self::new(value.action);
         result.content = value.content;
+        result.meta = value.meta.and_then(|meta| match meta {
+            Value::Object(meta) => Some(rmcp::model::MetaObject::from(meta)),
+            _ => None,
+        });
         result
     }
 }
@@ -384,108 +401,70 @@ pub struct ToolWithConnectorId {
 }
 
 pub struct ListToolsWithConnectorIdResult {
+    pub meta: Option<serde_json::Value>,
     pub next_cursor: Option<String>,
     pub tools: Vec<ToolWithConnectorId>,
 }
 
-pub struct CompleteToolsWithConnectorIdResult {
-    pub generation: usize,
-    pub tools: Vec<ToolWithConnectorId>,
-}
-
-enum ToolCatalogueWalk {
-    Complete(Vec<ToolWithConnectorId>),
-    Changed,
-}
-
-async fn collect_tool_pages<Fetch, FetchFuture, CurrentGeneration>(
-    generation: usize,
-    current_generation: CurrentGeneration,
-    mut fetch_page: Fetch,
-) -> Result<ToolCatalogueWalk>
-where
-    Fetch: FnMut(Option<PaginatedRequestParams>) -> FetchFuture,
-    FetchFuture: Future<Output = Result<ListToolsWithConnectorIdResult>>,
-    CurrentGeneration: Fn() -> usize,
-{
-    let mut tools = Vec::new();
-    let mut cursor: Option<String> = None;
-    let mut seen_cursors = HashSet::new();
-    let mut seen_tool_names = HashSet::new();
-
-    for _ in 0..MAX_TOOLS_LIST_PAGES {
-        let params = cursor
-            .as_ref()
-            .map(|cursor| PaginatedRequestParams::default().with_cursor(Some(cursor.clone())));
-        let page = match fetch_page(params).await {
-            Ok(page) => page,
-            Err(_) if current_generation() != generation => {
-                return Ok(ToolCatalogueWalk::Changed);
-            }
-            Err(error) => return Err(error),
-        };
-        let observed_items = tools.len().saturating_add(page.tools.len());
-        if observed_items > MAX_TOOLS_LIST_ITEMS {
-            if current_generation() != generation {
-                return Ok(ToolCatalogueWalk::Changed);
-            }
-            return Err(anyhow!(
-                "tools/list returned {observed_items} tools, exceeding the limit of {MAX_TOOLS_LIST_ITEMS}"
-            ));
-        }
-        for tool in &page.tools {
-            let name = tool.tool.name.as_ref();
-            if !seen_tool_names.insert(name.to_string()) {
-                if current_generation() != generation {
-                    return Ok(ToolCatalogueWalk::Changed);
-                }
-                return Err(anyhow!("tools/list returned duplicate tool name {name:?}"));
-            }
-        }
-        tools.extend(page.tools);
-
-        let Some(next_cursor) = page.next_cursor else {
-            return if current_generation() == generation {
-                Ok(ToolCatalogueWalk::Complete(tools))
-            } else {
-                Ok(ToolCatalogueWalk::Changed)
-            };
-        };
-        if !seen_cursors.insert(next_cursor.clone()) {
-            if current_generation() != generation {
-                return Ok(ToolCatalogueWalk::Changed);
-            }
-            return Err(anyhow!(
-                "tools/list returned repeated cursor {next_cursor:?}"
-            ));
-        }
-        cursor = Some(next_cursor);
-    }
-
-    if current_generation() != generation {
-        Ok(ToolCatalogueWalk::Changed)
-    } else {
-        Err(anyhow!(
-            "tools/list exceeded the limit of {MAX_TOOLS_LIST_PAGES} pages"
-        ))
-    }
+/// An active Plugin Runtime event request and its request-scoped notifications.
+pub struct CancellableEventStreamRequest {
+    pub handle: RequestHandle<RoleClient>,
+    pub notifications: crate::EventNotificationReceiver,
 }
 
 /// MCP client implemented on top of the official `rmcp` SDK.
 /// https://github.com/modelcontextprotocol/rust-sdk
 pub struct RmcpClient {
+    // Drop our interest in retrying before the SDK transport uses its ordinary shutdown grace.
+    stdio_process: Option<StdioProcessSlot>,
     state: Mutex<ClientState>,
-    stdio_process: Option<StdioServerProcessHandle>,
     transport_recipe: TransportRecipe,
     protocol_mode: McpProtocolMode,
+    requires_read_only_tools: bool,
     initialize_context: Mutex<Option<InitializeContext>>,
     session_recovery_lock: Semaphore,
     elicitation_pause_state: ElicitationPauseState,
-    tool_list_generation: Arc<AtomicUsize>,
-    protected_output: bool,
+    tool_list_revision: Arc<AtomicU64>,
+    cancel_requests_on_drop: AtomicBool,
 }
 
 impl RmcpClient {
+    /// Extend tool-call cancellation to catalog, resource, and custom requests on a shared connection.
+    pub fn enable_request_cancellation(&self) {
+        self.cancel_requests_on_drop.store(true, Ordering::Relaxed);
+    }
+
+    fn request_cancellation(&self) -> RequestCancellation {
+        if self.cancel_requests_on_drop.load(Ordering::Relaxed) {
+            RequestCancellation::OnDrop
+        } else {
+            RequestCancellation::Disabled
+        }
+    }
+
+    /// Tool catalog invalidation sequence, ordered before subsequent responses.
+    pub fn tool_list_revision(&self) -> crate::ToolListRevision {
+        crate::ToolListRevision(Arc::clone(&self.tool_list_revision))
+    }
+
+    /// Requests server-side read-only filtering and invocation checks for every tool request.
+    pub fn with_read_only_tools(mut self, requires_read_only_tools: bool) -> Self {
+        self.requires_read_only_tools = requires_read_only_tools;
+        self
+    }
+
+    fn apply_read_only_tools_meta(&self, meta: &mut Option<RequestMetaObject>) {
+        if self.requires_read_only_tools {
+            meta.get_or_insert_default()
+                .insert(READ_ONLY_TOOLS_META_KEY.to_string(), Value::Bool(true));
+        }
+    }
+
+    /// Returns the protocol compatibility policy captured when this client was created.
+    pub fn protocol_mode(&self) -> McpProtocolMode {
+        self.protocol_mode
+    }
+
     pub async fn new_in_process_client(
         factory: Arc<dyn InProcessTransportFactory>,
     ) -> io::Result<Self> {
@@ -501,11 +480,12 @@ impl RmcpClient {
             stdio_process: None,
             transport_recipe,
             protocol_mode: McpProtocolMode::Legacy,
+            requires_read_only_tools: false,
             initialize_context: Mutex::new(None),
             session_recovery_lock: Semaphore::new(/*permits*/ 1),
             elicitation_pause_state: ElicitationPauseState::new(),
-            tool_list_generation: Arc::new(AtomicUsize::new(0)),
-            protected_output: false,
+            tool_list_revision: Arc::default(),
+            cancel_requests_on_drop: AtomicBool::new(false),
         })
     }
 
@@ -517,18 +497,56 @@ impl RmcpClient {
         cwd: Option<String>,
         launcher: Arc<dyn StdioServerLauncher>,
     ) -> io::Result<Self> {
+        Self::new_stdio_client_with_protocol_mode(
+            program,
+            args,
+            env,
+            env_vars,
+            cwd,
+            launcher,
+            McpProtocolMode::Legacy,
+        )
+        .await
+    }
+
+    /// Constructs a stdio client with an explicitly selected compatibility policy.
+    #[allow(clippy::too_many_arguments)]
+    pub async fn new_stdio_client_with_protocol_mode(
+        program: OsString,
+        args: Vec<OsString>,
+        mut env: Option<HashMap<OsString, OsString>>,
+        env_vars: &[McpServerEnvVar],
+        cwd: Option<String>,
+        launcher: Arc<dyn StdioServerLauncher>,
+        protocol_mode: McpProtocolMode,
+    ) -> io::Result<Self> {
+        let requested_stdio_version = match protocol_mode {
+            McpProtocolMode::Legacy => None,
+            McpProtocolMode::V20260728 | McpProtocolMode::DiscoverLocalStdio => env
+                .as_mut()
+                .and_then(|env| env.remove(OsStr::new("CODEX_MCP_PROTOCOL_VERSION"))),
+        };
+        let protocol_mode = protocol_mode.stdio_mode(requested_stdio_version.as_deref())?;
         let transport_recipe = TransportRecipe::Stdio {
-            command: StdioServerCommand::new(program, args, env, env_vars.to_vec(), cwd),
+            command: StdioServerCommand::new(
+                program,
+                args,
+                env,
+                env_vars.to_vec(),
+                cwd,
+                protocol_mode,
+            ),
             launcher,
         };
         let transport = Self::create_pending_transport(&transport_recipe)
             .await
             .map_err(io::Error::other)?;
         let stdio_process = match &transport {
-            PendingTransport::Stdio { transport } => Some(transport.process_handle()),
+            PendingTransport::Stdio { transport } => Some(transport.process_slot()),
             PendingTransport::InProcess { .. }
             | PendingTransport::StreamableHttp { .. }
-            | PendingTransport::StreamableHttpWithOAuth { .. } => None,
+            | PendingTransport::StreamableHttpWithOAuth { .. }
+            | PendingTransport::StreamableHttpWithAccessTokenOnly { .. } => None,
         };
 
         Ok(Self {
@@ -537,12 +555,13 @@ impl RmcpClient {
             }),
             stdio_process,
             transport_recipe,
-            protocol_mode: McpProtocolMode::Legacy,
+            protocol_mode,
             initialize_context: Mutex::new(None),
+            requires_read_only_tools: false,
             session_recovery_lock: Semaphore::new(/*permits*/ 1),
             elicitation_pause_state: ElicitationPauseState::new(),
-            tool_list_generation: Arc::new(AtomicUsize::new(0)),
-            protected_output: false,
+            tool_list_revision: Arc::default(),
+            cancel_requests_on_drop: AtomicBool::new(false),
         })
     }
 
@@ -556,7 +575,7 @@ impl RmcpClient {
         store_mode: OAuthCredentialsStoreMode,
         keyring_backend_kind: AuthKeyringBackendKind,
         http_client: Arc<dyn HttpClient>,
-        auth_provider: Option<SharedAuthProvider>,
+        auth_provider: Option<Arc<dyn AuthProviderResolver>>,
     ) -> Result<Self> {
         Self::new_streamable_http_client_with_protocol_mode(
             server_name,
@@ -573,6 +592,7 @@ impl RmcpClient {
         .await
     }
 
+    /// Constructs a streamable HTTP client with an explicitly selected compatibility policy.
     #[allow(clippy::too_many_arguments)]
     pub async fn new_streamable_http_client_with_protocol_mode(
         server_name: &str,
@@ -583,8 +603,42 @@ impl RmcpClient {
         store_mode: OAuthCredentialsStoreMode,
         keyring_backend_kind: AuthKeyringBackendKind,
         http_client: Arc<dyn HttpClient>,
-        auth_provider: Option<SharedAuthProvider>,
+        auth_provider: Option<Arc<dyn AuthProviderResolver>>,
         protocol_mode: McpProtocolMode,
+    ) -> Result<Self> {
+        Self::new_streamable_http_client_with_protocol_mode_and_redirect_mode(
+            server_name,
+            url,
+            bearer_token.map(StreamableHttpBearerToken::Resolved),
+            http_headers,
+            env_http_headers,
+            /*oauth_config*/ None,
+            store_mode,
+            keyring_backend_kind,
+            http_client,
+            auth_provider,
+            protocol_mode,
+            StreamableHttpRedirectMode::Legacy,
+            McpOAuthRefreshMode::Legacy,
+        )
+        .await
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub async fn new_streamable_http_client_with_protocol_mode_and_redirect_mode(
+        server_name: &str,
+        url: &str,
+        bearer_token: Option<StreamableHttpBearerToken>,
+        http_headers: Option<HashMap<String, String>>,
+        env_http_headers: Option<HashMap<String, String>>,
+        oauth_config: Option<McpServerOAuthConfig>,
+        store_mode: OAuthCredentialsStoreMode,
+        keyring_backend_kind: AuthKeyringBackendKind,
+        http_client: Arc<dyn HttpClient>,
+        auth_provider: Option<Arc<dyn AuthProviderResolver>>,
+        protocol_mode: McpProtocolMode,
+        redirect_mode: StreamableHttpRedirectMode,
+        oauth_refresh_mode: McpOAuthRefreshMode,
     ) -> Result<Self> {
         let transport_recipe = TransportRecipe::StreamableHttp {
             server_name: server_name.to_string(),
@@ -592,12 +646,16 @@ impl RmcpClient {
             bearer_token,
             http_headers,
             env_http_headers,
+            oauth_config: oauth_config.map(Arc::new),
             store_mode,
             keyring_backend_kind,
             pinned_credential_store: Arc::new(OnceLock::new()),
+            originator: AuthStorageOriginator::current(),
             http_client,
             auth_provider,
-            protected_output: false,
+            redirect_mode,
+            oauth_refresh_mode,
+            initialize_deadline: Arc::new(StdMutex::new(None)),
         };
         let transport = Self::create_pending_transport(&transport_recipe).await?;
         Ok(Self {
@@ -608,65 +666,11 @@ impl RmcpClient {
             transport_recipe,
             protocol_mode,
             initialize_context: Mutex::new(None),
+            requires_read_only_tools: false,
             session_recovery_lock: Semaphore::new(/*permits*/ 1),
             elicitation_pause_state: ElicitationPauseState::new(),
-            tool_list_generation: Arc::new(AtomicUsize::new(0)),
-            protected_output: false,
-        })
-    }
-
-    pub async fn new_protected_streamable_http_client(
-        server_name: &str,
-        url: &str,
-        store_mode: OAuthCredentialsStoreMode,
-        keyring_backend_kind: AuthKeyringBackendKind,
-        http_client: Arc<dyn HttpClient>,
-    ) -> Result<Self> {
-        Self::new_protected_streamable_http_client_with_protocol_mode(
-            server_name,
-            url,
-            store_mode,
-            keyring_backend_kind,
-            http_client,
-            McpProtocolMode::Legacy,
-        )
-        .await
-    }
-
-    pub async fn new_protected_streamable_http_client_with_protocol_mode(
-        server_name: &str,
-        url: &str,
-        store_mode: OAuthCredentialsStoreMode,
-        keyring_backend_kind: AuthKeyringBackendKind,
-        http_client: Arc<dyn HttpClient>,
-        protocol_mode: McpProtocolMode,
-    ) -> Result<Self> {
-        let transport_recipe = TransportRecipe::StreamableHttp {
-            server_name: server_name.to_string(),
-            url: url.to_string(),
-            bearer_token: None,
-            http_headers: None,
-            env_http_headers: None,
-            store_mode,
-            keyring_backend_kind,
-            pinned_credential_store: Arc::new(OnceLock::new()),
-            http_client,
-            auth_provider: None,
-            protected_output: true,
-        };
-        let transport = Self::create_pending_transport(&transport_recipe).await?;
-        Ok(Self {
-            state: Mutex::new(ClientState::Connecting {
-                transport: Some(transport),
-            }),
-            stdio_process: None,
-            transport_recipe,
-            protocol_mode,
-            initialize_context: Mutex::new(None),
-            session_recovery_lock: Semaphore::new(/*permits*/ 1),
-            elicitation_pause_state: ElicitationPauseState::new(),
-            tool_list_generation: Arc::new(AtomicUsize::new(0)),
-            protected_output: true,
+            tool_list_revision: Arc::default(),
+            cancel_requests_on_drop: AtomicBool::new(false),
         })
     }
 
@@ -678,14 +682,12 @@ impl RmcpClient {
         params: InitializeRequestParams,
         timeout: Option<Duration>,
         send_elicitation: SendElicitation,
-    ) -> Result<InitializeResult> {
-        let client_service = ElicitationClientService::new(
-            params.clone(),
-            send_elicitation,
-            self.elicitation_pause_state.clone(),
-            Arc::clone(&self.tool_list_generation),
-            self.protected_output,
-        );
+    ) -> Result<ServerPeerInfo> {
+        let context = InitializeContext {
+            timeout,
+            client_info: params,
+            send_elicitation: Arc::new(send_elicitation),
+        };
         let pending_transport = {
             let mut guard = self.state.lock().await;
             match &mut *guard {
@@ -693,41 +695,24 @@ impl RmcpClient {
                     Some(transport) => transport,
                     None => return Err(anyhow!("client already initializing")),
                 },
-                ClientState::Ready { .. } | ClientState::Expired { .. } => {
-                    return Err(anyhow!("client already initialized"));
-                }
+                ClientState::Ready { .. } => return Err(anyhow!("client already initialized")),
                 ClientState::Closed => return Err(anyhow!("MCP client is shut down")),
             }
         };
 
-        let (service, oauth_persistor) = self
-            .connect_pending_transport_with_oauth_recovery(
-                pending_transport,
-                client_service.clone(),
-                timeout,
-                self.protocol_mode,
-            )
+        let (service, oauth_runtime) = self
+            .connect_pending_transport_with_initialize_retries(pending_transport, &context)
             .await?;
 
         let initialize_result_rmcp = service
             .peer()
             .peer_info()
             .ok_or_else(|| anyhow!("handshake succeeded but server info was missing"))?;
-        let peer_info = initialize_result_rmcp.as_ref();
-        let mut initialize_result = InitializeResult::new(peer_info.capabilities.clone())
-            .with_protocol_version(peer_info.protocol_version.clone())
-            .with_server_info(peer_info.server_info.clone().ok_or_else(|| {
-                anyhow!("initialization succeeded but server implementation was missing")
-            })?);
-        initialize_result.instructions = peer_info.instructions.clone();
-        initialize_result.meta = peer_info.meta.clone();
+        let initialize_result = initialize_result_rmcp.as_ref().clone();
 
         {
             let mut initialize_context = self.initialize_context.lock().await;
-            *initialize_context = Some(InitializeContext {
-                timeout,
-                client_service,
-            });
+            *initialize_context = Some(context);
         }
 
         {
@@ -737,11 +722,11 @@ impl RmcpClient {
             }
             *guard = ClientState::Ready {
                 service,
-                oauth: oauth_persistor.clone(),
+                oauth: oauth_runtime.clone(),
             };
         }
 
-        if let Some(runtime) = oauth_persistor
+        if let Some(OAuthRuntime::Legacy(runtime)) = oauth_runtime
             && let Err(error) = runtime.persist_if_needed().await
         {
             warn!("failed to persist OAuth tokens after initialize: {error}");
@@ -755,109 +740,98 @@ impl RmcpClient {
         params: Option<PaginatedRequestParams>,
         timeout: Option<Duration>,
     ) -> Result<ListToolsResult> {
+        let mut params = crate::trace_context::traced_pagination(params);
         self.refresh_oauth_if_needed().await?;
+        if self.requires_read_only_tools {
+            self.apply_read_only_tools_meta(&mut params.get_or_insert_default().meta);
+        }
+        let cancellation = self.request_cancellation();
         let result = self
-            .run_service_operation(
-                "tools/list",
-                timeout,
-                /*retry_read_only_after_invalid_token*/ true,
-                move |service| {
-                    let params = params.clone();
-                    async move { service.list_tools(params).await }.boxed()
-                },
-            )
+            .run_service_operation("tools/list", timeout, move |service| {
+                let params = params.clone();
+                async move {
+                    if matches!(cancellation, RequestCancellation::Disabled) {
+                        return service.list_tools(params).await;
+                    }
+                    let result = cancellation
+                        .send(
+                            service.peer(),
+                            ClientRequest::ListToolsRequest(ListToolsRequest {
+                                method: Default::default(),
+                                params,
+                                extensions: Default::default(),
+                            }),
+                            rmcp::service::PeerRequestOptions::no_options(),
+                        )
+                        .await?;
+                    match result {
+                        ServerResult::ListToolsResult(result) => Ok(result),
+                        _ => Err(ServiceError::UnexpectedResponse),
+                    }
+                }
+                .boxed()
+            })
             .await?;
         self.persist_oauth_tokens().await;
         Ok(result)
     }
 
+    /// List a page of Codex Apps tools and restore any shared connector metadata.
     #[instrument(level = "trace", skip_all)]
     pub async fn list_tools_with_connector_ids(
         &self,
         params: Option<PaginatedRequestParams>,
         timeout: Option<Duration>,
     ) -> Result<ListToolsWithConnectorIdResult> {
-        self.refresh_oauth_if_needed().await?;
-        let result = self
-            .run_service_operation(
-                "tools/list",
-                timeout,
-                /*retry_read_only_after_invalid_token*/ true,
-                move |service| {
-                    let params = params.clone();
-                    async move { service.list_tools(params).await }.boxed()
-                },
-            )
-            .await?;
+        let result = self.list_tools(params, timeout).await?;
+        let apps: HashMap<_, _> = result
+            .meta
+            .as_ref()
+            .and_then(|meta| meta.get("openai/apps"))
+            .and_then(Value::as_array)
+            .into_iter()
+            .flatten()
+            .filter_map(|app| Some((app["connectorId"].as_str()?, app)))
+            .collect();
         let tools = result
             .tools
             .into_iter()
-            .map(|tool| {
+            .map(|mut tool| {
+                let connector_id = Self::meta_string(tool.meta.as_ref(), "connector_id");
+                if let Some(app) = connector_id.as_deref().and_then(|id| apps.get(id))
+                    && let Some(meta) = &mut tool.meta
+                {
+                    // Preserve the wire strings for callers that read the raw tool metadata.
+                    for (shared_key, tool_key) in [
+                        ("connectorName", "connector_name"),
+                        ("connectorDescription", "connector_description"),
+                    ] {
+                        if let Some(value) = app[shared_key]
+                            .as_str()
+                            .filter(|value| !value.trim().is_empty())
+                        {
+                            meta.insert(tool_key.into(), Value::from(value));
+                        }
+                    }
+                }
                 let meta = tool.meta.as_ref();
-                let connector_id = Self::meta_string(meta, "connector_id");
                 let connector_name = Self::meta_string(meta, "connector_name")
                     .or_else(|| Self::meta_string(meta, "connector_display_name"));
                 let connector_description = Self::meta_string(meta, "connector_description")
                     .or_else(|| Self::meta_string(meta, "connectorDescription"));
-                Ok(ToolWithConnectorId {
+                ToolWithConnectorId {
                     tool,
                     connector_id,
                     connector_name,
                     connector_description,
-                })
+                }
             })
-            .collect::<Result<Vec<_>>>()?;
-        self.persist_oauth_tokens().await;
+            .collect();
         Ok(ListToolsWithConnectorIdResult {
+            meta: result.meta.map(|meta| serde_json::json!(meta)),
             next_cursor: result.next_cursor,
             tools,
         })
-    }
-
-    /// Lists one complete, internally consistent tool catalogue while preserving connector metadata.
-    ///
-    /// A non-null cursor is always followed as an opaque value, including the
-    /// empty string. The walk is bounded, rejects repeated cursors and duplicate
-    /// tool names, and restarts when `notifications/tools/list_changed` arrives
-    /// before the terminal page is collected.
-    ///
-    /// # Errors
-    /// Returns an error when a page fetch fails, pagination cycles or exceeds
-    /// its limits, tool names repeat, or the server changes its catalogue during
-    /// every bounded snapshot attempt.
-    pub async fn list_all_tools_with_connector_ids(
-        &self,
-        timeout: Option<Duration>,
-    ) -> Result<CompleteToolsWithConnectorIdResult> {
-        let deadline = timeout.map(|duration| Instant::now() + duration);
-
-        for _ in 0..MAX_TOOLS_LIST_SNAPSHOT_ATTEMPTS {
-            let generation = self.tool_list_generation();
-            let walk = collect_tool_pages(
-                generation,
-                || self.tool_list_generation(),
-                |params| async move {
-                    let page_timeout =
-                        remaining_operation_timeout("tools/list", timeout, deadline)?;
-                    self.list_tools_with_connector_ids(params, page_timeout)
-                        .await
-                },
-            )
-            .await?;
-            if let ToolCatalogueWalk::Complete(tools) = walk {
-                return Ok(CompleteToolsWithConnectorIdResult { generation, tools });
-            }
-        }
-
-        Err(anyhow!(
-            "tools/list changed during {MAX_TOOLS_LIST_SNAPSHOT_ATTEMPTS} consecutive catalogue walks"
-        ))
-    }
-
-    /// Returns the notification generation for the server's tool catalogue.
-    #[must_use]
-    pub fn tool_list_generation(&self) -> usize {
-        self.tool_list_generation.load(Ordering::Acquire)
     }
 
     fn meta_string(meta: Option<&rmcp::model::MetaObject>, key: &str) -> Option<String> {
@@ -873,17 +847,34 @@ impl RmcpClient {
         params: Option<PaginatedRequestParams>,
         timeout: Option<Duration>,
     ) -> Result<ListResourcesResult> {
+        let params = crate::trace_context::traced_pagination(params);
         self.refresh_oauth_if_needed().await?;
+        let cancellation = self.request_cancellation();
         let result = self
-            .run_service_operation(
-                "resources/list",
-                timeout,
-                /*retry_read_only_after_invalid_token*/ true,
-                move |service| {
-                    let params = params.clone();
-                    async move { service.list_resources(params).await }.boxed()
-                },
-            )
+            .run_service_operation("resources/list", timeout, move |service| {
+                let params = params.clone();
+                async move {
+                    if matches!(cancellation, RequestCancellation::Disabled) {
+                        return service.list_resources(params).await;
+                    }
+                    let result = cancellation
+                        .send(
+                            service.peer(),
+                            ClientRequest::ListResourcesRequest(ListResourcesRequest {
+                                method: Default::default(),
+                                params,
+                                extensions: Default::default(),
+                            }),
+                            rmcp::service::PeerRequestOptions::no_options(),
+                        )
+                        .await?;
+                    match result {
+                        ServerResult::ListResourcesResult(result) => Ok(result),
+                        _ => Err(ServiceError::UnexpectedResponse),
+                    }
+                }
+                .boxed()
+            })
             .await?;
         self.persist_oauth_tokens().await;
         Ok(result)
@@ -894,17 +885,36 @@ impl RmcpClient {
         params: Option<PaginatedRequestParams>,
         timeout: Option<Duration>,
     ) -> Result<ListResourceTemplatesResult> {
+        let params = crate::trace_context::traced_pagination(params);
         self.refresh_oauth_if_needed().await?;
+        let cancellation = self.request_cancellation();
         let result = self
-            .run_service_operation(
-                "resources/templates/list",
-                timeout,
-                /*retry_read_only_after_invalid_token*/ true,
-                move |service| {
-                    let params = params.clone();
-                    async move { service.list_resource_templates(params).await }.boxed()
-                },
-            )
+            .run_service_operation("resources/templates/list", timeout, move |service| {
+                let params = params.clone();
+                async move {
+                    if matches!(cancellation, RequestCancellation::Disabled) {
+                        return service.list_resource_templates(params).await;
+                    }
+                    let result = cancellation
+                        .send(
+                            service.peer(),
+                            ClientRequest::ListResourceTemplatesRequest(
+                                ListResourceTemplatesRequest {
+                                    method: Default::default(),
+                                    params,
+                                    extensions: Default::default(),
+                                },
+                            ),
+                            rmcp::service::PeerRequestOptions::no_options(),
+                        )
+                        .await?;
+                    match result {
+                        ServerResult::ListResourceTemplatesResult(result) => Ok(result),
+                        _ => Err(ServiceError::UnexpectedResponse),
+                    }
+                }
+                .boxed()
+            })
             .await?;
         self.persist_oauth_tokens().await;
         Ok(result)
@@ -915,15 +925,80 @@ impl RmcpClient {
         params: ReadResourceRequestParams,
         timeout: Option<Duration>,
     ) -> Result<ReadResourceResult> {
+        let mut params = params;
+        params.meta = crate::trace_context::with_current_trace(params.meta);
         self.refresh_oauth_if_needed().await?;
+        let cancellation = self.request_cancellation();
+        let requested_modern = self.protocol_mode != McpProtocolMode::Legacy;
         let result = self
-            .run_service_operation(
+            .run_service_operation("resources/read", timeout, move |service| {
+                let params = params.clone();
+                async move {
+                    if matches!(cancellation, RequestCancellation::OnDrop) {
+                        return crate::request_input::read_resource(
+                            &service,
+                            service.service(),
+                            params,
+                            cancellation,
+                        )
+                        .await;
+                    }
+                    let modern_session = requested_modern
+                        && service.peer().peer_info().is_some_and(|info| {
+                            info.protocol_version == ProtocolVersion::V_2026_07_28
+                        });
+                    if modern_session {
+                        service.read_resource(params).await
+                    } else {
+                        service.peer().read_resource(params).await
+                    }
+                }
+                .boxed()
+            })
+            .await?;
+        self.persist_oauth_tokens().await;
+        Ok(result)
+    }
+
+    /// Reads a resource with inputs and timeout pauses owned by the calling chat.
+    pub async fn read_resource_with_elicitation(
+        &self,
+        mut params: ReadResourceRequestParams,
+        timeout: Option<Duration>,
+        send_elicitation: Arc<SendElicitation>,
+    ) -> Result<ReadResourceResult> {
+        params.meta = crate::trace_context::with_current_trace(params.meta);
+        self.refresh_oauth_if_needed().await?;
+        let cancellation = self.request_cancellation();
+        let pause_state = ElicitationPauseState::new();
+        let result = self
+            .run_service_operation_with_pause_state(
                 "resources/read",
                 timeout,
-                /*retry_read_only_after_invalid_token*/ true,
+                pause_state.clone(),
                 move |service| {
                     let params = params.clone();
-                    async move { service.read_resource(params).await }.boxed()
+                    let input_service = service
+                        .service()
+                        .for_request(Arc::clone(&send_elicitation), pause_state.clone());
+                    async move {
+                        if !service.peer().peer_info().is_some_and(|info| {
+                            info.protocol_version == ProtocolVersion::V_2026_07_28
+                        }) {
+                            return Err(ServiceError::McpError(rmcp::ErrorData::invalid_request(
+                                "request-scoped MCP inputs require protocol 2026-07-28",
+                                /*data*/ None,
+                            )));
+                        }
+                        crate::request_input::read_resource(
+                            &service,
+                            &input_service,
+                            params,
+                            cancellation,
+                        )
+                        .await
+                    }
+                    .boxed()
                 },
             )
             .await?;
@@ -931,14 +1006,83 @@ impl RmcpClient {
         Ok(result)
     }
 
-    pub async fn call_tool(
+    /// Builds metadata against the session that sends each attempt, including a recovery retry.
+    /// The resolver must be safe to invoke again and must retain the call's captured authority.
+    pub async fn call_tool<F>(
         &self,
         name: String,
-        arguments: Option<serde_json::Value>,
-        meta: Option<serde_json::Value>,
+        arguments: Option<Value>,
+        meta_for_session: F,
         timeout: Option<Duration>,
-    ) -> Result<CallToolResult> {
-        self.refresh_oauth_if_needed().await?;
+    ) -> Result<CallToolResult>
+    where
+        F: Fn(&rmcp::model::ServerCapabilities) -> Result<Option<Value>> + Send + Sync,
+    {
+        self.call_tool_inner(
+            name,
+            arguments,
+            meta_for_session,
+            timeout,
+            /*send_elicitation*/ None,
+        )
+        .await
+    }
+
+    /// Routes modern tool inputs and timeout pauses to this caller on a shared connection.
+    /// Legacy connections are rejected because their callbacks belong to connection startup.
+    pub async fn call_tool_with_elicitation<F>(
+        &self,
+        name: String,
+        arguments: Option<Value>,
+        meta_for_session: F,
+        timeout: Option<Duration>,
+        send_elicitation: Arc<SendElicitation>,
+    ) -> Result<CallToolResult>
+    where
+        F: Fn(&rmcp::model::ServerCapabilities) -> Result<Option<Value>> + Send + Sync,
+    {
+        self.call_tool_inner(
+            name,
+            arguments,
+            meta_for_session,
+            timeout,
+            Some(send_elicitation),
+        )
+        .await
+    }
+
+    async fn call_tool_inner<F>(
+        &self,
+        name: String,
+        arguments: Option<Value>,
+        meta_for_session: F,
+        timeout: Option<Duration>,
+        send_elicitation: Option<Arc<SendElicitation>>,
+    ) -> Result<CallToolResult>
+    where
+        F: Fn(&rmcp::model::ServerCapabilities) -> Result<Option<Value>> + Send + Sync,
+    {
+        let authentication_required_result = |error| {
+            if !is_authentication_required_error(&error) {
+                return Err(error);
+            }
+            // Local expiry and server rejection use the same reconnect signal without
+            // exposing token-endpoint or transport details in the tool result.
+            let mut result = CallToolResult::error(vec![ContentBlock::text(
+                "MCP authentication required. Reconnect to continue using this server.",
+            )]);
+            result.meta = Some(
+                serde_json::Map::from_iter([(
+                    "mcp/www_authenticate".to_string(),
+                    Value::String("Bearer error=\"invalid_token\"".to_string()),
+                )])
+                .into(),
+            );
+            Ok(result)
+        };
+        if let Err(error) = self.refresh_oauth_if_needed().await {
+            return authentication_required_result(error);
+        }
         let arguments = match arguments {
             Some(Value::Object(map)) => Some(map),
             Some(other) => {
@@ -948,55 +1092,120 @@ impl RmcpClient {
             }
             None => None,
         };
-        let meta = match meta {
-            Some(Value::Object(map)) => Some(rmcp::model::RequestMetaObject::from(map)),
-            Some(other) => {
-                return Err(anyhow!(
-                    "MCP tool request _meta must be a JSON object, got {other}"
-                ));
-            }
-            None => None,
-        };
         let mut rmcp_params = CallToolRequestParams::new(name);
         rmcp_params.arguments = arguments;
-        let result = self
-            .run_service_operation(
+        let requested_modern = self.protocol_mode != McpProtocolMode::Legacy;
+        let meta_for_session = &meta_for_session;
+        let pause_state = if send_elicitation.is_some() {
+            ElicitationPauseState::new()
+        } else {
+            self.elicitation_pause_state.clone()
+        };
+        match self
+            .run_service_operation_with_pause_state(
                 "tools/call",
                 timeout,
-                /*retry_read_only_after_invalid_token*/ false,
+                pause_state.clone(),
                 move |service| {
-                    let rmcp_params = rmcp_params.clone();
-                    let meta = meta.clone();
+                    let mut rmcp_params = rmcp_params.clone();
+                    let send_elicitation = send_elicitation.clone();
+                    let pause_state = pause_state.clone();
                     async move {
+                        // Resolve from this service, not a cached startup capability or another
+                        // service observed before recovery. Local policy failures never send a call.
+                        let meta = (|| {
+                            let info = service
+                                .peer()
+                                .peer_info()
+                                .context("MCP session has no negotiated server capabilities")?;
+                            let mut meta = match meta_for_session(&info.capabilities)? {
+                                Some(Value::Object(map)) => Some(RequestMetaObject::from(map)),
+                                Some(other) => {
+                                    return Err(anyhow!(
+                                        "MCP tool request _meta must be a JSON object, got {other}"
+                                    ));
+                                }
+                                None => None,
+                            };
+                            self.apply_read_only_tools_meta(&mut meta);
+                            Ok(crate::trace_context::with_current_trace(meta))
+                        })();
+                        let meta = match meta {
+                            Ok(meta) => meta,
+                            Err(error) => return Ok(Err(error)),
+                        };
+                        let modern_session = requested_modern
+                            && service.peer().peer_info().is_some_and(|info| {
+                                info.protocol_version == ProtocolVersion::V_2026_07_28
+                            });
+                        if modern_session {
+                            rmcp_params.meta = meta;
+                            let input_service = send_elicitation
+                                .map(|sender| service.service().for_request(sender, pause_state));
+                            return crate::request_input::call_tool(
+                                &service,
+                                input_service.as_ref().unwrap_or_else(|| service.service()),
+                                rmcp_params,
+                            )
+                            .await
+                            .map(Ok);
+                        }
+                        if send_elicitation.is_some() {
+                            return Err(ServiceError::McpError(rmcp::ErrorData::invalid_request(
+                                "request-scoped MCP inputs require protocol 2026-07-28",
+                                /*data*/ None,
+                            )));
+                        }
                         let mut options = rmcp::service::PeerRequestOptions::no_options();
                         options.meta = meta;
-                        let request = service
-                            .peer()
-                            .send_request_with_option(
+                        let result = RequestCancellation::OnDrop
+                            .send(
+                                service.peer(),
                                 ClientRequest::CallToolRequest(rmcp::model::CallToolRequest::new(
                                     rmcp_params,
                                 )),
                                 options,
                             )
                             .await?;
-                        let guard =
-                            RequestCancellationGuard::new(request.peer.clone(), request.id.clone());
-                        // The guard covers caller/task drops and active timeout
-                        // drops; rmcp retains its normal response cleanup path.
-                        let result = request.await_response().await;
-                        guard.disarm();
-                        let result = result?;
                         match result {
-                            ServerResult::CallToolResult(result) => Ok(result),
+                            ServerResult::CallToolResult(result) => Ok(Ok(result)),
                             _ => Err(rmcp::service::ServiceError::UnexpectedResponse),
                         }
                     }
                     .boxed()
                 },
             )
-            .await?;
-        self.persist_oauth_tokens().await;
-        Ok(result)
+            .await
+        {
+            Ok(Ok(result)) => {
+                self.persist_oauth_tokens().await;
+                Ok(result)
+            }
+            Ok(Err(error)) => Err(error),
+            Err(error) => {
+                let Some(ClientOperationError::Service(ServiceError::TransportSend(transport))) =
+                    error.downcast_ref()
+                else {
+                    return authentication_required_result(error);
+                };
+                let Some(StreamableHttpError::AuthRequired(challenge)) =
+                    transport
+                        .error
+                        .downcast_ref::<StreamableHttpError<StreamableHttpClientAdapterError>>()
+                else {
+                    return authentication_required_result(error);
+                };
+                // The transport has already handled automatic refresh. Preserve the challenge
+                // for interactive login without replaying the rejected tool call.
+                let mut result =
+                    CallToolResult::error(vec![ContentBlock::text("Authentication required")]);
+                result.meta = Some(MetaObject::from(serde_json::Map::from_iter([(
+                    "mcp/www_authenticate".to_string(),
+                    serde_json::json!([challenge.www_authenticate_header]),
+                )])));
+                Ok(result)
+            }
+        }
     }
 
     pub async fn send_custom_notification(
@@ -1008,7 +1217,6 @@ impl RmcpClient {
         self.run_service_operation(
             "notifications/custom",
             /*timeout*/ None,
-            /*retry_read_only_after_invalid_token*/ false,
             move |service| {
                 let params = params.clone();
                 async move {
@@ -1035,57 +1243,76 @@ impl RmcpClient {
         method: &str,
         params: Option<serde_json::Value>,
     ) -> Result<ServerResult> {
+        self.send_custom_request_with_timeout(method, params, /*timeout*/ None)
+            .await
+    }
+
+    pub async fn send_custom_request_with_timeout(
+        &self,
+        method: &str,
+        params: Option<serde_json::Value>,
+        timeout: Option<Duration>,
+    ) -> Result<ServerResult> {
         self.refresh_oauth_if_needed().await?;
+        let cancellation = self.request_cancellation();
         let response = self
-            .run_service_operation(
-                "requests/custom",
-                /*timeout*/ None,
-                /*retry_read_only_after_invalid_token*/ false,
-                move |service| {
-                    let params = params.clone();
-                    async move {
-                        service
-                            .send_request(ClientRequest::CustomRequest(CustomRequest::new(
-                                method, params,
-                            )))
-                            .await
-                    }
-                    .boxed()
-                },
-            )
+            .run_service_operation("requests/custom", timeout, move |service| {
+                let params = params.clone();
+                async move {
+                    let request = crate::trace_context::traced_custom_request(method, params);
+                    cancellation
+                        .send(
+                            service.peer(),
+                            ClientRequest::CustomRequest(request),
+                            rmcp::service::PeerRequestOptions::no_options(),
+                        )
+                        .await
+                }
+                .boxed()
+            })
             .await?;
         self.persist_oauth_tokens().await;
         Ok(response)
     }
 
+    /// Starts a Plugin Runtime event stream without waiting for its final response.
+    pub async fn send_event_stream_request(
+        &self,
+        params: Option<serde_json::Value>,
+    ) -> Result<CancellableEventStreamRequest> {
+        let service = self.service().await?;
+        let (sender, notifications) = event_notification_channel();
+        let mut request = crate::trace_context::traced_custom_request("events/stream", params);
+        request.extensions.insert(sender);
+        let handle = service
+            .peer()
+            .send_cancellable_request(
+                ClientRequest::CustomRequest(request),
+                rmcp::service::PeerRequestOptions::no_options(),
+            )
+            .await?;
+
+        Ok(CancellableEventStreamRequest {
+            handle,
+            notifications,
+        })
+    }
+
     async fn service(&self) -> Result<Arc<RunningService<RoleClient, ElicitationClientService>>> {
-        loop {
-            let expired = {
-                let guard = self.state.lock().await;
-                match &*guard {
-                    ClientState::Ready { service, .. } => return Ok(Arc::clone(service)),
-                    ClientState::Expired { .. } => true,
-                    ClientState::Connecting { .. } => {
-                        return Err(anyhow!("MCP client not initialized"));
-                    }
-                    ClientState::Closed => return Err(anyhow!("MCP client is shut down")),
-                }
-            };
-            if expired {
-                self.reinitialize_expired_service().await?;
-            }
+        let guard = self.state.lock().await;
+        match &*guard {
+            ClientState::Ready { service, .. } => Ok(Arc::clone(service)),
+            ClientState::Connecting { .. } => Err(anyhow!("MCP client not initialized")),
+            ClientState::Closed => Err(anyhow!("MCP client is shut down")),
         }
     }
 
-    async fn oauth_persistor(&self) -> Option<OAuthPersistor> {
+    async fn oauth_runtime(&self) -> Option<OAuthRuntime> {
         let guard = self.state.lock().await;
         match &*guard {
             ClientState::Ready {
                 oauth: Some(runtime),
                 ..
-            }
-            | ClientState::Expired {
-                oauth: Some(runtime),
             } => Some(runtime.clone()),
             _ => None,
         }
@@ -1093,8 +1320,11 @@ impl RmcpClient {
 
     /// Returns `None` when this client does not manage stored OAuth credentials.
     pub async fn managed_oauth_credentials(&self) -> Option<Option<StoredOAuthTokens>> {
-        let persistor = self.oauth_persistor().await?;
-        Some(persistor.stored_credentials().await)
+        let runtime = self.oauth_runtime().await?;
+        Some(match runtime {
+            OAuthRuntime::Legacy(persistor) => persistor.stored_credentials().await,
+            OAuthRuntime::Coordinated { store, .. } => store.stored_credentials().await,
+        })
     }
 
     /// Returns whether an initialized transport or its underlying service has stopped.
@@ -1104,40 +1334,56 @@ impl RmcpClient {
             ClientState::Ready { service, .. } => {
                 service.is_closed() || service.peer().is_transport_closed()
             }
-            ClientState::Connecting { .. } | ClientState::Expired { .. } => false,
+            ClientState::Connecting { .. } => false,
             ClientState::Closed => true,
         }
     }
 
     /// Stop the MCP transport and any stdio server process owned by this client.
     pub async fn shutdown(&self) {
+        if let Err(error) = self.shutdown_for(StdioTermination::Shutdown).await {
+            warn!("failed to terminate MCP stdio server process: {error}");
+        }
+    }
+
+    /// Wait for a failed discovery process to release resources needed by a subsequent launch.
+    pub async fn shutdown_before_retry(&self) -> io::Result<()> {
+        self.shutdown_for(StdioTermination::Restart).await
+    }
+
+    async fn shutdown_for(&self, reason: StdioTermination) -> io::Result<()> {
         let previous_state = {
             let mut guard = self.state.lock().await;
             std::mem::replace(&mut *guard, ClientState::Closed)
         };
 
-        if let Some(process) = &self.stdio_process
-            && let Err(error) = process.terminate().await
-        {
-            warn!("failed to terminate MCP stdio server process: {error}");
+        let process = match &self.stdio_process {
+            Some(slot) => Some(slot.lock().await.close()),
+            None => None,
+        };
+        if matches!(reason, StdioTermination::Restart) {
+            // Let the helper see EOF before escalating to process-group termination.
+            drop(previous_state);
         }
-
-        drop(previous_state);
+        if let Some(process) = process {
+            process.terminate(reason).await?;
+        }
+        Ok(())
     }
 
     /// This should be called after every tool call so that if a given tool call triggered
     /// a refresh of the OAuth tokens, they are persisted.
     async fn persist_oauth_tokens(&self) {
-        if let Some(runtime) = self.oauth_persistor().await
+        if let Some(OAuthRuntime::Legacy(runtime)) = self.oauth_runtime().await
             && let Err(error) = runtime.persist_if_needed().await
         {
             warn!("failed to persist OAuth tokens: {error}");
         }
     }
 
-    /// OAuth uses independent lock/request bounds and completes before the operation timeout starts.
+    /// Prepares managed OAuth before the MCP operation timeout starts.
     async fn refresh_oauth_if_needed(&self) -> Result<()> {
-        if let Some(runtime) = self.oauth_persistor().await {
+        if let Some(runtime) = self.oauth_runtime().await {
             runtime.refresh_if_needed().await?;
         }
         Ok(())
@@ -1163,13 +1409,26 @@ impl RmcpClient {
                 bearer_token,
                 http_headers,
                 env_http_headers,
+                oauth_config,
                 store_mode,
                 keyring_backend_kind,
                 pinned_credential_store,
+                originator,
                 http_client,
                 auth_provider,
-                protected_output,
+                redirect_mode,
+                oauth_refresh_mode,
+                initialize_deadline,
             } => {
+                let has_configured_headers = matches!(
+                    bearer_token,
+                    Some(StreamableHttpBearerToken::ProvidedByHttpClient)
+                ) || http_headers
+                    .as_ref()
+                    .is_some_and(|headers| !headers.is_empty())
+                    || env_http_headers
+                        .as_ref()
+                        .is_some_and(|headers| !headers.is_empty());
                 let default_headers =
                     build_default_headers(http_headers.clone(), env_http_headers.clone())?;
                 let auth_provider =
@@ -1179,24 +1438,37 @@ impl RmcpClient {
                         auth_provider.clone()
                     };
 
-                let resolved_oauth_tokens = if !protected_output
-                    && bearer_token.is_none()
+                let resolved_oauth_tokens = if bearer_token.is_none()
                     && auth_provider.is_none()
                     && !default_headers.contains_key(AUTHORIZATION)
                 {
-                    if let Some(store) = pinned_credential_store.get().copied() {
-                        // Rebuilds reread the source selected during first construction. Only the
-                        // initial construction below evaluates configured store policy.
-                        store
-                            .load(&DefaultKeyringStore, server_name, url)?
-                            .map(|tokens| ResolvedOAuthTokens { tokens, store })
-                    } else {
+                    OAuthClientCredentials::resolve(oauth_config.as_deref())?;
+                    let oauth_server_name = server_name.clone();
+                    let oauth_url = url.clone();
+                    let oauth_store_mode = *store_mode;
+                    let oauth_keyring_backend_kind = *keyring_backend_kind;
+                    let pinned_credential_store = Arc::clone(pinned_credential_store);
+
+                    // Recovery can run after the startup scope ends, even when startup found
+                    // no credentials and therefore could not pin a store with this attribution.
+                    let originator = *originator;
+                    let load = move || -> Result<Option<ResolvedOAuthTokens>> {
+                        if let Some(store) = pinned_credential_store.get().copied() {
+                            // Rebuilds reread the source selected during first construction. Only
+                            // initial construction below evaluates configured store policy.
+                            return store
+                                .load(&DefaultKeyringStore, &oauth_server_name, &oauth_url)
+                                .map(|tokens| {
+                                    tokens.map(|tokens| ResolvedOAuthTokens { tokens, store })
+                                });
+                        }
+
                         match resolve_oauth_tokens_from_store_policy(
                             &DefaultKeyringStore,
-                            server_name,
-                            url,
-                            *store_mode,
-                            *keyring_backend_kind,
+                            &oauth_server_name,
+                            &oauth_url,
+                            oauth_store_mode,
+                            oauth_keyring_backend_kind,
                         ) {
                             Ok(tokens) => {
                                 if let Some(resolved) = tokens.as_ref() {
@@ -1204,18 +1476,25 @@ impl RmcpClient {
                                     // first concrete source so Auto is not reevaluated mid-client.
                                     pinned_credential_store.set(resolved.store).map_err(|_| {
                                         anyhow!(
-                                            "OAuth credential store pinned concurrently for MCP server `{server_name}`"
+                                            "OAuth credential store pinned concurrently for MCP server `{oauth_server_name}`"
                                         )
                                     })?;
                                 }
-                                tokens
+                                Ok(tokens)
                             }
                             Err(err) => {
-                                warn!("failed to read tokens for server `{server_name}`: {err}");
-                                None
+                                warn!(
+                                    "failed to read tokens for server `{oauth_server_name}`: {err}"
+                                );
+                                Ok(None)
                             }
                         }
-                    }
+                    };
+                    tokio::task::spawn_blocking(move || originator.sync_scope(load))
+                        .await
+                        .map_err(|error| {
+                            anyhow!("OAuth credential loading task failed: {error}")
+                        })??
                 } else {
                     None
                 };
@@ -1232,15 +1511,15 @@ impl RmcpClient {
                         credential_store,
                         default_headers.clone(),
                         Arc::clone(http_client),
+                        has_configured_headers,
+                        *redirect_mode,
+                        *oauth_refresh_mode,
+                        Arc::clone(initialize_deadline),
+                        oauth_config.as_deref(),
                     )
                     .await
                     {
-                        Ok((transport, oauth_persistor)) => {
-                            Ok(PendingTransport::StreamableHttpWithOAuth {
-                                transport,
-                                oauth_persistor,
-                            })
-                        }
+                        Ok(pending_transport) => Ok(pending_transport),
                         Err(err)
                             if err.downcast_ref::<AuthError>().is_some_and(|auth_err| {
                                 matches!(auth_err, AuthError::NoAuthorizationSupport)
@@ -1263,6 +1542,9 @@ impl RmcpClient {
                                     Arc::clone(http_client),
                                     default_headers,
                                     /*auth_provider*/ None,
+                                    has_configured_headers,
+                                    *redirect_mode,
+                                    Arc::clone(initialize_deadline),
                                 ),
                                 http_config,
                             );
@@ -1273,8 +1555,8 @@ impl RmcpClient {
                 } else {
                     let mut http_config =
                         StreamableHttpClientTransportConfig::with_uri(url.clone());
-                    if let Some(bearer_token) = bearer_token.clone() {
-                        http_config = http_config.auth_header(bearer_token);
+                    if let Some(StreamableHttpBearerToken::Resolved(bearer_token)) = bearer_token {
+                        http_config = http_config.auth_header(bearer_token.clone());
                     }
 
                     let transport = StreamableHttpClientTransport::with_client(
@@ -1282,6 +1564,9 @@ impl RmcpClient {
                             Arc::clone(http_client),
                             default_headers,
                             auth_provider,
+                            has_configured_headers,
+                            *redirect_mode,
+                            Arc::clone(initialize_deadline),
                         ),
                         http_config,
                     );
@@ -1292,64 +1577,152 @@ impl RmcpClient {
     }
 
     async fn connect_pending_transport(
+        &self,
         pending_transport: PendingTransport,
-        client_service: ElicitationClientService,
+        initialize_context: &InitializeContext,
         timeout: Option<Duration>,
-        protocol_mode: McpProtocolMode,
     ) -> Result<(
         Arc<RunningService<RoleClient, ElicitationClientService>>,
-        Option<OAuthPersistor>,
+        Option<OAuthRuntime>,
     )> {
-        let deadline = timeout.map(|duration| Instant::now() + duration);
-        let lifecycle = protocol_mode.client_lifecycle();
-        let (transport, oauth_persistor) = match pending_transport {
+        // Request IDs and remembered cancellations belong to this connection, including
+        // when a failed initialization or expired HTTP session creates a new transport.
+        let client_service = || {
+            let send_elicitation = Arc::clone(&initialize_context.send_elicitation);
+            let mut info = initialize_context.client_info.clone();
+            if self.protocol_mode == McpProtocolMode::DiscoverLocalStdio {
+                info.protocol_version = McpProtocolMode::Legacy.preferred_protocol_version();
+            }
+            ElicitationClientService::new(
+                info,
+                Box::new(move |id, request| send_elicitation(id, request)),
+                self.elicitation_pause_state.clone(),
+            )
+        };
+        let _initialize_deadline = match &self.transport_recipe {
+            TransportRecipe::StreamableHttp {
+                initialize_deadline,
+                ..
+            } => {
+                *initialize_deadline
+                    .lock()
+                    .unwrap_or_else(PoisonError::into_inner) =
+                    timeout.and_then(|duration| Instant::now().checked_add(duration));
+                Some(InitializeDeadlineGuard {
+                    deadline: Arc::clone(initialize_deadline),
+                })
+            }
+            TransportRecipe::InProcess { .. } | TransportRecipe::Stdio { .. } => None,
+        };
+        let lifecycle = self.protocol_mode.client_lifecycle();
+        let connect_stdio = |transport: StdioServerTransport, lifecycle| {
+            client_service()
+                .serve_with_lifecycle(
+                    track_tool_list_changes(
+                        OrderedByteTransport::new(transport),
+                        Arc::clone(&self.tool_list_revision),
+                    ),
+                    lifecycle,
+                )
+                .boxed()
+        };
+        let mut discovery = None;
+        let (transport, oauth_runtime) = match pending_transport {
             PendingTransport::InProcess { transport } => (
-                client_service
-                    .serve_with_lifecycle(transport, lifecycle.clone())
+                client_service()
+                    .serve_with_lifecycle(
+                        track_tool_list_changes(
+                            OrderedByteTransport::new(
+                                IntoTransport::<RoleClient, _, _>::into_transport(transport),
+                            ),
+                            Arc::clone(&self.tool_list_revision),
+                        ),
+                        lifecycle,
+                    )
                     .boxed(),
                 None,
             ),
-            PendingTransport::Stdio { transport } => (
-                client_service
-                    .serve_with_lifecycle(*transport, lifecycle.clone())
-                    .boxed(),
-                None,
-            ),
+            PendingTransport::Stdio { mut transport } => {
+                if transport.protocol_mode() == McpProtocolMode::DiscoverLocalStdio {
+                    discovery = transport
+                        .watch_discovery(timeout)
+                        .map(|reply| (reply, transport.process_ref()));
+                }
+                let lifecycle = transport.protocol_mode().client_lifecycle();
+                (connect_stdio(*transport, lifecycle), None)
+            }
             PendingTransport::StreamableHttp { transport } => (
-                client_service
-                    .serve_with_lifecycle(transport, lifecycle.clone())
+                client_service()
+                    .serve_with_lifecycle(
+                        track_tool_list_changes(
+                            capture_event_notifications(transport),
+                            Arc::clone(&self.tool_list_revision),
+                        ),
+                        lifecycle,
+                    )
                     .boxed(),
                 None,
             ),
             PendingTransport::StreamableHttpWithOAuth {
                 transport,
-                oauth_persistor,
+                oauth_runtime,
             } => (
-                client_service
-                    .serve_with_lifecycle(transport, lifecycle)
+                client_service()
+                    .serve_with_lifecycle(
+                        track_tool_list_changes(transport, Arc::clone(&self.tool_list_revision)),
+                        lifecycle,
+                    )
                     .boxed(),
-                Some(oauth_persistor),
+                Some(oauth_runtime),
+            ),
+            PendingTransport::StreamableHttpWithAccessTokenOnly { transport } => (
+                client_service()
+                    .serve_with_lifecycle(
+                        track_tool_list_changes(transport, Arc::clone(&self.tool_list_revision)),
+                        lifecycle,
+                    )
+                    .boxed(),
+                None,
             ),
         };
 
-        let handshake_timeout = remaining_initialize_timeout(timeout, deadline)?;
-        let service_result = match handshake_timeout {
-            Some(duration) => match time::timeout(duration, transport).await {
-                Ok(result) => {
-                    result.map_err(|source| anyhow::Error::from(HandshakeError { source }))
-                }
-                Err(_elapsed) => Err(anyhow!(
-                    "timed out handshaking with MCP server after {duration:?}"
-                )),
-            },
-            None => transport
+        let handshake = async {
+            let mut result = transport.await;
+            if let (Some((mut reply, process)), Err(error)) = (discovery, &result)
+                && let Some(mode) = stdio_handshake::restart_mode(error, reply.try_recv().ok())?
+            {
+                process
+                    .terminate(StdioTermination::Restart)
+                    .await
+                    .context("stop stdio server before handshake restart")?;
+                let fresh = self.launch_stdio_replacement(mode).await?;
+                // A confirmed modern helper doesn't need another legacy probe timer.
+                // Windows can still select initialize if it could not contain the new process.
+                let lifecycle = match fresh.protocol_mode() {
+                    McpProtocolMode::DiscoverLocalStdio => {
+                        rmcp::service::ClientLifecycleMode::Discover {
+                            preferred_versions: vec![ProtocolVersion::V_2026_07_28],
+                        }
+                    }
+                    mode => mode.client_lifecycle(),
+                };
+                result = connect_stdio(fresh, lifecycle).await;
+            }
+            result.map_err(|source| HandshakeError { source }.into())
+        };
+        let service_result = match timeout {
+            Some(duration) => time::timeout(duration, handshake)
                 .await
-                .map_err(|source| anyhow::Error::from(HandshakeError { source })),
+                .with_context(|| {
+                    format!("timed out handshaking with MCP server after {duration:?}")
+                })
+                .flatten(),
+            None => handshake.await,
         };
         let service = match service_result {
             Ok(service) => service,
             Err(error) => {
-                if let Some(runtime) = oauth_persistor.as_ref()
+                if let Some(OAuthRuntime::Legacy(runtime)) = oauth_runtime.as_ref()
                     && let Err(persist_error) = runtime.persist_if_needed().await
                 {
                     warn!(
@@ -1360,110 +1733,89 @@ impl RmcpClient {
             }
         };
 
-        Ok((Arc::new(service), oauth_persistor))
+        // Preserve Codex's existing snapshot and request-freshness behavior. rmcp 3
+        // enables response caching and stale-on-error fallback by default.
+        service
+            .peer()
+            .set_response_cache_config(ClientCacheConfig::disabled())
+            .await;
+
+        Ok((Arc::new(service), oauth_runtime))
+    }
+
+    async fn launch_stdio_replacement(
+        &self,
+        mode: McpProtocolMode,
+    ) -> Result<StdioServerTransport> {
+        let TransportRecipe::Stdio { command, launcher } = &self.transport_recipe else {
+            unreachable!("stdio discovery uses a stdio launch recipe");
+        };
+        let slot = self
+            .stdio_process
+            .as_ref()
+            .context("missing stdio process")?;
+        launcher
+            .launch(command.for_restart(mode, Arc::clone(slot)))
+            .await
+            .context("restart stdio server")
     }
 
     async fn run_service_operation<T, F, Fut>(
         &self,
         label: &str,
         timeout: Option<Duration>,
-        retry_read_only_after_invalid_token: bool,
         operation: F,
     ) -> Result<T>
     where
         F: Fn(Arc<RunningService<RoleClient, ElicitationClientService>>) -> Fut,
         Fut: std::future::Future<Output = std::result::Result<T, rmcp::service::ServiceError>>,
     {
-        // A lazy reconnect is a new initialize handshake and uses the stored
-        // initialize timeout; the caller's timeout remains the request budget.
-        let service = self.service().await?;
-        let mut deadline = timeout.map(|duration| Instant::now() + duration);
-        let oauth_persistor = self.oauth_persistor().await;
-        let rejected_access_token = match oauth_persistor.as_ref() {
-            Some(oauth_persistor) => oauth_persistor.access_token_snapshot().await,
-            None => None,
-        };
-        let mut result = Self::run_service_operation_with_transient_retries(
-            Arc::clone(&service),
+        self.run_service_operation_with_pause_state(
             label,
             timeout,
             self.elicitation_pause_state.clone(),
+            operation,
+        )
+        .await
+    }
+
+    async fn run_service_operation_with_pause_state<T, F, Fut>(
+        &self,
+        label: &str,
+        timeout: Option<Duration>,
+        pause_state: ElicitationPauseState,
+        operation: F,
+    ) -> Result<T>
+    where
+        F: Fn(Arc<RunningService<RoleClient, ElicitationClientService>>) -> Fut,
+        Fut: std::future::Future<Output = std::result::Result<T, rmcp::service::ServiceError>>,
+    {
+        let service = self.service().await?;
+        match Self::run_service_operation_with_transient_retries(
+            Arc::clone(&service),
+            label,
+            timeout,
+            pause_state.clone(),
             &operation,
         )
-        .await;
-
-        if result
-            .as_ref()
-            .is_err_and(Self::is_confirmed_invalid_token_operation_error)
-            && let Some(oauth_persistor) = oauth_persistor
+        .await
         {
-            let refresh_started_at = Instant::now();
-            let refresh_result = oauth_persistor
-                .refresh_after_unauthorized(rejected_access_token.as_deref())
-                .await;
-            extend_operation_deadline(&mut deadline, refresh_started_at.elapsed());
-            refresh_result?;
-            if retry_read_only_after_invalid_token {
-                let remaining = remaining_operation_timeout(label, timeout, deadline)?;
-                result = Self::run_service_operation_with_transient_retries(
-                    Arc::clone(&service),
+            Ok(result) => Ok(result),
+            Err(error) if Self::is_session_expired_404(&error) => {
+                self.reinitialize_after_session_expiry(&service).await?;
+                let recovered_service = self.service().await?;
+                Self::run_service_operation_with_transient_retries(
+                    recovered_service,
                     label,
-                    remaining,
-                    self.elicitation_pause_state.clone(),
+                    timeout,
+                    pause_state,
                     &operation,
                 )
-                .await;
-            } else {
-                return result
-                    .map_err(|error| match error {
-                        ClientOperationError::Service(source) => {
-                            ClientOperationError::OAuthTokenRefreshed { source }
-                        }
-                        error => error,
-                    })
-                    .map_err(Into::into);
+                .await
+                .map_err(Into::into)
             }
+            Err(error) => Err(error.into()),
         }
-
-        if result.as_ref().is_err_and(Self::is_session_expired_404) {
-            {
-                let mut guard = self.state.lock().await;
-                let expired_oauth = match &*guard {
-                    ClientState::Ready {
-                        service: current,
-                        oauth,
-                    } if Arc::ptr_eq(current, &service) => Some(oauth.clone()),
-                    _ => None,
-                };
-                if let Some(oauth) = expired_oauth {
-                    *guard = ClientState::Expired { oauth };
-                }
-            }
-
-            if label == "tools/call" {
-                return result
-                    .map_err(|error| match error {
-                        ClientOperationError::UncertainService { source } => {
-                            ClientOperationError::ExpiredSessionUncertain { source }
-                        }
-                        error => error,
-                    })
-                    .map_err(Into::into);
-            }
-
-            let recovered_service = self.service().await?;
-            let remaining = remaining_operation_timeout(label, timeout, deadline)?;
-            result = Self::run_service_operation_with_transient_retries(
-                recovered_service,
-                label,
-                remaining,
-                self.elicitation_pause_state.clone(),
-                &operation,
-            )
-            .await;
-        }
-
-        result.map_err(Into::into)
     }
 
     async fn run_service_operation_with_transient_retries<T, F, Fut>(
@@ -1496,11 +1848,13 @@ impl RmcpClient {
             .await
             {
                 Ok(result) => return Ok(result),
-                Err(error) if Self::is_retryable_tools_list_error(label, &error) => {
+                Err(error)
+                    if label == "tools/list" && Self::is_retryable_transport_error(&error) =>
+                {
                     let Some(retry_delay_ms) = retry_delay_ms else {
                         return Err(error);
                     };
-                    let delay = Self::retry_delay(&error, Duration::from_millis(retry_delay_ms));
+                    let delay = Duration::from_millis(retry_delay_ms);
                     warn!(
                         attempt = attempt + 1,
                         max_attempts = STREAMABLE_HTTP_RETRY_DELAYS_MS.len() + 1,
@@ -1541,32 +1895,13 @@ impl RmcpClient {
                         label: label.to_string(),
                         duration,
                     })?
-                    .map_err(|error| Self::classify_operation_error(label, error))
+                    .map_err(ClientOperationError::from)
             }
-            None => operation(service)
-                .await
-                .map_err(|error| Self::classify_operation_error(label, error)),
+            None => operation(service).await.map_err(ClientOperationError::from),
         }
     }
 
-    fn classify_operation_error(
-        label: &str,
-        error: rmcp::service::ServiceError,
-    ) -> ClientOperationError {
-        if label == "tools/call"
-            && matches!(&error, rmcp::service::ServiceError::TransportSend(_))
-            && !Self::is_pre_execution_auth_failure(&error)
-        {
-            ClientOperationError::UncertainService { source: error }
-        } else {
-            ClientOperationError::Service(error)
-        }
-    }
-
-    fn is_retryable_tools_list_error(label: &str, error: &ClientOperationError) -> bool {
-        if label != "tools/list" {
-            return false;
-        }
+    pub(crate) fn is_retryable_transport_error(error: &ClientOperationError) -> bool {
         let ClientOperationError::Service(rmcp::service::ServiceError::TransportSend(error)) =
             error
         else {
@@ -1580,14 +1915,9 @@ impl RmcpClient {
     }
 
     fn is_session_expired_404(error: &ClientOperationError) -> bool {
-        let service_error = match error {
-            ClientOperationError::Service(source)
-            | ClientOperationError::UncertainService { source }
-            | ClientOperationError::OAuthTokenRefreshed { source }
-            | ClientOperationError::ExpiredSessionUncertain { source } => source,
-            ClientOperationError::Timeout { .. } => return false,
-        };
-        let rmcp::service::ServiceError::TransportSend(error) = service_error else {
+        let ClientOperationError::Service(rmcp::service::ServiceError::TransportSend(error)) =
+            error
+        else {
             return false;
         };
 
@@ -1604,49 +1934,10 @@ impl RmcpClient {
             })
     }
 
-    fn is_confirmed_invalid_token_operation_error(error: &ClientOperationError) -> bool {
-        let ClientOperationError::Service(service_error) = error else {
-            return false;
-        };
-        Self::is_confirmed_invalid_token_service_error(service_error)
-    }
-
-    fn is_confirmed_invalid_token_service_error(
-        service_error: &rmcp::service::ServiceError,
-    ) -> bool {
-        let rmcp::service::ServiceError::TransportSend(error) = service_error else {
-            return false;
-        };
-
-        error
-            .error
-            .downcast_ref::<StreamableHttpError<StreamableHttpClientAdapterError>>()
-            .is_some_and(|error| match error {
-                StreamableHttpError::AuthRequired(challenge) => {
-                    is_bearer_invalid_token_challenge(&challenge.www_authenticate_header)
-                }
-                _ => false,
-            })
-    }
-
-    fn is_pre_execution_auth_failure(service_error: &rmcp::service::ServiceError) -> bool {
-        let rmcp::service::ServiceError::TransportSend(error) = service_error else {
-            return false;
-        };
-
-        error
-            .error
-            .downcast_ref::<StreamableHttpError<StreamableHttpClientAdapterError>>()
-            .is_some_and(|error| match error {
-                StreamableHttpError::Auth(AuthError::AuthorizationRequired) => true,
-                StreamableHttpError::AuthRequired(challenge) => {
-                    is_bearer_invalid_token_challenge(&challenge.www_authenticate_header)
-                }
-                _ => false,
-            })
-    }
-
-    async fn reinitialize_expired_service(&self) -> Result<()> {
+    async fn reinitialize_after_session_expiry(
+        &self,
+        failed_service: &Arc<RunningService<RoleClient, ElicitationClientService>>,
+    ) -> Result<()> {
         let _recovery_guard = self
             .session_recovery_lock
             .acquire()
@@ -1656,8 +1947,10 @@ impl RmcpClient {
         {
             let guard = self.state.lock().await;
             match &*guard {
-                ClientState::Ready { .. } => return Ok(()),
-                ClientState::Expired { .. } => {}
+                ClientState::Ready { service, .. } if !Arc::ptr_eq(service, failed_service) => {
+                    return Ok(());
+                }
+                ClientState::Ready { .. } => {}
                 ClientState::Connecting { .. } => {
                     return Err(anyhow!("MCP client not initialized"));
                 }
@@ -1674,32 +1967,29 @@ impl RmcpClient {
             .clone()
             .ok_or_else(|| anyhow!("MCP client cannot recover before initialize succeeds"))?;
         let pending_transport = Self::create_pending_transport(&self.transport_recipe).await?;
-        let (service, oauth_persistor) = self
-            .connect_pending_transport_with_oauth_recovery(
+        let (service, oauth_runtime) = self
+            .connect_pending_transport_with_initialize_retries(
                 pending_transport,
-                initialize_context.client_service,
-                initialize_context.timeout,
-                self.protocol_mode,
+                &initialize_context,
             )
             .await?;
+        service
+            .peer()
+            .peer_info()
+            .ok_or_else(|| anyhow!("recovered handshake succeeded but server info was missing"))?;
 
         {
             let mut guard = self.state.lock().await;
-            match &*guard {
-                ClientState::Closed => return Err(anyhow!("MCP client is shut down")),
-                ClientState::Connecting { .. } => {
-                    return Err(anyhow!("MCP client not initialized"));
-                }
-                ClientState::Ready { .. } => return Ok(()),
-                ClientState::Expired { .. } => {}
+            if matches!(*guard, ClientState::Closed) {
+                return Err(anyhow!("MCP client is shut down"));
             }
             *guard = ClientState::Ready {
                 service,
-                oauth: oauth_persistor.clone(),
+                oauth: oauth_runtime.clone(),
             };
         }
 
-        if let Some(runtime) = oauth_persistor
+        if let Some(OAuthRuntime::Legacy(runtime)) = oauth_runtime
             && let Err(error) = runtime.persist_if_needed().await
         {
             warn!("failed to persist OAuth tokens after session recovery: {error}");
@@ -1709,6 +1999,7 @@ impl RmcpClient {
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 async fn create_oauth_transport_and_runtime(
     server_name: &str,
     url: &str,
@@ -1716,260 +2007,126 @@ async fn create_oauth_transport_and_runtime(
     credential_store: ResolvedOAuthCredentialStore,
     default_headers: HeaderMap,
     http_client: Arc<dyn HttpClient>,
-) -> Result<(
-    StreamableHttpClientTransport<SingleAttemptOAuthClient<StreamableHttpClientAdapter>>,
-    OAuthPersistor,
-)> {
-    let oauth_http_client = Arc::new(OAuthHttpClientAdapter::new_scoped(
+    has_configured_headers: bool,
+    redirect_mode: StreamableHttpRedirectMode,
+    oauth_refresh_mode: McpOAuthRefreshMode,
+    initialize_deadline: Arc<StdMutex<Option<Instant>>>,
+    oauth_config: Option<&McpServerOAuthConfig>,
+) -> Result<PendingTransport> {
+    OAuthClientCredentials::resolve(oauth_config)?
+        .validate_stored_client_id(&initial_tokens.client_id)?;
+    let oauth_http_client = Arc::new(OAuthHttpClientAdapter::new_with_redirect_mode(
         http_client.clone(),
         default_headers.clone(),
         url,
-        crate::auth_status::OAuthDiscoveryTimeout::Requested,
+        has_configured_headers,
+        redirect_mode,
     )?);
-    let mut manager =
-        AuthorizationManager::new_with_oauth_http_client(url.to_string(), oauth_http_client)
-            .await?;
-    let metadata = discover_metadata(&manager).await?;
+    let mut manager = AuthorizationManager::new_with_oauth_http_client(
+        url.to_string(),
+        oauth_http_client.clone(),
+    )
+    .await?;
+    manager.set_allow_missing_issuer(true);
+    let metadata = resolve_refresh_metadata(
+        &manager,
+        url,
+        Some(&oauth_http_client),
+        &initial_tokens,
+    )
+    .await
+    .context("failed to resolve OAuth metadata before using stored credentials")?;
+    let use_stored_access_token_only =
+        match validate_refresh_token_issuer(&metadata, &initial_tokens) {
+            Ok(()) => false,
+            Err(_error) if initial_tokens.access_token_is_usable_without_refresh() => true,
+            Err(error) => return Err(error),
+        };
     manager.set_metadata(metadata);
-    // OAuthPersistor below installs the request-only token view using the existing
-    // serialized adoption path. Do not call OAuthState::set_credentials: it performs
-    // another discovery and accepts SDK-synthesized OAuth endpoints.
+    let mut runtime_tokens = initial_tokens.clone();
+    if use_stored_access_token_only {
+        runtime_tokens.token_response.0.set_refresh_token(None);
+        runtime_tokens.issuer = None;
+    }
+    install_tokens_in_manager(&mut manager, &runtime_tokens, oauth_config).await?;
+    let coordinated_store = match oauth_refresh_mode {
+        McpOAuthRefreshMode::Coordinated if !use_stored_access_token_only => {
+            let store = OAuthCredentialStore::new(
+                initial_tokens.clone(),
+                credential_store,
+                DefaultKeyringStore,
+                oauth_config.cloned(),
+            )
+            .with_device_metadata_client(oauth_http_client.clone());
+            manager.set_credential_store(store.clone());
+            Some(store)
+        }
+        McpOAuthRefreshMode::Legacy | McpOAuthRefreshMode::Coordinated => None,
+    };
 
-    let auth_client = AuthClient::new(
-        StreamableHttpClientAdapter::new(http_client, default_headers, /*auth_provider*/ None),
-        manager,
+    let http_client = StreamableHttpClientAdapter::new(
+        http_client,
+        default_headers,
+        /*auth_provider*/ None,
+        has_configured_headers,
+        redirect_mode,
+        initialize_deadline,
     );
-    let auth_manager = auth_client.auth_manager.clone();
 
+    if use_stored_access_token_only {
+        warn!(
+            "stored OAuth refresh credentials could not be bound to their issuer for MCP server `{server_name}`; using the stored access token without refresh"
+        );
+        return Ok(PendingTransport::StreamableHttpWithAccessTokenOnly {
+            transport: StreamableHttpClientTransport::with_client(
+                AuthClient::new(http_client, manager),
+                StreamableHttpClientTransportConfig::with_uri(url.to_string()),
+            ),
+        });
+    }
+
+    let auth_manager = Arc::new(Mutex::new(manager));
+    let runtime = match coordinated_store {
+        Some(store) => OAuthRuntime::Coordinated {
+            auth_manager,
+            store,
+        },
+        None => OAuthRuntime::Legacy(OAuthPersistor::new(
+            server_name.to_string(),
+            url.to_string(),
+            auth_manager,
+            credential_store,
+            Some(initial_tokens),
+            oauth_config.cloned(),
+        )),
+    };
     let transport = StreamableHttpClientTransport::with_client(
-        SingleAttemptOAuthClient::new(auth_client),
+        OAuthStreamableHttpClient::new(http_client, runtime.clone()),
         StreamableHttpClientTransportConfig::with_uri(url.to_string()),
     );
 
-    let runtime = OAuthPersistor::new(
-        server_name.to_string(),
-        url.to_string(),
-        auth_manager,
-        credential_store,
-        Some(initial_tokens.clone()),
-    );
-    runtime.adopt_credentials(initial_tokens).await?;
-
-    Ok((transport, runtime))
+    Ok(PendingTransport::StreamableHttpWithOAuth {
+        transport,
+        oauth_runtime: runtime,
+    })
 }
 
 #[cfg(test)]
+#[path = "tool_input_tests.rs"]
+mod tool_input_tests;
+
+#[cfg(test)]
+#[path = "user_verification_cancellation_tests.rs"]
+mod user_verification_cancellation_tests;
+
+#[cfg(test)]
 mod tests {
-    use std::any::TypeId;
-    use std::borrow::Cow;
-    use std::cell::Cell;
-    use std::collections::VecDeque;
-    use std::rc::Rc;
-    use std::sync::Arc;
-    use std::sync::atomic::AtomicUsize;
-    use std::sync::atomic::Ordering;
     use std::time::Duration;
 
     use pretty_assertions::assert_eq;
-    use rmcp::model::JsonObject;
-    use rmcp::transport::DynamicTransportError;
-    use rmcp::transport::streamable_http_client::AuthRequiredError;
-    use rmcp::transport::streamable_http_client::InsufficientScopeError;
     use tokio::time;
 
     use super::*;
-
-    fn listed_tool(name: &str) -> ToolWithConnectorId {
-        ToolWithConnectorId {
-            tool: Tool::new(
-                Cow::Owned(name.to_string()),
-                Cow::Borrowed("test tool"),
-                Arc::new(JsonObject::new()),
-            ),
-            connector_id: None,
-            connector_name: None,
-            connector_description: None,
-        }
-    }
-
-    fn tool_page(names: &[&str], next_cursor: Option<&str>) -> ListToolsWithConnectorIdResult {
-        ListToolsWithConnectorIdResult {
-            next_cursor: next_cursor.map(str::to_string),
-            tools: names.iter().map(|name| listed_tool(name)).collect(),
-        }
-    }
-
-    #[tokio::test]
-    async fn complete_tool_walk_rejects_cursor_cycles() {
-        let mut pages = VecDeque::from([
-            tool_page(&["first"], Some("a")),
-            tool_page(&["second"], Some("b")),
-            tool_page(&["third"], Some("a")),
-        ]);
-
-        let error = collect_tool_pages(
-            /*generation*/ 0,
-            || 0,
-            move |_params| {
-                std::future::ready(
-                    pages
-                        .pop_front()
-                        .ok_or_else(|| anyhow!("missing fixture page")),
-                )
-            },
-        )
-        .await
-        .err()
-        .expect("cursor cycle should fail");
-
-        assert_eq!(
-            error.to_string(),
-            "tools/list returned repeated cursor \"a\""
-        );
-    }
-
-    #[tokio::test]
-    async fn complete_tool_walk_rejects_duplicate_tool_names() {
-        let mut pages = VecDeque::from([
-            tool_page(&["same"], Some("next")),
-            tool_page(&["same"], /*next_cursor*/ None),
-        ]);
-
-        let error = collect_tool_pages(
-            /*generation*/ 0,
-            || 0,
-            move |_params| {
-                std::future::ready(
-                    pages
-                        .pop_front()
-                        .ok_or_else(|| anyhow!("missing fixture page")),
-                )
-            },
-        )
-        .await
-        .err()
-        .expect("duplicate tool names should fail");
-
-        assert_eq!(
-            error.to_string(),
-            "tools/list returned duplicate tool name \"same\""
-        );
-    }
-
-    #[tokio::test]
-    async fn complete_tool_walk_rejects_oversized_catalogues() {
-        let mut page = Some(ListToolsWithConnectorIdResult {
-            next_cursor: None,
-            tools: (0..=MAX_TOOLS_LIST_ITEMS)
-                .map(|index| listed_tool(&format!("tool-{index}")))
-                .collect(),
-        });
-
-        let error = collect_tool_pages(
-            /*generation*/ 0,
-            || 0,
-            move |_params| {
-                std::future::ready(
-                    page.take()
-                        .ok_or_else(|| anyhow!("missing oversized fixture page")),
-                )
-            },
-        )
-        .await
-        .err()
-        .expect("oversized tool catalogues should fail");
-
-        assert_eq!(
-            error.to_string(),
-            format!(
-                "tools/list returned {} tools, exceeding the limit of {MAX_TOOLS_LIST_ITEMS}",
-                MAX_TOOLS_LIST_ITEMS + 1
-            )
-        );
-    }
-
-    #[tokio::test]
-    async fn complete_tool_walk_rejects_non_terminating_page_chain() {
-        let page_index = Rc::new(Cell::new(0));
-        let fetched_page_index = Rc::clone(&page_index);
-
-        let error = collect_tool_pages(
-            /*generation*/ 0,
-            || 0,
-            move |_params| {
-                let index = fetched_page_index.get();
-                fetched_page_index.set(index + 1);
-                std::future::ready(Ok(ListToolsWithConnectorIdResult {
-                    next_cursor: Some(format!("cursor-{index}")),
-                    tools: vec![listed_tool(&format!("tool-{index}"))],
-                }))
-            },
-        )
-        .await
-        .err()
-        .expect("non-terminating page chain should fail");
-
-        assert_eq!(
-            error.to_string(),
-            format!("tools/list exceeded the limit of {MAX_TOOLS_LIST_PAGES} pages")
-        );
-        assert_eq!(page_index.get(), MAX_TOOLS_LIST_PAGES);
-    }
-
-    #[tokio::test]
-    async fn tool_walk_discards_snapshot_changed_mid_collection() {
-        let generation = Arc::new(AtomicUsize::new(0));
-        let current_generation = Arc::clone(&generation);
-        let changed_generation = Arc::clone(&generation);
-        let calls = Rc::new(Cell::new(0));
-        let fetch_calls = Rc::clone(&calls);
-        let mut pages = VecDeque::from([
-            tool_page(&["old"], Some("next")),
-            tool_page(&["stale"], /*next_cursor*/ None),
-        ]);
-
-        let walk = collect_tool_pages(
-            /*generation*/ 0,
-            move || current_generation.load(Ordering::Acquire),
-            move |_params| {
-                let call = fetch_calls.get();
-                fetch_calls.set(call + 1);
-                if call == 1 {
-                    changed_generation.store(1, Ordering::Release);
-                }
-                std::future::ready(
-                    pages
-                        .pop_front()
-                        .ok_or_else(|| anyhow!("missing fixture page")),
-                )
-            },
-        )
-        .await
-        .expect("changed catalogue walk should be discarded without protocol error");
-
-        assert!(matches!(walk, ToolCatalogueWalk::Changed));
-        assert_eq!(calls.get(), 2);
-    }
-
-    #[tokio::test]
-    async fn tool_walk_discards_fetch_error_after_snapshot_change() {
-        let generation = Arc::new(AtomicUsize::new(0));
-        let current_generation = Arc::clone(&generation);
-        let changed_generation = Arc::clone(&generation);
-
-        let walk = collect_tool_pages(
-            /*generation*/ 0,
-            move || current_generation.load(Ordering::Acquire),
-            move |_params| {
-                changed_generation.store(1, Ordering::Release);
-                std::future::ready(Err(anyhow!("cursor invalidated by catalogue change")))
-            },
-        )
-        .await
-        .expect("an error from an invalidated snapshot should request a retry");
-
-        assert!(matches!(walk, ToolCatalogueWalk::Changed));
-    }
 
     #[test]
     fn client_operation_timeout_rounds_duration() {
@@ -1979,160 +2136,6 @@ mod tests {
         };
 
         assert_eq!(error.to_string(), "timed out awaiting tools/list after 30s");
-    }
-
-    #[test]
-    fn ops_holder_conflict_classifier_matches_real_service_operation_wrapper() {
-        let error = ClientOperationError::Service(rmcp::service::ServiceError::McpError(
-            rmcp::ErrorData::new(
-                rmcp::model::ErrorCode::INTERNAL_ERROR,
-                "work_item_execution.holder_conflict: another active execution holds this work item.",
-                Some(serde_json::json!({
-                    "code": "work_item_execution.holder_conflict",
-                    "request_id": "44444444-4444-4444-8444-444444444444"
-                })),
-            ),
-        ));
-        assert!(is_ops_holder_conflict_error(&error));
-
-        let wrong_code = ClientOperationError::Service(rmcp::service::ServiceError::McpError(
-            rmcp::ErrorData::new(
-                rmcp::model::ErrorCode::INTERNAL_ERROR,
-                "work_item_execution.holder_conflict: another active execution holds this work item.",
-                Some(serde_json::json!({"code": "other"})),
-            ),
-        ));
-        assert!(!is_ops_holder_conflict_error(&wrong_code));
-    }
-
-    #[test]
-    fn oauth_refresh_extends_operation_deadline_without_resetting_budget() {
-        let initial_deadline = Instant::now() + Duration::from_secs(30);
-        let mut deadline = Some(initial_deadline);
-
-        extend_operation_deadline(&mut deadline, Duration::from_secs(20));
-
-        assert_eq!(deadline, Some(initial_deadline + Duration::from_secs(20)));
-    }
-
-    fn transport_send_error(
-        error: StreamableHttpError<StreamableHttpClientAdapterError>,
-    ) -> ClientOperationError {
-        ClientOperationError::Service(rmcp::service::ServiceError::TransportSend(
-            DynamicTransportError::from_parts("test", TypeId::of::<()>(), Box::new(error)),
-        ))
-    }
-
-    #[test]
-    fn locally_synthesized_authorization_required_does_not_trigger_refresh() {
-        let error =
-            transport_send_error(StreamableHttpError::Auth(AuthError::AuthorizationRequired));
-
-        assert!(!RmcpClient::is_confirmed_invalid_token_operation_error(
-            &error
-        ));
-        assert!(!RmcpClient::is_session_expired_404(&error));
-        let ClientOperationError::Service(source) = error else {
-            unreachable!();
-        };
-        assert!(matches!(
-            RmcpClient::classify_operation_error("tools/call", source),
-            ClientOperationError::Service(_)
-        ));
-    }
-
-    #[test]
-    fn generic_http_auth_challenge_does_not_trigger_refresh() {
-        let error = transport_send_error(StreamableHttpError::AuthRequired(
-            AuthRequiredError::new("Bearer resource_metadata=\"https://example.test\"".to_string()),
-        ));
-
-        assert!(!RmcpClient::is_confirmed_invalid_token_operation_error(
-            &error
-        ));
-        assert!(!RmcpClient::is_session_expired_404(&error));
-    }
-
-    #[test]
-    fn bare_http_unauthorized_status_is_not_a_confirmed_token_denial() {
-        let error = transport_send_error(StreamableHttpError::Client(
-            StreamableHttpClientAdapterError::HttpStatus {
-                status: 401,
-                body: String::new(),
-                retry_after: None,
-                diagnostics: Default::default(),
-            },
-        ));
-
-        assert!(!RmcpClient::is_confirmed_invalid_token_operation_error(
-            &error
-        ));
-        let ClientOperationError::Service(source) = error else {
-            unreachable!();
-        };
-        assert!(matches!(
-            RmcpClient::classify_operation_error("tools/call", source),
-            ClientOperationError::UncertainService { .. }
-        ));
-    }
-
-    #[test]
-    fn confirmed_bearer_invalid_token_denial_is_recoverable() {
-        let error =
-            transport_send_error(StreamableHttpError::AuthRequired(AuthRequiredError::new(
-                r#"Basic realm="example", Bearer error="invalid_token""#.to_string(),
-            )));
-
-        assert!(RmcpClient::is_confirmed_invalid_token_operation_error(
-            &error
-        ));
-        assert!(matches!(
-            RmcpClient::classify_operation_error(
-                "tools/call",
-                match error {
-                    ClientOperationError::Service(error) => error,
-                    _ => unreachable!(),
-                }
-            ),
-            ClientOperationError::Service(_)
-        ));
-    }
-
-    #[test]
-    fn insufficient_scope_does_not_trigger_token_refresh() {
-        let error = transport_send_error(StreamableHttpError::InsufficientScope(
-            InsufficientScopeError::new(
-                r#"Bearer error="insufficient_scope""#.to_string(),
-                Some("ops:write".to_string()),
-            ),
-        ));
-
-        assert!(!RmcpClient::is_confirmed_invalid_token_operation_error(
-            &error
-        ));
-    }
-
-    #[test]
-    fn uncertain_tool_call_auth_error_is_never_replayed_or_refreshed() {
-        let ClientOperationError::Service(source) =
-            transport_send_error(StreamableHttpError::AuthRequired(AuthRequiredError::new(
-                r#"Bearer error="invalid_token""#.to_string(),
-            )))
-        else {
-            unreachable!();
-        };
-        let error = ClientOperationError::UncertainService { source };
-
-        assert!(!RmcpClient::is_confirmed_invalid_token_operation_error(
-            &error
-        ));
-    }
-
-    #[test]
-    fn unrelated_streamable_http_errors_do_not_reinitialize_mcp_client() {
-        let error = transport_send_error(StreamableHttpError::UnexpectedEndOfStream);
-
-        assert!(!RmcpClient::is_session_expired_404(&error));
     }
 
     #[tokio::test]

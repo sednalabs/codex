@@ -12,6 +12,7 @@ impl AppsRequestProcessor {
         let started_at = Instant::now();
         let AppsReadParams {
             app_ids,
+            thread_id,
             include_tools,
         } = params;
         if app_ids.len() > APP_READ_MAX_IDS {
@@ -25,14 +26,25 @@ impl AppsRequestProcessor {
             .into_iter()
             .filter(|app_id| seen_app_ids.insert(app_id.clone()))
             .collect::<Vec<_>>();
-        let config = self.load_latest_config(/*fallback_cwd*/ None).await?;
-        let auth = self.auth_manager.auth().await;
+        let (mut config, mcp_manager) = self.load_apps_config(thread_id.as_deref()).await?;
+        let auth = match mcp_manager
+            .auth_manager()
+            .auth_with_http_client_factory()
+            .await
+        {
+            Some((auth, factory)) => {
+                config.application_network_policy = factory.network_policy().clone();
+                Some(auth)
+            }
+            None => None,
+        };
+        let runtime = self
+            .thread_manager
+            .runtime_auth_for_mcp_manager(&config, &mcp_manager)
+            .map_err(|error| internal_error(error.to_string()))?;
         if !config
             .features
             .apps_enabled_for_auth(auth.as_ref().is_some_and(CodexAuth::uses_codex_backend))
-            || !self
-                .workspace_codex_plugins_enabled(&config, auth.as_ref())
-                .await
         {
             let response = AppsReadResponse {
                 apps: Vec::new(),
@@ -48,12 +60,17 @@ impl AppsRequestProcessor {
         let connectors::ConnectorMetadataReadResult {
             apps,
             missing_app_ids,
-        } = connectors::read_connector_metadata(&config, auth, &app_ids, include_tools)
-            .await
-            .map_err(|err| internal_error(format!("failed to read app metadata: {err}")))?;
-        let plugins_manager = self.thread_manager.plugins_manager();
-        plugins_manager.set_auth_mode(Some(auth.api_auth_mode()));
-        let loaded_plugins = plugins_manager
+        } = connectors::read_connector_metadata(
+            &config,
+            auth,
+            runtime.as_ref(),
+            &app_ids,
+            include_tools,
+        )
+        .await
+        .map_err(|err| internal_error(format!("failed to read app metadata: {err}")))?;
+        let loaded_plugins = mcp_manager
+            .plugins_manager()
             .plugins_for_config(&config.plugins_config_input())
             .await;
         let connector_snapshot =

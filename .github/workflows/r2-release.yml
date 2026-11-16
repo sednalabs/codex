@@ -12,6 +12,9 @@ on:
       prerelease:
         required: true
         type: boolean
+      stage:
+        required: true
+        type: string
 
 permissions: {}
 
@@ -25,7 +28,7 @@ jobs:
 
     steps:
       - name: Checkout
-        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
         with:
           persist-credentials: false
 
@@ -36,13 +39,21 @@ jobs:
           AWS_SECRET_ACCESS_KEY: ${{ secrets.CODEX_R2_SECRET_ACCESS_KEY }}
           AWS_ENDPOINT_URL: ${{ vars.CODEX_R2_ENDPOINT_URL }}
           AWS_REGION: ${{ vars.CODEX_R2_REGION }}
+          AWS_RETRY_MODE: standard
+          AWS_MAX_ATTEMPTS: "6"
           GH_TOKEN: ${{ github.token }}
           RELEASE_TAG: ${{ inputs.tag }}
           RELEASE_MAKE_LATEST: ${{ inputs.make_latest }}
           RELEASE_PRERELEASE: ${{ inputs.prerelease }}
+          RELEASE_STAGE: ${{ inputs.stage }}
+          PYTHONPATH: .github/scripts
         run: |
           set -euo pipefail
+          # The publisher parallelizes objects; serialize parts within each object to avoid R2 throttling.
+          aws configure set default.s3.preferred_transfer_client classic
+          aws configure set default.s3.max_concurrent_requests 1
           python3 .github/scripts/publish_r2_release.py \
             --tag "${RELEASE_TAG}" \
             --make-latest "${RELEASE_MAKE_LATEST}" \
-            --prerelease "${RELEASE_PRERELEASE}"
+            --prerelease "${RELEASE_PRERELEASE}" \
+            --stage "${RELEASE_STAGE}"

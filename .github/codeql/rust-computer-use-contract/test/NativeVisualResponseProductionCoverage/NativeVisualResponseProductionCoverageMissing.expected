@@ -1,1 +1,0 @@
-| codex-rs/tui/src/desktop_computer_use_provider.rs:0:0:0:0 | codex-rs/tui/src/desktop_computer_use_provider.rs | Expected production visual handler 'handle_with_provider' is missing or has no recognized successful response exit, so native-image guard coverage would become vacuous. |

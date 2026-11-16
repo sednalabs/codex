@@ -1,5 +1,5 @@
 {
-  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$schema": "http://json-schema.org/draft-07/schema#",
   "properties": {
     "cwds": {
       "description": "Zero or more working directories to include for repo-scoped detection.",
@@ -18,7 +18,7 @@
     "maxSessionAgeDays": {
       "description": "Maximum age in days for detected sessions. Missing values use the default limit.",
       "format": "uint32",
-      "minimum": 0,
+      "minimum": 0.0,
       "type": [
         "integer",
         "null"
@@ -27,7 +27,7 @@
     "maxSessions": {
       "description": "Maximum number of sessions to detect. Missing values use the default limit.",
       "format": "uint32",
-      "minimum": 0,
+      "minimum": 0.0,
       "type": [
         "integer",
         "null"
@@ -41,7 +41,7 @@
       ]
     },
     "source": {
-      "description": "Deprecated field retained for compatibility. This field is ignored; use `migrationSource`\nto select the migration source.",
+      "description": "Deprecated field retained for compatibility. This field is ignored; use `migrationSource` to select the migration source.",
       "type": [
         "string",
         "null"

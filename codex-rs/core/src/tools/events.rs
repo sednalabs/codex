@@ -3,32 +3,36 @@ use crate::session::session::Session;
 use crate::session::turn_context::TurnContext;
 use crate::tools::context::SharedTurnDiffTracker;
 use crate::tools::sandboxing::ToolError;
+use codex_analytics::ArtifactOperation;
+use codex_analytics::ArtifactOperationLifecycle;
+use codex_analytics::build_track_events_context;
 use codex_apply_patch::AppliedPatchDelta;
 use codex_core_plugins::PluginCommandAttribution;
+use codex_core_plugins::recognize_artifact_operation;
+use codex_otel::ARTIFACT_OPERATION_EXPECTED_OUTPUT_COUNT_METRIC;
+use codex_otel::ARTIFACT_OPERATION_STARTED_METRIC;
 use codex_protocol::error::CodexErrorDetails;
 use codex_protocol::error::SandboxErr;
 use codex_protocol::exec_output::ExecToolCallOutput;
 use codex_protocol::items::CommandExecutionItem;
 use codex_protocol::items::CommandExecutionStatus;
 use codex_protocol::items::FileChangeItem;
+use codex_protocol::items::ModelInvocationContext;
 use codex_protocol::items::TurnItem;
+use codex_protocol::openai_models::ModelInfo;
 use codex_protocol::parse_command::ParsedCommand;
 use codex_protocol::protocol::EventMsg;
 use codex_protocol::protocol::ExecCommandSource;
 use codex_protocol::protocol::ExecCommandStatus;
 use codex_protocol::protocol::FileChange;
 use codex_protocol::protocol::PatchApplyStatus;
-use codex_protocol::protocol::TerminalWaitInfo;
 use codex_protocol::protocol::TurnDiffEvent;
 use codex_shell_command::parse_command::parse_command;
-use codex_utils_absolute_path::AbsolutePathBuf;
 use codex_utils_path_uri::PathUri;
 use codex_utils_string::truncate_middle_with_token_budget;
 use std::collections::HashMap;
 use std::path::PathBuf;
 use std::time::Duration;
-
-use super::format_exec_output_str;
 
 const REJECTION_MESSAGE_MAX_TOKENS: usize = 900;
 
@@ -38,8 +42,12 @@ pub(super) fn truncate_rejection_message(message: &str) -> String {
 
 #[derive(Clone, Copy)]
 pub(crate) struct ToolEventCtx<'a> {
+    pub sandbox_type: Option<codex_protocol::sandbox::SandboxType>,
+    pub model_context: Option<&'a ModelInvocationContext>,
     pub session: &'a Session,
     pub turn: &'a TurnContext,
+    /// Model captured by the step that issued this call, including delayed completion events.
+    pub model_info: &'a ModelInfo,
     pub call_id: &'a str,
     pub turn_diff_tracker: Option<&'a SharedTurnDiffTracker>,
 }
@@ -48,12 +56,16 @@ impl<'a> ToolEventCtx<'a> {
     pub fn new(
         session: &'a Session,
         turn: &'a TurnContext,
+        model_info: &'a ModelInfo,
         call_id: &'a str,
         turn_diff_tracker: Option<&'a SharedTurnDiffTracker>,
     ) -> Self {
         Self {
+            model_context: None,
+            sandbox_type: None,
             session,
             turn,
+            model_info,
             call_id,
             turn_diff_tracker,
         }
@@ -102,12 +114,66 @@ fn tracker_update_for_known_delta<'a>(
 }
 
 async fn emit_exec_command_begin(ctx: ToolEventCtx<'_>, exec_input: &ExecCommandInput<'_>) {
+    if exec_input.source == ExecCommandSource::UnifiedExecStartup
+        && let Some(attribution) = exec_input.plugin_attribution
+        && let Some(operation) = recognize_artifact_operation(Some(attribution), exec_input.command)
+    {
+        let metric_tags = [
+            ("skill", operation.plugin_name),
+            ("artifact_type", operation.artifact_type),
+            ("operation_kind", operation.operation_kind),
+            ("output_format", operation.output_format),
+            ("execution_backend", "unified_exec"),
+        ];
+        let session_telemetry = ctx
+            .turn
+            .session_telemetry
+            .clone()
+            .with_model(&ctx.model_info.slug, &ctx.model_info.slug);
+        session_telemetry.counter(
+            ARTIFACT_OPERATION_STARTED_METRIC,
+            /*inc*/ 1,
+            &metric_tags,
+        );
+        session_telemetry.histogram(
+            ARTIFACT_OPERATION_EXPECTED_OUTPUT_COUNT_METRIC,
+            i64::from(operation.expected_output_count),
+            &metric_tags,
+        );
+        ctx.session
+            .services
+            .analytics_events_client
+            .track_artifact_operation(
+                build_track_events_context(
+                    ctx.model_info.slug.clone(),
+                    ctx.session.thread_id.to_string(),
+                    ctx.turn.sub_id.clone(),
+                    ctx.turn.originator.clone(),
+                    /*turn_metadata*/ None,
+                ),
+                ArtifactOperation {
+                    item_id: ctx.call_id.to_string(),
+                    lifecycle: ArtifactOperationLifecycle::Started,
+                    occurred_at_ms: codex_analytics::now_unix_millis(),
+                    plugin_id: attribution.plugin_id.as_key(),
+                    script_path: operation.script_path.to_string(),
+                    skill: operation.plugin_name.to_string(),
+                    artifact_type: operation.artifact_type.to_string(),
+                    operation_kind: operation.operation_kind.to_string(),
+                    expected_output_count: operation.expected_output_count,
+                    output_format: operation.output_format.to_string(),
+                    execution_backend: "unified_exec".to_string(),
+                },
+            );
+    }
     let (plugin_id, script_path) = plugin_attribution_fields(exec_input.plugin_attribution);
     ctx.session
         .emit_turn_item_started(
             ctx.turn,
             &TurnItem::CommandExecution(CommandExecutionItem {
                 id: ctx.call_id.to_string(),
+                model_context: ctx.model_context.cloned(),
+                sandbox_type: ctx.sandbox_type,
                 plugin_id,
                 script_path,
                 process_id: exec_input.process_id.map(str::to_owned),
@@ -116,27 +182,16 @@ async fn emit_exec_command_begin(ctx: ToolEventCtx<'_>, exec_input: &ExecCommand
                 parsed_cmd: exec_input.parsed_cmd.to_vec(),
                 source: exec_input.source,
                 interaction_input: exec_input.interaction_input.map(str::to_owned),
-                terminal_wait: exec_input.terminal_wait.clone(),
                 status: CommandExecutionStatus::InProgress,
-                stdout: None,
-                stderr: None,
                 aggregated_output: None,
                 exit_code: None,
                 duration: None,
-                formatted_output: None,
             }),
         )
         .await;
 }
 // Concrete, allocation-free emitter: avoid trait objects and boxed futures.
 pub(crate) enum ToolEmitter {
-    Shell {
-        command: Vec<String>,
-        cwd: PathUri,
-        source: ExecCommandSource,
-        parsed_cmd: Vec<ParsedCommand>,
-        plugin_attribution: Option<PluginCommandAttribution>,
-    },
     ApplyPatch {
         changes: HashMap<PathBuf, FileChange>,
         auto_approved: bool,
@@ -149,27 +204,10 @@ pub(crate) enum ToolEmitter {
         parsed_cmd: Vec<ParsedCommand>,
         process_id: Option<String>,
         plugin_attribution: Option<PluginCommandAttribution>,
-        terminal_wait: Option<TerminalWaitInfo>,
     },
 }
 
 impl ToolEmitter {
-    pub fn shell(
-        command: Vec<String>,
-        cwd: AbsolutePathBuf,
-        source: ExecCommandSource,
-        plugin_attribution: Option<PluginCommandAttribution>,
-    ) -> Self {
-        let parsed_cmd = parse_command(&command);
-        Self::Shell {
-            command,
-            cwd: PathUri::from_abs_path(&cwd),
-            source,
-            parsed_cmd,
-            plugin_attribution,
-        }
-    }
-
     pub fn apply_patch_for_environment(
         changes: HashMap<PathBuf, FileChange>,
         auto_approved: bool,
@@ -188,7 +226,6 @@ impl ToolEmitter {
         source: ExecCommandSource,
         process_id: Option<String>,
         plugin_attribution: Option<PluginCommandAttribution>,
-        terminal_wait: Option<TerminalWaitInfo>,
     ) -> Self {
         let parsed_cmd = parse_command(command);
         Self::UnifiedExec {
@@ -198,40 +235,11 @@ impl ToolEmitter {
             parsed_cmd,
             process_id,
             plugin_attribution,
-            terminal_wait,
         }
     }
 
     pub async fn emit(&self, ctx: ToolEventCtx<'_>, stage: ToolEventStage<'_>) {
         match (self, stage) {
-            (
-                Self::Shell {
-                    command,
-                    cwd,
-                    source,
-                    parsed_cmd,
-                    plugin_attribution,
-                    ..
-                },
-                stage,
-            ) => {
-                emit_exec_stage(
-                    ctx,
-                    ExecCommandInput::new(
-                        command,
-                        cwd,
-                        parsed_cmd,
-                        *source,
-                        /*interaction_input*/ None,
-                        /*process_id*/ None,
-                        plugin_attribution.as_ref(),
-                        /*terminal_wait*/ None,
-                    ),
-                    stage,
-                )
-                .await;
-            }
-
             (
                 Self::ApplyPatch {
                     changes,
@@ -348,7 +356,6 @@ impl ToolEmitter {
                     parsed_cmd,
                     process_id,
                     plugin_attribution,
-                    terminal_wait,
                 },
                 stage,
             ) => {
@@ -362,7 +369,6 @@ impl ToolEmitter {
                         /*interaction_input*/ None,
                         process_id.as_deref(),
                         plugin_attribution.as_ref(),
-                        terminal_wait.clone(),
                     ),
                     stage,
                 )
@@ -380,7 +386,7 @@ impl ToolEmitter {
         output: &ExecToolCallOutput,
         ctx: ToolEventCtx<'_>,
     ) -> String {
-        super::format_exec_output_for_model(output, ctx.turn.model_info.truncation_policy.into())
+        super::format_exec_output_for_model(output, ctx.model_info.truncation_policy.into())
     }
 
     pub async fn finish(
@@ -447,9 +453,7 @@ impl ToolEmitter {
                 // TODO: We should add a new ToolError variant for user-declined approvals.
                 let normalized = if msg == "rejected by user" {
                     match self {
-                        Self::Shell { .. } | Self::UnifiedExec { .. } => {
-                            "exec command rejected by user".to_string()
-                        }
+                        Self::UnifiedExec { .. } => "exec command rejected by user".to_string(),
                         Self::ApplyPatch { .. } => "patch rejected by user".to_string(),
                     }
                 } else {
@@ -477,11 +481,9 @@ struct ExecCommandInput<'a> {
     interaction_input: Option<&'a str>,
     process_id: Option<&'a str>,
     plugin_attribution: Option<&'a PluginCommandAttribution>,
-    terminal_wait: Option<TerminalWaitInfo>,
 }
 
 impl<'a> ExecCommandInput<'a> {
-    #[allow(clippy::too_many_arguments)]
     fn new(
         command: &'a [String],
         cwd: &'a PathUri,
@@ -490,7 +492,6 @@ impl<'a> ExecCommandInput<'a> {
         interaction_input: Option<&'a str>,
         process_id: Option<&'a str>,
         plugin_attribution: Option<&'a PluginCommandAttribution>,
-        terminal_wait: Option<TerminalWaitInfo>,
     ) -> Self {
         Self {
             command,
@@ -500,18 +501,14 @@ impl<'a> ExecCommandInput<'a> {
             interaction_input,
             process_id,
             plugin_attribution,
-            terminal_wait,
         }
     }
 }
 
 struct ExecCommandResult {
-    stdout: String,
-    stderr: String,
     aggregated_output: String,
     exit_code: i32,
     duration: Duration,
-    formatted_output: String,
     status: ExecCommandStatus,
 }
 
@@ -527,15 +524,9 @@ async fn emit_exec_stage(
         ToolEventStage::Success { output, .. }
         | ToolEventStage::Failure(ToolEventFailure::Output(output)) => {
             let exec_result = ExecCommandResult {
-                stdout: output.stdout.text.clone(),
-                stderr: output.stderr.text.clone(),
-                aggregated_output: output.aggregated_output.text.clone(),
+                aggregated_output: output.aggregated_output.text,
                 exit_code: output.exit_code,
                 duration: output.duration,
-                formatted_output: format_exec_output_str(
-                    &output,
-                    ctx.turn.model_info.truncation_policy.into(),
-                ),
                 status: if output.exit_code == 0 {
                     ExecCommandStatus::Completed
                 } else {
@@ -547,12 +538,9 @@ async fn emit_exec_stage(
         ToolEventStage::Failure(ToolEventFailure::Message(message)) => {
             let text = message.to_string();
             let exec_result = ExecCommandResult {
-                stdout: String::new(),
-                stderr: text.clone(),
-                aggregated_output: text.clone(),
+                aggregated_output: text,
                 exit_code: -1,
                 duration: Duration::ZERO,
-                formatted_output: text,
                 status: ExecCommandStatus::Failed,
             };
             emit_exec_end(ctx, exec_input, exec_result).await;
@@ -560,12 +548,9 @@ async fn emit_exec_stage(
         ToolEventStage::Failure(ToolEventFailure::Rejected { message, .. }) => {
             let text = message.to_string();
             let exec_result = ExecCommandResult {
-                stdout: String::new(),
-                stderr: text.clone(),
-                aggregated_output: text.clone(),
+                aggregated_output: text,
                 exit_code: -1,
                 duration: Duration::ZERO,
-                formatted_output: text,
                 status: ExecCommandStatus::Declined,
             };
             emit_exec_end(ctx, exec_input, exec_result).await;
@@ -584,6 +569,8 @@ async fn emit_exec_end(
             ctx.turn,
             TurnItem::CommandExecution(CommandExecutionItem {
                 id: ctx.call_id.to_string(),
+                model_context: ctx.model_context.cloned(),
+                sandbox_type: ctx.sandbox_type,
                 plugin_id,
                 script_path,
                 process_id: exec_input.process_id.map(str::to_owned),
@@ -591,15 +578,11 @@ async fn emit_exec_end(
                 cwd: exec_input.cwd.clone(),
                 parsed_cmd: exec_input.parsed_cmd.to_vec(),
                 source: exec_input.source,
-                interaction_input: exec_input.interaction_input.map(str::to_owned),
-                terminal_wait: exec_input.terminal_wait,
+                interaction_input: None,
                 status: exec_result.status.into(),
-                stdout: Some(exec_result.stdout),
-                stderr: Some(exec_result.stderr),
                 aggregated_output: Some(exec_result.aggregated_output),
                 exit_code: Some(exec_result.exit_code),
                 duration: Some(exec_result.duration),
-                formatted_output: Some(exec_result.formatted_output),
             }),
         )
         .await;
@@ -711,7 +694,13 @@ mod tests {
             environment_id: None,
         }
         .finish(
-            ToolEventCtx::new(session.as_ref(), turn.as_ref(), "call-id", Some(&tracker)),
+            ToolEventCtx::new(
+                session.as_ref(),
+                turn.as_ref(),
+                turn.model_info(),
+                "call-id",
+                Some(&tracker),
+            ),
             out,
             Some(&delta),
         )
@@ -795,7 +784,13 @@ mod tests {
             .expect("apply patch");
 
             emit_patch_end(
-                ToolEventCtx::new(session.as_ref(), turn.as_ref(), "call-id", Some(&tracker)),
+                ToolEventCtx::new(
+                    session.as_ref(),
+                    turn.as_ref(),
+                    turn.model_info(),
+                    "call-id",
+                    Some(&tracker),
+                ),
                 HashMap::new(),
                 String::new(),
                 String::new(),
@@ -844,7 +839,13 @@ mod tests {
         tracker.lock().await.track_delta("", &delta);
 
         emit_patch_end(
-            ToolEventCtx::new(session.as_ref(), turn.as_ref(), "call-id", Some(&tracker)),
+            ToolEventCtx::new(
+                session.as_ref(),
+                turn.as_ref(),
+                turn.model_info(),
+                "call-id",
+                Some(&tracker),
+            ),
             HashMap::new(),
             String::new(),
             String::new(),

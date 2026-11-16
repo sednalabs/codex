@@ -1,17 +1,19 @@
 use crate::function_tool::FunctionCallError;
+use crate::tools::context::ToolEnvironments;
 use crate::tools::context::ToolInvocation;
 use crate::tools::context::ToolPayload;
 use crate::tools::context::boxed_tool_output;
 use crate::tools::handlers::parse_arguments;
 use crate::tools::registry::CoreToolRuntime;
+use crate::tools::registry::LiveEnvironmentResolver;
 use crate::tools::registry::PostToolUsePayload;
 use crate::tools::registry::PreToolUsePayload;
 use crate::tools::registry::ToolExecutor;
-use crate::unified_exec::MIN_YIELD_TIME_MS;
+use crate::tools::sandboxing::ToolError;
+use crate::unified_exec::UnifiedExecContext;
+use crate::unified_exec::UnifiedExecError;
 use crate::unified_exec::WriteStdinInteractionEvent;
 use crate::unified_exec::WriteStdinRequest;
-use codex_protocol::protocol::TerminalWaitInfo;
-use codex_protocol::protocol::TerminalWaitPrimitive;
 use codex_tools::ToolName;
 use codex_tools::ToolSpec;
 use serde::Deserialize;
@@ -19,14 +21,10 @@ use serde::Deserialize;
 use super::super::shell_spec::create_write_stdin_tool;
 use super::TerminalWaitArgs;
 use super::complete_terminal_wait;
-use super::effective_max_output_tokens;
 use super::post_unified_exec_tool_use_payload;
-use super::unified_exec_blocking_wait_capability;
 
 #[derive(Debug, Deserialize)]
 struct WriteStdinArgs {
-    // The model is trained on `session_id`.
-    session_id: i32,
     #[serde(default)]
     chars: String,
     #[serde(default = "super::default_write_stdin_yield_time_ms")]
@@ -34,9 +32,22 @@ struct WriteStdinArgs {
     #[serde(default)]
     max_output_tokens: Option<usize>,
     #[serde(default)]
-    return_on_output: bool,
-    #[serde(flatten)]
-    terminal_wait: TerminalWaitArgs,
+    wait_until_terminal: bool,
+    #[serde(default)]
+    max_wait_ms: Option<u64>,
+    #[serde(default)]
+    heartbeat_interval_ms: Option<u64>,
+}
+
+impl WriteStdinArgs {
+    fn parse(payload: &ToolPayload) -> Result<Self, FunctionCallError> {
+        let ToolPayload::Function { arguments } = payload else {
+            return Err(FunctionCallError::RespondToModel(
+                "write_stdin handler received unsupported payload".to_string(),
+            ));
+        };
+        parse_arguments(arguments)
+    }
 }
 
 pub struct WriteStdinHandler;
@@ -54,7 +65,10 @@ impl ToolExecutor<ToolInvocation> for WriteStdinHandler {
         true
     }
 
-    fn handle(&self, invocation: ToolInvocation) -> codex_tools::ToolExecutorFuture<'_> {
+    fn handle<'a>(&'a self, invocation: ToolInvocation) -> codex_tools::ToolExecutorFuture<'a>
+    where
+        ToolInvocation: 'a,
+    {
         Box::pin(self.handle_call(invocation))
     }
 }
@@ -67,95 +81,84 @@ impl WriteStdinHandler {
         let ToolInvocation {
             session,
             turn,
-            payload,
+            step_context,
             cancellation_token,
+            call_id,
+            payload,
+            environments,
             ..
         } = invocation;
 
-        let arguments = match payload {
-            ToolPayload::Function { arguments } => arguments,
-            _ => {
-                return Err(FunctionCallError::RespondToModel(
-                    "write_stdin handler received unsupported payload".to_string(),
-                ));
-            }
-        };
-
-        let args: WriteStdinArgs = parse_arguments(&arguments)?;
-        if args.return_on_output && args.terminal_wait.wait_until_terminal {
-            return Err(FunctionCallError::RespondToModel(
-                "return_on_output cannot be combined with wait_until_terminal".to_string(),
+        let ToolEnvironments::Terminal(terminal) = environments else {
+            return Err(FunctionCallError::Fatal(
+                "write_stdin requires a terminal session".to_string(),
             ));
-        }
-        let truncation_policy = turn.model_info.truncation_policy.into();
-        let max_output_tokens = Some(effective_max_output_tokens(
-            args.max_output_tokens,
-            truncation_policy,
-        ));
-        let terminal_wait = if args.terminal_wait.wait_until_terminal {
-            Some(TerminalWaitInfo {
-                primitive: TerminalWaitPrimitive::WriteStdinWaitUntilTerminal,
-                max_wait_ms: args.terminal_wait.max_wait_ms,
-                heartbeat_interval_ms: args.terminal_wait.heartbeat_interval_ms,
-            })
-        } else if args.chars.is_empty() {
-            Some(TerminalWaitInfo {
-                primitive: TerminalWaitPrimitive::WriteStdinEmptyPoll,
-                max_wait_ms: None,
-                heartbeat_interval_ms: None,
-            })
-        } else {
-            None
         };
-        let response = session
-            .services
-            .unified_exec_manager
-            .write_stdin(WriteStdinRequest {
-                process_id: args.session_id,
-                input: &args.chars,
-                yield_time_ms: args.yield_time_ms,
-                empty_input_min_yield_time_ms: MIN_YIELD_TIME_MS,
-                return_on_output: args.return_on_output,
-                max_output_tokens,
-                truncation_policy,
-                interaction_event: Some(WriteStdinInteractionEvent {
-                    session: &session,
-                    turn: &turn,
-                    terminal_wait: terminal_wait.clone(),
-                    emit_when_process_exited: args.terminal_wait.wait_until_terminal,
-                }),
-            })
-            .await
-            .map_err(|err| {
-                FunctionCallError::RespondToModel(format!("write_stdin failed: {err}"))
-            })?;
-        let response = if args.terminal_wait.wait_until_terminal {
-            let Some(capability) = unified_exec_blocking_wait_capability() else {
-                return Ok(boxed_tool_output(response));
-            };
-            complete_terminal_wait(
-                &session.services.unified_exec_manager,
-                response,
-                args.terminal_wait,
-                capability,
-                args.yield_time_ms,
-                &cancellation_token,
+        let args = WriteStdinArgs::parse(&payload)?;
+        let terminal_wait = TerminalWaitArgs {
+            wait_until_terminal: args.wait_until_terminal,
+            max_wait_ms: args.max_wait_ms,
+            heartbeat_interval_ms: args.heartbeat_interval_ms,
+        };
+        let fallback_yield_time_ms = args.yield_time_ms;
+        let manager = &session.services.unified_exec_manager;
+        let context =
+            UnifiedExecContext::new(session.clone(), step_context, cancellation_token, call_id);
+        let response = manager
+            .write_stdin(
+                &context,
+                WriteStdinRequest {
+                    terminal: &terminal,
+                    input: &args.chars,
+                    yield_time_ms: args.yield_time_ms,
+                    max_output_tokens: args.max_output_tokens,
+                    truncation_policy: context
+                        .step_context
+                        .settings
+                        .model_info
+                        .truncation_policy
+                        .into(),
+                    interaction_event: Some(WriteStdinInteractionEvent {
+                        session: &session,
+                        turn: &turn,
+                    }),
+                },
             )
             .await
             .map_err(|err| {
-                FunctionCallError::RespondToModel(format!(
-                    "write_stdin failed while waiting: {err}"
-                ))
-            })?
-        } else {
-            response
-        };
+                let message = match err {
+                    UnifiedExecError::StdinApproval(ToolError::Rejected(reason)) => {
+                        format!("write_stdin rejected: {reason}")
+                    }
+                    UnifiedExecError::StdinApproval(ToolError::Codex(err)) => {
+                        format!("write_stdin approval failed: {err}")
+                    }
+                    err => format!("write_stdin failed: {err}"),
+                };
+                FunctionCallError::RespondToModel(message)
+            })?;
+
+        let response = complete_terminal_wait(
+            manager,
+            &context,
+            response,
+            terminal_wait,
+            fallback_yield_time_ms,
+        )
+        .await
+        .map_err(|err| {
+            FunctionCallError::RespondToModel(format!("write_stdin failed while waiting: {err}"))
+        })?;
 
         Ok(boxed_tool_output(response))
     }
 }
 
 impl CoreToolRuntime for WriteStdinHandler {
+    fn live_environment_resolver(&self) -> Option<LiveEnvironmentResolver> {
+        Some(super::terminal_session_for_input)
+    }
+
     fn matches_kind(&self, payload: &ToolPayload) -> bool {
         matches!(payload, ToolPayload::Function { .. })
     }

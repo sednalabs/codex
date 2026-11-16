@@ -172,12 +172,15 @@ async fn plugin_share_save_uploads_local_plugin() -> Result<()> {
                     share_context: Some(expected_share_context("plugins_123")),
                     source: PluginSource::Remote,
                     installed: true,
+                    installed_at: None,
                     enabled: true,
                     install_policy: PluginInstallPolicy::Available,
                     install_policy_source: None,
                     must_show_installation_interstitial: Some(false),
                     auth_policy: PluginAuthPolicy::OnUse,
                     availability: codex_app_server_protocol::PluginAvailability::Available,
+                    disabled_reason: None,
+                    eligible_plan_types: None,
                     interface: Some(expected_plugin_interface()),
                     keywords: Vec::new(),
                 },
@@ -386,7 +389,8 @@ plugin_sharing = false
             .received_requests()
             .await
             .expect("wiremock should record requests")
-            .is_empty()
+            .iter()
+            .all(|request| request.url.path() == "/backend-api/wham/accounts/check")
     );
     Ok(())
 }
@@ -589,12 +593,15 @@ async fn plugin_share_list_returns_created_workspace_plugins() -> Result<()> {
                     share_context: Some(expected_share_context("plugins_123")),
                     source: PluginSource::Remote,
                     installed: true,
+                    installed_at: None,
                     enabled: true,
                     install_policy: PluginInstallPolicy::Available,
                     install_policy_source: None,
                     must_show_installation_interstitial: Some(false),
                     auth_policy: PluginAuthPolicy::OnUse,
                     availability: codex_app_server_protocol::PluginAvailability::Available,
+                    disabled_reason: None,
+                    eligible_plan_types: None,
                     interface: Some(expected_plugin_interface()),
                     keywords: Vec::new(),
                 },
@@ -1249,12 +1256,15 @@ async fn plugin_share_delete_removes_created_workspace_plugin() -> Result<()> {
                     share_context: Some(expected_share_context("plugins_123")),
                     source: PluginSource::Remote,
                     installed: true,
+                    installed_at: None,
                     enabled: true,
                     install_policy: PluginInstallPolicy::Available,
                     install_policy_source: None,
                     must_show_installation_interstitial: Some(false),
                     auth_policy: PluginAuthPolicy::OnUse,
                     availability: codex_app_server_protocol::PluginAvailability::Available,
+                    disabled_reason: None,
+                    eligible_plan_types: None,
                     interface: Some(expected_plugin_interface()),
                     keywords: Vec::new(),
                 },

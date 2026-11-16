@@ -2,7 +2,6 @@ use crate::auth::SharedAuthProvider;
 use crate::common::ResponseStream;
 use crate::common::ResponsesApiRequest;
 use crate::endpoint::session::EndpointSession;
-use crate::endpoint::session::ProviderRequestAttemptFactory;
 use crate::error::ApiError;
 use crate::provider::Provider;
 use crate::requests::Compression;
@@ -58,16 +57,16 @@ impl<T: HttpTransport> ResponsesClient<T> {
         }
     }
 
-    pub fn with_request_attempt_factory(
-        self,
-        factory: Option<ProviderRequestAttemptFactory<T>>,
-    ) -> Self {
-        Self {
-            session: self.session.with_request_attempt_factory(factory),
-            sse_telemetry: self.sse_telemetry,
-        }
+    pub async fn stream_request(
+        &self,
+        request: ResponsesApiRequest,
+        options: ResponsesOptions,
+    ) -> Result<ResponseStream, ApiError> {
+        self.stream_request_with_observer(request, options, |_| {})
+            .await
     }
 
+    /// Gives the observer a shared copy of the exact JSON before transport dispatch.
     #[instrument(
         name = "responses.stream_request",
         level = "info",
@@ -75,13 +74,14 @@ impl<T: HttpTransport> ResponsesClient<T> {
         fields(
             transport = "responses_http",
             http.method = "POST",
-            api.path = "responses"
+            api.path = "/responses"
         )
     )]
-    pub async fn stream_request(
+    pub async fn stream_request_with_observer(
         &self,
         request: ResponsesApiRequest,
         options: ResponsesOptions,
+        on_encoded: impl FnOnce(&bytes::Bytes),
     ) -> Result<ResponseStream, ApiError> {
         let ResponsesOptions {
             session_id,
@@ -91,10 +91,10 @@ impl<T: HttpTransport> ResponsesClient<T> {
             compression,
             turn_state,
         } = options;
-
         let body = EncodedJsonBody::encode(&request)
             .map_err(|e| ApiError::Stream(format!("failed to encode responses request: {e}")))?;
 
+        on_encoded(body.shared_bytes());
         let mut headers = extra_headers;
         if let Some(ref thread_id) = thread_id {
             insert_header(&mut headers, "x-client-request-id", thread_id);
@@ -108,10 +108,6 @@ impl<T: HttpTransport> ResponsesClient<T> {
             .await
     }
 
-    fn path() -> &'static str {
-        "responses"
-    }
-
     #[instrument(
         name = "responses.stream",
         level = "info",
@@ -119,7 +115,7 @@ impl<T: HttpTransport> ResponsesClient<T> {
         fields(
             transport = "responses_http",
             http.method = "POST",
-            api.path = "responses",
+            api.path = "/responses",
             turn.has_state = turn_state.is_some()
         )
     )]
@@ -152,7 +148,7 @@ impl<T: HttpTransport> ResponsesClient<T> {
             .session
             .stream_encoded_json_with(
                 Method::POST,
-                Self::path(),
+                "/responses",
                 extra_headers,
                 Some(body),
                 |req| {

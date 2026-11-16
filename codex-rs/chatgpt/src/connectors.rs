@@ -6,6 +6,7 @@ use crate::chatgpt_client::chatgpt_get_request_with_timeout;
 use crate::chatgpt_client::chatgpt_post_request_with_timeout;
 
 use codex_connectors::AppInfo;
+use codex_connectors::AppToolPolicyEvaluator;
 use codex_connectors::ConnectorDirectoryCacheContext;
 use codex_connectors::ConnectorDirectoryCacheKey;
 use codex_connectors::ConnectorMetadata;
@@ -21,42 +22,30 @@ pub use codex_core::connectors::list_accessible_connectors_from_mcp_tools_with_m
 pub use codex_core::connectors::list_accessible_connectors_from_mcp_tools_with_options;
 pub use codex_core::connectors::list_accessible_connectors_from_mcp_tools_with_options_and_status;
 pub use codex_core::connectors::list_cached_accessible_connectors_from_mcp_tools;
-pub use codex_core::connectors::with_app_enabled_state;
+use codex_features::RuntimeAuthMode;
 use codex_login::AuthManager;
 use codex_login::CodexAuth;
 use codex_plugin::AppConnectorId;
+use codex_runtime_agent_instance::RuntimeAuthManager;
 use serde::Deserialize;
 use serde::Serialize;
+use std::sync::Arc;
 
 const DIRECTORY_CONNECTORS_TIMEOUT: Duration = Duration::from_secs(60);
 const CONNECTOR_METADATA_TIMEOUT: Duration = Duration::from_secs(60);
 const DEFAULT_APPS_PRODUCT_SKU: &str = "codex";
 
-async fn apps_enabled(config: &Config) -> bool {
+async fn apps_enabled(config: &Config) -> anyhow::Result<bool> {
     let auth_manager =
-        AuthManager::shared_from_config(config, /*enable_codex_api_key_env*/ false).await;
+        AuthManager::shared_from_config(config, /*enable_codex_api_key_env*/ false).await?;
     let auth = auth_manager.auth().await;
-    config
+    Ok(config
         .features
-        .apps_enabled_for_auth(auth.as_ref().is_some_and(CodexAuth::uses_codex_backend))
-}
-
-async fn connector_auth(config: &Config) -> anyhow::Result<CodexAuth> {
-    let auth_manager =
-        AuthManager::shared_from_config(config, /*enable_codex_api_key_env*/ false).await;
-    let auth = auth_manager
-        .auth()
-        .await
-        .ok_or_else(|| anyhow::anyhow!("ChatGPT auth not available"))?;
-    anyhow::ensure!(
-        auth.uses_codex_backend(),
-        "ChatGPT connectors require Codex backend auth"
-    );
-    Ok(auth)
+        .apps_enabled_for_auth(auth.as_ref().is_some_and(CodexAuth::uses_codex_backend)))
 }
 
 pub async fn list_connectors(config: &Config) -> anyhow::Result<Vec<AppInfo>> {
-    if !apps_enabled(config).await {
+    if !apps_enabled(config).await? {
         return Ok(Vec::new());
     }
     let (connectors_result, accessible_result) = tokio::join!(
@@ -65,45 +54,68 @@ pub async fn list_connectors(config: &Config) -> anyhow::Result<Vec<AppInfo>> {
     );
     let connectors = connectors_result?;
     let accessible = accessible_result?;
-    Ok(with_app_enabled_state(
-        merge_connectors_with_accessible(
-            connectors, accessible, /*all_connectors_loaded*/ true,
+    Ok(
+        AppToolPolicyEvaluator::new(&config.config_layer_stack).apply_app_enabled_state(
+            merge_connectors_with_accessible(
+                connectors, accessible, /*all_connectors_loaded*/ true,
+            ),
         ),
-        config,
-    ))
+    )
 }
 
 pub async fn list_all_connectors(config: &Config) -> anyhow::Result<Vec<AppInfo>> {
-    list_all_connectors_with_options(config, /*force_refetch*/ false, &[]).await
+    if !apps_enabled(config).await? {
+        return Ok(Vec::new());
+    }
+    let mut config = config.clone();
+    let (auth, runtime) = crate::chatgpt_client::standalone_auth(&mut config).await?;
+    list_all_connectors_with_options(
+        &config,
+        Some(&auth),
+        runtime.as_ref(),
+        /*force_refetch*/ false,
+        &[],
+    )
+    .await
 }
 
-pub async fn list_cached_all_connectors(
+pub fn list_cached_all_connectors(
     config: &Config,
+    auth: Option<&CodexAuth>,
     plugin_apps: &[AppConnectorId],
 ) -> Option<Vec<AppInfo>> {
-    if !apps_enabled(config).await {
+    if !config
+        .features
+        .apps_enabled_for_auth(auth.is_some_and(CodexAuth::uses_codex_backend))
+    {
         return Some(Vec::new());
     }
 
-    let auth = connector_auth(config).await.ok()?;
-    let cache_context = connector_directory_cache_context(config, &auth);
+    let auth = auth?;
+    let cache_context = connector_directory_cache_context(config, auth);
     let connectors = codex_connectors::cached_directory_connectors(&cache_context)?;
     Some(merge_directory_and_plugin_connectors(
-        connectors,
+        connectors.to_vec(),
         plugin_apps,
     ))
 }
 
 pub async fn list_all_connectors_with_options(
     config: &Config,
+    auth: Option<&CodexAuth>,
+    runtime: Option<&(Arc<RuntimeAuthManager>, RuntimeAuthMode)>,
     force_refetch: bool,
     plugin_apps: &[AppConnectorId],
 ) -> anyhow::Result<Vec<AppInfo>> {
-    if !apps_enabled(config).await {
+    if !config
+        .features
+        .apps_enabled_for_auth(auth.is_some_and(CodexAuth::uses_codex_backend))
+    {
         return Ok(Vec::new());
     }
-    let auth = connector_auth(config).await?;
-    let cache_context = connector_directory_cache_context(config, &auth);
+    let auth = auth.ok_or_else(|| anyhow::anyhow!("ChatGPT auth not available"))?;
+    let runtime = codex_model_provider::runtime_auth_for_url(runtime, &config.chatgpt_base_url)?;
+    let cache_context = connector_directory_cache_context(config, auth);
     let connectors = codex_connectors::list_all_connectors_with_options(
         cache_context,
         auth.is_workspace_account(),
@@ -111,6 +123,8 @@ pub async fn list_all_connectors_with_options(
         |path| async move {
             chatgpt_get_request_with_timeout::<DirectoryListResponse>(
                 config,
+                auth,
+                runtime,
                 path,
                 Some(DIRECTORY_CONNECTORS_TIMEOUT),
             )
@@ -133,9 +147,12 @@ pub struct ConnectorMetadataReadResult {
 ///
 /// The store is created before awaiting the backend request, so a response that arrives after an
 /// account or backend change can only commit to the scope under which it was requested.
+/// Capture `auth` and `config.application_network_policy` together using
+/// `AuthManager::auth_with_http_client_factory` so the request retains that account's policy.
 pub async fn read_connector_metadata(
     config: &Config,
     auth: &CodexAuth,
+    runtime: Option<&(Arc<RuntimeAuthManager>, RuntimeAuthMode)>,
     app_ids: &[String],
     include_tools: bool,
 ) -> anyhow::Result<ConnectorMetadataReadResult> {
@@ -148,6 +165,7 @@ pub async fn read_connector_metadata(
         "ChatGPT account ID not available, please re-run codex login"
     );
 
+    let runtime = codex_model_provider::runtime_auth_for_url(runtime, &config.chatgpt_base_url)?;
     let store = ConnectorMetadataStore::new(
         config.chatgpt_base_url.clone(),
         auth.get_account_id(),
@@ -176,6 +194,7 @@ pub async fn read_connector_metadata(
             },
             CONNECTOR_METADATA_TIMEOUT,
             product_sku,
+            runtime,
         )
         .await?;
         let mut requested_ids = missing_ids.iter().cloned().collect::<HashSet<_>>();

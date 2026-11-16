@@ -1,20 +1,29 @@
+#[path = "plugin_measurement_catalog.rs"]
+mod measurement_catalog;
+pub(crate) use measurement_catalog::fetch_measurement_reference_bundle;
+
 use crate::app_mcp_routing::apply_app_mcp_routing_policy;
+use crate::error_subtype::http_status_sub_error_type;
 use crate::http_client_selector::HttpClientSelector;
 use crate::loader::plugin_app_declarations_from_value;
 use crate::store::PLUGINS_CACHE_DIR;
 use crate::store::PluginStore;
+use chrono::DateTime;
+use chrono::Utc;
 use codex_app_server_protocol::JSONRPCErrorError;
 use codex_app_server_protocol::PluginAuthPolicy;
 use codex_app_server_protocol::PluginAvailability;
+use codex_app_server_protocol::PluginDisabledReason;
 use codex_app_server_protocol::PluginInstallPolicy;
 use codex_app_server_protocol::PluginInstallPolicySource;
 use codex_app_server_protocol::PluginInterface;
 use codex_app_server_protocol::ScheduledTaskSummary;
 use codex_app_server_protocol::SkillInterface;
+use codex_features::RuntimeAuthMode;
 use codex_http_client::ClientRouteClass;
 use codex_http_client::HttpClientFactory;
+use codex_http_client::RequestBuilder;
 use codex_http_client::RouteAwareClientPool;
-use codex_http_client::RouteAwareRequestBuilder;
 use codex_http_client::RouteAwareRequestError;
 use codex_login::CodexAuth;
 use codex_login::default_client::default_headers;
@@ -24,7 +33,9 @@ use codex_plugin::PluginCapabilitySummary;
 use codex_plugin::PluginId;
 use codex_plugin::app_connector_ids_from_declarations;
 use codex_plugin::prompt_safe_plugin_description;
+use codex_runtime_agent_instance::RuntimeAuthSlot;
 use codex_utils_absolute_path::AbsolutePathBuf;
+use http::HeaderMap;
 use http::Method;
 use http::StatusCode;
 use serde::Deserialize;
@@ -43,20 +54,28 @@ use tracing::instrument;
 use url::Url;
 
 mod catalog_cache;
+mod plugin_capabilities;
 mod remote_installed_plugin_sync;
+mod search;
 mod share;
 
 #[cfg(test)]
 #[path = "remote_tests.rs"]
 mod tests;
 
+pub use plugin_capabilities::RemotePluginCapabilities;
 pub use remote_installed_plugin_sync::RemoteInstalledPluginBundleSyncError;
 pub use remote_installed_plugin_sync::RemoteInstalledPluginBundleSyncOutcome;
 pub use remote_installed_plugin_sync::RemotePluginCacheMutationGuard;
+pub use remote_installed_plugin_sync::RemotePluginChange;
 pub use remote_installed_plugin_sync::RemotePluginMaterialization;
 pub use remote_installed_plugin_sync::mark_remote_plugin_cache_mutation_in_flight;
-pub(crate) use remote_installed_plugin_sync::maybe_start_remote_installed_plugin_bundle_sync;
+pub(crate) use remote_installed_plugin_sync::remote_installed_plugin_bundle_sync_gate;
 pub use remote_installed_plugin_sync::sync_remote_installed_plugin_bundles_once;
+pub(crate) use remote_installed_plugin_sync::sync_remote_installed_plugin_bundles_once_with_snapshot;
+pub use search::RemotePluginSearchPage;
+pub use search::RemotePluginSearchRequest;
+pub use search::search_remote_plugins;
 pub use share::RemotePluginShareAccessPolicy;
 pub use share::RemotePluginShareDiscoverability;
 pub use share::RemotePluginSharePrincipal;
@@ -91,9 +110,14 @@ pub const REMOTE_WORKSPACE_SHARED_WITH_ME_UNLISTED_MARKETPLACE_DISPLAY_NAME: &st
 
 const OPENAI_CURATED_REMOTE_COLLECTION_KEY: &str = "vertical";
 const OAI_PRODUCT_SKU_HEADER: &str = "OAI-Product-Sku";
-const CODEX_PRODUCT_SKU: &str = "codex";
+pub(crate) const CODEX_PRODUCT_SKU: &str = "codex";
 const REMOTE_PLUGIN_CATALOG_TIMEOUT: Duration = Duration::from_secs(30);
+// Leave room within the 120-second mutation-gate wait even when successful pages keep arriving.
+const REMOTE_INSTALLED_PLUGINS_FETCH_TIMEOUT: Duration = Duration::from_secs(60);
+// Allow 20,000 installed plugins without unbounded cursor history.
+const MAX_REMOTE_INSTALLED_PLUGIN_PAGES: usize = 100;
 const RECOMMENDED_PLUGINS_TIMEOUT: Duration = Duration::from_secs(5);
+const TOOLING_STATE_TIMEOUT: Duration = Duration::from_millis(250);
 const REMOTE_PLUGIN_LIST_PAGE_LIMIT: u32 = 200;
 const MAX_RECOMMENDED_PLUGINS: usize = 50;
 const MAX_RECOMMENDED_PLUGIN_NAME_LEN: usize = 64;
@@ -131,27 +155,136 @@ const REMOTE_INSTALLED_MARKETPLACE_DISPLAY_ORDER: [(&str, &str); 6] = [
 #[derive(Debug, Clone)]
 pub struct RemotePluginServiceConfig {
     pub chatgpt_base_url: String,
+    pub(crate) product_sku: String,
     pub(crate) http_clients: Arc<dyn HttpClientSelector>,
+    pub(crate) runtime_auth: Option<(RuntimeAuthSlot, RuntimeAuthMode)>,
 }
 
 impl RemotePluginServiceConfig {
+    /// Keeps metadata and subsequent storage requests on the account that starts the operation.
+    pub(crate) fn for_current_account(&self) -> Self {
+        Self {
+            http_clients: self.http_clients.for_current_account(),
+            ..self.clone()
+        }
+    }
+
     /// Creates remote plugin service state from the effective application HTTP configuration.
-    ///
-    /// Keeping the factory mandatory ensures every catalog, mutation, upload, and bundle request
-    /// follows the same outbound proxy policy.
-    pub fn new(chatgpt_base_url: String, http_client_factory: HttpClientFactory) -> Self {
+    /// Every catalog, mutation, upload, and bundle request retains the configured proxy policy.
+    pub fn new(
+        chatgpt_base_url: String,
+        http_client_factory: HttpClientFactory,
+        product_sku: Option<String>,
+    ) -> Self {
         let http_clients =
             RouteAwareClientPool::with_chatgpt_cloudflare_cookies_without_request_logging(
                 http_client_factory,
                 ClientRouteClass::Api,
             );
+        let http_clients: Arc<dyn HttpClientSelector> = Arc::new(http_clients);
         Self {
             chatgpt_base_url,
-            http_clients: Arc::new(http_clients),
+            product_sku: product_sku.unwrap_or_else(|| CODEX_PRODUCT_SKU.to_string()),
+            http_clients,
+            runtime_auth: None,
         }
     }
 
-    pub(crate) fn http_request(&self, method: Method, url: &str) -> RouteAwareRequestBuilder {
+    #[cfg(test)]
+    pub(crate) fn new_with_runtime_auth(
+        chatgpt_base_url: String,
+        http_client_factory: HttpClientFactory,
+        product_sku: Option<String>,
+        runtime_auth: (RuntimeAuthSlot, RuntimeAuthMode),
+    ) -> Self {
+        if codex_http_client::classify_openai_api_url(&chatgpt_base_url)
+            == codex_http_client::OpenAiDestination::Other
+        {
+            return Self::new(chatgpt_base_url, http_client_factory, product_sku);
+        }
+        Self::new_with_selected_runtime_auth(
+            chatgpt_base_url,
+            http_client_factory,
+            product_sku,
+            runtime_auth,
+        )
+    }
+
+    #[cfg(test)]
+    pub(crate) fn new_with_selected_runtime_auth(
+        chatgpt_base_url: String,
+        http_client_factory: HttpClientFactory,
+        product_sku: Option<String>,
+        runtime_auth: (RuntimeAuthSlot, RuntimeAuthMode),
+    ) -> Self {
+        let mut config = Self::new(
+            chatgpt_base_url,
+            http_client_factory.with_sensitive_header_protection(),
+            product_sku,
+        );
+        config.runtime_auth = Some(runtime_auth);
+        config
+    }
+
+    // Keep runtime registration out of callers' async stack frames.
+    pub(crate) fn authenticated_request<'a>(
+        &'a self,
+        method: Method,
+        url: &'a str,
+        auth: &'a CodexAuth,
+    ) -> std::pin::Pin<
+        Box<
+            dyn std::future::Future<Output = Result<RequestBuilder, codex_api::AuthError>>
+                + Send
+                + 'a,
+        >,
+    > {
+        Box::pin(async move {
+            if self.runtime_auth.is_some() {
+                codex_model_provider::validate_runtime_destination(Some(&self.chatgpt_base_url))
+                    .map_err(|error| codex_api::AuthError::Build(error.to_string()))?;
+            }
+            let runtime = self
+                .runtime_auth
+                .as_ref()
+                .map(|(slot, mode)| {
+                    slot.get()
+                        .map(|manager| (Arc::clone(manager), *mode))
+                        .ok_or_else(|| {
+                            codex_api::AuthError::Build(
+                                "runtime authentication has not been initialized".to_string(),
+                            )
+                        })
+                })
+                .transpose()?;
+            let resolved = codex_model_provider::auth_provider_for_request(
+                auth,
+                runtime.as_ref(),
+                &HeaderMap::new(),
+            )
+            .await?;
+            let request = match &resolved.runtime {
+                Some(runtime) => self
+                    .http_clients
+                    .request_for_account(
+                        method,
+                        url,
+                        runtime.http_client_factory().network_policy(),
+                    )
+                    .ok_or_else(|| {
+                        codex_api::AuthError::Build(
+                            "plugin credentials and transport must share the application network policy"
+                                .to_string(),
+                        )
+                    })?,
+                None => self.http_clients.request(method, url),
+            };
+            let headers = resolved.auth.apply_auth_headers(HeaderMap::new()).await?;
+            Ok(request.headers(default_headers()).headers(headers))
+        })
+    }
+
+    pub(crate) fn http_request(&self, method: Method, url: &str) -> RequestBuilder {
         self.http_clients
             .request(method, url)
             .headers(default_headers())
@@ -161,6 +294,14 @@ impl RemotePluginServiceConfig {
 impl PartialEq for RemotePluginServiceConfig {
     fn eq(&self, other: &Self) -> bool {
         self.chatgpt_base_url == other.chatgpt_base_url
+            && self.product_sku == other.product_sku
+            && match (&self.runtime_auth, &other.runtime_auth) {
+                (Some((left, left_mode)), Some((right, right_mode))) => {
+                    Arc::ptr_eq(left, right) && left_mode == right_mode
+                }
+                (None, None) => true,
+                _ => false,
+            }
             && self.http_clients.outbound_proxy_policy()
                 == other.http_clients.outbound_proxy_policy()
     }
@@ -192,6 +333,8 @@ pub enum RemoteMarketplaceSource {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum RemotePluginCatalogCacheMode {
     PreferCache,
+    /// Reuse fresh entries and synchronously refresh missing or stale entries.
+    PreferFreshCache,
     ForceRefetch,
 }
 
@@ -199,6 +342,15 @@ pub enum RemotePluginCatalogCacheMode {
 pub struct RemoteMarketplacesFetchOutcome {
     pub marketplaces: Vec<RemoteMarketplace>,
     pub catalog_cache_refresh_scopes: BTreeSet<RemotePluginScope>,
+    /// Whether any requested directory was served from disk cache, even if it was empty.
+    pub catalog_cache_used: bool,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct RemoteMarketplaceFetchOutcome {
+    pub marketplace: Option<RemoteMarketplace>,
+    /// Whether the requested directory was served from disk cache, even if it was empty.
+    pub catalog_cache_used: bool,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -207,12 +359,16 @@ pub struct RemoteInstalledPlugin {
     pub id: String,
     pub version: Option<String>,
     pub name: String,
+    pub canonical_app_id: Option<String>,
+    pub installed_at: Option<DateTime<Utc>>,
     pub enabled: bool,
     pub install_policy: PluginInstallPolicy,
     pub install_policy_source: Option<PluginInstallPolicySource>,
     pub must_show_installation_interstitial: Option<bool>,
     pub auth_policy: PluginAuthPolicy,
     pub availability: PluginAvailability,
+    pub disabled_reason: Option<PluginDisabledReason>,
+    pub eligible_plan_types: Option<Vec<String>>,
     pub interface: Option<PluginInterface>,
     pub keywords: Vec<String>,
 }
@@ -226,12 +382,15 @@ pub struct RemotePluginSummary {
     pub name: String,
     pub share_context: Option<RemotePluginShareContext>,
     pub installed: bool,
+    pub installed_at: Option<DateTime<Utc>>,
     pub enabled: bool,
     pub install_policy: PluginInstallPolicy,
     pub install_policy_source: Option<PluginInstallPolicySource>,
     pub must_show_installation_interstitial: Option<bool>,
     pub auth_policy: PluginAuthPolicy,
     pub availability: PluginAvailability,
+    pub disabled_reason: Option<PluginDisabledReason>,
+    pub eligible_plan_types: Option<Vec<String>>,
     pub interface: Option<PluginInterface>,
     pub keywords: Vec<String>,
 }
@@ -265,6 +424,7 @@ pub struct RemotePluginDetail {
     pub bundle_download_url: Option<String>,
     pub app_manifest: Option<JsonValue>,
     pub skills: Vec<RemotePluginSkill>,
+    pub onboarding_skill_name: Option<String>,
     pub app_ids: Vec<String>,
     pub app_templates: Vec<RemoteAppTemplate>,
     pub mcp_servers: Vec<String>,
@@ -322,7 +482,6 @@ pub struct RecommendedPlugin {
     pub config_id: String,
     pub remote_plugin_id: String,
     pub display_name: String,
-    pub app_connector_ids: Vec<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -441,8 +600,42 @@ pub enum RemotePluginCatalogError {
     #[error("{0}")]
     UnexpectedResponse(String),
 
+    #[error("installed plugin inventory fetch exceeded its overall time limit")]
+    InstalledPluginsFetchTimeout,
+
     #[error("{0}")]
     CacheRemove(String),
+}
+
+impl RemotePluginCatalogError {
+    /// Stable low-cardinality detail for plugin-install failure telemetry.
+    pub fn sub_error_type(&self) -> Option<String> {
+        match self {
+            Self::UnexpectedStatus { status, .. } => {
+                Some(http_status_sub_error_type(*status).to_string())
+            }
+            Self::AuthRequired
+            | Self::UnsupportedAuthMode
+            | Self::AuthToken(_)
+            | Self::Request { .. }
+            | Self::Decode { .. }
+            | Self::InvalidBaseUrl(_)
+            | Self::InvalidBaseUrlPath
+            | Self::UnknownMarketplace { .. }
+            | Self::UnexpectedPluginId { .. }
+            | Self::UnexpectedSkillName { .. }
+            | Self::UnexpectedEnabledState { .. }
+            | Self::InvalidPluginPath { .. }
+            | Self::PluginShareCheckoutNotAvailable { .. }
+            | Self::Archive { .. }
+            | Self::ArchiveJoin(_)
+            | Self::ArchiveTooLarge { .. }
+            | Self::MissingUploadEtag
+            | Self::UnexpectedResponse(_)
+            | Self::InstalledPluginsFetchTimeout
+            | Self::CacheRemove(_) => None,
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Deserialize, Serialize)]
@@ -455,9 +648,13 @@ pub enum RemotePluginScope {
     Workspace,
 }
 
-impl RemotePluginScope {
-    const CATALOG_CACHE_SCOPES: [Self; 3] = [Self::Global, Self::User, Self::Workspace];
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum RemoteInstalledPluginScope {
+    All,
+    Single(RemotePluginScope),
+}
 
+impl RemotePluginScope {
     fn api_value(self) -> &'static str {
         match self {
             Self::Global => "GLOBAL",
@@ -564,6 +761,8 @@ struct RemotePluginReleaseResponse {
     interface: RemotePluginReleaseInterfaceResponse,
     #[serde(default)]
     skills: Vec<RemotePluginSkillResponse>,
+    #[serde(default)]
+    onboarding_skill_name: Option<String>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     mcp_servers: Vec<RemotePluginMcpServerResponse>,
     scheduled_tasks: Option<Vec<ScheduledTaskSummary>>,
@@ -618,6 +817,8 @@ impl RemotePluginInstallPolicySource {
 struct RemotePluginDirectoryItem {
     id: String,
     name: String,
+    #[serde(default)]
+    canonical_app_id: Option<String>,
     scope: RemotePluginScope,
     #[serde(default)]
     discoverability: Option<RemotePluginShareDiscoverability>,
@@ -638,6 +839,10 @@ struct RemotePluginDirectoryItem {
     authentication_policy: PluginAuthPolicy,
     #[serde(rename = "status", default)]
     availability: PluginAvailability,
+    #[serde(default)]
+    disabled_reason: Option<PluginDisabledReason>,
+    #[serde(default)]
+    eligible_plan_types: Option<Vec<String>>,
     release: RemotePluginReleaseResponse,
 }
 
@@ -680,6 +885,8 @@ struct RemotePluginDirectorySharePrincipal {
 struct RemotePluginInstalledItem {
     #[serde(flatten)]
     plugin: RemotePluginDirectoryItem,
+    #[serde(default)]
+    installed_at: Option<DateTime<Utc>>,
     enabled: bool,
     #[serde(default)]
     disabled_skill_names: Vec<String>,
@@ -691,11 +898,14 @@ struct RemotePluginListResponse {
     pagination: RemotePluginPagination,
 }
 
+#[derive(Deserialize)]
+struct PluginToolingStateResponse {
+    tooling_changed_at: Option<String>,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
 struct RecommendedPluginsResponse {
-    #[serde(default)]
-    enabled: Option<bool>,
-    #[serde(default)]
+    enabled: bool,
     plugins: Vec<RecommendedPluginItem>,
 }
 
@@ -703,18 +913,7 @@ struct RecommendedPluginsResponse {
 struct RecommendedPluginItem {
     id: String,
     name: String,
-    #[serde(default)]
-    status: Option<PluginAvailability>,
-    #[serde(default)]
-    installation_policy: Option<PluginInstallPolicy>,
-    release: RecommendedPluginRelease,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
-struct RecommendedPluginRelease {
     display_name: String,
-    #[serde(default)]
-    app_ids: Vec<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
@@ -745,6 +944,7 @@ pub async fn fetch_remote_marketplaces(
     let auth = ensure_chatgpt_auth(auth)?;
     let mut marketplaces = Vec::new();
     let mut catalog_cache_refresh_scopes = BTreeSet::new();
+    let mut catalog_cache_used = false;
     let needs_workspace_installed = sources.iter().any(|source| {
         matches!(
             source,
@@ -767,6 +967,7 @@ pub async fn fetch_remote_marketplaces(
                         config,
                         auth,
                         scope,
+                        /*collection*/ None,
                         catalog_cache_mode,
                     ),
                     fetch_installed_plugins_for_scope(config, auth, scope),
@@ -774,6 +975,7 @@ pub async fn fetch_remote_marketplaces(
                 if directory_plugins.cache_refresh_needed {
                     catalog_cache_refresh_scopes.insert(scope);
                 }
+                catalog_cache_used |= directory_plugins.catalog_cache_used;
                 if let Some(marketplace) = build_remote_marketplace(
                     scope.marketplace_name(),
                     scope.marketplace_display_name(),
@@ -792,6 +994,7 @@ pub async fn fetch_remote_marketplaces(
                         config,
                         auth,
                         scope,
+                        /*collection*/ None,
                         catalog_cache_mode,
                     ),
                     fetch_installed_plugins_for_scope(config, auth, scope),
@@ -799,6 +1002,7 @@ pub async fn fetch_remote_marketplaces(
                 if directory_plugins.cache_refresh_needed {
                     catalog_cache_refresh_scopes.insert(scope);
                 }
+                catalog_cache_used |= directory_plugins.catalog_cache_used;
                 if let Some(marketplace) = build_remote_marketplace(
                     scope.marketplace_name(),
                     scope.marketplace_display_name(),
@@ -816,12 +1020,14 @@ pub async fn fetch_remote_marketplaces(
                     config,
                     auth,
                     scope,
+                    /*collection*/ None,
                     catalog_cache_mode,
                 )
                 .await?;
                 if directory_plugins.cache_refresh_needed {
                     catalog_cache_refresh_scopes.insert(scope);
                 }
+                catalog_cache_used |= directory_plugins.catalog_cache_used;
                 if let Some(marketplace) = build_remote_marketplace(
                     scope.marketplace_name(),
                     scope.marketplace_display_name(),
@@ -896,6 +1102,7 @@ pub async fn fetch_remote_marketplaces(
     Ok(RemoteMarketplacesFetchOutcome {
         marketplaces,
         catalog_cache_refresh_scopes,
+        catalog_cache_used,
     })
 }
 
@@ -907,7 +1114,9 @@ pub(crate) async fn fetch_and_cache_remote_plugin_catalog(
 ) -> Result<(), RemotePluginCatalogError> {
     let auth = ensure_chatgpt_auth(auth)?;
     let plugins = fetch_directory_plugins_for_scope(config, auth, scope).await?;
-    catalog_cache::write_cached_directory_plugins(codex_home, config, auth, scope, &plugins);
+    catalog_cache::write_cached_directory_plugins(
+        codex_home, config, auth, scope, /*collection*/ None, &plugins,
+    );
     Ok(())
 }
 
@@ -929,8 +1138,40 @@ pub fn invalidate_cached_remote_plugin_catalog_scopes(
         return;
     };
     for scope in scopes {
-        catalog_cache::remove_cached_directory_plugins(codex_home, config, auth, *scope);
+        catalog_cache::remove_cached_directory_plugins(
+            codex_home, config, auth, *scope, /*collection*/ None,
+        );
+        if *scope == RemotePluginScope::Global {
+            catalog_cache::remove_cached_directory_plugins(
+                codex_home,
+                config,
+                auth,
+                *scope,
+                Some(OPENAI_CURATED_REMOTE_COLLECTION_KEY),
+            );
+        }
     }
+}
+
+#[instrument(level = "trace", skip_all)]
+pub(crate) async fn fetch_tooling_changed_at(
+    config: &RemotePluginServiceConfig,
+    auth: Option<&CodexAuth>,
+) -> Result<Option<String>, RemotePluginCatalogError> {
+    let auth = ensure_chatgpt_auth(auth)?;
+    let base_url = config.chatgpt_base_url.trim_end_matches('/');
+    let url = format!("{base_url}/ps/plugins/tooling-state/turtle");
+    let poll = async {
+        let request = authenticated_request(config, Method::GET, &url, auth).await?;
+        let response: PluginToolingStateResponse = send_and_decode(request, &url).await?;
+        Ok(response.tooling_changed_at)
+    };
+    tokio::time::timeout(TOOLING_STATE_TIMEOUT, poll)
+        .await
+        .unwrap_or_else(|_| {
+            tracing::debug!("timed out reading recommendation tooling state");
+            Ok(None)
+        })
 }
 
 #[instrument(level = "trace", skip_all)]
@@ -940,18 +1181,61 @@ pub async fn fetch_recommended_plugins(
 ) -> Result<RecommendedPluginsMode, RemotePluginCatalogError> {
     let auth = ensure_chatgpt_auth(auth)?;
     let base_url = config.chatgpt_base_url.trim_end_matches('/');
-    let mut url = Url::parse(&format!("{base_url}/ps/plugins/suggested"))
+    let mut url = Url::parse(&format!("{base_url}/ps/plugins/suggested/codex"))
         .map_err(RemotePluginCatalogError::InvalidBaseUrl)?;
-    url.query_pairs_mut().append_pair("scope", "GLOBAL");
+    url.query_pairs_mut()
+        .append_pair("scope", "GLOBAL")
+        .append_pair("includeInstalled", "false");
     let url = url.to_string();
-    let request = authenticated_request(config.http_request(Method::GET, &url), auth)
+    let request = authenticated_request(config, Method::GET, &url, auth)
+        .await?
         .timeout(RECOMMENDED_PLUGINS_TIMEOUT);
     let response: RecommendedPluginsResponse = send_and_decode(request, &url).await?;
     Ok(recommended_plugins_mode(response))
 }
 
+#[instrument(level = "trace", skip_all)]
+pub(crate) async fn fetch_recommended_plugin_install_metadata(
+    config: &RemotePluginServiceConfig,
+    auth: Option<&CodexAuth>,
+    plugin_id: &str,
+) -> Result<Option<Vec<String>>, RemotePluginCatalogError> {
+    let auth = ensure_chatgpt_auth(auth)?;
+    let plugin = match fetch_plugin_detail_with_timeout(
+        config,
+        auth,
+        plugin_id,
+        /*include_download_urls*/ false,
+        RECOMMENDED_PLUGINS_TIMEOUT,
+    )
+    .await
+    {
+        Ok(plugin) => plugin,
+        Err(RemotePluginCatalogError::UnexpectedStatus {
+            status: StatusCode::NOT_FOUND,
+            ..
+        }) => return Ok(None),
+        Err(err) => return Err(err),
+    };
+    if plugin.id != plugin_id {
+        return Err(RemotePluginCatalogError::UnexpectedPluginId {
+            expected: plugin_id.to_string(),
+            actual: plugin.id,
+        });
+    }
+    if plugin.availability != PluginAvailability::Available
+        || plugin.installation_policy != PluginInstallPolicy::Available
+    {
+        return Ok(None);
+    }
+
+    let (app_connector_ids, _) =
+        effective_remote_plugin_apps_and_mcp_servers(&plugin.release, auth);
+    Ok(Some(app_connector_ids))
+}
+
 fn recommended_plugins_mode(response: RecommendedPluginsResponse) -> RecommendedPluginsMode {
-    if response.enabled != Some(true) {
+    if !response.enabled {
         return RecommendedPluginsMode::Legacy;
     }
 
@@ -959,12 +1243,6 @@ fn recommended_plugins_mode(response: RecommendedPluginsResponse) -> Recommended
     for plugin in response.plugins {
         if !is_valid_remote_plugin_id(&plugin.id)
             || plugin.name.chars().count() > MAX_RECOMMENDED_PLUGIN_NAME_LEN
-            || plugin
-                .status
-                .is_some_and(|status| status != PluginAvailability::Available)
-            || plugin
-                .installation_policy
-                .is_some_and(|policy| policy != PluginInstallPolicy::Available)
         {
             continue;
         }
@@ -982,19 +1260,10 @@ fn recommended_plugins_mode(response: RecommendedPluginsResponse) -> Recommended
                 continue;
             }
         };
-        let RecommendedPluginRelease {
-            display_name,
-            app_ids,
-        } = plugin.release;
-        let display_name = non_empty_string(Some(&display_name))
+        let display_name = non_empty_string(Some(&plugin.display_name))
             .unwrap_or_else(|| plugin.name.clone())
             .chars()
             .take(MAX_RECOMMENDED_PLUGIN_DISPLAY_NAME_LEN)
-            .collect();
-        let mut seen_app_ids = HashSet::new();
-        let app_connector_ids = app_ids
-            .into_iter()
-            .filter(|app_id| !app_id.is_empty() && seen_app_ids.insert(app_id.clone()))
             .collect();
         let config_id = plugin_id.as_key();
         plugins
@@ -1003,7 +1272,6 @@ fn recommended_plugins_mode(response: RecommendedPluginsResponse) -> Recommended
                 config_id,
                 remote_plugin_id: plugin.id,
                 display_name,
-                app_connector_ids,
             });
     }
 
@@ -1024,30 +1292,13 @@ pub(crate) fn has_fresh_cached_remote_plugin_catalog(
     let Ok(auth) = ensure_chatgpt_auth(auth) else {
         return false;
     };
-    catalog_cache::load_cached_directory_plugins(codex_home, config, auth, scope).is_some_and(
-        |cached| {
-            matches!(
-                cached.freshness,
-                catalog_cache::RemotePluginCatalogCacheFreshness::Fresh
-            )
-        },
+    catalog_cache::has_cached_directory_plugins(
+        codex_home,
+        config,
+        auth,
+        scope,
+        RemotePluginCatalogCacheMode::PreferFreshCache,
     )
-}
-
-pub(crate) fn cached_remote_plugin_catalog_scopes(
-    codex_home: &Path,
-    config: &RemotePluginServiceConfig,
-    auth: Option<&CodexAuth>,
-) -> BTreeSet<RemotePluginScope> {
-    let Ok(auth) = ensure_chatgpt_auth(auth) else {
-        return BTreeSet::new();
-    };
-    RemotePluginScope::CATALOG_CACHE_SCOPES
-        .into_iter()
-        .filter(|scope| {
-            catalog_cache::load_cached_directory_plugins(codex_home, config, auth, *scope).is_some()
-        })
-        .collect()
 }
 
 pub fn cached_global_remote_discoverable_plugins(
@@ -1060,6 +1311,8 @@ pub fn cached_global_remote_discoverable_plugins(
         config,
         auth,
         RemotePluginScope::Global,
+        /*collection*/ None,
+        RemotePluginCatalogCacheMode::PreferCache,
     )
     .map(|cached| cached.plugins)
     .unwrap_or_default()
@@ -1079,26 +1332,34 @@ pub fn cached_global_remote_discoverable_plugins(
 pub async fn fetch_openai_curated_remote_collection_marketplace(
     config: &RemotePluginServiceConfig,
     auth: Option<&CodexAuth>,
-) -> Result<Option<RemoteMarketplace>, RemotePluginCatalogError> {
+    catalog_cache_root: Option<&Path>,
+    catalog_cache_mode: RemotePluginCatalogCacheMode,
+) -> Result<RemoteMarketplaceFetchOutcome, RemotePluginCatalogError> {
     let auth = ensure_chatgpt_auth(auth)?;
     let scope = RemotePluginScope::Global;
     let (directory_plugins, installed_plugins) = tokio::try_join!(
-        fetch_directory_plugins_for_scope_with_collection(
+        fetch_directory_plugins_for_scope_with_cache(
+            catalog_cache_root,
             config,
             auth,
             scope,
-            OPENAI_CURATED_REMOTE_COLLECTION_KEY,
+            Some(OPENAI_CURATED_REMOTE_COLLECTION_KEY),
+            catalog_cache_mode,
         ),
         fetch_installed_plugins_for_scope(config, auth, scope),
     )?;
 
-    build_remote_marketplace(
+    let marketplace = build_remote_marketplace(
         REMOTE_GLOBAL_MARKETPLACE_NAME,
         REMOTE_GLOBAL_MARKETPLACE_DISPLAY_NAME,
-        directory_plugins,
+        directory_plugins.plugins,
         installed_plugins,
         /*include_installed_only*/ false,
-    )
+    )?;
+    Ok(RemoteMarketplaceFetchOutcome {
+        marketplace,
+        catalog_cache_used: directory_plugins.catalog_cache_used,
+    })
 }
 
 fn build_remote_marketplace(
@@ -1138,33 +1399,45 @@ fn build_remote_marketplace(
     }))
 }
 
+/// Selects whether installed-plugin metadata needs display enrichment.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum InstalledPluginDisplayAssets {
+    /// Resolve image URLs and creator names.
+    #[default]
+    Include,
+    /// Skip display lookups; retain stored display fields and execution metadata.
+    Skip,
+}
+
 pub(crate) async fn fetch_remote_installed_plugins(
     config: &RemotePluginServiceConfig,
     auth: Option<&CodexAuth>,
 ) -> Result<Vec<RemoteInstalledPlugin>, RemotePluginCatalogError> {
-    let auth = ensure_chatgpt_auth(auth)?;
-    let global = async {
-        let scope = RemotePluginScope::Global;
-        let installed_plugins = fetch_installed_plugins_for_scope(config, auth, scope).await?;
-        Ok::<_, RemotePluginCatalogError>((scope, installed_plugins))
-    };
-    let workspace = async {
-        let scope = RemotePluginScope::Workspace;
-        let installed_plugins = fetch_installed_plugins_for_scope(config, auth, scope).await?;
-        Ok::<_, RemotePluginCatalogError>((scope, installed_plugins))
-    };
-    let user = async {
-        let scope = RemotePluginScope::User;
-        let installed_plugins = fetch_installed_plugins_for_scope(config, auth, scope).await?;
-        Ok::<_, RemotePluginCatalogError>((scope, installed_plugins))
-    };
+    fetch_remote_installed_plugins_with_display_assets(
+        config,
+        auth,
+        InstalledPluginDisplayAssets::Include,
+    )
+    .await
+}
 
-    let (global, workspace, user) = tokio::try_join!(global, workspace, user)?;
-    let mut installed_plugins = [global, workspace, user]
-        .into_iter()
-        .flat_map(|(_scope, plugins)| plugins)
-        .map(|plugin| remote_installed_plugin_to_cache_entry(&plugin))
-        .collect::<Result<Vec<_>, _>>()?;
+pub(crate) async fn fetch_remote_installed_plugins_with_display_assets(
+    config: &RemotePluginServiceConfig,
+    auth: Option<&CodexAuth>,
+    display_assets: InstalledPluginDisplayAssets,
+) -> Result<Vec<RemoteInstalledPlugin>, RemotePluginCatalogError> {
+    let auth = ensure_chatgpt_auth(auth)?;
+    let mut installed_plugins = fetch_installed_plugins(
+        config,
+        auth,
+        RemoteInstalledPluginScope::All,
+        /*include_download_urls*/ false,
+        display_assets,
+    )
+    .await?
+    .into_iter()
+    .map(|plugin| remote_installed_plugin_to_cache_entry(&plugin))
+    .collect::<Result<Vec<_>, _>>()?;
     installed_plugins.sort_by(|left, right| {
         left.marketplace_name
             .cmp(&right.marketplace_name)
@@ -1195,12 +1468,15 @@ pub fn group_remote_installed_plugins_by_marketplaces(
             name: plugin.name.clone(),
             share_context: None,
             installed: true,
+            installed_at: plugin.installed_at,
             enabled: plugin.enabled,
             install_policy: plugin.install_policy,
             install_policy_source: plugin.install_policy_source,
             must_show_installation_interstitial: plugin.must_show_installation_interstitial,
             auth_policy: plugin.auth_policy,
             availability: plugin.availability,
+            disabled_reason: plugin.disabled_reason,
+            eligible_plan_types: plugin.eligible_plan_types.clone(),
             interface: plugin.interface.clone(),
             keywords: plugin.keywords.clone(),
         };
@@ -1284,7 +1560,7 @@ pub async fn fetch_remote_plugin_skill_detail(
     }
 
     let url = remote_plugin_skill_detail_url(config, plugin_id, skill_name)?;
-    let request = authenticated_request(config.http_request(Method::GET, &url), auth);
+    let request = authenticated_request(config, Method::GET, &url, auth).await?;
     let response: RemotePluginSkillDetailResponse = send_and_decode(request, &url).await?;
     if response.plugin_id != plugin_id {
         return Err(RemotePluginCatalogError::UnexpectedPluginId {
@@ -1359,31 +1635,8 @@ async fn build_remote_plugin_detail(
             enabled: !disabled_skill_names.contains(&skill.name),
         })
         .collect();
-    let mut app_declarations = plugin
-        .release
-        .app_manifest
-        .as_ref()
-        .map(plugin_app_declarations_from_value)
-        .unwrap_or_else(|| app_declarations_from_remote_app_ids(&plugin.release.app_ids));
-    let mut mcp_servers = plugin
-        .release
-        .mcp_servers
-        .iter()
-        .map(|server| (server.key.clone(), ()))
-        .collect::<HashMap<_, _>>();
-    apply_app_mcp_routing_policy(
-        &mut app_declarations,
-        &mut mcp_servers,
-        Some(auth.api_auth_mode()),
-        /*plugin_active*/ true,
-    );
-    let app_ids = app_connector_ids_from_declarations(&app_declarations)
-        .into_iter()
-        .map(|app_id| app_id.0)
-        .collect();
-    let mut mcp_servers = mcp_servers.into_keys().collect::<Vec<_>>();
-    mcp_servers.sort_unstable();
-    mcp_servers.dedup();
+    let (app_ids, mcp_servers) =
+        effective_remote_plugin_apps_and_mcp_servers(&plugin.release, auth);
 
     Ok(RemotePluginDetail {
         marketplace_name,
@@ -1395,6 +1648,7 @@ async fn build_remote_plugin_detail(
         bundle_download_url: plugin.release.bundle_download_url,
         app_manifest: plugin.release.app_manifest,
         skills,
+        onboarding_skill_name: plugin.release.onboarding_skill_name,
         app_ids,
         app_templates: plugin
             .release
@@ -1428,11 +1682,80 @@ fn app_declarations_from_remote_app_ids(app_ids: &[String]) -> Vec<AppDeclaratio
         .collect()
 }
 
+fn effective_remote_plugin_apps_and_mcp_servers(
+    release: &RemotePluginReleaseResponse,
+    auth: &CodexAuth,
+) -> (Vec<String>, Vec<String>) {
+    let mut app_declarations = release
+        .app_manifest
+        .as_ref()
+        .map(plugin_app_declarations_from_value)
+        .unwrap_or_else(|| app_declarations_from_remote_app_ids(&release.app_ids));
+    let mut mcp_servers = release
+        .mcp_servers
+        .iter()
+        .map(|server| (server.key.clone(), ()))
+        .collect::<HashMap<_, _>>();
+    apply_app_mcp_routing_policy(
+        &mut app_declarations,
+        &mut mcp_servers,
+        Some(auth.api_auth_mode()),
+        /*plugin_active*/ true,
+    );
+    let app_ids = app_connector_ids_from_declarations(&app_declarations)
+        .into_iter()
+        .map(|app_id| app_id.0)
+        .collect();
+    let mut mcp_server_names = mcp_servers.into_keys().collect::<Vec<_>>();
+    mcp_server_names.sort_unstable();
+    mcp_server_names.dedup();
+    (app_ids, mcp_server_names)
+}
+
+#[derive(Serialize)]
+struct RemotePluginInstallRequest<'a> {
+    install_attempt_id: &'a str,
+}
+
 pub async fn install_remote_plugin(
+    config: &RemotePluginServiceConfig,
+    auth: Option<&CodexAuth>,
+    marketplace_name: &str,
+    plugin_id: &str,
+) -> Result<RemotePluginInstallResult, RemotePluginCatalogError> {
+    install_remote_plugin_inner(
+        config,
+        auth,
+        marketplace_name,
+        plugin_id,
+        /*install_attempt_id*/ None,
+    )
+    .await
+}
+
+pub async fn install_remote_plugin_with_install_attempt_id(
+    config: &RemotePluginServiceConfig,
+    auth: Option<&CodexAuth>,
+    marketplace_name: &str,
+    plugin_id: &str,
+    install_attempt_id: &str,
+) -> Result<RemotePluginInstallResult, RemotePluginCatalogError> {
+    install_remote_plugin_inner(
+        config,
+        auth,
+        marketplace_name,
+        plugin_id,
+        Some(install_attempt_id),
+    )
+    .await
+}
+
+async fn install_remote_plugin_inner(
     config: &RemotePluginServiceConfig,
     auth: Option<&CodexAuth>,
     _marketplace_name: &str,
     plugin_id: &str,
+    install_attempt_id: Option<&str>,
 ) -> Result<RemotePluginInstallResult, RemotePluginCatalogError> {
     let auth = ensure_chatgpt_auth(auth)?;
     // Remote plugin IDs uniquely identify remote plugins, so the caller-provided
@@ -1444,7 +1767,12 @@ pub async fn install_remote_plugin(
     url.query_pairs_mut()
         .append_pair("includeAppsNeedingAuth", "true");
     let url = url.to_string();
-    let request = authenticated_request(config.http_request(Method::POST, &url), auth);
+    let request = authenticated_request(config, Method::POST, &url, auth).await?;
+    let request = if let Some(install_attempt_id) = install_attempt_id {
+        request.json(&RemotePluginInstallRequest { install_attempt_id })
+    } else {
+        request
+    };
     let response: RemotePluginMutationResponse = send_and_decode(request, &url).await?;
     if response.id != plugin_id {
         return Err(RemotePluginCatalogError::UnexpectedPluginId {
@@ -1502,6 +1830,7 @@ pub async fn resolve_remote_plugin_uninstall_target(
     let fallback_capability_summary = PluginCapabilitySummary {
         config_name: plugin_id.as_key(),
         display_name: plugin.release.display_name,
+        plugin_namespace: Some(plugin_id.plugin_name.clone()),
         description: prompt_safe_plugin_description(Some(&plugin.release.description)),
         has_skills: !plugin.release.skills.is_empty(),
         mcp_server_names,
@@ -1531,7 +1860,7 @@ pub async fn uninstall_remote_plugin(
 
     let base_url = config.chatgpt_base_url.trim_end_matches('/');
     let url = format!("{base_url}/ps/plugins/{remote_plugin_id}/uninstall");
-    let request = authenticated_request(config.http_request(Method::POST, &url), auth);
+    let request = authenticated_request(config, Method::POST, &url, auth).await?;
     let response: RemotePluginMutationResponse = send_and_decode(request, &url).await?;
     if response.id != remote_plugin_id {
         return Err(RemotePluginCatalogError::UnexpectedPluginId {
@@ -1627,6 +1956,7 @@ fn build_remote_plugin_summary(
         name: plugin.name.clone(),
         share_context: remote_plugin_share_context(plugin)?,
         installed: installed_plugin.is_some(),
+        installed_at: installed_plugin.and_then(|installed| installed.installed_at),
         enabled: installed_plugin.is_some_and(|plugin| plugin.enabled),
         install_policy: plugin.installation_policy,
         install_policy_source: plugin
@@ -1635,6 +1965,8 @@ fn build_remote_plugin_summary(
         must_show_installation_interstitial: plugin.must_show_installation_interstitial,
         auth_policy: plugin.authentication_policy,
         availability: plugin.availability,
+        disabled_reason: plugin.disabled_reason,
+        eligible_plan_types: plugin.eligible_plan_types.clone(),
         interface: remote_plugin_interface_to_info(plugin),
         keywords: plugin.release.keywords.clone(),
     })
@@ -1703,14 +2035,23 @@ fn remote_installed_plugin_to_cache_entry(
     installed_plugin: &RemotePluginInstalledItem,
 ) -> Result<RemoteInstalledPlugin, RemotePluginCatalogError> {
     let plugin = &installed_plugin.plugin;
+    let marketplace_name = remote_plugin_canonical_marketplace_name(plugin)?.to_string();
+    PluginId::new(plugin.name.clone(), marketplace_name.clone()).map_err(|err| {
+        RemotePluginCatalogError::UnexpectedResponse(format!(
+            "invalid remote plugin config id for `{}` in `{marketplace_name}`: {err}",
+            plugin.name
+        ))
+    })?;
     // Remote per-skill disabled state (`disabled_skill_names`) is intentionally
     // not projected into skills/list yet; local skills.config remains the
     // supported source for skill enablement.
     Ok(RemoteInstalledPlugin {
-        marketplace_name: remote_plugin_canonical_marketplace_name(plugin)?.to_string(),
+        marketplace_name,
         id: plugin.id.clone(),
         version: plugin.release.version.clone(),
         name: plugin.name.clone(),
+        canonical_app_id: plugin.canonical_app_id.clone(),
+        installed_at: installed_plugin.installed_at,
         enabled: installed_plugin.enabled,
         install_policy: plugin.installation_policy,
         install_policy_source: plugin
@@ -1719,6 +2060,8 @@ fn remote_installed_plugin_to_cache_entry(
         must_show_installation_interstitial: plugin.must_show_installation_interstitial,
         auth_policy: plugin.authentication_policy,
         availability: plugin.availability,
+        disabled_reason: plugin.disabled_reason,
+        eligible_plan_types: plugin.eligible_plan_types.clone(),
         interface: remote_plugin_interface_to_info(plugin),
         keywords: plugin.release.keywords.clone(),
     })
@@ -1848,6 +2191,7 @@ fn normalize_remote_default_prompt(prompt: &str) -> Option<String> {
 struct DirectoryPluginsFetchOutcome {
     plugins: Vec<RemotePluginDirectoryItem>,
     cache_refresh_needed: bool,
+    catalog_cache_used: bool,
 }
 
 async fn fetch_directory_plugins_for_scope_with_cache(
@@ -1855,12 +2199,13 @@ async fn fetch_directory_plugins_for_scope_with_cache(
     config: &RemotePluginServiceConfig,
     auth: &CodexAuth,
     scope: RemotePluginScope,
+    collection: Option<&str>,
     cache_mode: RemotePluginCatalogCacheMode,
 ) -> Result<DirectoryPluginsFetchOutcome, RemotePluginCatalogError> {
-    if cache_mode == RemotePluginCatalogCacheMode::PreferCache
-        && let Some(codex_home) = codex_home
-        && let Some(cached) =
-            catalog_cache::load_cached_directory_plugins(codex_home, config, auth, scope)
+    if let Some(codex_home) = codex_home
+        && let Some(cached) = catalog_cache::load_cached_directory_plugins(
+            codex_home, config, auth, scope, collection, cache_mode,
+        )
     {
         return Ok(DirectoryPluginsFetchOutcome {
             plugins: cached.plugins,
@@ -1868,16 +2213,22 @@ async fn fetch_directory_plugins_for_scope_with_cache(
                 cached.freshness,
                 catalog_cache::RemotePluginCatalogCacheFreshness::Stale
             ),
+            catalog_cache_used: true,
         });
     }
 
-    let plugins = fetch_directory_plugins_for_scope(config, auth, scope).await?;
+    let plugins =
+        fetch_directory_plugins_for_scope_with_optional_collection(config, auth, scope, collection)
+            .await?;
     if let Some(codex_home) = codex_home {
-        catalog_cache::write_cached_directory_plugins(codex_home, config, auth, scope, &plugins);
+        catalog_cache::write_cached_directory_plugins(
+            codex_home, config, auth, scope, collection, &plugins,
+        );
     }
     Ok(DirectoryPluginsFetchOutcome {
         plugins,
         cache_refresh_needed: false,
+        catalog_cache_used: false,
     })
 }
 
@@ -1888,21 +2239,6 @@ async fn fetch_directory_plugins_for_scope(
 ) -> Result<Vec<RemotePluginDirectoryItem>, RemotePluginCatalogError> {
     fetch_directory_plugins_for_scope_with_optional_collection(
         config, auth, scope, /*collection*/ None,
-    )
-    .await
-}
-
-async fn fetch_directory_plugins_for_scope_with_collection(
-    config: &RemotePluginServiceConfig,
-    auth: &CodexAuth,
-    scope: RemotePluginScope,
-    collection: &str,
-) -> Result<Vec<RemotePluginDirectoryItem>, RemotePluginCatalogError> {
-    fetch_directory_plugins_for_scope_with_optional_collection(
-        config,
-        auth,
-        scope,
-        Some(collection),
     )
     .await
 }
@@ -1960,36 +2296,56 @@ async fn fetch_installed_plugins_for_scope(
     auth: &CodexAuth,
     scope: RemotePluginScope,
 ) -> Result<Vec<RemotePluginInstalledItem>, RemotePluginCatalogError> {
-    fetch_installed_plugins_for_scope_with_download_url(
-        config, auth, scope, /*include_download_urls*/ false,
+    fetch_installed_plugins(
+        config,
+        auth,
+        RemoteInstalledPluginScope::Single(scope),
+        /*include_download_urls*/ false,
+        InstalledPluginDisplayAssets::Include,
     )
     .await
 }
 
-async fn fetch_installed_plugins_for_scope_with_download_url(
+async fn fetch_installed_plugins(
     config: &RemotePluginServiceConfig,
     auth: &CodexAuth,
-    scope: RemotePluginScope,
+    scope: RemoteInstalledPluginScope,
     include_download_urls: bool,
+    display_assets: InstalledPluginDisplayAssets,
 ) -> Result<Vec<RemotePluginInstalledItem>, RemotePluginCatalogError> {
-    let mut plugins = Vec::new();
-    let mut page_token = None;
-    loop {
-        let response = get_remote_plugin_installed_page(
-            config,
-            auth,
-            scope,
-            page_token.as_deref(),
-            include_download_urls,
-        )
-        .await?;
-        plugins.extend(response.plugins);
-        let Some(next_page_token) = response.pagination.next_page_token else {
-            break;
-        };
-        page_token = Some(next_page_token);
-    }
-    Ok(plugins)
+    // Only a complete inventory is authoritative: every failure discards all fetched pages
+    // before callers can publish the snapshot or remove plugins absent from it.
+    tokio::time::timeout(REMOTE_INSTALLED_PLUGINS_FETCH_TIMEOUT, async {
+        let mut plugins = Vec::new();
+        let mut page_token = None;
+        let mut seen_tokens = HashSet::new();
+        for _ in 0..MAX_REMOTE_INSTALLED_PLUGIN_PAGES {
+            let response = get_remote_plugin_installed_page(
+                config,
+                auth,
+                scope,
+                page_token.as_deref(),
+                include_download_urls,
+                display_assets,
+            )
+            .await?;
+            plugins.extend(response.plugins);
+            let Some(next_page_token) = response.pagination.next_page_token else {
+                return Ok(plugins);
+            };
+            if !seen_tokens.insert(next_page_token.clone()) {
+                return Err(RemotePluginCatalogError::UnexpectedResponse(
+                    "installed plugin inventory pagination repeated a cursor".to_string(),
+                ));
+            }
+            page_token = Some(next_page_token);
+        }
+        Err(RemotePluginCatalogError::UnexpectedResponse(
+            "installed plugin inventory pagination exceeded its page limit".to_string(),
+        ))
+    })
+    .await
+    .map_err(|_| RemotePluginCatalogError::InstalledPluginsFetchTimeout)?
 }
 
 async fn get_remote_plugin_list_page(
@@ -2012,7 +2368,7 @@ async fn get_remote_plugin_list_page(
         url.query_pairs_mut().append_pair("pageToken", page_token);
     }
     let url = url.to_string();
-    let request = authenticated_request(config.http_request(Method::GET, &url), auth);
+    let request = authenticated_request(config, Method::GET, &url, auth).await?;
     send_and_decode(request, &url).await
 }
 
@@ -2030,31 +2386,40 @@ async fn get_remote_shared_workspace_plugins_page(
         url.query_pairs_mut().append_pair("pageToken", page_token);
     }
     let url = url.to_string();
-    let request = authenticated_request(config.http_request(Method::GET, &url), auth);
+    let request = authenticated_request(config, Method::GET, &url, auth).await?;
     send_and_decode(request, &url).await
 }
 
 async fn get_remote_plugin_installed_page(
     config: &RemotePluginServiceConfig,
     auth: &CodexAuth,
-    scope: RemotePluginScope,
+    scope: RemoteInstalledPluginScope,
     page_token: Option<&str>,
     include_download_urls: bool,
+    display_assets: InstalledPluginDisplayAssets,
 ) -> Result<RemotePluginInstalledResponse, RemotePluginCatalogError> {
     let base_url = config.chatgpt_base_url.trim_end_matches('/');
     let mut url = Url::parse(&format!("{base_url}/ps/plugins/installed"))
         .map_err(RemotePluginCatalogError::InvalidBaseUrl)?;
+    if let RemoteInstalledPluginScope::Single(scope) = scope {
+        url.query_pairs_mut()
+            .append_pair("scope", scope.api_value());
+    }
     url.query_pairs_mut()
-        .append_pair("scope", scope.api_value());
+        .append_pair("limit", &REMOTE_PLUGIN_LIST_PAGE_LIMIT.to_string());
     if include_download_urls {
         url.query_pairs_mut()
             .append_pair("includeDownloadUrls", "true");
+    }
+    if display_assets == InstalledPluginDisplayAssets::Skip {
+        url.query_pairs_mut()
+            .append_pair("includeDisplayAssets", "false");
     }
     if let Some(page_token) = page_token {
         url.query_pairs_mut().append_pair("pageToken", page_token);
     }
     let url = url.to_string();
-    let request = authenticated_request(config.http_request(Method::GET, &url), auth);
+    let request = authenticated_request(config, Method::GET, &url, auth).await?;
     send_and_decode(request, &url).await
 }
 
@@ -2064,6 +2429,23 @@ async fn fetch_plugin_detail(
     plugin_id: &str,
     include_download_urls: bool,
 ) -> Result<RemotePluginDirectoryItem, RemotePluginCatalogError> {
+    fetch_plugin_detail_with_timeout(
+        config,
+        auth,
+        plugin_id,
+        include_download_urls,
+        REMOTE_PLUGIN_CATALOG_TIMEOUT,
+    )
+    .await
+}
+
+async fn fetch_plugin_detail_with_timeout(
+    config: &RemotePluginServiceConfig,
+    auth: &CodexAuth,
+    plugin_id: &str,
+    include_download_urls: bool,
+    timeout: Duration,
+) -> Result<RemotePluginDirectoryItem, RemotePluginCatalogError> {
     let base_url = config.chatgpt_base_url.trim_end_matches('/');
     let mut url = Url::parse(&format!("{base_url}/ps/plugins/{plugin_id}"))
         .map_err(RemotePluginCatalogError::InvalidBaseUrl)?;
@@ -2072,7 +2454,9 @@ async fn fetch_plugin_detail(
             .append_pair("includeDownloadUrls", "true");
     }
     let url = url.to_string();
-    let request = authenticated_request(config.http_request(Method::GET, &url), auth);
+    let request = authenticated_request(config, Method::GET, &url, auth)
+        .await?
+        .timeout(timeout);
     send_and_decode(request, &url).await
 }
 
@@ -2107,18 +2491,23 @@ fn ensure_chatgpt_auth(auth: Option<&CodexAuth>) -> Result<&CodexAuth, RemotePlu
     Ok(auth)
 }
 
-fn authenticated_request(
-    request: RouteAwareRequestBuilder,
+async fn authenticated_request(
+    config: &RemotePluginServiceConfig,
+    method: Method,
+    url: &str,
     auth: &CodexAuth,
-) -> RouteAwareRequestBuilder {
-    request
+) -> Result<RequestBuilder, RemotePluginCatalogError> {
+    Ok(config
+        .authenticated_request(method, url, auth)
+        .await
+        .map_err(std::io::Error::other)
+        .map_err(RemotePluginCatalogError::AuthToken)?
         .timeout(REMOTE_PLUGIN_CATALOG_TIMEOUT)
-        .headers(codex_model_provider::auth_provider_from_auth(auth).to_auth_headers())
-        .header(OAI_PRODUCT_SKU_HEADER, CODEX_PRODUCT_SKU)
+        .header(OAI_PRODUCT_SKU_HEADER, &config.product_sku))
 }
 
 async fn send_and_decode<T: for<'de> Deserialize<'de>>(
-    request: RouteAwareRequestBuilder,
+    request: RequestBuilder,
     url: &str,
 ) -> Result<T, RemotePluginCatalogError> {
     let response = request
@@ -2129,7 +2518,13 @@ async fn send_and_decode<T: for<'de> Deserialize<'de>>(
             source,
         })?;
     let status = response.status();
-    let body = response.text().await.unwrap_or_default();
+    let body = response
+        .text()
+        .await
+        .map_err(|source| RemotePluginCatalogError::Request {
+            url: url.to_string(),
+            source,
+        })?;
     if !status.is_success() {
         return Err(RemotePluginCatalogError::UnexpectedStatus {
             url: url.to_string(),
@@ -2143,3 +2538,7 @@ async fn send_and_decode<T: for<'de> Deserialize<'de>>(
         source,
     })
 }
+
+#[cfg(test)]
+#[path = "remote_runtime_auth_tests.rs"]
+mod runtime_auth_tests;

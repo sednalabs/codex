@@ -46,7 +46,7 @@ pub(crate) async fn on_call_response(
         success,
     };
     if let Err(err) = conversation
-        .submit_if_current(Op::DynamicToolResponse {
+        .submit(Op::DynamicToolResponse {
             id: call_id.clone(),
             response: core_response,
         })
@@ -62,7 +62,7 @@ fn decode_response(value: serde_json::Value) -> (DynamicToolCallResponse, Option
             if response.content_items.iter().any(|item| {
                 matches!(
                     item,
-                    DynamicToolCallOutputContentItem::InputImage { image_url, .. }
+                    DynamicToolCallOutputContentItem::InputImage { image_url }
                         if is_remote_image_url(image_url)
                 )
             }) =>

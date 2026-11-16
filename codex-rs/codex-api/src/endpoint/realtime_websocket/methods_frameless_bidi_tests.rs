@@ -27,6 +27,7 @@ fn session_json_omits_initial_items_when_empty() {
         "instructions".to_string(),
         Vec::new(),
         RealtimeVoice::Marin,
+        /*delegation_ack_filler*/ None,
     );
 
     assert_eq!(
@@ -66,47 +67,36 @@ fn session_json_encodes_role_bearing_initial_items() {
             },
         ],
         RealtimeVoice::Marin,
+        /*delegation_ack_filler*/ None,
     );
 
     assert_eq!(
-        session,
-        json!({
-            "model": "gpt-live",
-            "instructions": "instructions",
-            "audio": {
-                "output": {
-                    "voice": "marin",
-                },
+        session["initial_items"],
+        json!([
+            {
+                "type": "message",
+                "role": "developer",
+                "content": [{
+                    "type": "input_text",
+                    "text": "Remember this.",
+                }],
             },
-            "delegation": {
-                "type": "client",
+            {
+                "type": "message",
+                "role": "user",
+                "content": [{
+                    "type": "input_text",
+                    "text": "What do you remember?",
+                }],
             },
-            "initial_items": [
-                {
-                    "type": "message",
-                    "role": "developer",
-                    "content": [{
-                        "type": "input_text",
-                        "text": "Remember this.",
-                    }],
-                },
-                {
-                    "type": "message",
-                    "role": "user",
-                    "content": [{
-                        "type": "input_text",
-                        "text": "What do you remember?",
-                    }],
-                },
-                {
-                    "type": "message",
-                    "role": "assistant",
-                    "content": [{
-                        "type": "output_text",
-                        "text": "I remember.",
-                    }],
-                },
-            ],
-        })
+            {
+                "type": "message",
+                "role": "assistant",
+                "content": [{
+                    "type": "output_text",
+                    "text": "I remember.",
+                }],
+            },
+        ])
     );
 }

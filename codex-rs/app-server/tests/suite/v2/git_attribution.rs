@@ -14,10 +14,9 @@ use app_test_support::write_chatgpt_auth;
 use app_test_support::write_mock_responses_config_toml_with_chatgpt_base_url;
 use codex_app_server_protocol::LoginAccountResponse;
 use codex_app_server_protocol::RequestId;
+use codex_app_server_protocol::ThreadHistoryMode;
 use codex_app_server_protocol::ThreadResumeParams;
 use codex_app_server_protocol::ThreadResumeResponse;
-use codex_app_server_protocol::ThreadRollbackParams;
-use codex_app_server_protocol::ThreadRollbackResponse;
 use codex_app_server_protocol::ThreadStartParams;
 use codex_app_server_protocol::ThreadStartResponse;
 use codex_app_server_protocol::TurnStartParams;
@@ -25,14 +24,14 @@ use codex_app_server_protocol::UserInput;
 use codex_config::types::AuthCredentialsStoreMode;
 use codex_protocol::models::ContentItem;
 use codex_protocol::models::ResponseItem;
-use codex_protocol::protocol::RolloutItem;
-use codex_protocol::protocol::RolloutLine;
+use codex_rollout::RolloutItem;
 use core_test_support::responses;
 use core_test_support::skip_if_no_network;
 use pretty_assertions::assert_eq;
 use serde::de::DeserializeOwned;
 use serde_json::json;
 use tempfile::TempDir;
+use test_case::test_case;
 use tokio::time::Duration;
 use tokio::time::timeout;
 use wiremock::Mock;
@@ -48,7 +47,7 @@ const DEFAULT_READ_TIMEOUT: Duration = Duration::from_secs(60);
 #[cfg(not(any(target_os = "macos", windows)))]
 const DEFAULT_READ_TIMEOUT: Duration = Duration::from_secs(10);
 const COMMIT_ATTRIBUTION: &str = "Co-authored-by: Codex <noreply@openai.com>";
-const PR_ATTRIBUTION: &str = "Generated with Codex.";
+const PR_ATTRIBUTION: &str = "Generated with [Codex](https://openai.com/codex/).";
 const ATTRIBUTION_DISABLED: &str = "attribution is disabled for the current workspace";
 const LEGACY_COMMIT_ATTRIBUTION_INSTRUCTIONS: &str = "\
 When you write or edit a git commit message, ensure the message ends with this trailer exactly once:
@@ -58,6 +57,161 @@ Rules:
 - Keep existing trailers and append this trailer at the end if missing.
 - Do not duplicate this trailer if it already exists.
 - Keep one blank line between the commit body and trailer block.";
+
+#[derive(Clone, Copy)]
+enum LegacyAttribution {
+    CommitOnly,
+    UnlinkedPullRequest,
+}
+
+#[test_case("dual_header", false; "dual_header")]
+#[test_case("assertion_only", false; "assertion_only")]
+#[test_case("dual_header", true; "dual_header_custom_destination")]
+#[test_case("assertion_only", true; "assertion_only_custom_destination")]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn git_attribution_runtime_auth_uses_request_destination(
+    mode: &str,
+    custom_destination: bool,
+) -> Result<()> {
+    use base64::Engine;
+    use core_test_support::runtime_auth::PROBE_SERVER;
+    use core_test_support::runtime_auth::run_harness_through_proxy;
+
+    skip_if_no_network!(Ok(()));
+    let token = format!(
+        "e30.{}.c2ln",
+        base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(serde_json::to_vec(&json!({
+            "exp": chrono::Utc::now().timestamp() + 3600,
+            "session_id": "session-a", "iss": "https://auth.openai.com",
+            "https://api.openai.com/auth": {
+                "chatgpt_user_id": "user-123", "chatgpt_account_id": "workspace-enabled",
+            },
+        }))?)
+    );
+    if let Ok(server_url) = std::env::var(PROBE_SERVER) {
+        let home = TempDir::new()?;
+        let base_url = if custom_destination {
+            format!("{server_url}/backend-api")
+        } else {
+            "https://chatgpt.com/backend-api".into()
+        };
+        write_mock_responses_config_toml_with_chatgpt_base_url(
+            home.path(),
+            &server_url,
+            &base_url,
+        )?;
+        let config_path = home.path().join("config.toml");
+        let config = std::fs::read_to_string(&config_path)?;
+        std::fs::write(
+            config_path,
+            format!(
+                "{config}\n[features.runtime_agent_instances]\nenabled = {}\nmode = {mode:?}\n",
+                !custom_destination
+            ),
+        )?;
+        write_chatgpt_auth(
+            home.path(),
+            ChatGptAuthFixture::new(&token)
+                .account_id("workspace-enabled")
+                .chatgpt_user_id("user-123")
+                .plan_type("enterprise"),
+            AuthCredentialsStoreMode::File,
+        )?;
+        let mut app = TestAppServer::builder()
+            .with_codex_home(home.path())
+            .with_env_overrides(&[("OPENAI_API_KEY", None), ("CODEX_ACCESS_TOKEN", None)])
+            .build_initialized_with_timeout(DEFAULT_READ_TIMEOUT)
+            .await?;
+        let id = app
+            .send_thread_start_request_with_auto_env(ThreadStartParams {
+                // Extensions retain the harness URL, even when a thread overrides it.
+                config: Some(HashMap::from([
+                    (
+                        "chatgpt_base_url".into(),
+                        json!("https://chatgpt.com/backend-api"),
+                    ),
+                    (
+                        "features.runtime_agent_instances".into(),
+                        json!({"enabled": true, "mode": mode}),
+                    ),
+                ])),
+                ..Default::default()
+            })
+            .await?;
+        let ThreadStartResponse { thread, .. } = read_response(&mut app, id).await?;
+        run_turn(&mut app, &thread.id, "Hello").await?;
+        return Ok(());
+    }
+
+    let server = responses::start_mock_server().await;
+    let response_mock = responses::mount_sse_sequence(
+        &server,
+        vec![create_final_assistant_message_sse_response("Done")?],
+    )
+    .await;
+    Mock::given(method("GET"))
+        .and(path("/backend-api/wham/config/bundle"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({})))
+        .mount(&server)
+        .await;
+    Mock::given(method("POST"))
+        .and(path("/agent/register"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "runtime_agent_instance_id": "runtime-a", "agent_host_id": "host-a",
+            "actor": {"kind": "chatgpt", "user_id": "user-123", "account_id": "workspace-enabled"},
+        })))
+        .expect(1)
+        .mount(&server)
+        .await;
+    Mock::given(method("GET"))
+        .and(path("/backend-api/wham/settings/user"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "commit_attribution_enabled": true,
+        })))
+        .expect(1)
+        .mount(&server)
+        .await;
+    let case = if custom_destination {
+        format!("{mode}_custom_destination")
+    } else {
+        mode.into()
+    };
+    run_harness_through_proxy(
+        &server,
+        &format!("suite::v2::git_attribution::git_attribution_runtime_auth_uses_request_destination::{case}"),
+        /*realtime_target*/ None,
+    )
+    .await?;
+
+    let requests = server
+        .received_requests()
+        .await
+        .context("captured requests")?;
+    let settings = requests
+        .iter()
+        .find(|request| request.url.path() == "/backend-api/wham/settings/user")
+        .context("git-attribution settings request")?;
+    let authorization = settings.headers["authorization"].to_str()?;
+    if custom_destination || mode == "dual_header" {
+        assert!(authorization.starts_with("Bearer e30."));
+    } else {
+        assert!(authorization.starts_with("AgentAssertion 1."));
+    }
+    assert_eq!(
+        settings.headers.contains_key("x-openai-agent-assertion"),
+        !custom_destination && mode == "dual_header",
+    );
+    let model_requests = response_mock.requests();
+    assert_eq!(model_requests.len(), 1);
+    assert!(
+        model_requests[0]
+            .message_input_texts("developer")
+            .join("\n")
+            .contains(COMMIT_ATTRIBUTION)
+    );
+    server.verify().await;
+    Ok(())
+}
 
 #[tokio::test]
 async fn git_attribution_follows_authenticated_workspace_policy() -> Result<()> {
@@ -72,7 +226,7 @@ async fn git_attribution_follows_authenticated_workspace_policy() -> Result<()> 
             "Recovered",
             "Cached",
             "After switch",
-            "After rollback",
+            "After switching back",
         ]
         .into_iter()
         .map(create_final_assistant_message_sse_response)
@@ -140,6 +294,7 @@ async fn git_attribution_follows_authenticated_workspace_policy() -> Result<()> 
                 "chatgpt_base_url".to_string(),
                 json!(format!("{}/backend-api", settings_server.uri())),
             )])),
+            history_mode: Some(ThreadHistoryMode::Legacy),
             ..Default::default()
         })
         .await?;
@@ -159,14 +314,6 @@ async fn git_attribution_follows_authenticated_workspace_policy() -> Result<()> 
     run_turn(&mut app_server, &thread.id, "Turn after workspace switch").await?;
 
     let request_id = app_server
-        .send_thread_rollback_request(ThreadRollbackParams {
-            thread_id: thread.id.clone(),
-            num_turns: 1,
-        })
-        .await?;
-    let _: ThreadRollbackResponse = read_response(&mut app_server, request_id).await?;
-
-    let request_id = app_server
         .send_chatgpt_auth_tokens_login_request(
             "e30.e30.c2ln".to_string(),
             "workspace-enabled".to_string(),
@@ -174,13 +321,13 @@ async fn git_attribution_follows_authenticated_workspace_policy() -> Result<()> 
         )
         .await?;
     let _: LoginAccountResponse = read_response(&mut app_server, request_id).await?;
-    run_turn(&mut app_server, &thread.id, "Turn after rollback").await?;
+    run_turn(&mut app_server, &thread.id, "Turn after switching back").await?;
 
     let requests = response_mock.requests();
     assert_eq!(requests.len(), 5);
     for (request, expected) in requests
         .into_iter()
-        .zip([(0, 0), (1, 0), (1, 0), (1, 1), (1, 0)])
+        .zip([(0, 0), (1, 0), (1, 0), (1, 1), (2, 1)])
     {
         let developer_text = request.message_input_texts("developer").join("\n");
         assert_eq!(
@@ -205,8 +352,12 @@ async fn git_attribution_follows_authenticated_workspace_policy() -> Result<()> 
     Ok(())
 }
 
+#[test_case(LegacyAttribution::CommitOnly; "commit_only")]
+#[test_case(LegacyAttribution::UnlinkedPullRequest; "unlinked_pull_request")]
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn cold_resume_replaces_legacy_attribution_without_duplication() -> Result<()> {
+async fn cold_resume_replaces_legacy_attribution_without_duplication(
+    legacy_attribution: LegacyAttribution,
+) -> Result<()> {
     skip_if_no_network!(Ok(()));
 
     let server = responses::start_mock_server().await;
@@ -275,7 +426,7 @@ async fn cold_resume_replaces_legacy_attribution_without_duplication() -> Result
         status.success(),
         "initial app-server did not exit successfully"
     );
-    replace_attribution_fragment_with_legacy(&rollout_path)?;
+    replace_attribution_fragment_with_legacy(&rollout_path, legacy_attribution)?;
 
     let mut app_server = TestAppServer::builder()
         .with_codex_home(codex_home.path())
@@ -310,7 +461,10 @@ async fn cold_resume_replaces_legacy_attribution_without_duplication() -> Result
     Ok(())
 }
 
-fn replace_attribution_fragment_with_legacy(rollout_path: &Path) -> Result<()> {
+fn replace_attribution_fragment_with_legacy(
+    rollout_path: &Path,
+    legacy_attribution: LegacyAttribution,
+) -> Result<()> {
     let rollout = std::fs::read_to_string(rollout_path)?;
     let mut replaced = false;
     let mut removed_saved_attribution = false;
@@ -318,23 +472,29 @@ fn replace_attribution_fragment_with_legacy(rollout_path: &Path) -> Result<()> {
         .lines()
         .filter(|line| !line.trim().is_empty())
         .map(|line| {
-            let mut line = serde_json::from_str::<RolloutLine>(line)?;
-            if let RolloutItem::ResponseItem(ResponseItem::Message { role, content, .. }) =
-                &mut line.item
+            let mut line = codex_rollout::parse_rollout_line(line)?;
+            if let RolloutItem::ResponseItem(response_item) = &mut line.item
+                && let ResponseItem::Message { role, content, .. } = &mut response_item.item
                 && role == "developer"
             {
                 for item in content {
                     if let ContentItem::InputText { text } = item
                         && text.contains("<git_attribution>")
                     {
-                        *text = LEGACY_COMMIT_ATTRIBUTION_INSTRUCTIONS.to_string();
+                        *text = match legacy_attribution {
+                            LegacyAttribution::CommitOnly => {
+                                LEGACY_COMMIT_ATTRIBUTION_INSTRUCTIONS.to_string()
+                            }
+                            LegacyAttribution::UnlinkedPullRequest => {
+                                text.replace(PR_ATTRIBUTION, "Generated with Codex.")
+                            }
+                        };
                         replaced = true;
                     }
                 }
             }
             if let RolloutItem::WorldState(world_state) = &mut line.item
-                && let Some(state) = world_state.state.as_object_mut()
-                && state.remove("git_attribution").is_some()
+                && world_state.state.remove("git_attribution").is_some()
             {
                 removed_saved_attribution = true;
             }

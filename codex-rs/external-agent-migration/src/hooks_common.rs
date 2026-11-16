@@ -1,5 +1,6 @@
 use crate::invalid_data_error;
-use crate::utils::path_is_missing_without_follow;
+use crate::scope::is_redirected_destination;
+use crate::utils::is_missing_or_empty_text_file;
 use serde_json::Value as JsonValue;
 use std::fs;
 use std::io;
@@ -250,20 +251,10 @@ pub(super) fn copy_hook_scripts(
 }
 
 fn copy_dir_recursive_skip_existing(source: &Path, target: &Path) -> io::Result<()> {
-    match fs::symlink_metadata(target) {
-        Ok(metadata) if metadata.is_dir() => {}
-        Ok(_) => {
-            return Err(io::Error::new(
-                io::ErrorKind::AlreadyExists,
-                format!(
-                    "hook migration target `{}` is not a directory",
-                    target.display()
-                ),
-            ));
-        }
-        Err(err) if err.kind() == io::ErrorKind::NotFound => fs::create_dir_all(target)?,
-        Err(err) => return Err(err),
+    if is_redirected_destination(target)? {
+        return Ok(());
     }
+    fs::create_dir_all(target)?;
     for entry in fs::read_dir(source)? {
         let entry = entry?;
         let source_path = entry.path();
@@ -271,7 +262,10 @@ fn copy_dir_recursive_skip_existing(source: &Path, target: &Path) -> io::Result<
         let file_type = entry.file_type()?;
         if file_type.is_dir() {
             copy_dir_recursive_skip_existing(&source_path, &target_path)?;
-        } else if file_type.is_file() && path_is_missing_without_follow(&target_path)? {
+        } else if file_type.is_file()
+            && !target_path.exists()
+            && !is_redirected_destination(&target_path)?
+        {
             fs::copy(source_path, target_path)?;
         }
     }
@@ -283,19 +277,6 @@ pub(crate) fn json_u64(value: &JsonValue) -> Option<u64> {
         return None;
     }
     value.as_u64().or_else(|| value.as_str()?.parse().ok())
-}
-
-fn is_missing_or_empty_text_file(path: &Path) -> io::Result<bool> {
-    let metadata = match fs::symlink_metadata(path) {
-        Ok(metadata) => metadata,
-        Err(err) if err.kind() == io::ErrorKind::NotFound => return Ok(true),
-        Err(err) => return Err(err),
-    };
-    if !metadata.is_file() {
-        return Ok(false);
-    }
-
-    Ok(fs::read_to_string(path)?.trim().is_empty())
 }
 
 pub(crate) fn external_agent_config_dir() -> String {

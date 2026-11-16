@@ -1,9 +1,12 @@
+use codex_protocol::ThreadId;
 use codex_protocol::protocol::HistoryPosition;
+use codex_rollout::RolloutItem;
 use std::sync::Arc;
 
 use super::LocalThreadStore;
 use super::live_writer;
 use super::model_context;
+use super::rollout_lineage::RolloutLineage;
 use super::thread_history::find_source_turn;
 use super::thread_history::find_visible_turn;
 use crate::ForkBoundary;
@@ -18,7 +21,7 @@ pub(super) async fn prepare(
 ) -> ThreadStoreResult<PreparedFork> {
     let PrepareForkParams {
         thread_id,
-        boundary,
+        ref boundary,
     } = params;
     let source_reservation = store.live_writer_locks.reserve_lifecycle(thread_id).await;
     // Keep the source reserved until persistence and lineage materialization finish, even if the
@@ -38,6 +41,32 @@ pub(super) async fn prepare(
     .map_err(|err| ThreadStoreError::Internal {
         message: format!("failed to resolve fork lineage: {err}"),
     })??;
+    if store.state_db.is_none() {
+        return Err(ThreadStoreError::Unsupported {
+            operation: "prepare_fork",
+        });
+    }
+    let (history_base, model_context, preview_before_compaction) = lineage
+        .read_with_fallback(store, |lineage| {
+            read_fork_history(store, thread_id, boundary, lineage)
+        })
+        .await?;
+    let mut fork = PreparedFork::with_source_reservation(
+        thread_id,
+        history_base,
+        Arc::new(model_context),
+        source_reservation,
+    );
+    fork.preview_before_compaction = preview_before_compaction;
+    Ok(fork)
+}
+
+async fn read_fork_history(
+    store: &LocalThreadStore,
+    thread_id: ThreadId,
+    boundary: &ForkBoundary,
+    lineage: RolloutLineage,
+) -> ThreadStoreResult<(Option<HistoryPosition>, Vec<RolloutItem>, Option<String>)> {
     let source_segment = lineage
         .segments()
         .last()
@@ -50,11 +79,12 @@ pub(super) async fn prepare(
             .iter()
             .take(lineage.segments().len().saturating_sub(1))
         {
-            let _ancestor_writer_guard = store.live_writer_locks.lock(segment.thread_id()).await;
-            super::thread_history_materialization::materialize_to_sqlite(
+            let _ancestor_writer_guard = store.live_writer_locks.lock(segment.rollout_id()).await;
+            super::thread_history_materialization::materialize_to_sqlite_with_reads(
                 store,
-                segment.thread_id(),
+                segment.rollout_id(),
                 segment.rollout_path.as_path(),
+                &lineage.reads,
             )
             .await?;
         }
@@ -62,18 +92,77 @@ pub(super) async fn prepare(
     let source_writer_guard = store.live_writer_locks.lock(thread_id).await;
     super::thread_history_materialization::materialize_to_sqlite(
         store,
-        thread_id,
+        source_segment.rollout_id(),
         source_segment.rollout_path.as_path(),
     )
     .await?;
 
-    let latest_projection_state = super::thread_history::projection_state(store, thread_id)
-        .await?
+    let history_base = history_base_at_boundary(store, thread_id, boundary, &lineage).await?;
+    drop(source_writer_guard);
+    let model_context = model_context::load_for_fork(lineage.clone(), history_base).await?;
+    // The replay may start before the compaction to retain turn settings. If it contains a
+    // compaction, recover the opening preview from the same frozen transcript boundary: the
+    // first retained user turn need not be the original opening turn. This is also safe when
+    // the scanner conservatively returned a full replay.
+    let preview = if may_need_opening_preview(&model_context)
+        && let Some(end) = history_base
+    {
+        let prefix = lineage.truncate_at(end).await?;
+        super::thread_history::first_user_preview(store, &prefix).await?
+    } else {
+        None
+    };
+    Ok((history_base, model_context, preview))
+}
+
+fn may_need_opening_preview(model_context: &[RolloutItem]) -> bool {
+    model_context
+        .iter()
+        .any(|item| matches!(item, RolloutItem::Compacted(_)))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+
+    #[test]
+    fn preview_is_needed_even_when_turn_records_precede_compaction() {
+        let turn: RolloutItem = serde_json::from_value(json!({
+            "type": "event_msg", "payload": {"type": "turn_started", "turn_id": "turn"}
+        }))
+        .expect("turn fixture");
+        let checkpoint: RolloutItem = serde_json::from_value(json!({
+            "type": "compacted", "payload": {
+                "message": "summary", "replacement_history": [], "window_number": 1
+            }
+        }))
+        .expect("checkpoint fixture");
+        assert!(!may_need_opening_preview(std::slice::from_ref(&turn)));
+        assert!(may_need_opening_preview(&[turn, checkpoint]));
+    }
+}
+
+pub(super) async fn history_base_at_boundary(
+    store: &LocalThreadStore,
+    thread_id: ThreadId,
+    boundary: &ForkBoundary,
+    lineage: &RolloutLineage,
+) -> ThreadStoreResult<Option<HistoryPosition>> {
+    let source_segment = lineage
+        .segments()
+        .last()
         .ok_or_else(|| ThreadStoreError::Internal {
-            message: format!("missing projection state for paginated thread {thread_id}"),
+            message: "fork lineage has no source segment".to_string(),
         })?;
+    let latest_projection_state =
+        super::thread_history::projection_state(store, source_segment.rollout_id())
+            .await?
+            .ok_or_else(|| ThreadStoreError::Internal {
+                message: format!("missing projection state for paginated thread {thread_id}"),
+            })?;
     let latest_position = HistoryPosition {
-        thread_id,
+        thread_id: source_segment.rollout_id(),
         end_ordinal_exclusive: latest_projection_state.next_ordinal,
         end_byte_offset: latest_projection_state.next_byte_offset,
     };
@@ -81,7 +170,8 @@ pub(super) async fn prepare(
     let position = match boundary {
         ForkBoundary::Latest => latest_position,
         ForkBoundary::ThroughTurn(turn_id) => {
-            let row = find_visible_turn(pool, &lineage, turn_id.as_str()).await?;
+            let visible = lineage.for_history_page().await?;
+            let row = find_visible_turn(pool, &visible, turn_id.as_str()).await?;
             if row.status == "inProgress" {
                 return Err(ThreadStoreError::InvalidRequest {
                     message: format!("lastTurnId '{turn_id}' identifies an in-progress turn"),
@@ -94,7 +184,7 @@ pub(super) async fn prepare(
                 .rollout_end_byte_offset
                 .ok_or_else(|| missing_turn_position(turn_id.as_str()))?;
             HistoryPosition {
-                thread_id: row.physical_thread_id,
+                thread_id: row.rollout_id,
                 end_ordinal_exclusive: u64::try_from(rollout_end_ordinal)
                     .map_err(|_| invalid_turn_position(turn_id.as_str()))?
                     .checked_add(1)
@@ -104,7 +194,8 @@ pub(super) async fn prepare(
             }
         }
         ForkBoundary::BeforeTurn(turn_id) => {
-            let row = find_source_turn(pool, &lineage, turn_id.as_str()).await?;
+            let visible = lineage.for_history_page().await?;
+            let row = find_source_turn(pool, &visible, turn_id.as_str()).await?;
             if row.rollout_end_ordinal == Some(row.rollout_ordinal) {
                 return Err(ThreadStoreError::InvalidRequest {
                     message: format!("turn {turn_id} does not have a persisted start boundary"),
@@ -114,7 +205,7 @@ pub(super) async fn prepare(
                 .rollout_byte_offset
                 .ok_or_else(|| missing_turn_position(turn_id.as_str()))?;
             HistoryPosition {
-                thread_id: row.physical_thread_id,
+                thread_id: row.rollout_id,
                 end_ordinal_exclusive: u64::try_from(row.rollout_ordinal)
                     .map_err(|_| invalid_turn_position(turn_id.as_str()))?,
                 end_byte_offset: u64::try_from(rollout_byte_offset)
@@ -125,7 +216,7 @@ pub(super) async fn prepare(
     let segment_index = lineage
         .segments()
         .iter()
-        .position(|segment| segment.thread_id() == position.thread_id)
+        .position(|segment| segment.rollout_id() == position.thread_id)
         .ok_or_else(|| ThreadStoreError::Internal {
             message: "fork position is outside the source lineage".to_string(),
         })?;
@@ -145,15 +236,7 @@ pub(super) async fn prepare(
         } else {
             Some(position)
         };
-    drop(source_writer_guard);
-    let model_context = Arc::new(model_context::load_for_fork(lineage, history_base).await?);
-
-    Ok(PreparedFork::new(
-        thread_id,
-        history_base,
-        model_context,
-        source_reservation,
-    ))
+    Ok(history_base)
 }
 
 fn missing_turn_position(turn_id: &str) -> ThreadStoreError {

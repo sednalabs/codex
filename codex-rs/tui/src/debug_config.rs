@@ -6,7 +6,6 @@ use codex_config::CONFIG_TOML_FILE;
 use codex_config::ConfigLayerEntry;
 use codex_config::ConfigLayerSource;
 use codex_config::ConfigLayerStack;
-use codex_config::ConfigLayerStackOrdering;
 use codex_config::ManagedHooksRequirementsToml;
 use codex_config::NetworkConstraints;
 use codex_config::NetworkDomainPermissionToml;
@@ -131,14 +130,11 @@ fn render_debug_config_lines(
             .bold()
             .into(),
     );
-    let layers = stack.get_layers(
-        ConfigLayerStackOrdering::LowestPrecedenceFirst,
-        /*include_disabled*/ true,
-    );
-    if layers.is_empty() {
+    let mut layers = stack.all_layers_low_to_high().peekable();
+    if layers.peek().is_none() {
         lines.push("  <none>".dim().into());
     } else {
-        for (index, layer) in layers.iter().enumerate() {
+        for (index, layer) in layers.enumerate() {
             let source = format_config_layer_source(&layer.name, CONFIG_TOML_FILE);
             let status = if layer.is_disabled() {
                 "disabled"
@@ -207,14 +203,6 @@ fn render_debug_config_lines(
             "feedback.enabled",
             enabled.to_string(),
             Some(&feedback.source),
-        ));
-    }
-
-    if let Some(sandbox_private_desktop) = requirements.windows_sandbox_private_desktop.as_ref() {
-        requirement_lines.push(requirement_line(
-            "windows.sandbox_private_desktop",
-            sandbox_private_desktop.value.to_string(),
-            Some(&sandbox_private_desktop.source),
         ));
     }
 
@@ -340,18 +328,6 @@ fn render_debug_config_lines(
         ));
     }
 
-    if let Some(servers) = requirements_toml.mcp_servers.as_ref() {
-        let value = join_or_empty(servers.keys().cloned().collect::<Vec<_>>());
-        requirement_lines.push(requirement_line(
-            "mcp_servers",
-            value,
-            requirements
-                .mcp_servers
-                .as_ref()
-                .map(|sourced| &sourced.source),
-        ));
-    }
-
     // TODO(gt): Expand this debug output with detailed skills and rules display.
     if requirements_toml.rules.is_some() {
         requirement_lines.push(requirement_line(
@@ -370,8 +346,18 @@ fn render_debug_config_lines(
     }
 
     if let Some(network) = requirements.network.as_ref() {
+        let key = if requirements_toml
+            .permissions
+            .as_ref()
+            .and_then(|permissions| permissions.network.as_ref())
+            .is_some()
+        {
+            "permissions.network"
+        } else {
+            "network_proxy"
+        };
         requirement_lines.push(requirement_line(
-            "experimental_network",
+            key,
             format_network_constraints(&network.value),
             Some(&network.source),
         ));
@@ -408,7 +394,8 @@ fn render_non_file_layer_details(layer: &ConfigLayerEntry) -> Vec<Line<'static>>
         ConfigLayerSource::Mdm { .. }
         | ConfigLayerSource::EnterpriseManaged { .. }
         | ConfigLayerSource::LegacyManagedConfigTomlFromMdm => render_non_file_layer_value(layer),
-        ConfigLayerSource::System { .. }
+        ConfigLayerSource::PackagedDefaults { .. }
+        | ConfigLayerSource::System { .. }
         | ConfigLayerSource::User { .. }
         | ConfigLayerSource::Project { .. }
         | ConfigLayerSource::LegacyManagedConfigTomlFromFile { .. } => Vec::new(),
@@ -471,7 +458,8 @@ fn non_file_layer_value_label(source: &ConfigLayerSource) -> &'static str {
             "MDM value"
         }
         ConfigLayerSource::EnterpriseManaged { .. } => "Enterprise-managed config value",
-        ConfigLayerSource::SessionFlags
+        ConfigLayerSource::PackagedDefaults { .. }
+        | ConfigLayerSource::SessionFlags
         | ConfigLayerSource::System { .. }
         | ConfigLayerSource::User { .. }
         | ConfigLayerSource::Project { .. }
@@ -567,9 +555,11 @@ fn format_network_constraints(network: &NetworkConstraints) -> String {
         dangerously_allow_non_loopback_proxy,
         dangerously_allow_all_unix_sockets,
         domains,
+        review_domains,
         managed_allowed_domains_only,
         unix_sockets,
         allow_local_binding,
+        header_injections,
     } = network;
 
     if let Some(enabled) = enabled {
@@ -600,6 +590,9 @@ fn format_network_constraints(network: &NetworkConstraints) -> String {
             format_network_permission_entries(&domains.entries, format_network_domain_permission)
         ));
     }
+    if let Some(review_domains) = review_domains {
+        parts.push(format!("review_domains={{{}}}", review_domains.join(", ")));
+    }
     if let Some(managed_allowed_domains_only) = managed_allowed_domains_only {
         parts.push(format!(
             "managed_allowed_domains_only={managed_allowed_domains_only}"
@@ -616,6 +609,19 @@ fn format_network_constraints(network: &NetworkConstraints) -> String {
     }
     if let Some(allow_local_binding) = allow_local_binding {
         parts.push(format!("allow_local_binding={allow_local_binding}"));
+    }
+    if let Some(header_injections) = header_injections {
+        let hosts = header_injections
+            .iter()
+            .map(|rule| rule.host.as_str())
+            .collect::<std::collections::BTreeSet<_>>()
+            .into_iter()
+            .collect::<Vec<_>>()
+            .join(", ");
+        parts.push(format!(
+            "header_injections={} hosts={{{hosts}}}",
+            header_injections.len()
+        ));
     }
 
     join_or_empty(parts)
@@ -672,19 +678,20 @@ mod tests {
     use codex_config::LoaderOverrides;
     use codex_config::ManagedHooksRequirementsToml;
     use codex_config::MatcherGroup;
-    use codex_config::McpServerIdentity;
-    use codex_config::McpServerRequirement;
     use codex_config::NetworkConstraints;
     use codex_config::NetworkDomainPermissionToml;
     use codex_config::NetworkDomainPermissionsToml;
+    use codex_config::NetworkHeaderInjectionToml;
     use codex_config::NetworkUnixSocketPermissionToml;
     use codex_config::NetworkUnixSocketPermissionsToml;
     use codex_config::RequirementSource;
+    use codex_config::RequirementsLayerEntry;
     use codex_config::ResidencyRequirement;
     use codex_config::SandboxModeRequirement;
     use codex_config::Sourced;
     use codex_config::WebSearchModeRequirement;
     use codex_config::WindowsRequirementsToml;
+    use codex_config::compose_requirements;
     use codex_config::sandbox_mode_requirement_for_permission_profile;
     use codex_config::types::FeedbackConfigToml;
     use codex_protocol::config_types::ApprovalsReviewer;
@@ -852,10 +859,6 @@ interrupt_message = false
                 },
                 RequirementSource::LegacyManagedConfigTomlFromMdm,
             )),
-            windows_sandbox_private_desktop: Some(Sourced::new(
-                /*value*/ false,
-                RequirementSource::LegacyManagedConfigTomlFromMdm,
-            )),
             approval_policy: ConstrainedWithSource::new(
                 Constrained::allow_any(AskForApproval::OnRequest.to_core()),
                 Some(RequirementSource::LegacyManagedConfigTomlFromMdm),
@@ -870,17 +873,6 @@ interrupt_message = false
                     file: requirements_file.clone(),
                 }),
             ),
-            mcp_servers: Some(Sourced::new(
-                BTreeMap::from([(
-                    "docs".to_string(),
-                    McpServerRequirement::Identity {
-                        identity: McpServerIdentity::Command {
-                            command: "codex-mcp".to_string(),
-                        },
-                    },
-                )]),
-                RequirementSource::LegacyManagedConfigTomlFromMdm,
-            )),
             enforce_residency: ConstrainedWithSource::new(
                 Constrained::allow_any(Some(ResidencyRequirement::Us)),
                 Some(RequirementSource::LegacyManagedConfigTomlFromMdm),
@@ -904,6 +896,7 @@ interrupt_message = false
             feature_requirements: Some(Sourced::new(
                 FeatureRequirementsToml {
                     entries: BTreeMap::from([("guardian_approval".to_string(), true)]),
+                    ..Default::default()
                 },
                 RequirementSource::LegacyManagedConfigTomlFromMdm,
             )),
@@ -916,6 +909,16 @@ interrupt_message = false
                             NetworkDomainPermissionToml::Allow,
                         )]),
                     }),
+                    review_domains: Some(vec!["api.example.com".to_string()]),
+                    header_injections: Some(vec![NetworkHeaderInjectionToml {
+                        host: "api.example.com".to_string(),
+                        methods: vec!["POST".to_string()],
+                        path_prefixes: vec!["/v1".to_string()],
+                        headers: BTreeMap::from([(
+                            "x-managed-source".to_string(),
+                            "secret-looking-value".to_string(),
+                        )]),
+                    }]),
                     ..Default::default()
                 },
                 RequirementSource::LegacyManagedConfigTomlFromMdm,
@@ -933,9 +936,18 @@ interrupt_message = false
         };
 
         let requirements_toml = ConfigRequirementsToml {
+            config_server: None,
+            application: None,
+            allowed_login_methods: None,
+            allowed_chatgpt_workspaces: None,
+            cli_auth_credentials_store: None,
+            chatgpt_base_url: None,
             sqlite_home: Some(sqlite_home),
+            unsafe_enforce_sqlite_journal_mode: None,
             log_dir: Some(log_dir),
             model_catalog_json: Some(model_catalog_json),
+            model_provider: None,
+            model_providers: None,
             check_for_update_on_startup: Some(false),
             allow_login_shell: Some(false),
             feedback: Some(FeedbackConfigToml {
@@ -951,32 +963,33 @@ interrupt_message = false
             allow_managed_hooks_only: Some(true),
             allow_appshots: Some(false),
             allow_remote_control: Some(false),
+            allow_browser_and_computer_use: None,
             computer_use: None,
             browser_use: None,
+            in_app_browser: None,
             windows: Some(WindowsRequirementsToml {
                 allowed_sandbox_implementations: None,
-                sandbox_private_desktop: Some(false),
+                allow_mxc: None,
+                require_mxc: None,
             }),
+            additional_developer_instructions: None,
             guardian_policy_config: Some("Use the managed guardian policy.".to_string()),
+            guardian_extra_policy: None,
             feature_requirements: Some(FeatureRequirementsToml {
                 entries: BTreeMap::from([("guardian_approval".to_string(), true)]),
+                ..Default::default()
             }),
             hooks: None,
-            mcp_servers: Some(BTreeMap::from([(
-                "docs".to_string(),
-                McpServerRequirement::Identity {
-                    identity: McpServerIdentity::Command {
-                        command: "codex-mcp".to_string(),
-                    },
-                },
-            )])),
+            mcp_servers: None,
             plugins: None,
             marketplaces: None,
+            otel: None,
             apps: None,
             rules: None,
             enforce_residency: Some(ResidencyRequirement::Us),
             network: None,
             permissions: None,
+            auto_review: None,
             models: None,
         };
 
@@ -1036,13 +1049,13 @@ interrupt_message = false
         assert!(rendered.contains(&format!(
             "features: guardian_approval=true (source: {requirements_source})"
         )));
-        assert!(rendered.contains("mcp_servers: docs (source: MDM managed_config.toml (legacy))"));
         assert!(rendered.contains(&format!(
             "enforce_residency: us (source: {requirements_source})"
         )));
         assert!(rendered.contains(&format!(
-            "experimental_network: enabled=true, domains={{example.com=allow}} (source: {requirements_source})"
+            "network_proxy: enabled=true, domains={{example.com=allow}}, review_domains={{api.example.com}}, header_injections=1 hosts={{api.example.com}} (source: {requirements_source})"
         )));
+        assert!(!rendered.contains("secret-looking-value"));
         assert!(
             rendered.contains(
                 format!(
@@ -1196,8 +1209,36 @@ interrupt_message = false
         let rendered = render_stack_to_text(&stack);
         let requirements_source = (RequirementSource::LegacyManagedConfigTomlFromMdm).to_string();
         assert!(rendered.contains(&format!(
-            "experimental_network: unix_sockets={{/tmp/blocked.sock=deny, /tmp/codex.sock=allow}} (source: {requirements_source})"
+            "network_proxy: unix_sockets={{/tmp/blocked.sock=deny, /tmp/codex.sock=allow}} (source: {requirements_source})"
         )));
+    }
+
+    #[test]
+    fn debug_config_network_requirement_surfaces() {
+        let mut outputs = Vec::new();
+        for table in [
+            "network_proxy",
+            "experimental_network",
+            "permissions.network",
+        ] {
+            let layer = RequirementsLayerEntry::from_toml(
+                RequirementSource::EnterpriseManaged {
+                    id: "network".to_string(),
+                    name: "Network policy".to_string(),
+                },
+                format!("[{table}]\nenabled = true"),
+            );
+            let sourced = compose_requirements([layer])
+                .expect("compose requirements")
+                .expect("managed network requirements");
+            let requirements =
+                ConfigRequirements::try_from(sourced.clone()).expect("valid requirements");
+            let stack = ConfigLayerStack::new(Vec::new(), requirements, sourced.into_toml())
+                .expect("config layer stack");
+            outputs.push(format!("{table}:\n{}", render_stack_to_text(&stack)));
+        }
+
+        insta::assert_snapshot!(outputs.join("\n\n"));
     }
 
     #[test]
@@ -1326,6 +1367,7 @@ approval_policy = "never"
             computer_use: None,
             windows: None,
             guardian_policy_config: None,
+            guardian_extra_policy: None,
             feature_requirements: None,
             hooks: None,
             mcp_servers: None,
@@ -1361,7 +1403,7 @@ approval_policy = "never"
                         std::path::PathBuf::from("/enterprise/hooks")
                     }),
                     windows_managed_dir: Some(std::path::PathBuf::from(r"C:\enterprise\hooks")),
-                    hooks: HookEventsToml {
+                    hooks: Box::new(HookEventsToml {
                         pre_tool_use: vec![MatcherGroup {
                             matcher: Some("^Bash$".to_string()),
                             hooks: vec![HookHandlerConfig::Command {
@@ -1374,7 +1416,7 @@ approval_policy = "never"
                             }],
                         }],
                         ..Default::default()
-                    },
+                    }),
                 }),
                 Some(RequirementSource::LegacyManagedConfigTomlFromMdm),
             )),

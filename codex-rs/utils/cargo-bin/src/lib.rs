@@ -5,6 +5,11 @@ use std::path::PathBuf;
 
 pub use runfiles;
 
+mod executable;
+pub use executable::copy_executable;
+#[cfg(unix)]
+pub use executable::write_executable;
+
 /// Bazel sets this when runfiles directories are disabled, which we do on all platforms for consistency.
 const RUNFILES_MANIFEST_ONLY_ENV: &str = "RUNFILES_MANIFEST_ONLY";
 
@@ -43,28 +48,29 @@ pub fn cargo_bin(name: &str) -> Result<PathBuf, CargoBinError> {
             return resolve_bin_from_env(key, value);
         }
     }
-
-    let current_exe =
-        std::env::current_exe().map_err(|source| CargoBinError::CurrentExe { source })?;
-    let path = cargo_bin_path_from_current_exe(name, &current_exe);
-    if path.exists() {
-        Ok(path)
-    } else {
-        Err(CargoBinError::NotFound {
+    match assert_cmd::Command::cargo_bin(name) {
+        Ok(cmd) => {
+            let mut path = PathBuf::from(cmd.get_program());
+            if !path.is_absolute() {
+                path = std::env::current_dir()
+                    .map_err(|source| CargoBinError::CurrentDir { source })?
+                    .join(path);
+            }
+            if path.exists() {
+                Ok(path)
+            } else {
+                Err(CargoBinError::ResolvedPathDoesNotExist {
+                    key: "assert_cmd::Command::cargo_bin".to_owned(),
+                    path,
+                })
+            }
+        }
+        Err(err) => Err(CargoBinError::NotFound {
             name: name.to_owned(),
             env_keys,
-            fallback: format!("target-dir fallback path {} did not exist", path.display()),
-        })
+            fallback: format!("assert_cmd fallback failed: {err}"),
+        }),
     }
-}
-
-fn cargo_bin_path_from_current_exe(name: &str, current_exe: &Path) -> PathBuf {
-    let mut path = current_exe.to_path_buf();
-    let _current_test_binary = path.pop();
-    if path.ends_with("deps") {
-        let _deps = path.pop();
-    }
-    path.join(format!("{name}{}", std::env::consts::EXE_SUFFIX))
 }
 
 fn cargo_bin_env_keys(name: &str) -> Vec<String> {
@@ -119,6 +125,19 @@ fn resolve_bin_from_env(key: &str, value: OsString) -> Result<PathBuf, CargoBinE
 ///
 /// This is expected to be used exclusively in test code because Codex CLI is a
 /// standalone binary with no packaged resources.
+#[cfg(codex_bazel)]
+#[macro_export]
+macro_rules! find_resource {
+    ($resource:expr) => {{
+        // Capture the caller's package, not the package of this helper crate.
+        $crate::resolve_bazel_runfile(
+            option_env!("BAZEL_PACKAGE"),
+            std::path::Path::new(&$resource),
+        )
+    }};
+}
+
+#[cfg(not(codex_bazel))]
 #[macro_export]
 macro_rules! find_resource {
     ($resource:expr) => {{
@@ -164,9 +183,18 @@ pub fn resolve_bazel_runfile(
     ))
 }
 
+#[cfg(not(codex_bazel))]
 pub fn resolve_cargo_runfile(resource: &Path) -> std::io::Result<PathBuf> {
     let manifest_dir = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"));
     Ok(manifest_dir.join(resource))
+}
+
+#[cfg(codex_bazel)]
+pub fn resolve_cargo_runfile(_resource: &Path) -> std::io::Result<PathBuf> {
+    Err(io::Error::new(
+        io::ErrorKind::Unsupported,
+        "Cargo source-directory lookup is unavailable in Bazel builds; use runfiles",
+    ))
 }
 
 pub fn repo_root() -> io::Result<PathBuf> {
@@ -227,41 +255,4 @@ fn normalize_runfile_path(path: &Path) -> PathBuf {
             acc.push(component.as_os_str());
             acc
         })
-}
-
-#[cfg(test)]
-mod tests {
-    use super::cargo_bin_path_from_current_exe;
-    use std::path::Path;
-    use std::path::PathBuf;
-
-    #[test]
-    fn cargo_bin_path_from_current_exe_strips_deps_component() {
-        let current_exe = Path::new("/tmp/target/debug/deps/codex_protocol-tests");
-
-        let path = cargo_bin_path_from_current_exe("codex", current_exe);
-
-        assert_eq!(
-            path,
-            PathBuf::from(format!(
-                "/tmp/target/debug/codex{}",
-                std::env::consts::EXE_SUFFIX
-            ))
-        );
-    }
-
-    #[test]
-    fn cargo_bin_path_from_current_exe_keeps_non_deps_parent() {
-        let current_exe = Path::new("/tmp/target/debug/codex_protocol-tests");
-
-        let path = cargo_bin_path_from_current_exe("codex", current_exe);
-
-        assert_eq!(
-            path,
-            PathBuf::from(format!(
-                "/tmp/target/debug/codex{}",
-                std::env::consts::EXE_SUFFIX
-            ))
-        );
-    }
 }

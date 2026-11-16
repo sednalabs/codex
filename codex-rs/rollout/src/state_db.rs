@@ -1,3 +1,4 @@
+use crate::RolloutItem;
 use crate::config::RolloutConfig;
 use crate::config::RolloutConfigView;
 use crate::list::Cursor;
@@ -9,7 +10,6 @@ use anyhow::Context;
 use chrono::DateTime;
 use chrono::Utc;
 use codex_protocol::ThreadId;
-use codex_protocol::protocol::RolloutItem;
 use codex_protocol::protocol::SessionSource;
 use codex_protocol::protocol::ThreadHistoryMode;
 pub use codex_state::LogEntry;
@@ -359,9 +359,11 @@ pub async fn list_threads_db(
     allowed_sources: &[SessionSource],
     model_providers: Option<&[String]>,
     cwd_filters: Option<&[PathBuf]>,
+    included_thread_ids: Option<&[ThreadId]>,
     relation_filter: Option<codex_state::ThreadRelationFilter>,
     archived: bool,
-    is_pinned: Option<bool>,
+    section: Option<Option<&str>>,
+    project_id: Option<Option<&str>>,
     search_term: Option<&str>,
 ) -> Option<codex_state::ThreadsPage> {
     let ctx = context?;
@@ -374,7 +376,7 @@ pub async fn list_threads_db(
         return None;
     }
 
-    let anchor = cursor_to_anchor(cursor);
+    let mut anchor = cursor_to_anchor(cursor);
     let allowed_sources: Vec<String> = allowed_sources
         .iter()
         .map(|value| match serde_json::to_value(value) {
@@ -390,63 +392,79 @@ pub async fn list_threads_db(
             .map(|cwd| normalize_cwd_for_state_db(cwd))
             .collect::<Vec<_>>()
     });
-    let filters = codex_state::ThreadFilterOptions {
-        archived_only: archived,
-        is_pinned,
-        allowed_sources: allowed_sources.as_slice(),
-        model_providers: model_providers.as_deref(),
-        cwd_filters: normalized_cwd_filters.as_deref(),
-        anchor: anchor.as_ref(),
-        sort_key: match sort_key {
-            ThreadSortKey::CreatedAt => codex_state::SortKey::CreatedAt,
-            ThreadSortKey::UpdatedAt => codex_state::SortKey::UpdatedAt,
-            ThreadSortKey::RecencyAt => codex_state::SortKey::RecencyAt,
-        },
-        sort_direction: match sort_direction {
-            SortDirection::Asc => codex_state::SortDirection::Asc,
-            SortDirection::Desc => codex_state::SortDirection::Desc,
-        },
-        search_term,
+    let state_sort_key = match sort_key {
+        ThreadSortKey::CreatedAt => codex_state::SortKey::CreatedAt,
+        ThreadSortKey::UpdatedAt => codex_state::SortKey::UpdatedAt,
+        ThreadSortKey::RecencyAt => codex_state::SortKey::RecencyAt,
     };
-    let page = match relation_filter {
-        Some(relation_filter) => {
-            ctx.list_threads_by_relation(page_size, relation_filter, filters)
-                .await
-        }
-        None => ctx.list_threads(page_size, filters).await,
+    let state_sort_direction = match sort_direction {
+        SortDirection::Asc => codex_state::SortDirection::Asc,
+        SortDirection::Desc => codex_state::SortDirection::Desc,
     };
-    match page {
-        Ok(mut page) => {
-            // Relationship-filtered listings intentionally treat persisted state as authoritative.
-            if relation_filter.is_some() {
-                return Some(page);
+
+    let mut items = Vec::with_capacity(page_size);
+    let mut next_anchor = None;
+    let mut num_scanned_rows = 0usize;
+    while items.len() < page_size {
+        let filters = codex_state::ThreadFilterOptions {
+            included_thread_ids,
+            archived_only: archived,
+            section,
+            allowed_sources: allowed_sources.as_slice(),
+            model_providers: model_providers.as_deref(),
+            cwd_filters: normalized_cwd_filters.as_deref(),
+            project_id,
+            anchor: anchor.as_ref(),
+            sort_key: state_sort_key,
+            sort_direction: state_sort_direction,
+            search_term,
+        };
+        let page = match relation_filter {
+            Some(relation) => {
+                ctx.list_threads_by_relation(page_size - items.len(), relation, filters)
+                    .await
             }
-            let mut valid_items = Vec::with_capacity(page.items.len());
-            for item in page.items {
-                if let Some(existing_path) =
-                    crate::compression::existing_rollout_path(item.rollout_path.as_path()).await
-                {
-                    let mut item = item;
-                    item.rollout_path = existing_path;
-                    valid_items.push(item);
-                } else {
-                    warn!(
-                        "state db list_threads returned stale rollout path for thread {}: {}",
-                        item.id,
-                        item.rollout_path.display()
-                    );
-                    warn!("state db discrepancy during list_threads_db: stale_db_path_dropped");
-                    let _ = ctx.delete_thread(item.id).await;
-                }
+            None => ctx.list_threads(page_size - items.len(), filters).await,
+        }
+        .inspect_err(|err| warn!("state db list_threads failed: {err}"))
+        .ok()?;
+        // Parent-scoped listings include empty threads whose rollout may still be pending.
+        if relation_filter
+            .is_some_and(|relation| relation != codex_state::ThreadRelationFilter::IncludeAttached)
+        {
+            return Some(page);
+        }
+        num_scanned_rows = num_scanned_rows.saturating_add(page.num_scanned_rows);
+        next_anchor = page.next_anchor;
+
+        for item in page.items {
+            if let Some(existing_path) =
+                crate::compression::existing_rollout_path(item.rollout_path.as_path()).await
+            {
+                let mut item = item;
+                item.rollout_path = existing_path;
+                items.push(item);
+            } else {
+                warn!(
+                    "state db list_threads returned stale rollout path for thread {}: {}",
+                    item.id,
+                    item.rollout_path.display()
+                );
+                warn!("state db discrepancy during list_threads_db: stale_db_path_retained");
             }
-            page.items = valid_items;
-            Some(page)
         }
-        Err(err) => {
-            warn!("state db list_threads failed: {err}");
-            None
+
+        if items.len() == page_size || next_anchor.is_none() {
+            break;
         }
+        anchor = next_anchor.clone();
     }
+    Some(codex_state::ThreadsPage {
+        items,
+        parent_thread_ids: Default::default(),
+        next_anchor,
+        num_scanned_rows,
+    })
 }
 
 /// Look up the rollout path for a thread id using SQLite.
@@ -509,6 +527,23 @@ pub async fn reconcile_rollout(
         .await;
         return;
     }
+    reconcile_rollout_from_disk(
+        ctx,
+        rollout_path,
+        default_provider,
+        archived_only,
+        /*name_index_home*/ None,
+    )
+    .await;
+}
+
+pub(super) async fn reconcile_rollout_from_disk(
+    ctx: &codex_state::StateRuntime,
+    rollout_path: &Path,
+    default_provider: &str,
+    archived_only: Option<bool>,
+    name_index_home: Option<&Path>,
+) {
     let outcome =
         match metadata::extract_metadata_from_rollout(rollout_path, default_provider).await {
             Ok(outcome) => outcome,
@@ -524,6 +559,15 @@ pub async fn reconcile_rollout(
     let memory_mode = outcome.memory_mode.unwrap_or_else(|| "enabled".to_string());
     metadata.cwd = normalize_cwd_for_state_db(&metadata.cwd);
     let existing_metadata = ctx.get_thread(metadata.id).await.ok().flatten();
+    // Filesystem repair may seed a missing row, but it must not change an existing row's
+    // selected rollout path. After `thread/revert`, a scan can find multiple immutable
+    // rollouts for one thread and cannot know which one SQLite selected.
+    if existing_metadata
+        .as_ref()
+        .is_some_and(|existing| existing.rollout_path.as_path() != rollout_path)
+    {
+        return;
+    }
     // Paginated metadata updates are SQLite-only. Use the rollout mode to seed a
     // missing row, then keep the value from SQLite.
     let restore_memory_mode_from_rollout =
@@ -531,6 +575,14 @@ pub async fn reconcile_rollout(
     if let Some(existing_metadata) = existing_metadata.as_ref() {
         metadata.prefer_existing_git_info(existing_metadata);
         metadata.prefer_existing_explicit_title(existing_metadata);
+    } else if let Some(home) = name_index_home {
+        // The saved name is outside the rollout. Seed it when title search repairs a missing row.
+        // The upsert preserves the database name if another writer creates the row first.
+        metadata.name = crate::find_thread_name_by_id(home, &metadata.id)
+            .await
+            .ok()
+            .flatten()
+            .filter(|name| !name.is_empty());
     }
     match archived_only {
         Some(true) if metadata.archived_at.is_none() => {
@@ -577,6 +629,12 @@ pub async fn read_repair_rollout_path(
     if let Some(thread_id) = thread_id
         && let Ok(Some(metadata)) = ctx.get_thread(thread_id).await
     {
+        // Filesystem repair may seed a missing row, but it must not change an existing row's
+        // selected rollout path. After `thread/revert`, a scan can find multiple immutable
+        // rollouts for one thread and cannot know which one SQLite selected.
+        if metadata.rollout_path.as_path() != rollout_path {
+            return;
+        }
         saw_existing_metadata = true;
         let mut repaired = metadata.clone();
         repaired.rollout_path = rollout_path.to_path_buf();
@@ -641,10 +699,10 @@ pub async fn apply_rollout_items(
     let Some(ctx) = context else {
         return;
     };
-    let mut builder = match builder {
-        Some(builder) => builder.clone(),
+    let mut metadata = Box::new(match builder {
+        Some(builder) => builder.build(default_provider),
         None => match metadata::builder_from_items(items, rollout_path) {
-            Some(builder) => builder,
+            Some(builder) => builder.build(default_provider),
             None => {
                 warn!(
                     "state db apply_rollout_items missing builder during {stage}: {}",
@@ -654,14 +712,11 @@ pub async fn apply_rollout_items(
                 return;
             }
         },
-    };
-    if builder.model_provider.is_none() {
-        builder.model_provider = Some(default_provider.to_string());
-    }
-    builder.rollout_path = rollout_path.to_path_buf();
-    builder.cwd = normalize_cwd_for_state_db(&builder.cwd);
+    });
+    metadata.rollout_path = rollout_path.to_path_buf();
+    metadata.cwd = normalize_cwd_for_state_db(&metadata.cwd);
     if let Err(err) = ctx
-        .apply_rollout_items(&builder, items, new_thread_memory_mode, updated_at_override)
+        .apply_rollout_items(metadata, items, new_thread_memory_mode, updated_at_override)
         .await
     {
         warn!(

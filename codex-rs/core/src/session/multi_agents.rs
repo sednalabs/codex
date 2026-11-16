@@ -1,58 +1,198 @@
+use crate::agent::types::ResolvedMultiAgentV2UsageHints;
+use crate::config::Config;
 use crate::config::MultiAgentV2Config;
-use crate::session::turn_context::TurnContext;
+use crate::context::MultiAgentRoleInstructions;
+use crate::session::step_context::StepContext;
+use codex_model_provider_info::OPENAI_PROVIDER_ID;
+use codex_prompts::ResolvedMessage;
+use codex_prompts::ResolvedModelMessages;
+use codex_prompts::ResolvedMultiAgentMessages;
 use codex_protocol::config_types::MultiAgentMode;
 use codex_protocol::openai_models::ReasoningEffort;
 use codex_protocol::protocol::MultiAgentVersion;
 use codex_protocol::protocol::SessionSource;
 use codex_protocol::protocol::SubAgentSource;
 
-pub(super) fn usage_hint_text<'a>(
-    turn_context: &'a TurnContext,
-    session_source: &SessionSource,
-) -> Option<&'a str> {
+const HOSTED_MULTI_AGENT_SKILL_GUIDANCE: &str = "Before calling any multi-agent tool, read the full multi-agent skill using its listed package locator. Skip the read only if the full skill text is already in your current context. If the read fails, make note of the blocker.";
+
+pub(super) fn multi_agent_mode_is_client_owned(step_context: &StepContext) -> bool {
+    let config = &step_context.turn.as_ref().config;
+    let configured_origin = config
+        .multi_agent_v2
+        .multi_agent_mode_hint_text
+        .as_deref()
+        .map(|text| {
+            config.multi_agent_text_is_client_owned("multi_agent_mode_hint_text", text)
+        });
+    let model_messages = if config.multi_agent_v2.disable_native_tools {
+        ResolvedModelMessages::bundled()
+    } else {
+        ResolvedModelMessages::from_model(&step_context.settings.model_info)
+    };
+    let messages = model_messages.multi_agent();
+    let proactive =
+        step_context.settings.effective_reasoning_effort() == Some(ReasoningEffort::Ultra);
+    let message = match messages.hint {
+        Some(text) => ResolvedMessage::Catalog(text),
+        None if proactive => messages.proactive,
+        None => messages.explicit,
+    };
+    resolved_text_is_client_owned(configured_origin, message, catalog_is_client_owned(config))
+}
+
+pub(super) fn usage_hint_is_client_owned(step_context: &StepContext) -> bool {
+    let turn = step_context.turn.as_ref();
+    let config = &turn.config;
+    let messages = ResolvedModelMessages::from_model(&step_context.settings.model_info).multi_agent();
+    let (key, text, message) = if matches!(
+        &turn.session_source,
+        SessionSource::SubAgent(SubAgentSource::ThreadSpawn { .. })
+    ) {
+        (
+            "subagent_usage_hint_text",
+            config.multi_agent_v2.subagent_usage_hint_text.as_deref(),
+            messages.subagent,
+        )
+    } else {
+        (
+            "root_agent_usage_hint_text",
+            config.multi_agent_v2.root_agent_usage_hint_text.as_deref(),
+            messages.root,
+        )
+    };
+    let configured_origin = text.map(|text| config.multi_agent_text_is_client_owned(key, text));
+    resolved_text_is_client_owned(configured_origin, message, catalog_is_client_owned(config))
+}
+
+fn catalog_is_client_owned(config: &Config) -> bool {
+    config.model_provider_id == OPENAI_PROVIDER_ID
+        && config.model_provider.base_url.is_none()
+        && config.model_catalog.is_none()
+}
+
+fn resolved_text_is_client_owned(
+    configured_origin: Option<bool>,
+    message: ResolvedMessage<'_>,
+    trusted_catalog: bool,
+) -> bool {
+    // Configured text has its own origin. Otherwise retain the selected
+    // message's provenance, even when catalog and bundled text are identical.
+    configured_origin.unwrap_or(match message {
+        ResolvedMessage::Bundled(_) => true,
+        ResolvedMessage::Catalog(_) => trusted_catalog,
+    })
+}
+
+pub(super) fn usage_hint_text(step_context: &StepContext) -> Option<MultiAgentRoleInstructions> {
+    let turn_context = step_context.turn.as_ref();
     if turn_context.multi_agent_version != MultiAgentVersion::V2 {
         return None;
     }
 
-    let multi_agent_v2 = &turn_context.config.multi_agent_v2;
-    configured_usage_hint_text_for_source(multi_agent_v2, session_source)
-}
-
-fn configured_usage_hint_text_for_source<'a>(
-    multi_agent_v2: &'a MultiAgentV2Config,
-    session_source: &SessionSource,
-) -> Option<&'a str> {
-    match session_source {
-        SessionSource::SubAgent(SubAgentSource::ThreadSpawn { .. }) => {
-            multi_agent_v2.subagent_usage_hint_text.as_deref()
-        }
+    let multi_agent_messages =
+        ResolvedModelMessages::from_model(&step_context.settings.model_info).multi_agent();
+    let snapshot = resolve_usage_hints(
+        &turn_context.config.multi_agent_v2,
+        multi_agent_messages,
+        !turn_context.config.update_plan_enabled && turn_context.config.model_catalog.is_none(),
+    );
+    match &turn_context.session_source {
+        SessionSource::SubAgent(SubAgentSource::ThreadSpawn { .. }) => snapshot.subagent,
         SessionSource::Cli
         | SessionSource::VSCode
         | SessionSource::Exec
         | SessionSource::Mcp
         | SessionSource::Custom(_)
-        | SessionSource::Unknown => multi_agent_v2.root_agent_usage_hint_text.as_deref(),
+        | SessionSource::Unknown => snapshot.root,
         SessionSource::Internal(_) | SessionSource::SubAgent(_) => None,
     }
 }
 
-pub(crate) fn effective_multi_agent_mode(turn_context: &TurnContext) -> Option<MultiAgentMode> {
+pub(crate) fn resolve_usage_hints(
+    config: &MultiAgentV2Config,
+    multi_agent_messages: ResolvedMultiAgentMessages<'_>,
+    omit_update_plan_instructions: bool,
+) -> ResolvedMultiAgentV2UsageHints {
+    let resolve_role = |configured: Option<&str>, message: ResolvedMessage<'_>| {
+        // Configured roles take precedence; empty configured or catalog roles suppress fallback.
+        if let Some(configured) = configured {
+            return (!configured.is_empty())
+                .then(|| MultiAgentRoleInstructions::Configured(configured.to_owned()));
+        }
+
+        let base = message.text();
+        if base.is_empty() {
+            return None;
+        }
+        if config.disable_native_tools {
+            return None;
+        }
+        Some(MultiAgentRoleInstructions::Composed {
+            base: base.to_owned(),
+            marked: message.catalog_override().is_some(),
+            omit_update_plan_instructions,
+            max_concurrency: config.max_concurrent_threads_per_session,
+            wait_agent_enabled: config.wait_agent_enabled,
+            expose_model_overrides: config.expose_spawn_agent_model_overrides,
+        })
+    };
+
+    ResolvedMultiAgentV2UsageHints {
+        root: resolve_role(
+            config.root_agent_usage_hint_text.as_deref(),
+            multi_agent_messages.root,
+        ),
+        subagent: resolve_role(
+            config.subagent_usage_hint_text.as_deref(),
+            multi_agent_messages.subagent,
+        ),
+    }
+}
+
+pub(crate) fn effective_multi_agent_mode(step_context: &StepContext) -> Option<MultiAgentMode> {
+    let turn_context = step_context.turn.as_ref();
+    let settings = &step_context.settings;
     if turn_context.multi_agent_version != MultiAgentVersion::V2 {
         return None;
     }
 
-    // A configured hint, including an empty string, defines a custom policy instead of an
-    // effort-derived built-in policy.
-    let multi_agent_mode = match &turn_context
-        .config
-        .multi_agent_v2
+    let config = &turn_context.config.multi_agent_v2;
+    let model_messages = if config.disable_native_tools {
+        ResolvedModelMessages::bundled()
+    } else {
+        ResolvedModelMessages::from_model(&settings.model_info)
+    };
+    let multi_agent_messages = model_messages.multi_agent();
+    let hint = config
         .multi_agent_mode_hint_text
-    {
-        Some(hint_text) => MultiAgentMode::Custom(hint_text.clone()),
-        None => match turn_context.effective_reasoning_effort() {
-            Some(ReasoningEffort::Ultra) => MultiAgentMode::Proactive,
-            _ => MultiAgentMode::ExplicitRequestOnly,
-        },
+        .as_deref()
+        .or(multi_agent_messages.hint);
+    let multi_agent_mode = match hint {
+        Some(text) => MultiAgentMode::Custom(text.to_owned()),
+        None => {
+            let (message, builtin) =
+                if settings.effective_reasoning_effort() == Some(ReasoningEffort::Ultra) {
+                    (multi_agent_messages.proactive, MultiAgentMode::Proactive)
+                } else {
+                    (
+                        multi_agent_messages.explicit,
+                        MultiAgentMode::ExplicitRequestOnly,
+                    )
+                };
+            if config.disable_native_tools {
+                let policy = message
+                    .text()
+                    .replace("collaboration tools", "multi-agent tools");
+                MultiAgentMode::Custom(format!(
+                    "\n{policy}\n\n{HOSTED_MULTI_AGENT_SKILL_GUIDANCE}\n"
+                ))
+            } else {
+                match message {
+                    ResolvedMessage::Catalog(text) => MultiAgentMode::Custom(text.to_owned()),
+                    ResolvedMessage::Bundled(_) => builtin,
+                }
+            }
+        }
     };
 
     match &turn_context.session_source {
@@ -64,5 +204,61 @@ pub(crate) fn effective_multi_agent_mode(turn_context: &TurnContext) -> Option<M
         | SessionSource::Custom(_)
         | SessionSource::Unknown => Some(multi_agent_mode),
         SessionSource::Internal(_) | SessionSource::SubAgent(_) => None,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::multi_agent_mode_is_client_owned;
+    use super::resolved_text_is_client_owned;
+    use super::usage_hint_is_client_owned;
+    use crate::session::step_context::StepContext;
+    use crate::session::tests::make_session_and_context;
+    use codex_prompts::ResolvedMessage;
+    use std::sync::Arc;
+
+    #[tokio::test]
+    async fn instruction_overlay_ownership_follows_resolved_catalog_and_bundled_hints() {
+        let (_session, mut turn) = make_session_and_context().await;
+        let config = Arc::make_mut(&mut turn.config);
+        config.model_provider_id = "synthetic-provider".to_string();
+        config.multi_agent_v2.disable_native_tools = false;
+        config.multi_agent_v2.multi_agent_mode_hint_text = None;
+        config.multi_agent_v2.root_agent_usage_hint_text = None;
+        let mut step = StepContext::for_test(Arc::new(turn));
+        let settings = Arc::make_mut(&mut Arc::make_mut(&mut step).settings);
+        Arc::make_mut(&mut settings.model_info).model_messages = Some(
+            serde_json::from_value(serde_json::json!({
+                "multi_agent": {
+                    "role": { "root": "Synthetic catalog role." },
+                    "mode": { "hint_text": "Synthetic catalog mode." }
+                }
+            }))
+            .expect("synthetic model messages should parse"),
+        );
+        assert!(!multi_agent_mode_is_client_owned(&step));
+        assert!(!usage_hint_is_client_owned(&step));
+
+        let settings = Arc::make_mut(&mut Arc::make_mut(&mut step).settings);
+        Arc::make_mut(&mut settings.model_info).model_messages = None;
+        assert!(multi_agent_mode_is_client_owned(&step));
+        assert!(usage_hint_is_client_owned(&step));
+    }
+
+    #[test]
+    fn instruction_overlay_ownership_tracks_configured_and_resolved_message_sources() {
+        for (configured_origin, message, trusted_catalog, expected) in [
+            (Some(true), ResolvedMessage::Catalog("same text"), false, true),
+            (Some(false), ResolvedMessage::Bundled("same text"), true, false),
+            (None, ResolvedMessage::Bundled("same text"), false, true),
+            (None, ResolvedMessage::Catalog("same text"), false, false),
+            (None, ResolvedMessage::Catalog("same text"), true, true),
+        ] {
+            assert_eq!(
+                resolved_text_is_client_owned(configured_origin, message, trusted_catalog),
+                expected,
+                "{configured_origin:?}, {message:?}, trusted_catalog={trusted_catalog}"
+            );
+        }
     }
 }
