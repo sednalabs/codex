@@ -162,7 +162,7 @@ pub async fn run_http_proxy(
         // lifetime bound, which means it doesn't satisfy `anyhow::Context`'s `StdError` constraint.
         // Wrap it in Rama's `OpaqueError` so we can preserve the original error as a source and
         // still use `anyhow` for chaining.
-        .map_err(|err| err.into_opaque_error())
+        .map_err(rama_core::error::ErrorExt::into_opaque_error)
         .map_err(anyhow::Error::from)
         .with_context(|| format!("bind HTTP proxy: {addr}"))?;
 
@@ -207,6 +207,7 @@ async fn run_http_proxy_with_listener(
     Ok(())
 }
 
+#[cfg(target_os = "windows")]
 pub(crate) fn http_proxy_service(
     state: Arc<NetworkProxyState>,
     policy_decider: Option<Arc<dyn NetworkPolicyDecider>>,
@@ -254,7 +255,7 @@ fn http_proxy_service_with_executor(
                         let executor = executor.clone();
                         move |stream| http_connect_proxy(stream, executor.clone())
                     }),
-                    executor.clone(),
+                    executor,
                 ),
             ),
             RemoveResponseHeaderLayer::hop_by_hop(),
@@ -272,7 +273,7 @@ fn http_proxy_service_with_executor(
 async fn http_connect_accept(
     policy_decider: Option<Arc<dyn NetworkPolicyDecider>>,
     environment_id: Option<String>,
-    mut req: Request,
+    req: Request,
 ) -> Result<(Response, Request), Response> {
     if req.headers().get_all(header::HOST).iter().nth(1).is_some() {
         return Err(text_response(
@@ -584,7 +585,7 @@ where
         ),
     }
 
-    let mut extensions = upgraded.extensions().clone();
+    let extensions = upgraded.extensions().clone();
     if let Some(proxy) = proxy {
         extensions.insert(proxy);
     }
@@ -1135,7 +1136,7 @@ async fn forward_request_credential_destinations(
     let scheme = req
         .uri()
         .scheme()
-        .map(|protocol| protocol.as_str())
+        .map(rama_net::Protocol::as_str)
         .unwrap_or("http");
     // Preserve the legacy parser's raw path for credential scoping.
     let raw_uri = req.uri().as_str();
@@ -1706,7 +1707,7 @@ mod tests {
                     } else {
                         Method::GET
                     })
-                    .uri(request_uri)
+                    .uri(uri.as_str())
                     .header(header::HOST, host_header)
                     .header(header::AUTHORIZATION, format!("Bearer {dummy}"))
                     .body(Body::empty())

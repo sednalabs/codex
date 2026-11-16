@@ -30,7 +30,6 @@ use anyhow::Context as _;
 use anyhow::Result;
 use rama_core::Service;
 use rama_core::error::BoxError;
-use rama_core::error::ErrorExt as _;
 use rama_core::extensions::Extensions;
 use rama_core::extensions::ExtensionsRef;
 use rama_core::graceful::ShutdownGuard;
@@ -80,7 +79,7 @@ pub async fn run_socks5(
         .bind_address(addr)
         .await
         // See `http_proxy.rs` for details on why we wrap `BoxError` before converting to anyhow.
-        .map_err(|err| err.into_opaque_error())
+        .map_err(rama_core::error::ErrorExt::into_opaque_error)
         .map_err(anyhow::Error::from)
         .with_context(|| format!("bind SOCKS5 proxy: {addr}"))?;
 
@@ -156,6 +155,7 @@ async fn run_socks5_with_listener(
     Ok(())
 }
 
+#[cfg(target_os = "windows")]
 pub(crate) fn socks5_proxy_service(
     state: Arc<NetworkProxyState>,
     policy_decider: Option<Arc<dyn NetworkPolicyDecider>>,
@@ -220,7 +220,7 @@ fn socks5_proxy_service_with_executor(
 }
 
 async fn handle_socks5_tcp(
-    mut req: TcpRequest,
+    req: TcpRequest,
     policy_decider: Option<Arc<dyn NetworkPolicyDecider>>,
     environment_id: Option<String>,
 ) -> Result<EstablishedClientConnection<Socks5TcpConnection, TcpRequest>, BoxError> {
@@ -458,7 +458,7 @@ async fn handle_socks5_tcp(
 
     if let Some(mitm_state) = mitm_state {
         let client = client.as_deref().unwrap_or_default();
-        let mut extensions = Extensions::new();
+        let extensions = Extensions::new();
         if let Some(policy) = req.extensions().get_ref::<DialPolicy>() {
             extensions.insert(policy.clone());
         }

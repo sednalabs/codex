@@ -4,7 +4,6 @@
 use anyhow::Context;
 use anyhow::Result;
 use rama_core::Service;
-use rama_core::error::ErrorExt as _;
 use rama_core::extensions::ExtensionsRef;
 use rama_core::io::Io;
 use rama_core::io::PrefixedIo;
@@ -195,7 +194,7 @@ pub(crate) async fn forward_http_request(
         tokio::spawn(async move {
             let result = async {
                 let (mut downstream, mut upstream) = tokio::try_join!(downstream, upstream)
-                    .map_err(|err| err.into_opaque_error())?;
+                    .map_err(rama_core::error::ErrorExt::into_opaque_error)?;
                 tokio::io::copy_bidirectional(&mut downstream, &mut upstream).await?;
                 anyhow::Ok(())
             }

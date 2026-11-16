@@ -365,7 +365,7 @@ impl AwsSigV4Signer {
         let query_text = req
             .uri()
             .query()
-            .map(|query| query.as_encoded_str())
+            .map(rama_net::uri::QueryRef::as_encoded_str)
             .unwrap_or_default();
         let mut query = url::form_urlencoded::parse(query_text.as_bytes());
         ensure!(

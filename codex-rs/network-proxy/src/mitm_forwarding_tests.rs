@@ -311,7 +311,7 @@ async fn signs_only_supported_http1_requests_for_an_http2_origin() {
                     Ok::<_, std::convert::Infallible>(Response::new(Body::empty()))
                 }
             });
-            HttpServer::h2(Executor::default())
+            HttpServer::new_h2(Executor::default())
                 .service(service)
                 .serve(ServiceInput::new(stream))
                 .await
@@ -348,7 +348,7 @@ async fn signs_only_supported_http1_requests_for_an_http2_origin() {
             move |request| handle_mitm_request(request, Arc::clone(&context))
         });
         let guest_server = tokio::spawn(async move {
-            HttpServer::http1()
+            HttpServer::new_http1(Executor::default())
                 .service(handler)
                 .serve(ServiceInput::new(io))
                 .await

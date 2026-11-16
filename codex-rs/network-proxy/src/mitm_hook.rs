@@ -503,7 +503,7 @@ fn query_matches(query_constraints: &[QueryConstraint], req: &Request) -> bool {
     let actual_query = req
         .uri()
         .query()
-        .map(|query| query.as_encoded_str())
+        .map(rama_net::uri::QueryRef::as_encoded_str)
         .unwrap_or_default();
     let mut actual_values: BTreeMap<String, Vec<String>> = BTreeMap::new();
     for (name, value) in form_urlencoded::parse(actual_query.as_bytes()) {

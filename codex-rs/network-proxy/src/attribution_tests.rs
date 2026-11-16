@@ -43,7 +43,7 @@ async fn framed_connection_receives_registered_execution_state() -> Result<(), B
     let (stream, _) = listener.accept().await?;
     let service = BindConnectionAttribution::new(
         service_fn(|stream: RamaTcpStream| async move {
-            let state = stream.extensions().get::<Arc<NetworkProxyState>>().cloned();
+            let state = stream.extensions().get_arc::<NetworkProxyState>();
             Ok::<_, io::Error>(state)
         }),
         state,

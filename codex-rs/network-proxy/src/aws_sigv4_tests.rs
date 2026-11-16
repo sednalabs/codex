@@ -218,7 +218,7 @@ async fn canonicalizes_query_order_without_changing_encoded_s3_path() {
         ] {
             let uri = format!("https://bucket.s3.amazonaws.com/a%20b//key?{query}");
             let request = Request::builder()
-                .uri(&uri)
+                .uri(uri.as_str())
                 .header("x-amz-content-sha256", payload_hash.as_str())
                 .body(Body::empty())
                 .unwrap();
