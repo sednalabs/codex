@@ -206,11 +206,9 @@ impl ToolCallRuntime {
         let tool_runtime = router
             .registered_tool(&call.tool_name)
             .map(|tool| Arc::clone(&tool.runtime));
-        let finishes_on_cancellation = tool_runtime
-            .as_ref()
-            .is_some_and(|runtime| {
-                runtime.finishes_on_cancellation() || runtime.manages_handler_cancellation()
-            });
+        let finishes_on_cancellation = tool_runtime.as_ref().is_some_and(|runtime| {
+            runtime.finishes_on_cancellation() || runtime.manages_handler_cancellation()
+        });
         let router = Arc::clone(router);
         let session = Arc::clone(&self.session);
         let turn = Arc::clone(&step_context.turn);
@@ -682,9 +680,8 @@ mod tests {
                 },
             )
             .await;
-        let handler: Arc<dyn CoreToolRuntime> = Arc::new(
-            crate::tools::handlers::unified_exec::ExecCommandHandler::default(),
-        );
+        let handler: Arc<dyn CoreToolRuntime> =
+            Arc::new(crate::tools::handlers::unified_exec::ExecCommandHandler::default());
         let router = Arc::new(ToolRouter::from_parts(
             ToolRegistry::from_tools([handler]),
             Vec::new(),
@@ -706,7 +703,8 @@ mod tests {
                     "cmd": "printf first-marker; sleep 1; printf second-marker; sleep 30",
                     "yield_time_ms": 250,
                     "wait_until_terminal": true,
-                }).to_string(),
+                })
+                .to_string(),
             },
             encrypted_function_args: None,
             native_call: None,
@@ -729,7 +727,10 @@ mod tests {
         };
         assert!(rendered.contains("first-marker"), "{rendered}");
         assert!(rendered.contains("second-marker"), "{rendered}");
-        assert!(rendered.contains("Process running with session ID"), "{rendered}");
+        assert!(
+            rendered.contains("Process running with session ID"),
+            "{rendered}"
+        );
         let process_id: i32 = rendered
             .split("Process running with session ID ")
             .nth(1)
@@ -739,13 +740,21 @@ mod tests {
             .expect("session ID value")
             .parse()
             .expect("numeric session ID");
-        assert!(session.services.unified_exec_manager.resolve_terminal(process_id).await.is_ok());
+        assert!(
+            session
+                .services
+                .unified_exec_manager
+                .resolve_terminal(process_id)
+                .await
+                .is_ok()
+        );
         let ordinary_cancellation = CancellationToken::new();
         let ordinary = ToolCall {
             tool_name: codex_tools::ToolName::plain("exec_command"),
             call_id: "ordinary-dispatch".to_string(),
             payload: ToolPayload::Function {
-                arguments: serde_json::json!({"cmd": "sleep 30", "yield_time_ms": 10000}).to_string(),
+                arguments: serde_json::json!({"cmd": "sleep 30", "yield_time_ms": 10000})
+                    .to_string(),
             },
             encrypted_function_args: None,
             native_call: None,
@@ -760,7 +769,11 @@ mod tests {
             .await
             .expect("ordinary cancellation must remain prompt")
             .expect("ordinary cancellation must return a response");
-        session.services.unified_exec_manager.terminate_all_processes().await;
+        session
+            .services
+            .unified_exec_manager
+            .terminate_all_processes()
+            .await;
     }
 
     #[test]

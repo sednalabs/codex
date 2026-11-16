@@ -448,7 +448,9 @@ class InstallShTest(unittest.TestCase):
                     capture_output=True,
                 )
             # A helper can outlive its parent CLI; retain its whole release.
-            with subprocess.Popen(["sleep", "300"], executable=str(helper)) as running:
+            sleep_helper = helper.with_name("sleep")
+            sleep_helper.symlink_to(helper)
+            with subprocess.Popen([str(sleep_helper), "300"]) as running:
                 try:
                     second, _ = run_installer_in(
                         root, versions[1], **install_options[versions[1]]
