@@ -439,18 +439,33 @@ class InstallShTest(unittest.TestCase):
             self.assertEqual(first.returncode, 0, first.stderr)
             oldest = releases / f"{versions[0]}-{target}"
             helper = oldest / "bin/codex-code-mode-host"
-            shutil.copy("/bin/sleep", helper)
+            # The release-retention check keys off this exact executable path.
+            # A copied multicall sleep binary rejects being invoked through an
+            # alias, so use a tiny native fixture that stays alive at this name.
+            helper_source = textwrap.dedent(
+                """\
+                #include <unistd.h>
+                int main(void) {
+                    for (;;) pause();
+                }
+                """
+            )
+            subprocess.run(
+                ["cc", "-x", "c", "-", "-o", str(helper)],
+                input=helper_source,
+                text=True,
+                check=True,
+                capture_output=True,
+            )
             if system.sysname == "Darwin":
-                # A copied macOS system binary cannot run with its platform signature.
+                # A test-owned helper must be signed before the macOS gatekeeper runs it.
                 subprocess.run(
                     ["/usr/bin/codesign", "--force", "--sign", "-", str(helper)],
                     check=True,
                     capture_output=True,
                 )
             # A helper can outlive its parent CLI; retain its whole release.
-            sleep_helper = helper.with_name("sleep")
-            sleep_helper.symlink_to(helper)
-            with subprocess.Popen([str(sleep_helper), "300"]) as running:
+            with subprocess.Popen([str(helper)]) as running:
                 try:
                     second, _ = run_installer_in(
                         root, versions[1], **install_options[versions[1]]
