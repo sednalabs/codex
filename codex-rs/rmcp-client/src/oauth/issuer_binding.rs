@@ -1,6 +1,7 @@
 use anyhow::Context;
 use anyhow::Result;
 use anyhow::bail;
+use rmcp::transport::AuthorizationManager;
 use rmcp::transport::auth::AuthError;
 use rmcp::transport::auth::AuthorizationMetadata;
 use url::Url;
