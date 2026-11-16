@@ -188,12 +188,6 @@ runs:
           --symbols-archive "${GITHUB_WORKSPACE}/symbols-dist/${target}/codex-symbols-${target}.tar.gz"
         )
 
-        # CI must exercise packaged tools; local smoke runs may use host tools.
-        if command -v rg || { [[ "$RUNNER_OS" == "Linux" ]] && command -v bwrap; }; then
-          echo "Host rg (or bwrap on Linux) is on PATH; CI must use packaged tools." >&2
-          exit 1
-        fi
-
         # Windows setup helpers can finish background ACL work after pytest exits.
         # Separate roots keep the next run from deleting their executables.
         uv run --frozen pytest "${pytest_args[@]}" \

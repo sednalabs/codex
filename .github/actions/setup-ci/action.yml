@@ -33,7 +33,9 @@ runs:
       if: runner.os == 'Linux'
       shell: bash
       run: |
-        sudo sysctl -w kernel.unprivileged_userns_clone=1
+        if [[ -e /proc/sys/kernel/unprivileged_userns_clone ]]; then
+          sudo sysctl -w kernel.unprivileged_userns_clone=1
+        fi
         if sudo sysctl -a 2>/dev/null | grep -q '^kernel.apparmor_restrict_unprivileged_userns'; then
           sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
         fi
