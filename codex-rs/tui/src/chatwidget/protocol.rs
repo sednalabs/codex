@@ -673,27 +673,9 @@ impl ChatWidget {
             ThreadItemPayload::ImageGeneration(_) => {
                 self.on_image_generation_begin();
             }
-            ThreadItemPayload::CollabAgentToolCall {
-                id,
-                tool,
-                status,
-                sender_thread_id,
-                receiver_thread_ids,
-                prompt,
-                model,
-                reasoning_effort,
-                agents_states,
-            } => self.on_collab_agent_tool_call(ThreadItemPayload::CollabAgentToolCall {
-                id,
-                tool,
-                status,
-                sender_thread_id,
-                receiver_thread_ids,
-                prompt,
-                model,
-                reasoning_effort,
-                agents_states,
-            }),
+            item @ ThreadItemPayload::CollabAgentToolCall { .. } => {
+                self.on_collab_agent_tool_call(item)
+            }
             ThreadItemPayload::EnteredReviewMode { review, .. } if replay_kind.is_none() => {
                 self.enter_review_mode_with_hint(review, /*from_replay*/ false);
             }

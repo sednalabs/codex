@@ -451,27 +451,9 @@ impl ChatWidget {
                 }
             }
             ThreadItemPayload::HookPrompt { .. } => {}
-            ThreadItemPayload::CollabAgentToolCall {
-                id,
-                tool,
-                status,
-                sender_thread_id,
-                receiver_thread_ids,
-                prompt,
-                model,
-                reasoning_effort,
-                agents_states,
-            } => self.on_collab_agent_tool_call(ThreadItemPayload::CollabAgentToolCall {
-                id,
-                tool,
-                status,
-                sender_thread_id,
-                receiver_thread_ids,
-                prompt,
-                model,
-                reasoning_effort,
-                agents_states,
-            }),
+            item @ ThreadItemPayload::CollabAgentToolCall { .. } => {
+                self.on_collab_agent_tool_call(item)
+            }
             item @ ThreadItemPayload::SubAgentActivity { .. } => self.on_sub_agent_activity(item),
             item @ ThreadItemPayload::DynamicToolCall { .. } => self.on_dynamic_tool_item(item),
             ThreadItemPayload::Sleep(_) => {}

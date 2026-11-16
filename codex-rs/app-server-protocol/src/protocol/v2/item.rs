@@ -33,6 +33,8 @@ use codex_protocol::items::AgentMessageModeration as CoreAgentMessageModeration;
 pub use codex_protocol::items::AsyncUserInputQuestion;
 use codex_protocol::items::CollabAgentTool as CoreCollabAgentTool;
 use codex_protocol::items::CollabAgentToolCallStatus as CoreCollabAgentToolCallStatus;
+use codex_protocol::items::CollabAgentWaitCompletionReason;
+use codex_protocol::items::CollabAgentWaitReturnWhen;
 use codex_protocol::items::CommandExecutionStatus as CoreCommandExecutionStatus;
 use codex_protocol::items::DynamicToolCallStatus as CoreDynamicToolCallStatus;
 pub use codex_protocol::items::McpAppDisplayMode;
@@ -470,6 +472,15 @@ pub enum ThreadItemPayload {
         /// Thread ID of the receiving agent, when applicable. In case of spawn operation,
         /// this corresponds to the newly spawned agent.
         receiver_thread_ids: Vec<String>,
+        /// Selected completion condition for a wait, when known.
+        #[serde(default)]
+        return_when: Option<CollabAgentWaitReturnWhen>,
+        /// Why a wait completed, when known.
+        #[serde(default)]
+        completion_reason: Option<CollabAgentWaitCompletionReason>,
+        /// Selected targets observed complete when target completion ended the wait.
+        #[serde(default)]
+        completed_target_thread_ids: Vec<String>,
         /// Prompt text sent as part of the collab tool call, when available.
         prompt: Option<String>,
         /// Model requested for the spawned agent, when applicable.
@@ -1057,6 +1068,13 @@ impl From<CoreTurnItem> for ThreadItemPayload {
                 sender_thread_id: call.sender_thread_id.to_string(),
                 receiver_thread_ids: call
                     .receiver_thread_ids
+                    .into_iter()
+                    .map(String::from)
+                    .collect(),
+                return_when: call.return_when,
+                completion_reason: call.completion_reason,
+                completed_target_thread_ids: call
+                    .completed_target_thread_ids
                     .into_iter()
                     .map(String::from)
                     .collect(),

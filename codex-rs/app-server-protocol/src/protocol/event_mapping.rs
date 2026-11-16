@@ -79,6 +79,9 @@ pub fn item_event_to_server_notification(
         EventMsg::CollabAgentSpawnBegin(begin_event) => {
             let item = ThreadItemPayload::CollabAgentToolCall {
                 id: begin_event.call_id,
+                return_when: None,
+                completion_reason: None,
+                completed_target_thread_ids: Vec::new(),
                 tool: CollabAgentTool::SpawnAgent,
                 status: CollabAgentToolCallStatus::InProgress,
                 sender_thread_id: begin_event.sender_thread_id.to_string(),
@@ -118,6 +121,9 @@ pub fn item_event_to_server_notification(
             };
             let item = ThreadItemPayload::CollabAgentToolCall {
                 id: end_event.call_id,
+                return_when: None,
+                completion_reason: None,
+                completed_target_thread_ids: Vec::new(),
                 tool: CollabAgentTool::SpawnAgent,
                 status,
                 sender_thread_id: end_event.sender_thread_id.to_string(),
@@ -139,6 +145,9 @@ pub fn item_event_to_server_notification(
             let receiver_thread_ids = vec![begin_event.receiver_thread_id.to_string()];
             let item = ThreadItemPayload::CollabAgentToolCall {
                 id: begin_event.call_id,
+                return_when: None,
+                completion_reason: None,
+                completed_target_thread_ids: Vec::new(),
                 tool: CollabAgentTool::SendInput,
                 status: CollabAgentToolCallStatus::InProgress,
                 sender_thread_id: begin_event.sender_thread_id.to_string(),
@@ -167,6 +176,9 @@ pub fn item_event_to_server_notification(
             let received_status = CollabAgentState::from(end_event.status);
             let item = ThreadItemPayload::CollabAgentToolCall {
                 id: end_event.call_id,
+                return_when: None,
+                completion_reason: None,
+                completed_target_thread_ids: Vec::new(),
                 tool: CollabAgentTool::SendInput,
                 status,
                 sender_thread_id: end_event.sender_thread_id.to_string(),
@@ -209,6 +221,9 @@ pub fn item_event_to_server_notification(
                 .collect();
             let item = ThreadItemPayload::CollabAgentToolCall {
                 id: begin_event.call_id,
+                return_when: None,
+                completion_reason: None,
+                completed_target_thread_ids: Vec::new(),
                 tool: CollabAgentTool::Wait,
                 status: CollabAgentToolCallStatus::InProgress,
                 sender_thread_id: begin_event.sender_thread_id.to_string(),
@@ -245,6 +260,9 @@ pub fn item_event_to_server_notification(
                 .collect();
             let item = ThreadItemPayload::CollabAgentToolCall {
                 id: end_event.call_id,
+                return_when: None,
+                completion_reason: None,
+                completed_target_thread_ids: Vec::new(),
                 tool: CollabAgentTool::Wait,
                 status,
                 sender_thread_id: end_event.sender_thread_id.to_string(),
@@ -265,6 +283,9 @@ pub fn item_event_to_server_notification(
         EventMsg::CollabCloseBegin(begin_event) => {
             let item = ThreadItemPayload::CollabAgentToolCall {
                 id: begin_event.call_id,
+                return_when: None,
+                completion_reason: None,
+                completed_target_thread_ids: Vec::new(),
                 tool: CollabAgentTool::CloseAgent,
                 status: CollabAgentToolCallStatus::InProgress,
                 sender_thread_id: begin_event.sender_thread_id.to_string(),
@@ -298,6 +319,9 @@ pub fn item_event_to_server_notification(
             .collect();
             let item = ThreadItemPayload::CollabAgentToolCall {
                 id: end_event.call_id,
+                return_when: None,
+                completion_reason: None,
+                completed_target_thread_ids: Vec::new(),
                 tool: CollabAgentTool::CloseAgent,
                 status,
                 sender_thread_id: end_event.sender_thread_id.to_string(),
@@ -318,6 +342,9 @@ pub fn item_event_to_server_notification(
         EventMsg::CollabResumeBegin(begin_event) => {
             let item = ThreadItemPayload::CollabAgentToolCall {
                 id: begin_event.call_id,
+                return_when: None,
+                completion_reason: None,
+                completed_target_thread_ids: Vec::new(),
                 tool: CollabAgentTool::ResumeAgent,
                 status: CollabAgentToolCallStatus::InProgress,
                 sender_thread_id: begin_event.sender_thread_id.to_string(),
@@ -351,6 +378,9 @@ pub fn item_event_to_server_notification(
             .collect();
             let item = ThreadItemPayload::CollabAgentToolCall {
                 id: end_event.call_id,
+                return_when: None,
+                completion_reason: None,
+                completed_target_thread_ids: Vec::new(),
                 tool: CollabAgentTool::ResumeAgent,
                 status,
                 sender_thread_id: end_event.sender_thread_id.to_string(),
@@ -595,6 +625,9 @@ mod tests {
                 "turn-1".to_string(),
                 ThreadItemPayload::CollabAgentToolCall {
                     id: event.call_id,
+                    return_when: None,
+                    completion_reason: None,
+                    completed_target_thread_ids: Vec::new(),
                     tool: CollabAgentTool::ResumeAgent,
                     status: CollabAgentToolCallStatus::InProgress,
                     sender_thread_id: event.sender_thread_id.to_string(),
@@ -634,6 +667,9 @@ mod tests {
                 "turn-2".to_string(),
                 ThreadItemPayload::CollabAgentToolCall {
                     id: event.call_id,
+                    return_when: None,
+                    completion_reason: None,
+                    completed_target_thread_ids: Vec::new(),
                     tool: CollabAgentTool::ResumeAgent,
                     status: CollabAgentToolCallStatus::Failed,
                     sender_thread_id: event.sender_thread_id.to_string(),

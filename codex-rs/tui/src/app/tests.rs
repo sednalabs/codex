@@ -2276,6 +2276,9 @@ async fn collab_receiver_notification_caches_thread_without_app_server_read() {
             "turn-1".to_string(),
             ThreadItemPayload::CollabAgentToolCall {
                 id: "wait-1".to_string(),
+                return_when: None,
+                completion_reason: None,
+                completed_target_thread_ids: Vec::new(),
                 tool: codex_app_server_protocol::CollabAgentTool::Wait,
                 status: codex_app_server_protocol::CollabAgentToolCallStatus::InProgress,
                 sender_thread_id: ThreadId::new().to_string(),
@@ -2314,6 +2317,9 @@ async fn collab_receiver_notification_does_not_cache_not_found_thread() {
                 "turn-1".to_string(),
                 ThreadItemPayload::CollabAgentToolCall {
                     id: "send-1".to_string(),
+                    return_when: None,
+                    completion_reason: None,
+                    completed_target_thread_ids: Vec::new(),
                     tool: codex_app_server_protocol::CollabAgentTool::SendInput,
                     status: codex_app_server_protocol::CollabAgentToolCallStatus::Failed,
                     sender_thread_id: ThreadId::new().to_string(),
@@ -12316,6 +12322,9 @@ async fn replace_chat_widget_reseeds_collab_agent_metadata_for_replay() {
                         "turn-1".to_string(),
                         ThreadItemPayload::CollabAgentToolCall {
                             id: "wait-1".to_string(),
+                            return_when: None,
+                            completion_reason: None,
+                            completed_target_thread_ids: Vec::new(),
                             tool: codex_app_server_protocol::CollabAgentTool::Wait,
                             status:
                                 codex_app_server_protocol::CollabAgentToolCallStatus::InProgress,

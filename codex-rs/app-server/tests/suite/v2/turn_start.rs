@@ -4469,6 +4469,9 @@ async fn turn_start_emits_spawn_agent_item_with_model_metadata_v2() -> Result<()
         spawn_started,
         ThreadItemPayload::CollabAgentToolCall {
             id: SPAWN_CALL_ID.to_string(),
+            return_when: None,
+            completion_reason: None,
+            completed_target_thread_ids: Vec::new(),
             tool: CollabAgentTool::SpawnAgent,
             status: CollabAgentToolCallStatus::InProgress,
             sender_thread_id: thread.id.clone(),
@@ -4502,6 +4505,7 @@ async fn turn_start_emits_spawn_agent_item_with_model_metadata_v2() -> Result<()
         model,
         reasoning_effort,
         agents_states,
+        ..
     } = spawn_completed
     else {
         unreachable!("loop ensures we break on collab agent tool call items");
@@ -5131,6 +5135,7 @@ config_file = "./custom-role.toml"
         model,
         reasoning_effort,
         agents_states,
+        ..
     } = spawn_completed
     else {
         unreachable!("loop ensures we break on collab agent tool call items");

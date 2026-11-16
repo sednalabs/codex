@@ -3564,6 +3564,9 @@ fn core_turn_item_into_thread_item_converts_supported_variants() {
         status: CoreCollabAgentToolCallStatus::Completed,
         sender_thread_id,
         receiver_thread_ids: vec![receiver_thread_id],
+        return_when: None,
+        completion_reason: None,
+        completed_target_thread_ids: Vec::new(),
         receiver_agents: Vec::new(),
         prompt: Some("continue".to_string()),
         model: None,
@@ -3577,6 +3580,9 @@ fn core_turn_item_into_thread_item_converts_supported_variants() {
         ThreadItemPayload::from(collab_item),
         ThreadItemPayload::CollabAgentToolCall {
             id: "collab-1".to_string(),
+            return_when: None,
+            completion_reason: None,
+            completed_target_thread_ids: Vec::new(),
             tool: CollabAgentTool::SendInput,
             status: CollabAgentToolCallStatus::Completed,
             sender_thread_id: sender_thread_id.to_string(),
@@ -3595,6 +3601,41 @@ fn core_turn_item_into_thread_item_converts_supported_variants() {
             .collect(),
         }
     );
+
+    let wait_item = TurnItem::CollabAgentToolCall(CollabAgentToolCallItem {
+        id: "wait-1".to_string(),
+        tool: CoreCollabAgentTool::Wait,
+        status: CoreCollabAgentToolCallStatus::Completed,
+        sender_thread_id,
+        receiver_thread_ids: vec![receiver_thread_id],
+        receiver_agents: Vec::new(),
+        return_when: Some(codex_protocol::items::CollabAgentWaitReturnWhen::All),
+        completion_reason: Some(
+            codex_protocol::items::CollabAgentWaitCompletionReason::AllTargetsCompleted,
+        ),
+        completed_target_thread_ids: vec![receiver_thread_id],
+        prompt: None,
+        model: None,
+        reasoning_effort: None,
+        agents_states: Default::default(),
+    });
+    let converted = ThreadItemPayload::from(wait_item);
+    let ThreadItemPayload::CollabAgentToolCall {
+        return_when,
+        completion_reason,
+        receiver_thread_ids,
+        completed_target_thread_ids,
+        ..
+    } = converted else {
+        panic!("expected collab wait item");
+    };
+    assert_eq!(return_when, Some(codex_protocol::items::CollabAgentWaitReturnWhen::All));
+    assert_eq!(
+        completion_reason,
+        Some(codex_protocol::items::CollabAgentWaitCompletionReason::AllTargetsCompleted)
+    );
+    assert_eq!(receiver_thread_ids, vec![receiver_thread_id.to_string()]);
+    assert_eq!(completed_target_thread_ids, vec![receiver_thread_id.to_string()]);
 
     let sub_agent_activity_item = TurnItem::SubAgentActivity(SubAgentActivityItem {
         model: Some("gpt-5".into()),

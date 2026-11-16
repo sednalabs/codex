@@ -882,6 +882,9 @@ async fn collab_spawn_end_shows_requested_model_and_effort() {
             "turn-1".to_string(),
             AppServerThreadItemPayload::CollabAgentToolCall {
                 id: "call-spawn".to_string(),
+                return_when: None,
+                completion_reason: None,
+                completed_target_thread_ids: Vec::new(),
                 tool: AppServerCollabAgentTool::SpawnAgent,
                 status: AppServerCollabAgentToolCallStatus::InProgress,
                 sender_thread_id: sender_thread_id.to_string(),
@@ -901,6 +904,9 @@ async fn collab_spawn_end_shows_requested_model_and_effort() {
             "turn-1".to_string(),
             AppServerThreadItemPayload::CollabAgentToolCall {
                 id: "call-spawn".to_string(),
+                return_when: None,
+                completion_reason: None,
+                completed_target_thread_ids: Vec::new(),
                 tool: AppServerCollabAgentTool::SpawnAgent,
                 status: AppServerCollabAgentToolCallStatus::Completed,
                 sender_thread_id: sender_thread_id.to_string(),
@@ -1605,6 +1611,9 @@ async fn live_app_server_collab_wait_items_render_history() {
             "turn-1".to_string(),
             AppServerThreadItemPayload::CollabAgentToolCall {
                 id: "wait-1".to_string(),
+                return_when: None,
+                completion_reason: None,
+                completed_target_thread_ids: Vec::new(),
                 tool: AppServerCollabAgentTool::Wait,
                 status: AppServerCollabAgentToolCallStatus::InProgress,
                 sender_thread_id: sender_thread_id.to_string(),
@@ -1628,6 +1637,9 @@ async fn live_app_server_collab_wait_items_render_history() {
             "turn-1".to_string(),
             AppServerThreadItemPayload::CollabAgentToolCall {
                 id: "wait-1".to_string(),
+                return_when: None,
+                completion_reason: None,
+                completed_target_thread_ids: Vec::new(),
                 tool: AppServerCollabAgentTool::Wait,
                 status: AppServerCollabAgentToolCallStatus::Completed,
                 sender_thread_id: sender_thread_id.to_string(),
@@ -1683,6 +1695,9 @@ async fn live_app_server_collab_spawn_completed_renders_requested_model_and_effo
             "turn-1".to_string(),
             AppServerThreadItemPayload::CollabAgentToolCall {
                 id: "spawn-1".to_string(),
+                return_when: None,
+                completion_reason: None,
+                completed_target_thread_ids: Vec::new(),
                 tool: AppServerCollabAgentTool::SpawnAgent,
                 status: AppServerCollabAgentToolCallStatus::InProgress,
                 sender_thread_id: sender_thread_id.to_string(),
@@ -1703,6 +1718,9 @@ async fn live_app_server_collab_spawn_completed_renders_requested_model_and_effo
             "turn-1".to_string(),
             AppServerThreadItemPayload::CollabAgentToolCall {
                 id: "spawn-1".to_string(),
+                return_when: None,
+                completion_reason: None,
+                completed_target_thread_ids: Vec::new(),
                 tool: AppServerCollabAgentTool::SpawnAgent,
                 status: AppServerCollabAgentToolCallStatus::Completed,
                 sender_thread_id: sender_thread_id.to_string(),

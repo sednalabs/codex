@@ -1101,6 +1101,9 @@ impl ThreadHistoryBuilder {
     ) {
         let item = ThreadItemPayload::CollabAgentToolCall {
             id: payload.call_id.clone(),
+            return_when: None,
+            completion_reason: None,
+            completed_target_thread_ids: Vec::new(),
             tool: CollabAgentTool::SpawnAgent,
             status: CollabAgentToolCallStatus::InProgress,
             sender_thread_id: payload.sender_thread_id.to_string(),
@@ -1137,6 +1140,9 @@ impl ThreadHistoryBuilder {
         };
         let item = ThreadItemPayload::CollabAgentToolCall {
             id: payload.call_id.clone(),
+            return_when: None,
+            completion_reason: None,
+            completed_target_thread_ids: Vec::new(),
             tool: CollabAgentTool::SpawnAgent,
             status,
             sender_thread_id: payload.sender_thread_id.to_string(),
@@ -1156,6 +1162,9 @@ impl ThreadHistoryBuilder {
     ) {
         let item = ThreadItemPayload::CollabAgentToolCall {
             id: payload.call_id.clone(),
+            return_when: None,
+            completion_reason: None,
+            completed_target_thread_ids: Vec::new(),
             tool: CollabAgentTool::SendInput,
             status: CollabAgentToolCallStatus::InProgress,
             sender_thread_id: payload.sender_thread_id.to_string(),
@@ -1181,6 +1190,9 @@ impl ThreadHistoryBuilder {
         let received_status = CollabAgentState::from(payload.status.clone());
         let item = ThreadItemPayload::CollabAgentToolCall {
             id: payload.call_id.clone(),
+            return_when: None,
+            completion_reason: None,
+            completed_target_thread_ids: Vec::new(),
             tool: CollabAgentTool::SendInput,
             status,
             sender_thread_id: payload.sender_thread_id.to_string(),
@@ -1216,6 +1228,9 @@ impl ThreadHistoryBuilder {
     ) {
         let item = ThreadItemPayload::CollabAgentToolCall {
             id: payload.call_id.clone(),
+            return_when: None,
+            completion_reason: None,
+            completed_target_thread_ids: Vec::new(),
             tool: CollabAgentTool::Wait,
             status: CollabAgentToolCallStatus::InProgress,
             sender_thread_id: payload.sender_thread_id.to_string(),
@@ -1256,6 +1271,9 @@ impl ThreadHistoryBuilder {
             .collect();
         let item = ThreadItemPayload::CollabAgentToolCall {
             id: payload.call_id.clone(),
+            return_when: None,
+            completion_reason: None,
+            completed_target_thread_ids: Vec::new(),
             tool: CollabAgentTool::Wait,
             status,
             sender_thread_id: payload.sender_thread_id.to_string(),
@@ -1275,6 +1293,9 @@ impl ThreadHistoryBuilder {
     ) {
         let item = ThreadItemPayload::CollabAgentToolCall {
             id: payload.call_id.clone(),
+            return_when: None,
+            completion_reason: None,
+            completed_target_thread_ids: Vec::new(),
             tool: CollabAgentTool::CloseAgent,
             status: CollabAgentToolCallStatus::InProgress,
             sender_thread_id: payload.sender_thread_id.to_string(),
@@ -1302,6 +1323,9 @@ impl ThreadHistoryBuilder {
         .collect();
         let item = ThreadItemPayload::CollabAgentToolCall {
             id: payload.call_id.clone(),
+            return_when: None,
+            completion_reason: None,
+            completed_target_thread_ids: Vec::new(),
             tool: CollabAgentTool::CloseAgent,
             status,
             sender_thread_id: payload.sender_thread_id.to_string(),
@@ -1321,6 +1345,9 @@ impl ThreadHistoryBuilder {
     ) {
         let item = ThreadItemPayload::CollabAgentToolCall {
             id: payload.call_id.clone(),
+            return_when: None,
+            completion_reason: None,
+            completed_target_thread_ids: Vec::new(),
             tool: CollabAgentTool::ResumeAgent,
             status: CollabAgentToolCallStatus::InProgress,
             sender_thread_id: payload.sender_thread_id.to_string(),
@@ -1351,6 +1378,9 @@ impl ThreadHistoryBuilder {
         .collect();
         let item = ThreadItemPayload::CollabAgentToolCall {
             id: payload.call_id.clone(),
+            return_when: None,
+            completion_reason: None,
+            completed_target_thread_ids: Vec::new(),
             tool: CollabAgentTool::ResumeAgent,
             status,
             sender_thread_id: payload.sender_thread_id.to_string(),
@@ -5128,6 +5158,9 @@ mod tests {
             item.payload,
             ThreadItemPayload::CollabAgentToolCall {
                 id: "resume-1".into(),
+                return_when: None,
+                completion_reason: None,
+                completed_target_thread_ids: Vec::new(),
                 tool: CollabAgentTool::ResumeAgent,
                 status: CollabAgentToolCallStatus::Completed,
                 sender_thread_id: "00000000-0000-0000-0000-000000000001".into(),
@@ -5188,6 +5221,9 @@ mod tests {
             turns[0].items[1].payload,
             ThreadItemPayload::CollabAgentToolCall {
                 id: "spawn-1".into(),
+                return_when: None,
+                completion_reason: None,
+                completed_target_thread_ids: Vec::new(),
                 tool: CollabAgentTool::SpawnAgent,
                 status: CollabAgentToolCallStatus::Completed,
                 sender_thread_id: "00000000-0000-0000-0000-000000000001".into(),
@@ -5260,6 +5296,9 @@ mod tests {
             turns[0].items[1].payload,
             ThreadItemPayload::CollabAgentToolCall {
                 id: "send-1".into(),
+                return_when: None,
+                completion_reason: None,
+                completed_target_thread_ids: Vec::new(),
                 tool: CollabAgentTool::SendInput,
                 status: CollabAgentToolCallStatus::Completed,
                 sender_thread_id: sender.to_string(),
