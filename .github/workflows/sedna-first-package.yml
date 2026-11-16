@@ -107,12 +107,20 @@ jobs:
               exit 1
             fi
           elif [[ "${EVENT_NAME}" == "workflow_dispatch" ]]; then
-            if [[ "${EVENT_REF}" != "refs/heads/main" || "${SOURCE_SHA}" != "${WORKFLOW_HOST_SHA}" ]]; then
-              echo "Manual runs require protected main as their exact source and workflow host." >&2
+            if [[ "${SOURCE_SHA}" != "${WORKFLOW_HOST_SHA}" ]]; then
+              echo "Manual runs require the selected ref as their exact source and workflow host." >&2
               exit 1
             fi
             if [[ "${OPERATION_INPUT}" != "prepare" && "${OPERATION_INPUT}" != "package" ]]; then
               echo "Manual operation must be prepare or package." >&2
+              exit 1
+            fi
+            if [[ "${OPERATION_INPUT}" == "prepare" && "${EVENT_REF}" != refs/heads/* ]]; then
+              echo "Manual preparation requires a branch ref." >&2
+              exit 1
+            fi
+            if [[ "${OPERATION_INPUT}" == "package" && "${EVENT_REF}" != "refs/heads/main" ]]; then
+              echo "Manual package builds and consumers require protected main." >&2
               exit 1
             fi
           else
@@ -269,17 +277,20 @@ jobs:
           git diff --check
 
           untracked="$(git ls-files --others --exclude-standard)"
-          case "${untracked}" in
-            "") ;;
-            "codex-rs/app-server-protocol/schema/typescript/v2/WaitAgentOutcome.ts")
-              git add -- "${untracked}"
-              ;;
-            *)
-              echo "Unexpected untracked output from the fixed generators." >&2
-              printf '%s\n' "${untracked}" >&2
-              exit 1
-              ;;
-          esac
+          if [[ -n "${untracked}" ]]; then
+            while IFS= read -r generated_path; do
+              case "${generated_path}" in
+                "codex-rs/app-server-protocol/schema/typescript/v2/WaitAgentOutcome.ts"|"codex-rs/app-server-protocol/schema/typescript/CollabAgentWaitCompletionReason.ts"|"codex-rs/app-server-protocol/schema/typescript/CollabAgentWaitReturnWhen.ts")
+                  git add -- "${generated_path}"
+                  ;;
+                *)
+                  echo "Unexpected untracked output from the fixed generators." >&2
+                  printf '%s\n' "${generated_path}" >&2
+                  exit 1
+                  ;;
+              esac
+            done <<< "${untracked}"
+          fi
           git diff --check HEAD
 
           output_dir="${RUNNER_TEMP}/sedna-first-generated"
