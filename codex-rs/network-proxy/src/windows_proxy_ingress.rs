@@ -7,7 +7,6 @@ use anyhow::Result;
 use rama_core::Service;
 use rama_core::error::BoxError;
 use rama_core::service::BoxService;
-use rama_net::stream::Socket;
 use rama_tcp::TcpStream;
 use rama_tcp::server::TcpListener;
 use std::collections::HashMap;
@@ -59,8 +58,8 @@ impl Service<TcpStream> for IngressDispatcher {
     type Error = BoxError;
 
     async fn serve(&self, stream: TcpStream) -> Result<(), BoxError> {
-        let local_addr = stream.local_addr()?;
-        let peer_addr = stream.peer_addr()?;
+        let local_addr = stream.stream.local_addr()?;
+        let peer_addr = stream.stream.peer_addr()?;
         let restricting_sids = restricting_sids_for_tcp_connection(local_addr, peer_addr)?;
         let route = {
             let routes = self

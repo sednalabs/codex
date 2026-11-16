@@ -3626,16 +3626,23 @@ fn core_turn_item_into_thread_item_converts_supported_variants() {
         receiver_thread_ids,
         completed_target_thread_ids,
         ..
-    } = converted else {
+    } = converted
+    else {
         panic!("expected collab wait item");
     };
-    assert_eq!(return_when, Some(codex_protocol::items::CollabAgentWaitReturnWhen::All));
+    assert_eq!(
+        return_when,
+        Some(codex_protocol::items::CollabAgentWaitReturnWhen::All)
+    );
     assert_eq!(
         completion_reason,
         Some(codex_protocol::items::CollabAgentWaitCompletionReason::AllTargetsCompleted)
     );
     assert_eq!(receiver_thread_ids, vec![receiver_thread_id.to_string()]);
-    assert_eq!(completed_target_thread_ids, vec![receiver_thread_id.to_string()]);
+    assert_eq!(
+        completed_target_thread_ids,
+        vec![receiver_thread_id.to_string()]
+    );
 
     let sub_agent_activity_item = TurnItem::SubAgentActivity(SubAgentActivityItem {
         model: Some("gpt-5".into()),

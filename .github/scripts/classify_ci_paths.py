@@ -24,9 +24,26 @@ CODEQL_ALL = (
 )
 
 SOURCE_FORMAT_SUFFIXES = {
-    ".c", ".cc", ".cpp", ".cxx", ".h", ".hh", ".hpp", ".hxx",
-    ".js", ".jsx", ".mjs", ".cjs", ".ts", ".tsx",
-    ".py", ".rs", ".toml", ".json", ".yaml", ".yml",
+    ".c",
+    ".cc",
+    ".cpp",
+    ".cxx",
+    ".h",
+    ".hh",
+    ".hpp",
+    ".hxx",
+    ".js",
+    ".jsx",
+    ".mjs",
+    ".cjs",
+    ".ts",
+    ".tsx",
+    ".py",
+    ".rs",
+    ".toml",
+    ".json",
+    ".yaml",
+    ".yml",
 }
 
 C_CPP_SUFFIXES = {".c", ".cc", ".cpp", ".cxx", ".h", ".hh", ".hpp", ".hxx"}
@@ -145,8 +162,7 @@ def classify(paths: Iterable[str]) -> Scope:
         for path in changed
     )
     clippy = any(
-        path in CLIPPY_REQUIRED_PATHS
-        or _starts(path, *CLIPPY_REQUIRED_PREFIXES)
+        path in CLIPPY_REQUIRED_PATHS or _starts(path, *CLIPPY_REQUIRED_PREFIXES)
         for path in changed
     )
 
@@ -246,10 +262,7 @@ def classify(paths: Iterable[str]) -> Scope:
         if _starts(path, ".github/workflows/", ".github/actions/"):
             codeql.add("actions")
 
-        if (
-            suffix in C_CPP_SUFFIXES
-            or name == "CMakeLists.txt"
-        ):
+        if suffix in C_CPP_SUFFIXES or name == "CMakeLists.txt":
             codeql.add("c-cpp")
 
         if (

@@ -5,7 +5,7 @@ use crate::NetworkProxy;
 use crate::NetworkProxyConfig;
 use crate::runtime::network_proxy_state_for_policy;
 use pretty_assertions::assert_eq;
-use rama_core::extensions::ExtensionsMut;
+use rama_core::extensions::ExtensionsRef;
 use rama_http::Body;
 use rama_http::Request;
 use rama_http::StatusCode;
@@ -151,14 +151,14 @@ async fn preserves_single_host_forwarding() {
 #[tokio::test]
 async fn rejects_duplicate_hosts_before_unix_socket_routing() {
     let state = Arc::new(network_proxy_state_for_policy(NetworkProxyConfig::default()));
-    let mut request = Request::builder()
+    let request = Request::builder()
         .uri("/")
         .header("host", "allowed.test")
         .header("host", "denied.test")
         .header("x-unix-socket", "/not-an-allowed-socket")
         .body(Body::empty())
         .unwrap();
-    request.extensions_mut().insert(state);
+    request.extensions().insert_arc(state);
     let response = http_plain_proxy(
         /*policy_decider*/ None, /*environment_id*/ None, request,
     )

@@ -12,7 +12,6 @@ use crate::runtime::ConfigReloaderFuture;
 use crate::runtime::ConfigState;
 use pretty_assertions::assert_eq;
 use rama_core::extensions::Extensions;
-use rama_core::extensions::ExtensionsMut;
 use rama_core::extensions::ExtensionsRef;
 use std::collections::BTreeMap;
 use std::collections::HashMap;
@@ -79,12 +78,6 @@ impl AsyncWrite for TestStream {
 impl ExtensionsRef for TestStream {
     fn extensions(&self) -> &Extensions {
         &self.extensions
-    }
-}
-
-impl ExtensionsMut for TestStream {
-    fn extensions_mut(&mut self) -> &mut Extensions {
-        &mut self.extensions
     }
 }
 

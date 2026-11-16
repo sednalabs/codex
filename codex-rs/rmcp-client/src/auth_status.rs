@@ -10,8 +10,10 @@ use http::HeaderMap;
 use http::header::AUTHORIZATION;
 use rmcp::transport::AuthorizationManager;
 use rmcp::transport::auth::AuthError;
+use rmcp::transport::auth::OAuthHttpClient;
 use tracing::debug;
 
+use crate::device_oauth_metadata::discover_device_only_metadata;
 use crate::http_client_adapter::StreamableHttpRedirectMode;
 use crate::oauth::StoredOAuthTokenStatus;
 use crate::oauth::oauth_token_status;
@@ -42,6 +44,7 @@ impl OAuthDiscoveryTimeout {
 pub struct StreamableHttpOAuthDiscovery {
     pub scopes_supported: Option<Vec<String>>,
     pub callback_mode: McpOAuthCallbackMode,
+    pub device_auth_only: bool,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -243,10 +246,23 @@ async fn discover_streamable_http_oauth_with_headers_and_http_client(
             )?
         }
     };
+    let oauth_http_client = Arc::new(oauth_http_client);
+    let manager_client: Arc<dyn OAuthHttpClient> = oauth_http_client.clone();
     let mut authorization_manager =
-        AuthorizationManager::new_with_oauth_http_client(url, Arc::new(oauth_http_client)).await?;
+        AuthorizationManager::new_with_oauth_http_client(url, manager_client).await?;
     authorization_manager.set_allow_missing_issuer(true);
-    discover_streamable_http_oauth_with_manager(&mut authorization_manager).await
+    if let Some(discovery) =
+        discover_streamable_http_oauth_with_manager(&mut authorization_manager).await?
+    {
+        return Ok(Some(discovery));
+    }
+    Ok(discover_device_only_metadata(url, &oauth_http_client)
+        .await?
+        .map(|metadata| StreamableHttpOAuthDiscovery {
+            scopes_supported: normalize_scopes(metadata.scopes_supported.unwrap_or_default()),
+            callback_mode: McpOAuthCallbackMode::CallbackSpecific,
+            device_auth_only: true,
+        }))
 }
 
 fn has_configured_headers(
@@ -273,6 +289,7 @@ async fn discover_streamable_http_oauth_with_manager(
             authorization_manager.set_metadata(metadata);
             Ok(Some(StreamableHttpOAuthDiscovery {
                 callback_mode,
+                device_auth_only: false,
                 // Prefer the initial challenge's scopes, falling back to resource metadata.
                 scopes_supported: normalize_scopes(
                     authorization_manager.select_initial_scopes(&[]).await,
@@ -680,6 +697,53 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn device_only_discovery_requires_issuer_and_exposes_scopes() {
+        let server = spawn_oauth_discovery_server(serde_json::json!({
+            "token_endpoint": "https://example.com/token",
+            "device_authorization_endpoint": "https://example.com/device",
+            "grant_types_supported": ["urn:ietf:params:oauth:grant-type:device_code"],
+            "scopes_supported": ["read", " read ", "write"],
+        }))
+        .await;
+        let discovery = discover_streamable_http_oauth(
+            &server.url,
+            None,
+            None,
+            test_http_client().await,
+            OAuthDiscoveryTimeout::LOCAL,
+            StreamableHttpRedirectMode::Legacy,
+        )
+        .await
+        .expect("discovery")
+        .expect("device-only support");
+        assert!(discovery.device_auth_only);
+        assert_eq!(
+            discovery.scopes_supported,
+            Some(vec!["read".into(), "write".into()])
+        );
+
+        let mismatched = spawn_oauth_discovery_server(serde_json::json!({
+            "issuer": "https://different.example",
+            "token_endpoint": "https://example.com/token",
+            "device_authorization_endpoint": "https://example.com/device",
+        }))
+        .await;
+        assert!(
+            discover_streamable_http_oauth(
+                &mismatched.url,
+                None,
+                None,
+                test_http_client().await,
+                OAuthDiscoveryTimeout::LOCAL,
+                StreamableHttpRedirectMode::Legacy,
+            )
+            .await
+            .expect("mismatched metadata is not OAuth support")
+            .is_none()
+        );
+    }
+
+    #[tokio::test]
     async fn discover_streamable_http_oauth_does_not_use_authorization_server_scopes() {
         let server = spawn_oauth_discovery_server(serde_json::json!({
             "authorization_endpoint": "https://example.com/authorize",
@@ -706,6 +770,7 @@ mod tests {
             StreamableHttpOAuthDiscovery {
                 scopes_supported: None,
                 callback_mode: McpOAuthCallbackMode::IssuerBound,
+                device_auth_only: false,
             }
         );
     }
@@ -737,6 +802,7 @@ mod tests {
             StreamableHttpOAuthDiscovery {
                 scopes_supported: None,
                 callback_mode: McpOAuthCallbackMode::CallbackSpecific,
+                device_auth_only: false,
             }
         );
     }
