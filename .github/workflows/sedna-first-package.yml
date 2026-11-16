@@ -135,7 +135,13 @@ jobs:
           else
             base_version="0.0.0-sedna.0"
           fi
-          package_version="${base_version}-ci.${GITHUB_RUN_NUMBER}+g${source_short}"
+          if [[ "${base_version}" == *+* ]]; then
+            base_build_metadata="${base_version#*+}"
+            base_version="${base_version%%+*}"
+            package_version="${base_version}-ci.${GITHUB_RUN_NUMBER}+${base_build_metadata}.g${source_short}"
+          else
+            package_version="${base_version}-ci.${GITHUB_RUN_NUMBER}+g${source_short}"
+          fi
 
           required_package_paths=(
             "justfile"
