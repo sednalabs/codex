@@ -23,7 +23,6 @@ use rama_core::Layer;
 use rama_core::Service;
 use rama_core::bytes::Bytes;
 use rama_core::error::BoxError;
-use rama_core::extensions::ExtensionsMut;
 use rama_core::extensions::ExtensionsRef;
 use rama_core::futures::stream::Stream as FuturesStream;
 use rama_core::rt::Executor;
@@ -192,21 +191,21 @@ impl MitmState {
 /// Proxy inner HTTP traffic, terminating TLS with a generated leaf certificate for HTTPS.
 pub(crate) async fn mitm_stream<S>(stream: S, scheme: Scheme) -> Result<()>
 where
-    S: Stream + Unpin + ExtensionsMut,
+    S: Stream + Unpin + ExtensionsRef,
 {
     let mitm = stream
         .extensions()
-        .get::<Arc<MitmState>>()
+        .get_ref::<Arc<MitmState>>()
         .cloned()
         .context("missing MITM state")?;
     let app_state = stream
         .extensions()
-        .get::<Arc<NetworkProxyState>>()
+        .get_ref::<Arc<NetworkProxyState>>()
         .cloned()
         .context("missing app state")?;
     let target = stream
         .extensions()
-        .get::<ProxyTarget>()
+        .get_ref::<ProxyTarget>()
         .context("missing proxy target")?
         .0
         .clone();
@@ -219,7 +218,7 @@ where
     };
     let mode = stream
         .extensions()
-        .get::<NetworkMode>()
+        .get_ref::<NetworkMode>()
         .copied()
         .unwrap_or(NetworkMode::Full);
     let upstream = if mitm.allow_upstream_proxy {
@@ -236,7 +235,7 @@ where
     let request_ctx = Arc::new(MitmRequestContext {
         dial_policy: stream
             .extensions()
-            .get::<crate::connect_policy::DialPolicy>()
+            .get_ref::<crate::connect_policy::DialPolicy>()
             .cloned(),
         policy: MitmPolicyContext {
             target_host,
@@ -251,7 +250,7 @@ where
 
     let executor = stream
         .extensions()
-        .get::<Executor>()
+        .get_ref::<Executor>()
         .cloned()
         .unwrap_or_default();
 
@@ -319,7 +318,7 @@ async fn forward_request(req: Request, request_ctx: &MitmRequestContext) -> Resu
     let mut signing = None;
     let client = req
         .extensions()
-        .get::<SocketInfo>()
+        .get_ref::<SocketInfo>()
         .map(|info| info.peer_addr().to_string());
     if let Some(signer) = hook_actions
         .as_ref()
@@ -394,7 +393,7 @@ async fn forward_request(req: Request, request_ctx: &MitmRequestContext) -> Resu
         upstream_req = signed;
     }
     if let Some(policy) = &request_ctx.dial_policy {
-        upstream_req.extensions_mut().insert(policy.clone());
+        upstream_req.extensions().insert(policy.clone());
     }
     let upstream_resp = if request_ctx.policy.scheme == Scheme::HTTP {
         crate::brokered_tunnel::forward_http_request(upstream_req, &request_ctx.upstream).await?
@@ -465,7 +464,7 @@ async fn evaluate_mitm_policy(
     let log_path = path_for_log(req.uri());
     let client = req
         .extensions()
-        .get::<SocketInfo>()
+        .get_ref::<SocketInfo>()
         .map(|info| info.peer_addr().to_string());
 
     if let Some(request_host) = extract_request_host(req) {

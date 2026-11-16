@@ -13,14 +13,18 @@ use crate::state::NetworkProxyState;
 use crate::system_dns::SystemDnsResolver;
 use rama_core::Service;
 use rama_core::error::BoxError;
-use rama_core::error::ErrorExt as _;
+use rama_core::error::ErrorContext as _;
 use rama_core::error::OpaqueError;
-use rama_core::extensions::ExtensionsMut;
+use rama_dns::client::DnsConnector;
+#[cfg(not(target_os = "macos"))]
+use rama_dns::client::HickoryDnsResolver;
+use rama_net::ConnectorTargetInputExt;
+use rama_net::TransportProtocolInputExt;
+use rama_net::client::ConnectorTarget;
 use rama_net::address::Host;
 use rama_net::address::HostWithPort;
 use rama_net::address::ProxyAddress;
 use rama_net::client::EstablishedClientConnection;
-use rama_net::transport::TryRefIntoTransportContext;
 use rama_tcp::TcpStream;
 use rama_tcp::client::TcpStreamConnector;
 use rama_tcp::client::service::TcpConnector;
@@ -30,6 +34,23 @@ use std::net::SocketAddr;
 use std::sync::Arc;
 use std::sync::atomic::AtomicU8;
 use std::sync::atomic::Ordering;
+
+#[cfg(not(target_os = "macos"))]
+fn system_hickory_dns_resolver() -> Result<HickoryDnsResolver, BoxError> {
+    static RESOLVER: std::sync::OnceLock<HickoryDnsResolver> = std::sync::OnceLock::new();
+
+    if let Some(resolver) = RESOLVER.get() {
+        return Ok(resolver.clone());
+    }
+
+    let resolver = HickoryDnsResolver::try_new_system().map_err(|err| {
+        OpaqueError::from_boxed(err)
+            .context("initialize system Hickory DNS resolver")
+            .into_boxed()
+    })?;
+    let _ = RESOLVER.set(resolver.clone());
+    Ok(RESOLVER.get().cloned().unwrap_or(resolver))
+}
 
 const BLOCKED: u8 = 1;
 const DIALED: u8 = 2;
@@ -79,7 +100,7 @@ impl DialPolicy {
         extensions: &'a rama_core::extensions::Extensions,
         target: &HostWithPort,
     ) -> Option<&'a Self> {
-        extensions.get::<Self>().filter(|policy| {
+        extensions.get_ref::<Self>().filter(|policy| {
             policy.target.port == target.port
                 && match (&policy.target.host, &target.host) {
                     (Host::Name(a), Host::Name(b)) => a
@@ -115,31 +136,33 @@ impl TargetCheckedTcpConnector {
 
 impl<Input> Service<Input> for TargetCheckedTcpConnector
 where
-    Input: TryRefIntoTransportContext + Send + ExtensionsMut + 'static,
-    Input::Error: Into<BoxError> + Send + Sync + 'static,
+    Input: ConnectorTargetInputExt + TransportProtocolInputExt + Send + 'static,
 {
     type Output = EstablishedClientConnection<TcpStream, Input>;
     type Error = BoxError;
 
     async fn serve(&self, input: Input) -> Result<Self::Output, Self::Error> {
-        let connector = TcpConnector::new();
         #[cfg(target_os = "macos")]
-        let connector = connector.with_dns(SystemDnsResolver);
+        let resolver = SystemDnsResolver;
+        #[cfg(not(target_os = "macos"))]
+        let resolver = system_hickory_dns_resolver()?;
 
-        if input.extensions().get::<ProxyAddress>().is_some() {
-            return connector.serve(input).await;
+        if let Some(proxy) = input.extensions().get_ref::<ProxyAddress>() {
+            input
+                .extensions()
+                .insert(ConnectorTarget(proxy.address.clone()));
+            return DnsConnector::with_resolver(TcpConnector::new(), resolver)
+                .serve(input)
+                .await;
         }
 
         let target = input
-            .try_ref_into_transport_ctx()
-            .map_err(|err| OpaqueError::from_boxed(err.into()).context("read network target"))?
-            .host_with_port()
-            .ok_or_else(|| OpaqueError::from_display("network target is missing a port"))?;
+            .connector_target()
+            .ok_or_else(|| OpaqueError::from_display("network target is missing a host or port"))?;
 
         let policy = DialPolicy::for_target(input.extensions(), &target).cloned();
         let attempts = Arc::new(AtomicU8::new(0));
-        let result = connector
-            .with_connector(TargetCheckedStreamConnector {
+        let connector = TcpConnector::new().with_connector(TargetCheckedStreamConnector {
                 state: self.state.clone(),
                 authorization: policy
                     .as_ref()
@@ -148,7 +171,8 @@ where
                     }),
                 attempts: attempts.clone(),
                 target,
-            })
+            });
+        let result = DnsConnector::with_resolver(connector, resolver)
             .serve(input)
             .await;
         if result.is_err()
@@ -298,8 +322,8 @@ mod tests {
             NetworkProxyConfig::default(),
         )));
 
-        let request: rama_tcp::client::Request =
-            rama_tcp::client::Request::new(HostWithPort::from(target));
+        let request: rama_net::client::Request =
+            rama_net::client::Request::new(HostWithPort::from(target));
         let err = Service::serve(&connector, request)
             .await
             .expect_err("local target should be rejected");
@@ -323,8 +347,8 @@ mod tests {
             },
         )));
 
-        let request: rama_tcp::client::Request =
-            rama_tcp::client::Request::new(HostWithPort::from(target));
+        let request: rama_net::client::Request =
+            rama_net::client::Request::new(HostWithPort::from(target));
         let result = Service::serve(&connector, request).await;
 
         assert!(result.is_ok(), "local target should be allowed: {result:?}");
@@ -341,8 +365,8 @@ mod tests {
         let state = Arc::new(network_proxy_state_for_policy(config));
         let connector = TargetCheckedTcpConnector::new(Arc::clone(&state));
 
-        let request: rama_tcp::client::Request =
-            rama_tcp::client::Request::new(HostWithPort::from(target));
+        let request: rama_net::client::Request =
+            rama_net::client::Request::new(HostWithPort::from(target));
         let result = Service::serve(&connector, request).await;
 
         assert!(
@@ -353,7 +377,7 @@ mod tests {
             .add_denied_domain(&target.ip().to_string())
             .await
             .unwrap();
-        let request = rama_tcp::client::Request::new(HostWithPort::from(target));
+        let request = rama_net::client::Request::new(HostWithPort::from(target));
         assert!(Service::serve(&connector, request).await.is_err());
     }
 
@@ -368,8 +392,8 @@ mod tests {
         let connector =
             TargetCheckedTcpConnector::new(Arc::new(network_proxy_state_for_policy(config)));
 
-        let request: rama_tcp::client::Request =
-            rama_tcp::client::Request::new(HostWithPort::new(Host::LOCALHOST_NAME, target.port()));
+        let request: rama_net::client::Request =
+            rama_net::client::Request::new(HostWithPort::new(Host::LOCALHOST_NAME, target.port()));
         let result = Service::serve(&connector, request).await;
 
         assert!(
@@ -409,12 +433,12 @@ mod tests {
         let admitted_target =
             HostWithPort::new(Host::Name("LOCALHOST.".parse().unwrap()), addr.port());
         let admit = async |decider: Option<Arc<dyn NetworkPolicyDecider>>| {
-            let mut req = rama_tcp::client::Request::new(target.clone());
+            let mut req = rama_net::client::Request::new(target.clone());
             let decision = evaluate_host_policy_for_dial(
                 &state,
                 decider.as_ref(),
                 &request,
-                Some((&admitted_target, req.extensions_mut())),
+                Some((&admitted_target, req.extensions())),
             )
             .await
             .unwrap();

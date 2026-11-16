@@ -6,9 +6,8 @@ use codex_utils_rustls_provider::ensure_rustls_crypto_provider;
 use rama_core::Layer;
 use rama_core::Service;
 use rama_core::error::BoxError;
-use rama_core::error::ErrorExt as _;
+use rama_core::error::ErrorContext as _;
 use rama_core::error::OpaqueError;
-use rama_core::extensions::ExtensionsMut;
 use rama_core::extensions::ExtensionsRef;
 use rama_core::service::BoxService;
 use rama_http::Body;
@@ -17,7 +16,7 @@ use rama_http::Response;
 use rama_http::Version;
 use rama_http::layer::version_adapter::RequestVersionAdapter;
 use rama_http_backend::client::HttpClientService;
-use rama_http_backend::client::HttpConnector;
+use rama_http_backend::client::HttpConnectorLayer;
 use rama_http_backend::client::proxy::layer::HttpProxyConnectorLayer;
 use rama_net::address::Host;
 use rama_net::address::HostWithPort;
@@ -211,7 +210,7 @@ impl Service<Request<Body>> for UpstreamClient {
             None => info!("HTTP upstream route selected (target={authority}, route=direct)"),
         }
         if let Some(proxy) = proxy {
-            req.extensions_mut().insert(proxy);
+            req.extensions().insert(proxy);
         }
 
         let connect_started_at = Instant::now();
@@ -235,8 +234,8 @@ impl Service<Request<Body>> for UpstreamClient {
             }
         };
 
-        req.extensions_mut()
-            .extend(http_connection.extensions().clone());
+        req.extensions()
+            .extend(http_connection.extensions());
 
         let request_started_at = Instant::now();
         match http_connection.serve(req).await {
@@ -278,7 +277,7 @@ fn build_http_connector(
         .with_connector_data(tls_config)
         .into_layer(proxy);
     let tls = RequestVersionAdapter::new(tls).with_default_version(Version::HTTP_11);
-    let connector = HttpConnector::new(tls);
+    let connector = HttpConnectorLayer::<Body>::default().into_layer(tls);
     connector.boxed()
 }
 
@@ -295,6 +294,6 @@ fn build_unix_connector(
     BoxError,
 > {
     let transport = UnixConnector::fixed(path);
-    let connector = HttpConnector::new(transport);
+    let connector = HttpConnectorLayer::<Body>::default().into_layer(transport);
     connector.boxed()
 }

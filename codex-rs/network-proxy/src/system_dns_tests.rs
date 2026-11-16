@@ -4,12 +4,13 @@ use crate::connect_policy::TargetCheckedTcpConnector;
 use crate::state::network_proxy_state_for_policy;
 use pretty_assertions::assert_eq;
 use rama_core::Service;
-use rama_core::extensions::ExtensionsMut;
+use rama_core::extensions::ExtensionsRef;
+use rama_core::futures::TryStreamExt;
 use rama_net::address::Host;
 use rama_net::address::HostWithPort;
 use rama_net::address::ProxyAddress;
 use rama_net::stream::Socket;
-use rama_tcp::client::Request;
+use rama_net::client::Request;
 use std::sync::Arc;
 use tokio::net::TcpListener;
 
@@ -17,8 +18,8 @@ use tokio::net::TcpListener;
 async fn native_resolution_supports_both_address_families() {
     let domain: Domain = "localhost".parse().expect("valid domain");
     let (ipv4, ipv6) = tokio::join!(
-        SystemDnsResolver.ipv4_lookup(domain.clone()),
-        SystemDnsResolver.ipv6_lookup(domain),
+        SystemDnsResolver.lookup_ipv4(domain.clone()).try_collect::<Vec<_>>(),
+        SystemDnsResolver.lookup_ipv6(domain).try_collect::<Vec<_>>(),
     );
 
     assert_eq!(
@@ -29,6 +30,13 @@ async fn native_resolution_supports_both_address_families() {
         ipv6.expect("resolve IPv6 localhost"),
         vec![Ipv6Addr::LOCALHOST]
     );
+}
+
+#[tokio::test]
+async fn native_resolution_rejects_unsupported_txt_without_fallback() {
+    let domain: Domain = "localhost".parse().expect("valid domain");
+    let result = SystemDnsResolver.lookup_txt(domain).try_collect::<Vec<_>>().await;
+    assert_eq!(result.expect_err("TXT must not fall back").kind(), io::ErrorKind::Unsupported);
 }
 
 #[tokio::test]
@@ -82,9 +90,9 @@ async fn connector_resolves_upstream_proxy_instead_of_destination() {
     let connector = TargetCheckedTcpConnector::new(Arc::new(network_proxy_state_for_policy(
         NetworkProxyConfig::default(),
     )));
-    let mut request =
+    let request =
         Request::new(HostWithPort::try_from("destination.invalid:80").expect("valid destination"));
-    request.extensions_mut().insert(
+    request.extensions().insert(
         ProxyAddress::try_from(format!("http://localhost:{}", target.port()))
             .expect("valid upstream proxy"),
     );

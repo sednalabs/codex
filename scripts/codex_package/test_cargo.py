@@ -19,7 +19,10 @@ class SourceBinariesForTargetTest(unittest.TestCase):
         with (
             patch("codex_package.cargo.subprocess.run") as run,
             patch("codex_package.cargo.validate_source_outputs"),
-            patch("codex_package.cargo.resolve_codex_v8_cargo_env", return_value={"V8_TEST": "yes"}),
+            patch(
+                "codex_package.cargo.resolve_codex_v8_cargo_env",
+                return_value={"V8_TEST": "yes"},
+            ),
         ):
             build_source_binaries(
                 TARGET_SPECS["x86_64-unknown-linux-gnu"],
@@ -34,7 +37,10 @@ class SourceBinariesForTargetTest(unittest.TestCase):
                 codex_windows_sandbox_setup_bin=None,
                 release_version="0.1.0-sedna.1-ci.1+g12345678",
             )
-        self.assertEqual(run.call_args.kwargs["env"]["CODEX_RELEASE_VERSION"], "0.1.0-sedna.1-ci.1+g12345678")
+        self.assertEqual(
+            run.call_args.kwargs["env"]["CODEX_RELEASE_VERSION"],
+            "0.1.0-sedna.1-ci.1+g12345678",
+        )
         self.assertEqual(run.call_args.kwargs["env"]["V8_TEST"], "yes")
 
     def test_macos_package_with_prebuilt_entrypoint_builds_nothing(self) -> None:

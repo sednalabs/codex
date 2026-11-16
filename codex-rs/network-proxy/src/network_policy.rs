@@ -375,7 +375,7 @@ pub(crate) async fn evaluate_host_policy_for_dial(
     request: &NetworkPolicyRequest,
     dial: Option<(
         &rama_net::address::HostWithPort,
-        &mut rama_core::extensions::Extensions,
+        &rama_core::extensions::Extensions,
     )>,
 ) -> Result<NetworkDecision> {
     let execution_id = state.execution_id();

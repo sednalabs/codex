@@ -680,6 +680,26 @@ inherits = "test"
 opt-level = 0
 
 [patch.crates-io]
+# Temporary Rama 0.3.0 time constraint backport; remove when an official compatible release is available.
+rama-core = { git = "https://github.com/GraciousGazelles/rama", rev = "c2773dc2edadf250a91c6a56fe64cd907359c10f" }
+rama-crypto = { git = "https://github.com/GraciousGazelles/rama", rev = "c2773dc2edadf250a91c6a56fe64cd907359c10f" }
+rama-dns = { git = "https://github.com/GraciousGazelles/rama", rev = "c2773dc2edadf250a91c6a56fe64cd907359c10f" }
+rama-error = { git = "https://github.com/GraciousGazelles/rama", rev = "c2773dc2edadf250a91c6a56fe64cd907359c10f" }
+rama-http = { git = "https://github.com/GraciousGazelles/rama", rev = "c2773dc2edadf250a91c6a56fe64cd907359c10f" }
+rama-http-backend = { git = "https://github.com/GraciousGazelles/rama", rev = "c2773dc2edadf250a91c6a56fe64cd907359c10f" }
+rama-http-core = { git = "https://github.com/GraciousGazelles/rama", rev = "c2773dc2edadf250a91c6a56fe64cd907359c10f" }
+rama-http-headers = { git = "https://github.com/GraciousGazelles/rama", rev = "c2773dc2edadf250a91c6a56fe64cd907359c10f" }
+rama-http-types = { git = "https://github.com/GraciousGazelles/rama", rev = "c2773dc2edadf250a91c6a56fe64cd907359c10f" }
+rama-json = { git = "https://github.com/GraciousGazelles/rama", rev = "c2773dc2edadf250a91c6a56fe64cd907359c10f" }
+rama-macros = { git = "https://github.com/GraciousGazelles/rama", rev = "c2773dc2edadf250a91c6a56fe64cd907359c10f" }
+rama-net = { git = "https://github.com/GraciousGazelles/rama", rev = "c2773dc2edadf250a91c6a56fe64cd907359c10f" }
+rama-socks5 = { git = "https://github.com/GraciousGazelles/rama", rev = "c2773dc2edadf250a91c6a56fe64cd907359c10f" }
+rama-tcp = { git = "https://github.com/GraciousGazelles/rama", rev = "c2773dc2edadf250a91c6a56fe64cd907359c10f" }
+rama-tls = { git = "https://github.com/GraciousGazelles/rama", rev = "c2773dc2edadf250a91c6a56fe64cd907359c10f" }
+rama-tls-rustls = { git = "https://github.com/GraciousGazelles/rama", rev = "c2773dc2edadf250a91c6a56fe64cd907359c10f" }
+rama-udp = { git = "https://github.com/GraciousGazelles/rama", rev = "c2773dc2edadf250a91c6a56fe64cd907359c10f" }
+rama-unix = { git = "https://github.com/GraciousGazelles/rama", rev = "c2773dc2edadf250a91c6a56fe64cd907359c10f" }
+rama-utils = { git = "https://github.com/GraciousGazelles/rama", rev = "c2773dc2edadf250a91c6a56fe64cd907359c10f" }
 # Uncomment to debug local changes.
 # ratatui = { path = "../../ratatui" }
 crossterm = { git = "https://github.com/openai-oss-forks/crossterm", rev = "ed1cdab335221515706178d68495bba2aed1924f" }

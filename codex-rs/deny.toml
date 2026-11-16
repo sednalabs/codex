@@ -345,6 +345,8 @@ required-git-spec = "rev"
 allow-registry = ["https://github.com/rust-lang/crates.io-index"]
 # List of URLs for allowed Git repositories
 allow-git = [
+    # Temporary Rama 0.3.0 time-constraint backport; remove with the matching patch.
+    "https://github.com/GraciousGazelles/rama",
     "https://github.com/dzbarsky/rules_rust",
     "https://github.com/helix-editor/nucleo.git",
     # CONNECT request handling needs this pinned H3 revision until released.

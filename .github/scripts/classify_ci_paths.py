@@ -201,7 +201,12 @@ def classify(paths: Iterable[str]) -> Scope:
         if (
             path == ".github/workflows/repo-checks.yml"
             or path in PACKAGE_ROOT_PATHS
-            or path in {"justfile", ".prettierignore", ".prettierrc", ".prettierrc.json"}
+            or path in {
+                "justfile",
+                ".prettierignore",
+                ".prettierrc",
+                ".prettierrc.json",
+            }
             or suffix in SOURCE_FORMAT_SUFFIXES
         ):
             # Markdown is intentionally excluded here. Documentation has its own
@@ -262,7 +267,12 @@ def classify(paths: Iterable[str]) -> Scope:
 
         if (
             suffix == ".rs"
-            or name in {"Cargo.toml", "Cargo.lock", "rust-toolchain", "rust-toolchain.toml"}
+            or name in {
+                "Cargo.toml",
+                "Cargo.lock",
+                "rust-toolchain",
+                "rust-toolchain.toml",
+            }
             or _starts(path, ".cargo/", "codex-rs/.cargo/")
         ):
             codeql.add("rust")
@@ -276,7 +286,9 @@ def classify(paths: Iterable[str]) -> Scope:
         repo_readme=repo_readme,
         sdk_python=sdk_python,
         sdk_typescript=sdk_typescript,
-        codeql_languages=tuple(language for language in CODEQL_ALL if language in codeql),
+        codeql_languages=tuple(
+            language for language in CODEQL_ALL if language in codeql
+        ),
         force_full_blocking=force_full_blocking,
         force_full_codeql=force_full_codeql,
     )
