@@ -20,10 +20,10 @@ use rama_dns::client::DnsConnector;
 use rama_dns::client::HickoryDnsResolver;
 use rama_net::ConnectorTargetInputExt;
 use rama_net::TransportProtocolInputExt;
-use rama_net::client::ConnectorTarget;
 use rama_net::address::Host;
 use rama_net::address::HostWithPort;
 use rama_net::address::ProxyAddress;
+use rama_net::client::ConnectorTarget;
 use rama_net::client::EstablishedClientConnection;
 use rama_tcp::TcpStream;
 use rama_tcp::client::TcpStreamConnector;
@@ -43,9 +43,8 @@ fn system_hickory_dns_resolver() -> Result<HickoryDnsResolver, BoxError> {
         return Ok(resolver.clone());
     }
 
-    let resolver = HickoryDnsResolver::try_new_system().map_err(|err| {
-        err.context("initialize system Hickory DNS resolver")
-    })?;
+    let resolver = HickoryDnsResolver::try_new_system()
+        .map_err(|err| err.context("initialize system Hickory DNS resolver"))?;
     let _ = RESOLVER.set(resolver.clone());
     Ok(RESOLVER.get().cloned().unwrap_or(resolver))
 }
@@ -156,22 +155,22 @@ where
                 .await;
         }
 
-        let target = input
-            .connector_target()
-            .ok_or_else(|| OpaqueError::from_static_str("network target is missing a host or port"))?;
+        let target = input.connector_target().ok_or_else(|| {
+            OpaqueError::from_static_str("network target is missing a host or port")
+        })?;
 
         let policy = DialPolicy::for_target(input.extensions(), &target).cloned();
         let attempts = Arc::new(AtomicU8::new(0));
         let connector = TcpConnector::new().with_connector(TargetCheckedStreamConnector {
-                state: self.state.clone(),
-                authorization: policy
-                    .as_ref()
-                    .map_or(HostAuthorization::RequireAllowlist, |policy| {
-                        policy.authorization
-                    }),
-                attempts: attempts.clone(),
-                target,
-            });
+            state: self.state.clone(),
+            authorization: policy
+                .as_ref()
+                .map_or(HostAuthorization::RequireAllowlist, |policy| {
+                    policy.authorization
+                }),
+            attempts: attempts.clone(),
+            target,
+        });
         let result = DnsConnector::with_resolver(connector, resolver)
             .serve(input)
             .await;

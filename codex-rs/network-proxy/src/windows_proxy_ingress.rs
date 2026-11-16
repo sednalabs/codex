@@ -136,10 +136,15 @@ impl WindowsProxyIngress {
         let http_addr = listeners.http_addr()?;
         let socks_addr = listeners.socks_addr(requested_socks_addr)?;
         let (http_listener, socks_listener) = listeners.into_listeners();
-        let http_listener =
-            TcpListener::try_from_std_tcp_listener(http_listener, rama_core::rt::Executor::default()).context("convert shared HTTP ingress listener")?;
+        let http_listener = TcpListener::try_from_std_tcp_listener(
+            http_listener,
+            rama_core::rt::Executor::default(),
+        )
+        .context("convert shared HTTP ingress listener")?;
         let socks_listener = socks_listener
-            .map(|listener| TcpListener::try_from_std_tcp_listener(listener, rama_core::rt::Executor::default()))
+            .map(|listener| {
+                TcpListener::try_from_std_tcp_listener(listener, rama_core::rt::Executor::default())
+            })
             .transpose()
             .context("convert shared SOCKS5 ingress listener")?;
         let runtime =

@@ -26,8 +26,8 @@ impl DnsAddressResolver for SystemDnsResolver {
         &self,
         domain: Domain,
     ) -> impl Stream<Item = Result<Ipv4Addr, Self::Error>> + Send + '_ {
-        stream_fn(async move |mut yielder| {
-            match lookup_host((domain.as_str(), 0)).await {
+        stream_fn(
+            async move |mut yielder| match lookup_host((domain.as_str(), 0)).await {
                 Ok(addresses) => {
                     for address in addresses {
                         if let IpAddr::V4(ip) = address.ip() {
@@ -36,16 +36,16 @@ impl DnsAddressResolver for SystemDnsResolver {
                     }
                 }
                 Err(error) => yielder.yield_item(Err(error)).await,
-            }
-        })
+            },
+        )
     }
 
     fn lookup_ipv6(
         &self,
         domain: Domain,
     ) -> impl Stream<Item = Result<Ipv6Addr, Self::Error>> + Send + '_ {
-        stream_fn(async move |mut yielder| {
-            match lookup_host((domain.as_str(), 0)).await {
+        stream_fn(
+            async move |mut yielder| match lookup_host((domain.as_str(), 0)).await {
                 Ok(addresses) => {
                     for address in addresses {
                         if let IpAddr::V6(ip) = address.ip() {
@@ -54,8 +54,8 @@ impl DnsAddressResolver for SystemDnsResolver {
                     }
                 }
                 Err(error) => yielder.yield_item(Err(error)).await,
-            }
-        })
+            },
+        )
     }
 }
 

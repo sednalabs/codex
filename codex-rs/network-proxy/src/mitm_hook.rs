@@ -500,7 +500,11 @@ fn query_matches(query_constraints: &[QueryConstraint], req: &Request) -> bool {
         return true;
     }
 
-    let actual_query = req.uri().query().map(|query| query.as_encoded_str()).unwrap_or_default();
+    let actual_query = req
+        .uri()
+        .query()
+        .map(|query| query.as_encoded_str())
+        .unwrap_or_default();
     let mut actual_values: BTreeMap<String, Vec<String>> = BTreeMap::new();
     for (name, value) in form_urlencoded::parse(actual_query.as_bytes()) {
         actual_values

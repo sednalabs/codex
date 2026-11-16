@@ -1,3 +1,4 @@
+use crate::ProxyTarget;
 use crate::certs::ManagedMitmCa;
 use crate::config::NetworkMitmCaConfig;
 use crate::config::NetworkMode;
@@ -25,9 +26,9 @@ use rama_core::bytes::Bytes;
 use rama_core::error::BoxError;
 use rama_core::extensions::ExtensionsRef;
 use rama_core::futures::stream::Stream as FuturesStream;
+use rama_core::io::Io;
 use rama_core::rt::Executor;
 use rama_core::service::service_fn;
-use rama_core::io::Io;
 use rama_http::Body;
 use rama_http::BodyDataStream;
 use rama_http::HeaderMap;
@@ -35,16 +36,15 @@ use rama_http::HeaderValue;
 use rama_http::Request;
 use rama_http::Response;
 use rama_http::StatusCode;
-use rama_net::uri::Uri;
 use rama_http::header::HOST;
 use rama_http::layer::remove_header::RemoveRequestHeaderLayer;
 use rama_http::layer::remove_header::RemoveResponseHeaderLayer;
-use rama_net::Protocol as Scheme;
 use rama_http_backend::server::HttpServer;
-use crate::ProxyTarget;
+use rama_net::Protocol as Scheme;
 use rama_net::stream::SocketInfo;
-use rama_tls_rustls::dep::rustls;
+use rama_net::uri::Uri;
 use rama_tls::server::TlsServerConfig;
+use rama_tls_rustls::dep::rustls;
 use rama_tls_rustls::server::TlsAcceptorLayer;
 use std::pin::Pin;
 use std::sync::Arc;
@@ -432,9 +432,10 @@ async fn evaluate_mitm_policy(
             .uri()
             .scheme()
             .is_some_and(|scheme| scheme != &Scheme::HTTP)
-            || legacy_uri
-                .as_ref()
-                .map_or(true, |uri| uri.authority().is_some_and(|authority| !matches_target(authority)))
+            || legacy_uri.as_ref().map_or(true, |uri| {
+                uri.authority()
+                    .is_some_and(|authority| !matches_target(authority))
+            })
             || req.headers().get_all(HOST).iter().any(|value| {
                 value
                     .to_str()

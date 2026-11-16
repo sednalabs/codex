@@ -9,8 +9,8 @@ use rama_core::futures::TryStreamExt;
 use rama_net::address::Host;
 use rama_net::address::HostWithPort;
 use rama_net::address::ProxyAddress;
-use rama_net::stream::Socket;
 use rama_net::client::Request;
+use rama_net::stream::Socket;
 use std::sync::Arc;
 use tokio::net::TcpListener;
 
@@ -18,8 +18,12 @@ use tokio::net::TcpListener;
 async fn native_resolution_supports_both_address_families() {
     let domain: Domain = "localhost".parse().expect("valid domain");
     let (ipv4, ipv6) = tokio::join!(
-        SystemDnsResolver.lookup_ipv4(domain.clone()).try_collect::<Vec<_>>(),
-        SystemDnsResolver.lookup_ipv6(domain).try_collect::<Vec<_>>(),
+        SystemDnsResolver
+            .lookup_ipv4(domain.clone())
+            .try_collect::<Vec<_>>(),
+        SystemDnsResolver
+            .lookup_ipv6(domain)
+            .try_collect::<Vec<_>>(),
     );
 
     assert_eq!(
@@ -35,8 +39,14 @@ async fn native_resolution_supports_both_address_families() {
 #[tokio::test]
 async fn native_resolution_rejects_unsupported_txt_without_fallback() {
     let domain: Domain = "localhost".parse().expect("valid domain");
-    let result = SystemDnsResolver.lookup_txt(domain).try_collect::<Vec<_>>().await;
-    assert_eq!(result.expect_err("TXT must not fall back").kind(), io::ErrorKind::Unsupported);
+    let result = SystemDnsResolver
+        .lookup_txt(domain)
+        .try_collect::<Vec<_>>()
+        .await;
+    assert_eq!(
+        result.expect_err("TXT must not fall back").kind(),
+        io::ErrorKind::Unsupported
+    );
 }
 
 #[tokio::test]

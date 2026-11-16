@@ -50,7 +50,7 @@ struct TokenUsageTotals {
     total_tokens: i64,
 }
 
-#[derive(Debug, sqlx::FromRow)]
+#[derive(Debug, sqlx_macros::FromRow)]
 struct StoredProviderUsage {
     provider_call_id: String,
     input_tokens_uncached: Option<i64>,

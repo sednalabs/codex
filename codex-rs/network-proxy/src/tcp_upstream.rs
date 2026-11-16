@@ -40,7 +40,9 @@ impl FromStr for TcpUpstreamProxy {
     type Err = anyhow::Error;
 
     fn from_str(raw: &str) -> Result<Self, Self::Err> {
-        let endpoint: HostWithPort = raw.parse().map_err(|err: BoxError| err.into_opaque_error())?;
+        let endpoint: HostWithPort = raw
+            .parse()
+            .map_err(|err: BoxError| err.into_opaque_error())?;
         ensure!(
             endpoint.port != 0,
             "TCP upstream proxy port must be nonzero"
@@ -88,7 +90,9 @@ impl TcpUpstreamProxy {
         let request = Request::builder()
             .method(Method::CONNECT)
             .version(Version::HTTP_11)
-            .uri(rama_net::uri::Uri::parse_authority_form_strict(authority.as_str())?)
+            .uri(rama_net::uri::Uri::parse_authority_form_strict(
+                authority.as_str(),
+            )?)
             .header(HOST, &authority)
             .extension(ProxyAddress {
                 protocol: Some(Protocol::HTTP),

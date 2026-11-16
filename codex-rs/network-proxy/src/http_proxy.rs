@@ -1,3 +1,4 @@
+use crate::ProxyTarget;
 use crate::attribution::BindConnectionAttribution;
 use crate::config::NetworkMode;
 use crate::connect_policy::ResolvedTargetsDenied;
@@ -45,10 +46,10 @@ use rama_core::error::ErrorExt as _;
 use rama_core::error::extra::OpaqueError;
 use rama_core::extensions::ExtensionsRef;
 use rama_core::graceful::ShutdownGuard;
-use rama_core::service::BoxService;
-use rama_core::service::service_fn;
 use rama_core::io::Io;
 use rama_core::rt::Executor;
+use rama_core::service::BoxService;
+use rama_core::service::service_fn;
 use rama_http::Body;
 use rama_http::HeaderMap;
 use rama_http::HeaderName;
@@ -60,25 +61,24 @@ use rama_http::header;
 use rama_http::headers::HeaderMapExt;
 use rama_http::headers::Host;
 use rama_http::layer::remove_header::RemoveResponseHeaderLayer;
+use rama_http::layer::upgrade::UpgradeLayer;
+use rama_http::layer::upgrade::UpgradeResponse;
+use rama_http::layer::upgrade::Upgraded;
 use rama_http::matcher::MethodMatcher;
 use rama_http_backend::client::proxy::layer::HttpProxyConnector;
 use rama_http_backend::server::HttpServer;
-use rama_http::layer::upgrade::UpgradeLayer;
-use rama_http::layer::upgrade::Upgraded;
-use rama_http::layer::upgrade::UpgradeResponse;
+use rama_net::AuthorityInputExt;
 use rama_net::Protocol;
+use rama_net::ProtocolInputExt;
+use rama_net::address::HostWithOptPort;
 use rama_net::client::ConnectorService;
 use rama_net::client::EstablishedClientConnection;
-use crate::ProxyTarget;
-use rama_net::address::HostWithOptPort;
-use rama_net::AuthorityInputExt;
-use rama_net::ProtocolInputExt;
+use rama_net::client::Request as TcpRequest;
 use rama_net::stream::SocketInfo;
 use rama_tcp::TcpStream;
-use rama_net::client::Request as TcpRequest;
 use rama_tcp::server::TcpListener;
-use rama_tls_rustls::types::client::TlsClientConfig;
 use rama_tls_rustls::client::TlsConnectorLayer;
+use rama_tls_rustls::types::client::TlsClientConfig;
 use serde::Serialize;
 use std::convert::Infallible;
 use std::net::SocketAddr;
@@ -128,15 +128,18 @@ impl TryFrom<&Request> for RequestContext {
             req.authority()
         }
         .ok_or_else(|| opaque_display("request authority is missing"))?;
-        Ok(Self { authority, protocol })
+        Ok(Self {
+            authority,
+            protocol,
+        })
     }
 }
 
 impl RequestContext {
     fn host_with_port(&self) -> rama_net::address::HostWithPort {
-        self.authority.clone().into_host_with_port_or(
-            self.protocol.default_port().unwrap_or(80),
-        )
+        self.authority
+            .clone()
+            .into_host_with_port_or(self.protocol.default_port().unwrap_or(80))
     }
 
     fn authority_has_default_port(&self) -> bool {
@@ -186,14 +189,18 @@ async fn run_http_proxy_with_listener(
     environment_id: Option<String>,
     executor: Executor,
 ) -> Result<()> {
-    let addr = TcpListener::local_addr(&listener)
-        .context("read HTTP proxy listener local addr")?;
+    let addr = TcpListener::local_addr(&listener).context("read HTTP proxy listener local addr")?;
 
     info!("HTTP proxy listening on {addr}");
 
     listener
         .serve(CancelOnShutdown::new(
-            http_proxy_service_with_executor(state, policy_decider, environment_id, executor.clone()),
+            http_proxy_service_with_executor(
+                state,
+                policy_decider,
+                environment_id,
+                executor.clone(),
+            ),
             executor,
         ))
         .await;
@@ -492,9 +499,7 @@ async fn http_connect_proxy(upgraded: Upgraded, executor: Executor) -> Result<()
                 Ok((crate::brokered_tunnel::TunnelProtocol::Http, stream)) => {
                     mitm::mitm_stream(stream, rama_net::Protocol::HTTP, executor.clone())
                         .await
-                        .map_err(|err| {
-                            opaque_display(format!("HTTP tunnel error: {err}"))
-                        })
+                        .map_err(|err| opaque_display(format!("HTTP tunnel error: {err}")))
                 }
                 Ok((crate::brokered_tunnel::TunnelProtocol::Opaque, stream)) => {
                     if mode == NetworkMode::Limited {
@@ -505,9 +510,7 @@ async fn http_connect_proxy(upgraded: Upgraded, executor: Executor) -> Result<()
                         forward_connect_tunnel(stream).await
                     }
                 }
-                Err(err) => Err(opaque_display(format!(
-                    "detect tunnel protocol: {err:#}"
-                ))),
+                Err(err) => Err(opaque_display(format!("detect tunnel protocol: {err:#}"))),
             }
         }
     };
@@ -1129,10 +1132,16 @@ async fn forward_request_credential_destinations(
     req: &Request,
 ) -> Result<Vec<String>> {
     let authority = context.host_with_port();
-    let scheme = req.uri().scheme().map(|protocol| protocol.as_str()).unwrap_or("http");
+    let scheme = req
+        .uri()
+        .scheme()
+        .map(|protocol| protocol.as_str())
+        .unwrap_or("http");
     // Preserve the legacy parser's raw path for credential scoping.
     let raw_uri = req.uri().as_str();
-    let legacy_uri: http::Uri = raw_uri.parse().context("invalid credential destination URI")?;
+    let legacy_uri: http::Uri = raw_uri
+        .parse()
+        .context("invalid credential destination URI")?;
     let request_path = legacy_uri
         .path_and_query()
         .map(http::uri::PathAndQuery::as_str)

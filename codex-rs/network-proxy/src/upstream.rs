@@ -17,17 +17,17 @@ use rama_http::layer::version_adapter::RequestVersionAdapter;
 use rama_http_backend::client::HttpClientService;
 use rama_http_backend::client::HttpConnectorLayer;
 use rama_http_backend::client::proxy::layer::HttpProxyConnectorLayer;
+use rama_net::AuthorityInputExt;
+use rama_net::ProtocolInputExt;
 use rama_net::address::Host;
 use rama_net::address::HostWithPort;
 use rama_net::address::ProxyAddress;
 use rama_net::client::EstablishedClientConnection;
-use rama_net::AuthorityInputExt;
-use rama_net::ProtocolInputExt;
 use rama_tls_rustls::client::RustlsClientConfigExt;
-use rama_tls_rustls::types::client::TlsClientConfig;
 use rama_tls_rustls::client::TlsConnectorLayer;
 use rama_tls_rustls::client::client_root_certs;
 use rama_tls_rustls::dep::rustls;
+use rama_tls_rustls::types::client::TlsClientConfig;
 use std::sync::Arc;
 use std::time::Instant;
 use tracing::info;
@@ -203,9 +203,13 @@ impl Service<Request<Body>> for UpstreamClient {
                 .get_ref::<crate::ProxyTarget>()
                 .filter(|target| matches!(&target.0.host, Host::Name(_)))
                 .map(|target| target.0.clone())
-                .or_else(|| req.authority().map(|authority| authority.into_host_with_port_or(default_port)))
+                .or_else(|| {
+                    req.authority()
+                        .map(|authority| authority.into_host_with_port_or(default_port))
+                })
         } else {
-            req.authority().map(|authority| authority.into_host_with_port_or(default_port))
+            req.authority()
+                .map(|authority| authority.into_host_with_port_or(default_port))
         };
         let authority = target
             .as_ref()
@@ -247,8 +251,7 @@ impl Service<Request<Body>> for UpstreamClient {
             }
         };
 
-        req.extensions()
-            .extend(http_connection.extensions());
+        req.extensions().extend(http_connection.extensions());
 
         let request_started_at = Instant::now();
         match http_connection.serve(req).await {
@@ -264,7 +267,9 @@ impl Service<Request<Body>> for UpstreamClient {
                     "HTTP upstream response headers failed (target={authority}, elapsed_ms={})",
                     request_started_at.elapsed().as_millis()
                 );
-                Err(err.context("HTTP upstream request failed").into_opaque_error())
+                Err(err
+                    .context("HTTP upstream request failed")
+                    .into_opaque_error())
             }
         }
     }
@@ -280,12 +285,13 @@ fn build_http_connector(
 > {
     ensure_rustls_crypto_provider();
     let proxy = HttpProxyConnectorLayer::optional().into_layer(transport);
-    let mut client_config = rustls::ClientConfig::builder_with_protocol_versions(rustls::ALL_VERSIONS)
-        .with_root_certificates(tls_root_store)
-        .with_no_client_auth();
+    let mut client_config =
+        rustls::ClientConfig::builder_with_protocol_versions(rustls::ALL_VERSIONS)
+            .with_root_certificates(tls_root_store)
+            .with_no_client_auth();
     client_config.alpn_protocols = vec![b"h2".to_vec(), b"http/1.1".to_vec()];
-    let tls_config = TlsClientConfig::new()
-        .with_modify_rustls_config(move |_| Ok(client_config.clone()));
+    let tls_config =
+        TlsClientConfig::new().with_modify_rustls_config(move |_| Ok(client_config.clone()));
     let tls = TlsConnectorLayer::auto()
         .with_base_config(tls_config)
         .into_layer(proxy);

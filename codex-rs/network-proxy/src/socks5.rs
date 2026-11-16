@@ -1,3 +1,4 @@
+use crate::ProxyTarget;
 use crate::attribution::BindConnectionAttribution;
 use crate::config::NetworkMode;
 use crate::connect_policy::DialPolicy;
@@ -30,18 +31,18 @@ use anyhow::Result;
 use rama_core::Service;
 use rama_core::error::BoxError;
 use rama_core::error::ErrorExt as _;
-use rama_core::rt::Executor;
 use rama_core::extensions::Extensions;
 use rama_core::extensions::ExtensionsRef;
 use rama_core::graceful::ShutdownGuard;
+use rama_core::io::BridgeIo;
+use rama_core::io::rewind::Rewind;
+use rama_core::rt::Executor;
 use rama_core::service::BoxService;
 use rama_core::service::service_fn;
-use rama_core::io::rewind::Rewind;
-use rama_core::io::BridgeIo;
 use rama_net::address::HostWithPort;
-use rama_net::client::EstablishedClientConnection;
-use crate::ProxyTarget;
 use rama_net::address::SocketAddress;
+use rama_net::client::EstablishedClientConnection;
+use rama_net::client::Request as TcpRequest;
 use rama_net::stream::Socket;
 use rama_net::stream::SocketInfo;
 use rama_socks5::Socks5Acceptor;
@@ -50,7 +51,6 @@ use rama_socks5::server::DefaultUdpRelay;
 use rama_socks5::server::udp::RelayRequest;
 use rama_socks5::server::udp::RelayResponse;
 use rama_tcp::TcpStream;
-use rama_net::client::Request as TcpRequest;
 use rama_tcp::server::TcpListener;
 use std::io;
 use std::net::SocketAddr;
@@ -125,8 +125,7 @@ async fn run_socks5_with_listener(
     enable_socks5_udp: bool,
     executor: Executor,
 ) -> Result<()> {
-    let addr = TcpListener::local_addr(&listener)
-        .context("read SOCKS5 listener local addr")?;
+    let addr = TcpListener::local_addr(&listener).context("read SOCKS5 listener local addr")?;
 
     info!("SOCKS5 proxy listening on {addr}");
 
@@ -164,7 +163,11 @@ pub(crate) fn socks5_proxy_service(
     enable_socks5_udp: bool,
 ) -> BoxService<TcpStream, (), BoxError> {
     socks5_proxy_service_with_executor(
-        state, policy_decider, environment_id, enable_socks5_udp, Executor::default(),
+        state,
+        policy_decider,
+        environment_id,
+        enable_socks5_udp,
+        Executor::default(),
     )
 }
 
@@ -696,7 +699,9 @@ async fn proxy_socks5_tcp(
                     }
                     info!("SOCKS opaque upstream dial started (target={target})");
                     let connect_started_at = Instant::now();
-                    let EstablishedClientConnection { conn: mut upstream, .. } = connect_opaque_tcp(
+                    let EstablishedClientConnection {
+                        conn: mut upstream, ..
+                    } = connect_opaque_tcp(
                         state,
                         TcpRequest::new_with_extensions(target.clone(), extensions),
                     )
@@ -922,7 +927,7 @@ mod tests {
     use crate::state::build_config_state;
     use pretty_assertions::assert_eq;
     use rama_core::extensions::Extensions;
-        use rama_net::address::HostWithPort;
+    use rama_net::address::HostWithPort;
     use rama_net::address::SocketAddress;
     use rama_socks5::server::udp::RelayDirection;
     use std::collections::HashMap;
