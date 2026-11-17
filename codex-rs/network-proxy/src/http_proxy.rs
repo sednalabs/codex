@@ -270,7 +270,29 @@ fn connect_upgrade_response(
     response: Response,
     request: Request,
 ) -> UpgradeResponse<Request, Response> {
-    let extensions = request.extensions().clone();
+    // Request extensions include structural ingress wrappers around the connection's
+    // shared store. Copy only request metadata: merging an ingress wrapper back into
+    // the upgraded connection would create a self-referential extension store.
+    let source = request.extensions();
+    let extensions = rama_core::extensions::Extensions::new();
+    if let Some(target) = source.get_ref::<ProxyTarget>() {
+        extensions.insert(target.clone());
+    }
+    if let Some(mode) = source.get_ref::<ConnectMitmMode>() {
+        extensions.insert(*mode);
+    }
+    if let Some(mode) = source.get_ref::<NetworkMode>() {
+        extensions.insert(*mode);
+    }
+    if let Some(policy) = source.get_ref::<crate::connect_policy::DialPolicy>() {
+        extensions.insert(policy.clone());
+    }
+    if let Some(state) = source.get_arc::<mitm::MitmState>() {
+        extensions.insert_arc(state);
+    }
+    if let Some(state) = source.get_arc::<NetworkProxyState>() {
+        extensions.insert_arc(state);
+    }
     UpgradeResponse {
         response,
         request,
@@ -1434,14 +1456,21 @@ mod tests {
             .unwrap();
         let target: rama_net::address::HostWithPort = "example.com:443".parse().unwrap();
         let state = Arc::new(network_proxy_state_for_policy(NetworkProxyConfig::default()));
+        // HTTP/1 ingress wraps the same extension store that is later extended
+        // by the upgrade layer. Copying the wrapper would make that store cyclic.
+        let upgraded_extensions = rama_core::extensions::Extensions::new();
+        request
+            .extensions()
+            .insert(rama_core::extensions::Ingress(upgraded_extensions.clone()));
         request.extensions().insert(ProxyTarget(target.clone()));
         request.extensions().insert(NetworkMode::Full);
         request.extensions().insert(ConnectMitmMode::Disabled);
         request.extensions().insert_arc(state.clone());
 
         let response = connect_upgrade_response(Response::new(Body::empty()), request);
-        let upgraded_extensions = rama_core::extensions::Extensions::new();
         upgraded_extensions.extend(&response.extensions);
+        // An absent type traverses structural wrappers and exposed the former cycle.
+        assert!(upgraded_extensions.get_ref::<SocketInfo>().is_none());
         assert_eq!(
             upgraded_extensions.get_ref::<ProxyTarget>().unwrap().0,
             target
