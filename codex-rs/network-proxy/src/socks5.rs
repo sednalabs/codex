@@ -981,7 +981,7 @@ mod tests {
             mode: NetworkMode::Full,
             ..NetworkProxyConfig::default()
         });
-        let mut request =
+        let request =
             TcpRequest::new(HostWithPort::try_from("example.com:443").expect("valid authority"));
         request.extensions().insert_arc(state.clone());
 
@@ -1024,7 +1024,7 @@ mod tests {
         };
         settings.set_allowed_domains(vec!["example.com".to_string()]);
         let state = state_for_settings(settings);
-        let mut request =
+        let request =
             TcpRequest::new(HostWithPort::try_from("example.com:443").expect("valid authority"));
         request.extensions().insert_arc(state.clone());
 
@@ -1046,7 +1046,7 @@ mod tests {
         };
         settings.set_allowed_domains(vec!["example.com".to_string()]);
         let state = state_for_settings(settings);
-        let mut request =
+        let request =
             TcpRequest::new(HostWithPort::try_from("example.com:80").expect("valid authority"));
         request.extensions().insert_arc(state.clone());
 
@@ -1096,7 +1096,7 @@ mod tests {
         let state = state_for_settings(settings);
         let mut env = HashMap::from([("OPENAI_API_KEY".to_string(), "sk-real".to_string())]);
         state.virtualize_child_credentials(&mut env);
-        let mut request = TcpRequest::new(
+        let request = TcpRequest::new(
             HostWithPort::try_from("api.openai.com:8443").expect("valid authority"),
         );
         request.extensions().insert_arc(state.clone());
@@ -1123,7 +1123,7 @@ mod tests {
         };
         settings.set_allowed_domains(vec!["example.com".to_string()]);
         let state = state_for_settings(settings);
-        let mut request =
+        let request =
             TcpRequest::new(HostWithPort::try_from("example.com:443").expect("valid authority"));
         request.extensions().insert_arc(state.clone());
 
@@ -1159,7 +1159,7 @@ mod tests {
         };
         settings.set_allowed_domains(vec!["api.github.com".to_string()]);
         let state = state_for_settings(settings);
-        let mut request =
+        let request =
             TcpRequest::new(HostWithPort::try_from("api.github.com:443").expect("valid authority"));
         request.extensions().insert_arc(state.clone());
 
@@ -1192,7 +1192,7 @@ mod tests {
         };
         settings.set_allowed_domains(vec!["api.github.com".to_string()]);
         let state = state_for_settings(settings);
-        let mut request =
+        let request =
             TcpRequest::new(HostWithPort::try_from("api.github.com:80").expect("valid authority"));
         request.extensions().insert_arc(state.clone());
 

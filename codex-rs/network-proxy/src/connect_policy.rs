@@ -430,7 +430,7 @@ mod tests {
         let admitted_target =
             HostWithPort::new(Host::Name("LOCALHOST.".parse().unwrap()), addr.port());
         let admit = async |decider: Option<Arc<dyn NetworkPolicyDecider>>| {
-            let mut req = rama_net::client::Request::new(target.clone());
+            let req = rama_net::client::Request::new(target.clone());
             let decision = evaluate_host_policy_for_dial(
                 &state,
                 decider.as_ref(),

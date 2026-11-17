@@ -242,11 +242,7 @@ fn http_proxy_service_with_executor(
                         async move {
                             let (response, request) =
                                 http_connect_accept(policy_decider, environment_id, req).await?;
-                            Ok(UpgradeResponse {
-                                response,
-                                request,
-                                extensions: rama_core::extensions::Extensions::new(),
-                            })
+                            Ok(connect_upgrade_response(response, request))
                         }
                     }
                 }),
@@ -268,6 +264,18 @@ fn http_proxy_service_with_executor(
     );
 
     BindConnectionAttribution::new(http_service, state, environment_id).boxed()
+}
+
+fn connect_upgrade_response(
+    response: Response,
+    request: Request,
+) -> UpgradeResponse<Request, Response> {
+    let extensions = request.extensions().clone();
+    UpgradeResponse {
+        response,
+        request,
+        extensions,
+    }
 }
 
 async fn http_connect_accept(
@@ -1418,6 +1426,40 @@ mod tests {
     use tokio::time::Duration;
     use tokio::time::timeout;
 
+    #[test]
+    fn connect_upgrade_transfers_request_metadata() {
+        let request = Request::builder()
+            .uri("example.com:443")
+            .body(Body::empty())
+            .unwrap();
+        let target: rama_net::address::HostWithPort = "example.com:443".parse().unwrap();
+        let state = Arc::new(network_proxy_state_for_policy(NetworkProxyConfig::default()));
+        request.extensions().insert(ProxyTarget(target.clone()));
+        request.extensions().insert(NetworkMode::Full);
+        request.extensions().insert(ConnectMitmMode::Disabled);
+        request.extensions().insert_arc(state.clone());
+
+        let response = connect_upgrade_response(Response::new(Body::empty()), request);
+        let upgraded_extensions = rama_core::extensions::Extensions::new();
+        upgraded_extensions.extend(&response.extensions);
+        assert_eq!(
+            upgraded_extensions.get_ref::<ProxyTarget>().unwrap().0,
+            target
+        );
+        assert_eq!(
+            upgraded_extensions.get_ref::<NetworkMode>(),
+            Some(&NetworkMode::Full)
+        );
+        assert_eq!(
+            upgraded_extensions.get_ref::<ConnectMitmMode>(),
+            Some(&ConnectMitmMode::Disabled)
+        );
+        assert!(Arc::ptr_eq(
+            &upgraded_extensions.get_arc::<NetworkProxyState>().unwrap(),
+            &state,
+        ));
+    }
+
     #[tokio::test]
     async fn http_connect_accept_blocks_in_limited_mode() {
         let policy = {
@@ -1428,7 +1470,7 @@ mod tests {
         let state = Arc::new(network_proxy_state_for_policy(policy));
         state.set_network_mode(NetworkMode::Limited).await.unwrap();
 
-        let mut req = Request::builder()
+        let req = Request::builder()
             .method(Method::CONNECT)
             .uri("https://example.com:443")
             .header("host", "example.com:443")
@@ -1461,7 +1503,7 @@ mod tests {
         let (tx, audit) = std::sync::mpsc::channel();
         state.set_policy_audit_observer(Arc::new(move |event| tx.send(event).unwrap()));
         let state = Arc::new(state);
-        let mut req = Request::builder()
+        let req = Request::builder()
             .uri("http://localhost:8080/")
             .header("host", "localhost:8080")
             .body(Body::empty())
@@ -1501,7 +1543,7 @@ mod tests {
         };
         let state = Arc::new(network_proxy_state_for_policy(policy));
 
-        let mut req = Request::builder()
+        let req = Request::builder()
             .method(Method::CONNECT)
             .uri("https://example.com:443")
             .header("host", "example.com:443")
@@ -1531,7 +1573,7 @@ mod tests {
             }
         });
 
-        let mut req = Request::builder()
+        let req = Request::builder()
             .method(Method::CONNECT)
             .uri("https://example.com:443")
             .header("host", "example.com:443")
@@ -1566,7 +1608,7 @@ mod tests {
         let mut env = HashMap::from([("GH_TOKEN".to_string(), "ghp-real".to_string())]);
         state.virtualize_child_credentials(&mut env);
 
-        let mut req = Request::builder()
+        let req = Request::builder()
             .method(Method::CONNECT)
             .uri("https://github.com:22")
             .header("host", "github.com:22")
@@ -1756,7 +1798,7 @@ mod tests {
         state.virtualize_child_credentials(&mut env);
 
         for scheme in ["http", "https"] {
-            let mut req = Request::builder()
+            let req = Request::builder()
                 .method(Method::GET)
                 .uri(format!("{scheme}://github.com/repos/openai/codex/issues"))
                 .header(header::HOST, "github.com")
@@ -1808,7 +1850,7 @@ mod tests {
         policy.set_allowed_domains(vec!["api.github.com".to_string()]);
         let state = Arc::new(network_proxy_state_for_policy(policy));
 
-        let mut req = Request::builder()
+        let req = Request::builder()
             .method(Method::CONNECT)
             .uri("https://api.github.com:8443")
             .header("host", "api.github.com:8443")
@@ -2007,7 +2049,7 @@ mod tests {
             .await
             .expect("network mode should update");
 
-        let mut req = Request::builder()
+        let req = Request::builder()
             .method(Method::POST)
             .uri("http://example.com")
             .header("x-unix-socket", "/tmp/test.sock")
@@ -2032,7 +2074,7 @@ mod tests {
     async fn http_plain_proxy_rejects_unix_socket_when_not_allowlisted() {
         let state = Arc::new(network_proxy_state_for_policy(NetworkProxyConfig::default()));
 
-        let mut req = Request::builder()
+        let req = Request::builder()
             .method(Method::GET)
             .uri("http://example.com")
             .header("x-unix-socket", "/tmp/test.sock")
@@ -2066,7 +2108,7 @@ mod tests {
             network
         }));
 
-        let mut req = Request::builder()
+        let req = Request::builder()
             .method(Method::GET)
             .uri("http://example.com")
             .header("x-unix-socket", "/tmp/test.sock")
@@ -2092,7 +2134,7 @@ mod tests {
         };
         let state = Arc::new(network_proxy_state_for_policy(policy));
 
-        let mut req = Request::builder()
+        let req = Request::builder()
             .method(Method::CONNECT)
             .uri("https://api.openai.com:443")
             .header("host", "api.openai.com:443")
@@ -2132,7 +2174,7 @@ mod tests {
             state.set_proxy_private_ips_via_upstream(/*enabled*/ true);
             let state = Arc::new(state);
             for method in [Method::GET, Method::CONNECT] {
-                let mut req = Request::builder()
+                let req = Request::builder()
                     .method(method.clone())
                     .uri("http://100.68.58.50:80/api/items")
                     .header("host", "100.68.58.50:80")
@@ -2164,7 +2206,7 @@ mod tests {
     #[tokio::test]
     async fn http_plain_proxy_rejects_absolute_uri_host_header_mismatch() {
         let state = Arc::new(network_proxy_state_for_policy(NetworkProxyConfig::default()));
-        let mut req = Request::builder()
+        let req = Request::builder()
             .method(Method::GET)
             .uri("http://raw.githubusercontent.com/openai/codex/main/README.md")
             .header(header::HOST, "api.github.com")

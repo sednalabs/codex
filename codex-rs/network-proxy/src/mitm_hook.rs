@@ -483,28 +483,30 @@ fn hook_matches(hook: &MitmHook, req: &Request, origin: &MitmHookOrigin) -> bool
         return false;
     }
 
-    let path = req.uri().path_ref_or_root().as_encoded_str();
-    if !is_safe_for_authorization(&path) || !path_matches(&hook.matcher.path_prefixes, &path) {
+    // Keep the parsed request target's raw spelling for authorization.
+    // Rama's encoded view can rewrite literal path characters.
+    let raw_uri = req.uri().as_str();
+    let Ok(legacy_uri) = raw_uri.parse::<http::Uri>() else {
+        return false;
+    };
+    let path = legacy_uri.path();
+    if !is_safe_for_authorization(path) || !path_matches(&hook.matcher.path_prefixes, path) {
         return false;
     }
 
-    if !query_matches(&hook.matcher.query, req) {
+    if !query_matches(&hook.matcher.query, &legacy_uri) {
         return false;
     }
 
     headers_match(&hook.matcher.headers, req)
 }
 
-fn query_matches(query_constraints: &[QueryConstraint], req: &Request) -> bool {
+fn query_matches(query_constraints: &[QueryConstraint], uri: &http::Uri) -> bool {
     if query_constraints.is_empty() {
         return true;
     }
 
-    let actual_query = req
-        .uri()
-        .query()
-        .map(rama_net::uri::QueryRef::as_encoded_str)
-        .unwrap_or_default();
+    let actual_query = uri.query().unwrap_or_default();
     let mut actual_values: BTreeMap<String, Vec<String>> = BTreeMap::new();
     for (name, value) in form_urlencoded::parse(actual_query.as_bytes()) {
         actual_values

@@ -27,7 +27,6 @@ use rama_net::address::ProxyAddress;
 use rama_net::client::EstablishedClientConnection;
 use rama_net::stream::SocketInfo;
 use rama_tcp::TcpStream;
-use std::pin::Pin;
 use std::str::FromStr;
 use std::sync::Arc;
 use std::time::Duration;
@@ -123,12 +122,9 @@ impl TcpUpstreamProxy {
             }
             let stream = upgrade::handle_upgrade(response).await?;
             let parts = stream
-                .downcast::<Pin<Box<TcpStream>>>()
+                .downcast::<TcpStream>()
                 .map_err(|_| "unexpected transport for HTTP CONNECT")?;
-            Ok(Rewind::new_buffered(
-                *Pin::into_inner(parts.io),
-                parts.read_buf,
-            ))
+            Ok(Rewind::new_buffered(parts.io, parts.read_buf))
         })
         .await?
     }
