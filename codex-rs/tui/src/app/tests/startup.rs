@@ -932,11 +932,12 @@ async fn unattended_modals_survive_unfinished_terminal_input() -> Result<()> {
     crossterm::event::buffer_input(b"\rya")?;
     app.render_thread_snapshot(
         &mut tui,
-        &app_server,
+        &mut app_server,
         thread_id,
         snapshot,
         /*resume_restored_queue*/ false,
-    )?;
+    )
+    .await?;
     assert!(app.chat_widget.has_active_modal());
     let before = tui.terminal.previous_buffer().clone();
     let cursor = tui.terminal.last_known_cursor_pos;
@@ -1508,8 +1509,9 @@ async fn remote_overview_startup_hides_disabled_older_server_notice() -> Result<
             .remote_connection
             .as_ref()
             .expect("remote status")
-            .version,
-        "v2.0.0"
+            .version
+            .as_deref(),
+        Some("v2.0.0")
     );
     app.local_settings.tui.show_server_version_notice = true;
     app.refresh_server_version_overview_notice("2.1.0");
@@ -1930,12 +1932,12 @@ async fn ignore_same_thread_resume_allows_retrying_read_only_view() -> Result<()
             history_mode: None,
         })
     );
-    let app_server =
+    let mut app_server =
         crate::start_embedded_app_server_for_picker(app.chat_widget.config_ref()).await?;
     let mut tui = crate::tui::test_support::make_test_tui()?;
     app.render_thread_snapshot(
         &mut tui,
-        &app_server,
+        &mut app_server,
         thread_id,
         ThreadEventSnapshot {
             delegated_turns: Vec::new(),
@@ -1946,7 +1948,8 @@ async fn ignore_same_thread_resume_allows_retrying_read_only_view() -> Result<()
             input_state: None,
         },
         /*resume_restored_queue*/ false,
-    )?;
+    )
+    .await?;
     assert!(app.chat_widget.is_external_writer_view());
     assert!(!app.chat_widget.is_task_running_for_test());
     Ok(())

@@ -28,6 +28,7 @@ pub(super) async fn run_startup_for_test(
         tui,
         initial_backends,
         config.clone(),
+        Default::default(),
         config.cwd.to_path_buf(),
         backend_selection::BackendPreferenceContext::new(
             &config,
@@ -732,7 +733,7 @@ async fn fresh_startup_reads_destination_and_cleared_model_uses_catalog() -> Res
             insta::assert_snapshot!(rendered, @"
             › Ask Codex to do anything
 
-              GPT-6.1-Sol high · <PROJECT>
+              GPT-6.2-Sol high · <PROJECT>
               ? for shortcuts
             ");
         }

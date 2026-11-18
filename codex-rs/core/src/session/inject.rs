@@ -1,3 +1,4 @@
+use super::RealtimeRecord;
 use super::TurnInput as PendingTurnInput;
 use super::session::Session;
 use super::turn_context::TurnContext;
@@ -7,6 +8,7 @@ use codex_protocol::error::CodexErr;
 use codex_protocol::error::Result as CodexResult;
 use codex_protocol::models::ResponseItem;
 use codex_protocol::openai_models::ModelInfo;
+use codex_thread_store::PersistContext;
 use std::sync::Arc;
 use tokio_util::sync::CancellationToken;
 
@@ -26,6 +28,7 @@ impl Session {
     pub(crate) async fn history_injection_context(
         self: &Arc<Self>,
     ) -> CodexResult<Arc<TurnContext>> {
+        self.conversation.check_history_recovery()?;
         if self.reference_context_item().await.is_some() {
             let turn = self.new_inject_items_context().await;
             // Compaction can clear the baseline while we build this context.
@@ -39,8 +42,7 @@ impl Session {
             let step = self
                 .capture_step_context(Arc::clone(&turn), &CancellationToken::new())
                 .await?;
-            self.record_context_updates_and_set_reference_context_item(step.as_ref())
-                .await?;
+            self.try_publish_initial_context(step.as_ref()).await?;
         }
         Ok(turn)
     }
@@ -192,6 +194,26 @@ impl Session {
             image_preparations,
         )
         .await;
+    }
+
+    pub(crate) async fn record_realtime_session_chunk(
+        &self,
+        turn: &TurnContext,
+        item: ResponseItemEnvelope,
+    ) -> std::io::Result<()> {
+        self.try_ensure_rollout_materialized(PersistContext::Standard)
+            .await?;
+        let (items, images) = self
+            .prepare_conversation_items_for_history(turn, turn.model_info(), vec![item])
+            .await;
+        self.record_prepared_items(
+            turn,
+            turn.model_info(),
+            items,
+            images,
+            Some(RealtimeRecord::Chunk),
+        )
+        .await
     }
 
     /// Injects items into active work, or records them without starting a turn.

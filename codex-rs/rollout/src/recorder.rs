@@ -1793,9 +1793,9 @@ struct RolloutWriterState {
 
 impl RolloutWriterState {
     fn add_items(&mut self, items: Vec<RolloutItem>) {
-        self.realtime_sync_pending |= items.iter().any(
-            |item| matches!(item, RolloutItem::RealtimeItem(item) if item.observed_at_ms.is_some()),
-        );
+        self.realtime_sync_pending |= items
+            .iter()
+            .any(|item| item.realtime_observed_at_ms().is_some());
         self.pending_items.extend(items);
     }
 
@@ -2158,7 +2158,8 @@ impl From<codex_state::ThreadsPage> for ThreadsPage {
     }
 }
 
-fn thread_item_from_state_metadata(
+/// Projects a SQLite row into the rollout summary used by thread listings.
+pub fn thread_item_from_state_metadata(
     item: codex_state::ThreadMetadata,
     parent_thread_id: Option<ThreadId>,
 ) -> ThreadItem {

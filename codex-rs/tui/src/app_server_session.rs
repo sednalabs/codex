@@ -177,7 +177,6 @@ use std::collections::HashSet;
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::sync::Mutex;
-use std::sync::atomic::AtomicU64;
 use std::time::Duration;
 use std::time::Instant;
 use tokio::sync::Semaphore;
@@ -410,7 +409,7 @@ pub(crate) struct AppServerSession {
     pub(crate) unread_revisions: HashMap<ThreadId, String>,
     task_tool_threads: HashSet<ThreadId>,
     task_tool_capabilities_dir: Option<AbsolutePathBuf>,
-    task_search_generation: Arc<AtomicU64>,
+    pub(crate) task_search: crate::task_mentions::TaskSearch,
     remote_cwd_override: Option<PathBuf>,
     thread_params_mode: ThreadParamsMode,
     /// Explicit CLI provider selection, distinct from resolved configuration defaults.
@@ -611,6 +610,12 @@ pub(crate) enum TurnPermissionsOverride {
 )]
 pub(crate) struct UnsupportedLegacyPermissionProfile;
 
+/// The environment choice for a new Cloud thread.
+pub(crate) enum CloudThreadStart<'a> {
+    Project(Option<&'a std::path::Path>),
+    Saved(String),
+}
+
 impl AppServerSession {
     /// Platform of the app-server process, not necessarily its executor.
     pub(crate) fn app_server_platform_family(&self) -> Option<&str> {
@@ -657,7 +662,7 @@ impl AppServerSession {
             unread_revisions: HashMap::new(),
             task_tool_threads: HashSet::new(),
             task_tool_capabilities_dir: None,
-            task_search_generation: Arc::new(AtomicU64::new(0)),
+            task_search: crate::task_mentions::TaskSearch::default(),
             remote_cwd_override: None,
             thread_params_mode,
             model_provider_override: None,
@@ -889,10 +894,6 @@ impl AppServerSession {
         {
             tracing::warn!(%error, %thread_id, "failed to persist task-reference capability");
         }
-    }
-
-    pub(crate) fn task_search_generation(&self) -> Arc<AtomicU64> {
-        Arc::clone(&self.task_search_generation)
     }
 
     pub(crate) fn codex_home_path(
@@ -1146,6 +1147,26 @@ impl AppServerSession {
         selected_profile: Option<&PermissionProfileSelection>,
         host_project_cwd: Option<&std::path::Path>,
     ) -> Result<AppServerStartedThread> {
+        self.start_thread_with_environment(
+            local_settings,
+            config,
+            session_start_source,
+            remote_cwd_override,
+            selected_profile,
+            CloudThreadStart::Project(host_project_cwd),
+        )
+        .await
+    }
+
+    pub(crate) async fn start_thread_with_environment(
+        &mut self,
+        local_settings: &LocalSettings,
+        config: &Config,
+        session_start_source: Option<ThreadStartSource>,
+        remote_cwd_override: Option<&std::path::Path>,
+        selected_profile: Option<&PermissionProfileSelection>,
+        cloud_start: CloudThreadStart<'_>,
+    ) -> Result<AppServerStartedThread> {
         if self.thread_params_mode.settings_owner() == ThreadSettingsOwner::Server
             && selected_profile.is_some()
         {
@@ -1187,17 +1208,21 @@ impl AppServerSession {
             self.thread_tool_transport().configure(&mut params);
         }
         let request_handle = self.request_handle();
-        let project = if self.thread_params_mode == ThreadParamsMode::Cloud {
-            match host_project_cwd {
-                Some(cwd) => cloud_project::from_local_cwd(cwd).await,
-                None => None,
+        use codex_app_server_client::EnvironmentSelection;
+        let environment = if self.thread_params_mode == ThreadParamsMode::Cloud {
+            match cloud_start {
+                CloudThreadStart::Saved(id) => Some(EnvironmentSelection::Saved(id)),
+                CloudThreadStart::Project(Some(cwd)) => cloud_project::from_local_cwd(cwd)
+                    .await
+                    .map(EnvironmentSelection::Project),
+                CloudThreadStart::Project(None) => None,
             }
         } else {
             None
         };
-        let started = match project {
-            Some(project) => request_handle
-                .start_cloud_project_thread(request_id, params, project)
+        let started = match environment {
+            Some(environment) => request_handle
+                .start_cloud_thread_with_environment(request_id, params, environment)
                 .await
                 .map(|response| (response, ThreadHistorySupport::Paginated, false)),
             None => {
@@ -2326,7 +2351,8 @@ impl AppServerSession {
         client.resolve_server_request(request_id, result).await
     }
 
-    pub(crate) async fn shutdown(self) -> std::io::Result<()> {
+    pub(crate) async fn shutdown(mut self) -> std::io::Result<()> {
+        self.task_search.cancel();
         match self.connection_owner {
             Some(client) => client.shutdown().await,
             None => Ok(()),

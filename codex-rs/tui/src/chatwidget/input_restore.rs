@@ -71,6 +71,9 @@ impl ChatWidget {
             || !startup_message.local_images.is_empty()
             || !startup_message.remote_image_urls.is_empty()
             || !draft.pending_pastes.is_empty();
+        let startup_undo = (startup_has_content && !self.local_settings.tui.vim_mode_default)
+            .then(|| self.bottom_pane.startup_undo_draft())
+            .flatten();
 
         let cursor = if existing_has_content && startup_has_content {
             let mut used_paste_placeholders = HashSet::new();
@@ -118,6 +121,9 @@ impl ChatWidget {
             );
             draft.cursor
         };
+        if let Some(destination) = startup_undo {
+            self.bottom_pane.record_startup_undo(destination);
+        }
         self.bottom_pane.set_composer_cursor(cursor);
         self.bottom_pane.restore_startup_composer_state(
             draft.last_composer_activity_at,
@@ -419,7 +425,7 @@ impl ChatWidget {
                 }
             }
         }
-        self.on_interrupted_turn(reason);
+        self.on_interrupted_turn_with_id(reason, Some(turn_id));
         self.input_queue.pending_steers.extend(later);
         for (message, record) in unconfirmed {
             self.input_queue.queued_user_messages.push_back(message);
@@ -430,7 +436,12 @@ impl ChatWidget {
         self.refresh_pending_input_preview();
     }
 
+    #[cfg(test)]
     pub(super) fn on_interrupted_turn(&mut self, reason: TurnAbortReason) {
+        self.on_interrupted_turn_with_id(reason, /*turn_id*/ None);
+    }
+
+    fn on_interrupted_turn_with_id(&mut self, reason: TurnAbortReason, turn_id: Option<&str>) {
         self.requeue_image_submission();
         // Finalize, log a gentle prompt, and clear running state.
         self.finalize_turn();
@@ -454,12 +465,16 @@ impl ChatWidget {
                     /*hint*/ None,
                 ));
             } else {
-                self.add_to_history(match reason {
-                    TurnAbortReason::BudgetLimited => history_cell::new_error_event(
-                        "Goal budget reached - the turn was stopped.".to_string(),
+                match reason {
+                    TurnAbortReason::BudgetLimited => {
+                        self.add_to_history(history_cell::new_error_event(
+                            "Goal budget reached - the turn was stopped.".to_string(),
+                        ))
+                    }
+                    TurnAbortReason::Interrupted => self.add_to_history(
+                        history_cell::InterruptionNotice(turn_id.map(str::to_owned)),
                     ),
-                    TurnAbortReason::Interrupted => history_cell::new_interruption_notice(),
-                });
+                }
             }
         }
 

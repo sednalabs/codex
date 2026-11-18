@@ -31,6 +31,9 @@ impl Drop for ComUninitializeGuard {
 }
 
 pub(super) fn run() -> Result<i32> {
+    if let Some(codex_home) = std::env::args_os().nth(2) {
+        codex_windows_sandbox::init_runtime_log(Path::new(&codex_home));
+    }
     ensure!(
         crate::is_available(),
         "native MXC is unavailable on this Windows build"
@@ -64,7 +67,7 @@ pub(super) fn run() -> Result<i32> {
         &volumes,
         &platform_read_roots()?,
     )?;
-    crate::native::launch(&request)
+    crate::native::launch(request)
 }
 
 pub(super) fn volume_roots(

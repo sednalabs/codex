@@ -79,10 +79,37 @@ async fn empty_thread_backend_chord_preserves_draft_until_first_submission() -> 
     let mut tui = crate::tui::test_support::make_test_tui()?;
     app.chat_widget
         .apply_external_edit("first draft".to_string());
-    app.chat_widget
-        .set_new_backend_control(Some("Cloud".to_string()));
-    let screen = render_bottom_popup(&app.chat_widget, /*width*/ 80);
-    insta::assert_snapshot!(screen.lines().find(|line| line.trim_start().starts_with("Cloud")).unwrap().trim(), @"Cloud  ⌃x b to cycle");
+    let host_lines = [
+        ("Default", 80),
+        ("Team Rust", 80),
+        ("Team Rust — shared development environment", 45),
+    ]
+    .map(|(environment, width)| {
+        app.chat_widget
+            .set_new_backend_control(Some("Cloud".into()), Some(environment.into()));
+        render_bottom_popup(&app.chat_widget, width)
+            .lines()
+            .map(str::trim)
+            .find(|line| line.starts_with("Cloud"))
+            .unwrap()
+            .to_owned()
+    });
+    insta::assert_snapshot!(host_lines.join("\n"), @"
+    Cloud  ⌃x b cycle - Default  ⌃x e change
+    Cloud  ⌃x b cycle - Team Rust  ⌃x e change
+    Cloud  ⌃x b cycle - Team Rust…  ⌃x e change
+    ");
+
+    assert_eq!(app.route_key_chord_event(&mut tui, ctrl('x')), None);
+    let key = app
+        .route_key_chord_event(&mut tui, KeyCode::Char('e').into())
+        .expect("environment chord dispatch");
+    app.chat_widget.handle_key_event(key);
+    assert!(
+        std::iter::from_fn(|| events.try_recv().ok())
+            .any(|event| matches!(event, AppEvent::ChooseCloudEnvironment))
+    );
+    assert_eq!(app.chat_widget.composer_text_with_pending(), "first draft");
 
     // Cursor movement remains available while the backend selector is visible.
     let key = app.route_key_chord_event(&mut tui, ctrl('b')).unwrap();
@@ -1305,6 +1332,49 @@ async fn sidebar_chooser_resize_survives_startup_thread_assignment() -> Result<(
 }
 
 #[tokio::test]
+async fn focused_sidebar_chooser_keeps_tab_with_shortcut_guide_open() -> Result<()> {
+    use crate::app::sidebar::PaneFocus;
+    use crate::app::sidebar::SidebarContent;
+
+    let mut app = make_test_app().await;
+    app.local_settings.tui.keymap = toml::from_str(r#"list.move_down = "tab""#)?;
+    super::enable_side_retention(&mut app)?;
+    app.chat_widget
+        .apply_keymap_update(app.local_settings.tui.keymap.clone(), &app.keymap);
+    let mut server = start_config_write_test_app_server(&app).await?;
+    let mut tui = crate::tui::test_support::make_test_tui()?;
+    tui.set_owned_screen(/*owned*/ true)?;
+    app.chat_widget.handle_thread_session(test_thread_session(
+        ThreadId::new(),
+        app.config.cwd.to_path_buf(),
+    ));
+    app.chat_widget.replay_thread_turns(
+        vec![super::test_turn(
+            "parent-turn",
+            TurnStatus::Completed,
+            Vec::new(),
+        )],
+        ReplayKind::ResumeInitialMessages,
+    );
+
+    press(&mut app, &mut tui, &mut server, KeyCode::Char('?').into()).await?;
+    assert!(app.chat_widget.shortcut_overlay_visible());
+    let second_chat = ThreadId::new();
+    let pane = app.sidebar_mut();
+    pane.update_saved_chats(vec![ThreadId::new().into(), second_chat.into()]);
+    pane.show(SidebarContent::Chooser, PaneFocus::Sidebar);
+
+    press(&mut app, &mut tui, &mut server, KeyCode::Tab.into()).await?;
+    let pane = app.sidebar().expect("open sidebar chooser");
+    assert_eq!(pane.chat_tabs().choice(pane.choice), Some(second_chat));
+    assert!(app.chat_widget.shortcut_overlay_visible());
+
+    server.shutdown().await?;
+    tui.set_owned_screen(/*owned*/ false)?;
+    Ok(())
+}
+
+#[tokio::test]
 async fn sidebar_chooser_preserves_the_parent_draft_and_starts_a_side_chat() -> Result<()> {
     let (mut app, mut events, _ops) = make_test_app_with_channels().await;
     let mut server = start_config_write_test_app_server(&app).await?;
@@ -1519,7 +1589,7 @@ prepared.
     assert!(draft.remote_image_urls.is_empty());
     insta::assert_snapshot!(draft.text, @"second prompt
 parent draft!");
-    // A page fits a chat with a subtitle or two title-only chats.
+    // Page navigation uses the whole chooser viewport and clamps at both ends.
     let pane = app.sidebar_mut();
     for _ in 0..4 {
         pane.chat_ready(ThreadId::new());
@@ -1535,10 +1605,10 @@ parent draft!");
     tui.terminal = terminal_at(two_rows);
     super::side_frame(&mut app, &mut tui, two_rows)?;
     for (key, expected) in [
-        (KeyCode::PageDown, 3),
         (KeyCode::PageDown, 5),
-        (KeyCode::PageUp, 3),
-        (KeyCode::PageUp, 2),
+        (KeyCode::PageDown, 5),
+        (KeyCode::PageUp, 0),
+        (KeyCode::PageUp, 0),
     ] {
         Box::pin(press(&mut app, &mut tui, &mut server, key.into())).await?;
         assert_eq!(app.sidebar().unwrap().choice, expected);

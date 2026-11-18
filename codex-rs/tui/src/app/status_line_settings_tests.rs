@@ -2,6 +2,8 @@
 
 use crate::AppServerTarget;
 use crate::app::test_support::make_test_app;
+use crate::chatwidget::tests::render_bottom_popup;
+use crate::statusline_metrics::tests::Collector;
 use codex_config::types::BuiltinStatusLine;
 use codex_config::types::StatusLineProviderId;
 use codex_config::types::StatusLineSelection;
@@ -58,7 +60,8 @@ async fn remote_session_saves_to_the_active_local_profile() -> anyhow::Result<()
             },
         ),
     ] {
-        app.save_status_line_provider(selection.clone()).await?;
+        app.save_status_line_provider(selection.clone(), /*provider_from_picker*/ None)
+            .await?;
         let saved: toml::Table = toml::from_str(&std::fs::read_to_string(&profile)?)?;
         assert_eq!(saved, expected);
         assert_eq!(
@@ -99,12 +102,17 @@ async fn remote_session_saves_to_the_active_local_profile() -> anyhow::Result<()
 #[tokio::test]
 async fn failed_write_preserves_the_file_and_the_live_selection() -> anyhow::Result<()> {
     let mut app = make_test_app().await;
+    let collector = Collector::new();
+    app.statusline_metrics = collector.metrics(&mut app.config);
     let path = app.local_settings.user_config_path.clone();
-    let active = StatusLineSelection::Mcp(StatusLineProviderId {
-        server: "work".into(),
-        tool: "usage".into(),
-    });
-    app.save_status_line_provider(active).await?;
+    for tool in ["usage", "other", "other"] {
+        let selection = StatusLineSelection::Mcp(StatusLineProviderId {
+            server: "work".into(),
+            tool: tool.into(),
+        });
+        app.save_status_line_provider(selection, /*provider_from_picker*/ None)
+            .await?;
+    }
     let before = (
         app.local_settings.clone(),
         app.chat_widget.local_settings.clone(),
@@ -112,12 +120,64 @@ async fn failed_write_preserves_the_file_and_the_live_selection() -> anyhow::Res
     for contents in ["[malformed", "[[tui]]\ntheme = 'nord'\n"] {
         std::fs::write(&path, contents)?;
         let selection = StatusLineSelection::Builtin(BuiltinStatusLine::Default);
-        assert!(app.save_status_line_provider(selection).await.is_err());
+        assert!(
+            app.save_status_line_provider(selection, /*provider_from_picker*/ None)
+                .await
+                .is_err()
+        );
         assert_eq!(std::fs::read_to_string(&path)?, contents);
         assert_eq!(
             (&app.local_settings, &app.chat_widget.local_settings),
             (&before.0, &before.1)
         );
     }
+    assert_eq!(
+        collector.snapshot(),
+        [
+            "provider_changed change=enabled_custom 1",
+            "provider_changed change=switched_custom 1"
+        ]
+    );
     Ok(())
+}
+
+#[tokio::test]
+async fn reloading_the_effective_feature_gate_and_reselecting_an_unchanged_preference() {
+    let mut app = make_test_app().await;
+    let path = app.local_settings.user_config_path.clone();
+    let configured = "[features]\ntui_extensions_statusline = true\n[tui]\nstatus_line = []\nstatus_line_provider = { tool='line', server='fixture' } # local formatting\n";
+    std::fs::write(&path, configured).unwrap();
+    app.cli_kv_overrides = vec![(
+        "tui.status_line_provider".into(),
+        toml::toml! {
+            server = "fixture"
+            tool = "line"
+        }
+        .into(),
+    )];
+    app.refresh_in_memory_config_from_disk().await.unwrap();
+    assert!(render_bottom_popup(&app.chat_widget, /*width*/ 80).contains("Initializing…"));
+
+    let selected = app
+        .local_settings
+        .tui
+        .status_line_provider
+        .as_deref()
+        .unwrap()
+        .clone();
+    std::fs::write(&path, configured.replace("tool='line'", "tool='elsewhere'")).unwrap();
+    app.save_status_line_provider(selected, /*provider_from_picker*/ None)
+        .await
+        .unwrap();
+    let stored: toml::Table = toml::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
+    assert_eq!(
+        stored["tui"]["status_line_provider"]["tool"].as_str(),
+        Some("line")
+    );
+    std::fs::write(&path, configured.replace("= true", "= false")).unwrap();
+    app.refresh_in_memory_config_from_disk().await.unwrap();
+    assert!(!render_bottom_popup(&app.chat_widget, /*width*/ 80).contains("Initializing…"));
+    std::fs::write(&path, configured).unwrap();
+    app.refresh_in_memory_config_from_disk().await.unwrap();
+    assert!(render_bottom_popup(&app.chat_widget, /*width*/ 80).contains("Initializing…"));
 }

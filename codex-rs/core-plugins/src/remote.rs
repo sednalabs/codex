@@ -353,11 +353,18 @@ pub struct RemoteMarketplaceFetchOutcome {
     pub catalog_cache_used: bool,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct ActiveRemotePluginBundle {
+    pub(crate) directory_version: String,
+    pub(crate) remote_plugin_id: Option<String>,
+}
+
 #[derive(Debug, Clone, PartialEq)]
 pub struct RemoteInstalledPlugin {
     pub marketplace_name: String,
     pub id: String,
     pub version: Option<String>,
+    pub(crate) active_bundle: Option<ActiveRemotePluginBundle>,
     pub name: String,
     pub canonical_app_id: Option<String>,
     pub installed_at: Option<DateTime<Utc>>,
@@ -1153,7 +1160,11 @@ pub fn invalidate_cached_remote_plugin_catalog_scopes(
     }
 }
 
-#[instrument(level = "trace", skip_all)]
+#[instrument(
+    name = "plugins.recommendations.read_tooling_marker",
+    level = "info",
+    skip_all
+)]
 pub(crate) async fn fetch_tooling_changed_at(
     config: &RemotePluginServiceConfig,
     auth: Option<&CodexAuth>,
@@ -1174,7 +1185,11 @@ pub(crate) async fn fetch_tooling_changed_at(
         })
 }
 
-#[instrument(level = "trace", skip_all)]
+#[instrument(
+    name = "plugins.recommendations.fetch_catalog",
+    level = "info",
+    skip_all
+)]
 pub async fn fetch_recommended_plugins(
     config: &RemotePluginServiceConfig,
     auth: Option<&CodexAuth>,
@@ -2049,6 +2064,7 @@ fn remote_installed_plugin_to_cache_entry(
         marketplace_name,
         id: plugin.id.clone(),
         version: plugin.release.version.clone(),
+        active_bundle: None,
         name: plugin.name.clone(),
         canonical_app_id: plugin.canonical_app_id.clone(),
         installed_at: installed_plugin.installed_at,

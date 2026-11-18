@@ -85,6 +85,7 @@ use codex_login::default_client::add_originator_header;
 use codex_otel::SessionTelemetry;
 use codex_otel::WEBSOCKET_CONTINUATION_COUNT_METRIC;
 use codex_otel::current_span_w3c_trace_context;
+use codex_otel::inject_span_w3c_trace_headers;
 use codex_protocol::ItemIdGenerator;
 use codex_protocol::ResponseItemId;
 use codex_protocol::auth::AuthMode;
@@ -1897,6 +1898,7 @@ impl ModelClient {
     ) -> std::result::Result<ApiWebSocketConnection, ApiError> {
         let mut headers = self.build_websocket_headers(responses_metadata).await;
         headers.extend(responses_headers.clone());
+        inject_span_w3c_trace_headers(&tracing::Span::current(), &mut headers);
         if let Some(affinity) = parent_routing_affinity {
             let uri = api_provider
                 .websocket_url_for_path(RESPONSES_PATH)
@@ -2493,6 +2495,7 @@ impl ResponsesHttpExecutor<'_> {
             )?;
             self.client
                 .validate_required_cyber_access_program(request.access_programs)?;
+            let history_ids = inference_trace.stripped_output_ids(&request.input);
             self.client
                 .prepare_response_items_for_request(&mut request.input);
             let request_session_telemetry =
@@ -2537,6 +2540,7 @@ impl ResponsesHttpExecutor<'_> {
                     inference_trace_attempt.record_started(
                         wire.clone(),
                         Arc::clone(prompt),
+                        history_ids,
                         || Ok(None),
                     );
                 })
@@ -2809,6 +2813,13 @@ impl ModelClientSession {
                 Some(continuation) => (Some(continuation.response_id), Some(continuation.items)),
                 None => (None, None),
             };
+            // The full context captured after a warmup already carries the original IDs.
+            let history_ids = if previous_response_id_from_untraced_warmup {
+                Vec::new()
+            } else {
+                inference_trace
+                    .stripped_output_ids(incremental_items.as_deref().unwrap_or(&request.input))
+            };
             let original_item_ids = if let Some(incremental_items) = &mut incremental_items {
                 self.client
                     .prepare_response_items_for_request(incremental_items);
@@ -2898,6 +2909,7 @@ impl ModelClientSession {
                         inference_trace_attempt.record_started(
                             wire.clone(),
                             Arc::clone(prompt),
+                            history_ids,
                             move || {
                                 #[derive(serde::Serialize)]
                                 struct WarmupContext<'a> {
@@ -3003,6 +3015,7 @@ impl ModelClientSession {
         summary: ReasoningSummaryConfig,
         service_tier: Option<String>,
         responses_metadata: &CodexResponsesMetadata,
+        reuse_response: bool,
     ) -> Result<()> {
         if !self.client.responses_websocket_enabled() {
             return Ok(());
@@ -3030,6 +3043,13 @@ impl ModelClientSession {
             .await
         {
             Ok(WebsocketStreamOutcome::Stream(opened)) => {
+                if !reuse_response {
+                    // Keep the socket and its normalized images. Drop the continuation
+                    // before waiting so cancellation cannot expose the warm-up ID.
+                    self.websocket_session.last_response_rx = None;
+                    self.websocket_session.continuation_reset_reason =
+                        Some("restored_history_warmup");
+                }
                 let mut stream = (*opened).into_raw_stream()?;
                 // Wait for the v2 warmup request to complete before sending the first turn request.
                 while let Some(event) = stream.next().await {
@@ -3313,6 +3333,7 @@ where
         }
         loop {
             let event = tokio::select! {
+                biased;
                 _ = consumer_dropped.cancelled() => {
                     inference_trace_attempt.record_cancelled(
                         STREAM_DROPPED_REASON,
@@ -3336,6 +3357,7 @@ where
             };
             let event = match event {
                 Ok(ResponseEvent::OutputItemDone(mut item)) => {
+                    provider.normalize_completed_output_item(&mut item);
                     // Assign IDs after interceptors, which may replace provider items.
                     // Reuse the added event's ID so tracing and the harness agree.
                     if item.id().is_none_or(|id| id.is_empty()) {

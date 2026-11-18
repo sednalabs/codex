@@ -312,8 +312,9 @@ async fn activation_preserves_native_settings_and_thread_metadata() {
 const PREWARM_CODEX_PLUGINS: &[u8] = b"\xe2\x01\x07\x0a\x05codex";
 
 #[tokio::test]
-async fn prewarm_defers_readiness_only_for_selected_projects() {
+async fn prewarm_defers_readiness_for_explicit_environments() {
     let mut fixture = fixture_responses(vec![
+        response(vec![frame(&[])], tonic::Status::ok("")),
         response(vec![frame(&[])], tonic::Status::ok("")),
         response(vec![frame(&[])], tonic::Status::ok("")),
     ])
@@ -339,14 +340,14 @@ async fn prewarm_defers_readiness_only_for_selected_projects() {
             .prewarm_thread(
                 /*model*/ None,
                 /*model_provider*/ None,
-                Some(ProjectEnvironment {
+                Some(EnvironmentSelection::Project(ProjectEnvironment {
                     name: "App".to_owned(),
                     cwd: Some("/workspace/acme/app".to_owned()),
                     origin_urls: vec![
                         "git@github.com:acme/app.git".to_owned(),
                         "https://github.com/acme/lib.git".to_owned(),
                     ],
-                }),
+                })),
             )
             .await,
         Err(Error::InvalidResponse)
@@ -365,6 +366,73 @@ async fn prewarm_defers_readiness_only_for_selected_projects() {
     ]
     .concat();
     assert_request(&mut fixture, "Prewarm", &expected).await;
+
+    assert!(matches!(
+        fixture
+            .client
+            .prewarm_thread(
+                /*model*/ None,
+                /*model_provider*/ None,
+                Some(EnvironmentSelection::Saved("ws~asenvcfg_saved".to_owned())),
+            )
+            .await,
+        Err(Error::InvalidResponse)
+    ));
+    let expected = [
+        b"\x52\x17\x0a\x15\x0a\x13\x0a\x11ws~asenvcfg_saved".as_slice(),
+        PREWARM_CODEX_PLUGINS,
+        b"\xe8\x01\x01",
+    ]
+    .concat();
+    assert_request(&mut fixture, "Prewarm", &expected).await;
+}
+
+#[tokio::test]
+async fn saved_environment_catalog_follows_each_scope_cursor() {
+    let mut fixture = fixture_responses(
+        [
+            br#"{"data":[{"id":"asenvcfg_base","name":"Default"}],"next_cursor":"a+b"}"#.as_slice(),
+            br#"{"data":[{"id":"asenvcfg_personal","name":"Personal Rust"}],"next_cursor":null}"#,
+            br#"{"data":[{"id":"ws~asenvcfg_saved","name":"Team Rust"}],"next_cursor":null}"#,
+        ]
+        .into_iter()
+        .map(|body| {
+            http::Response::new(Body::new(http_body_util::Full::new(Bytes::from_static(
+                body,
+            ))))
+        })
+        .collect(),
+    )
+    .await;
+    assert_eq!(
+        fixture.client.list_saved_environments().await.unwrap(),
+        vec![
+            SavedEnvironment {
+                id: "asenvcfg_personal".into(),
+                name: "Personal Rust".into(),
+                workspace_shared: false,
+            },
+            SavedEnvironment {
+                id: "ws~asenvcfg_saved".into(),
+                name: "Team Rust".into(),
+                workspace_shared: true,
+            },
+        ]
+    );
+
+    for query in [
+        "scope=user&limit=100&omitDraft=true&view=picker",
+        "scope=user&limit=100&omitDraft=true&view=picker&cursor=a%2Bb",
+        "scope=workspace&limit=100&omitDraft=true&view=picker",
+    ] {
+        let (parts, body) = fixture.requests.recv().await.unwrap();
+        assert_eq!(parts.method, http::Method::GET);
+        assert_eq!(parts.uri.path(), "/v1/environment-configs");
+        assert_eq!(parts.uri.query(), Some(query));
+        assert_eq!(parts.headers["chatgpt-account-id"], "synthetic-account");
+        assert_eq!(parts.headers["x-openai-product-sku"], "codex");
+        assert!(body.is_empty());
+    }
 }
 
 #[tokio::test]

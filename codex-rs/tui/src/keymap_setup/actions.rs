@@ -168,6 +168,8 @@ define_keymap_actions! {
         toggle_shortcuts => "Show or hide the composer shortcut overlay.",
         history_search_previous => "Open history search or move to the previous match.",
         history_search_next => "Move to the next history search match.",
+        undo => "Undo the last composer edit.",
+        redo => "Redo the last composer edit.",
     }
     editor "Editor" {
         insert_newline => "Insert a newline in the editor.",
@@ -292,6 +294,8 @@ define_keymap_actions! {
         cancel => "Cancel and close selection views.",
     }
     agents "Agents" {
+        next_group => "Select the first task in the next group.",
+        previous_group => "Select the first task in the previous group.",
         resume => "Open the session resume picker.",
         search => "Search the available agent tasks.",
         new_task => "Open a new session in the selected checkout.",

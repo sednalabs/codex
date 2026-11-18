@@ -75,6 +75,14 @@ pub enum SandboxErr {
     LandlockRestrict,
 }
 
+/// Which customer-configured spend limit prevented inference.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum SpendLimitScope {
+    ApiKey,
+    Project,
+    Organization,
+}
+
 pub struct CodexErr {
     details: CodexErrorDetails,
     retry_after: Option<RetryAfter>,
@@ -222,6 +230,12 @@ pub enum CodexErrorDetails {
     ConnectionFailed(ConnectionFailedError),
     #[error("Quota exceeded. Check your plan and billing details.")]
     QuotaExceeded,
+    #[error("Your API {} has reached its spend limit.", match .0 {
+        SpendLimitScope::ApiKey => "key",
+        SpendLimitScope::Project => "project",
+        SpendLimitScope::Organization => "organization",
+    })]
+    APISpendLimitExceeded(SpendLimitScope),
     #[error(
         "To use Codex with your ChatGPT plan, upgrade to Plus: https://chatgpt.com/explore/plus."
     )]
@@ -237,8 +251,11 @@ pub enum CodexErrorDetails {
     /// Sandbox error
     #[error("sandbox error: {0}")]
     Sandbox(#[from] SandboxErr),
+    // Keep the published analytics category stable across the Rust variant rename.
+    #[strum_discriminants(serde(rename = "landlock_sandbox_executable_not_provided"))]
+    #[strum_discriminants(strum(serialize = "landlock_sandbox_executable_not_provided"))]
     #[error("codex-linux-sandbox was required but not provided")]
-    LandlockSandboxExecutableNotProvided,
+    LinuxSandboxExecutableNotProvided,
     #[error("unsupported operation: {0}")]
     UnsupportedOperation(String),
     #[error("{0}")]
@@ -407,7 +424,7 @@ impl CodexErr {
         UsageNotIncluded,
         InternalServerError,
         InternalAgentDied,
-        LandlockSandboxExecutableNotProvided,
+        LinuxSandboxExecutableNotProvided,
     );
 
     codex_err_tuple_constructors!(
@@ -491,6 +508,7 @@ impl CodexErr {
             | CodexErrorDetails::UsageAccountingFailed(_)
             | CodexErrorDetails::UsageNotIncluded
             | CodexErrorDetails::QuotaExceeded
+            | CodexErrorDetails::APISpendLimitExceeded(_)
             | CodexErrorDetails::InvalidImageRequest()
             | CodexErrorDetails::InvalidRequest(_)
             | CodexErrorDetails::InvalidAudioInput { .. }
@@ -504,7 +522,7 @@ impl CodexErr {
             | CodexErrorDetails::GatewayLoginRequired(_)
             | CodexErrorDetails::UnsupportedOperation(_)
             | CodexErrorDetails::Sandbox(_)
-            | CodexErrorDetails::LandlockSandboxExecutableNotProvided
+            | CodexErrorDetails::LinuxSandboxExecutableNotProvided
             | CodexErrorDetails::ContextWindowExceeded
             | CodexErrorDetails::ThreadNotFound(_)
             | CodexErrorDetails::AgentLimitReached { .. }
@@ -570,6 +588,15 @@ impl CodexErr {
         match &self.details {
             CodexErrorDetails::ContextWindowExceeded => CodexErrorInfo::ContextWindowExceeded,
             CodexErrorDetails::SessionBudgetExceeded => CodexErrorInfo::SessionBudgetExceeded,
+            CodexErrorDetails::APISpendLimitExceeded(SpendLimitScope::ApiKey) => {
+                CodexErrorInfo::ApiKeySpendLimitExceeded
+            }
+            CodexErrorDetails::APISpendLimitExceeded(SpendLimitScope::Project) => {
+                CodexErrorInfo::ProjectSpendLimitExceeded
+            }
+            CodexErrorDetails::APISpendLimitExceeded(SpendLimitScope::Organization) => {
+                CodexErrorInfo::OrganizationSpendLimitExceeded
+            }
             CodexErrorDetails::RateLimitExceeded(_) => CodexErrorInfo::RateLimitExceeded,
             CodexErrorDetails::UsageLimitReached(_)
             | CodexErrorDetails::QuotaExceeded

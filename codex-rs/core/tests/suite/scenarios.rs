@@ -1,5 +1,8 @@
 //! Multi-turn Astra scenarios snapshot the model-visible request history of shipped features.
 
+#[path = "scenarios_bundled_app_hooks.rs"]
+mod bundled_app_hooks;
+
 #[path = "scenarios_turn_input_agent_message.rs"]
 mod turn_input_agent_message;
 
@@ -9,6 +12,7 @@ mod multi_environment_mcp;
 use super::image_rollout::RecordingFileAttachmentStore;
 use super::permissions_messages::PermissionPathScenario;
 use codex_attachment_store::AttachmentStoreErrorKind;
+use codex_attachment_store::UploadContent;
 use codex_core::RequestCountry;
 use codex_protocol_test_support::ContentItemTestExt;
 use std::collections::HashMap;
@@ -134,6 +138,9 @@ mod dynamic_tools;
 
 #[path = "scenarios_audio_file_tests.rs"]
 mod audio_file;
+
+#[path = "scenarios_restored_history_prewarm.rs"]
+mod restored_history_prewarm;
 
 #[path = "scenarios_retained_tool_outputs.rs"]
 mod retained_tool_outputs;
@@ -269,6 +276,9 @@ mod frozen_cloud_skills;
 
 #[path = "scenarios_compaction_tests.rs"]
 mod compaction;
+
+#[path = "scenarios_statusline_authoring_tests.rs"]
+mod statusline_authoring;
 
 #[path = "scenarios_budget_context.rs"]
 mod budget_context;
@@ -486,10 +496,23 @@ async fn gif_generation_preserves_animation_and_replays_a_still_preview() -> Res
     let [animation, preview] = uploads.as_slice() else {
         panic!("expected an animated artifact and a separate model preview");
     };
-    assert_eq!(animation.data, BASE64_STANDARD.decode(gif)?);
-    assert_eq!(image::guess_format(&preview.data)?, image::ImageFormat::Png);
+    let UploadContent::Image {
+        data: animation_data,
+        ..
+    } = &animation.content
+    else {
+        panic!("expected animation image upload");
+    };
+    let UploadContent::Image {
+        data: preview_data, ..
+    } = &preview.content
+    else {
+        panic!("expected preview image upload");
+    };
+    assert_eq!(*animation_data, BASE64_STANDARD.decode(gif)?);
+    assert_eq!(image::guess_format(preview_data)?, image::ImageFormat::Png);
     assert_eq!(
-        image::load_from_memory(&preview.data)?
+        image::load_from_memory(preview_data)?
             .to_rgba8()
             .get_pixel(0, 0)
             .0,
@@ -3068,6 +3091,28 @@ async fn subagent_browser_auth_resolves_user_prompt() -> Result<()> {
     Ok(())
 }
 
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn guardian_nested_elicitation_request_history() -> Result<()> {
+    skip_if_no_network!(Ok(()));
+    skip_if_wine_exec!(Ok(()), "the MCP fixture requires a host Python interpreter");
+
+    let requests = super::guardian_mcp_elicitation::nested_elicitation_request_history().await?;
+    assert_eq!(requests.len(), 5);
+    let snapshot = context_snapshot::format_request_history_snapshot(
+        "A Node REPL invocation waits for two independent Guardian reviews. The follow-up review uses a transcript delta and receives the same live enclosing call.",
+        &requests,
+        &ContextSnapshotOptions::default().rewrite_known_segments(),
+    );
+    let snapshot = regex_lite::Regex::new(r"Wall time: [0-9]+(?:\.[0-9]+)? seconds")?
+        .replace_all(&snapshot, "Wall time: <DURATION> seconds");
+    let snapshot = regex_lite::Regex::new(
+        r#"(The active permission profile for environment )"(?:local|remote)""#,
+    )?
+    .replace_all(&snapshot, "$1\"<ENVIRONMENT>\"");
+    insta::assert_snapshot!("guardian_nested_elicitation", snapshot);
+    Ok(())
+}
+
 #[cfg(not(target_os = "windows"))]
 #[tokio::test]
 async fn guardian_elastic_budgeting_request_history() -> Result<()> {
@@ -4923,6 +4968,24 @@ async fn unshared_apps_catalog_across_turns() -> Result<()> {
             .include_request_settings(),
     );
     insta::assert_snapshot!("unshared_apps_catalog_across_turns", snapshot);
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn realtime_handoff_preserves_accepted_context() -> Result<()> {
+    skip_if_no_network!(Ok(()));
+    let requests = super::realtime_conversation::realtime_handoff_history_scenario(
+        /*block_prompt*/ false,
+    )
+    .await?;
+    insta::assert_snapshot!(
+        "realtime_turn_input_accepted_context",
+        context_snapshot::format_request_history_snapshot(
+            "A realtime handoff consumes the exact sealed transcript referenced by its durable acceptance.",
+            &requests,
+            &ContextSnapshotOptions::default().rewrite_known_segments(),
+        )
+    );
     Ok(())
 }
 

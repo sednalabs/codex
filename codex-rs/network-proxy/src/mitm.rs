@@ -15,6 +15,7 @@ use crate::runtime::HostBlockReason;
 use crate::state::BlockedRequest;
 use crate::state::BlockedRequestArgs;
 use crate::state::NetworkProxyState;
+use crate::upstream::OptionsAsterisk;
 use crate::upstream::UpstreamClient;
 use anyhow::Context as _;
 use anyhow::Result;
@@ -337,12 +338,21 @@ async fn forward_request(req: Request, request_ctx: &MitmRequestContext) -> Resu
     let path = path_and_query(req.uri());
     let log_path = path_for_log(req.uri());
 
+    let options_asterisk = method == "OPTIONS" && path == "*";
+    if path == "*" && !options_asterisk {
+        return Err(anyhow!("asterisk request-target is only supported for OPTIONS"));
+    }
+
     let (mut parts, body) = req.into_parts();
     let authority = authority_header_value(&target_host, target_port, &request_ctx.policy.scheme);
+    // Use a routable absolute URI while the connector selects and authorizes
+    // the target. UpstreamClient restores the asterisk form only after the
+    // HTTP/1 connection and any proxy tunnel have been established.
+    let routing_path = if options_asterisk { "/" } else { path.as_str() };
     let upstream_uri = http::Uri::builder()
         .scheme(request_ctx.policy.scheme.as_str())
         .authority(authority.as_str())
-        .path_and_query(path.as_str())
+        .path_and_query(routing_path)
         .build()?;
     parts.uri = Uri::parse(upstream_uri.to_string())?;
     apply_request_credentials(
@@ -372,6 +382,9 @@ async fn forward_request(req: Request, request_ctx: &MitmRequestContext) -> Resu
     };
 
     let mut upstream_req = Request::from_parts(parts, body);
+    if options_asterisk {
+        upstream_req.extensions().insert(OptionsAsterisk);
+    }
     if let Some(substitution) = hook_actions
         .as_ref()
         .and_then(|actions| actions.body_secret_substitution.as_ref())

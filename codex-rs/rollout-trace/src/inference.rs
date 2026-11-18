@@ -122,6 +122,26 @@ impl InferenceTraceContext {
         }
     }
 
+    /// Original history IDs of tool outputs omitted during request preparation.
+    pub fn stripped_output_ids(&self, input: &[ResponseItem]) -> Vec<(usize, String)> {
+        if matches!(self.state, InferenceTraceContextState::Disabled) {
+            return Vec::new();
+        }
+        let mut ids = Vec::new();
+        for (index, item) in input.iter().enumerate() {
+            if matches!(
+                item,
+                ResponseItem::FunctionCallOutput { .. } | ResponseItem::CustomToolCallOutput { .. }
+            ) && let Some(id) = item
+                .id()
+                .filter(|id| id.allocation().is_none() && !id.is_prefixed())
+            {
+                ids.push((index, id.to_string()));
+            }
+        }
+        ids
+    }
+
     /// Starts a new attempt after the concrete provider request has been built.
     pub fn start_attempt(&self) -> InferenceTraceAttempt {
         let InferenceTraceContextState::Enabled(context) = &self.state else {
@@ -181,6 +201,7 @@ impl InferenceTraceAttempt {
         &self,
         outgoing: impl AsRef<[u8]> + Send + 'static,
         prepared_prompt: Arc<P>,
+        stripped_tool_output_ids: Vec<(usize, String)>,
         warmup_context: impl FnOnce() -> serde_json::Result<Option<Vec<u8>>> + Send + 'static,
     ) {
         let InferenceTraceAttemptState::Enabled(attempt) = &self.state else {
@@ -211,6 +232,7 @@ impl InferenceTraceAttempt {
                     model,
                     provider_name,
                     request_payload,
+                    stripped_tool_output_ids,
                     prepared_prompt_payload,
                     warmup_context_payload,
                 })
@@ -469,9 +491,12 @@ mod tests {
                 "content": [{"type": "input_text", "text": "hello"}]
             }],
         });
-        attempt.record_started(serde_json::to_vec(&request)?, Arc::new(request), || {
-            Ok(None)
-        });
+        attempt.record_started(
+            serde_json::to_vec(&request)?,
+            Arc::new(request),
+            Vec::new(),
+            || Ok(None),
+        );
         attempt.record_completed("resp-1", Some("req-1"), &None, &[]);
 
         writer.flush()?;
@@ -487,7 +512,9 @@ mod tests {
         assert_eq!(inference.codex_turn_id, "turn-1");
         assert_eq!(inference.execution.status, ExecutionStatus::Completed);
         assert_eq!(inference.upstream_request_id, Some("req-1".to_string()));
-        assert_eq!(rollout.raw_payloads.len(), 3);
+        let prepared = &rollout.raw_payloads[&inference.prepared_prompt_payload_id];
+        assert_eq!(prepared.parts.len(), 1);
+        assert_eq!(rollout.raw_payloads.len(), 4);
 
         Ok(())
     }

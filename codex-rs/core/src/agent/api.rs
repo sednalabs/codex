@@ -25,8 +25,8 @@ use codex_protocol::protocol::MultiAgentVersion;
 use codex_protocol::protocol::SessionSource;
 use codex_protocol::protocol::TokenUsage;
 use codex_protocol::turn_input::TurnStartOptions;
-use codex_protocol::user_input::UserInput;
 use codex_rollout_trace::ThreadTraceContext;
+use codex_user_input::ResolvedUserInput;
 use futures::future::BoxFuture;
 use futures::stream::BoxStream;
 
@@ -224,7 +224,7 @@ impl AgentInfo {
 
 /// User input starts or steers a turn; agent messages retain their sender and wake mode.
 pub enum AgentInput {
-    UserInput(Vec<UserInput>),
+    UserInput(Vec<ResolvedUserInput>),
     Message {
         message: AgentMessage,
         mode: MessageDeliveryMode,

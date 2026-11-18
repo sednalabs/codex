@@ -45,6 +45,7 @@ use crate::state::validate_enabled_config_layers;
 use crate::strict_config::config_error_from_ignored_toml_value_fields;
 use crate::strict_config::ignored_config_warning;
 use crate::strict_config::ignored_toml_value_fields;
+use crate::strict_config::status_line_provider_warning;
 use crate::strict_config::unknown_feature_toml_value_field;
 use crate::strict_config::unknown_tui_toml_value_path;
 use crate::thread_config::ThreadConfigContext;
@@ -71,6 +72,7 @@ pub use local::LocalConfigLayers;
 pub use local::LocalTomlLayer;
 pub use local::LocalTomlLayerStack;
 pub use local::load_local_config_layers;
+pub use managed_requirements::load_guardian_policy_snapshot;
 pub use managed_requirements::load_managed_requirements_state;
 #[cfg(windows)]
 pub use windows::WindowsSystemConfigNamespaceProbe;
@@ -525,6 +527,10 @@ pub async fn load_config_layers_state(
             );
     config_layer_stack.is_projectless = is_projectless;
     config_layer_stack.project_trust = project_trust;
+    startup_warnings.extend(status_line_provider_warning(
+        &config_layer_stack,
+        strict_config,
+    )?);
     if config_layer_stack.layers_low_to_high().any(|layer| {
         matches!(
             layer.name,

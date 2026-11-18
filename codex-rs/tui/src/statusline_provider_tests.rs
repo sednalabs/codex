@@ -126,11 +126,15 @@ async fn picker_choice_reads_the_displayed_threads_uri_with_the_snapshot() -> Re
             thread,
             &cwd,
             ProviderSelection::Discovered(&known),
+            Instant::now() + LOOKUP_TIMEOUT,
         )
         .await?
         .unwrap();
         assert_eq!(provider.provider().title, "Next event");
-        provider.read(snapshot.clone()).await
+        provider
+            .read(snapshot.clone())
+            .await
+            .map_err(color_eyre::Report::from)
     };
     let (result, ()) = tokio::join!(read, host);
     result?;
@@ -180,6 +184,7 @@ async fn visible_project_registration_blocks_the_selected_provider() -> Result<(
             ThreadId::new(),
             &cwd,
             ProviderSelection::Discovered(&known),
+            Instant::now() + LOOKUP_TIMEOUT,
         );
         let (provider, ()) = tokio::join!(lookup, host);
         assert!(provider?.is_none());
@@ -249,8 +254,15 @@ async fn selecting_a_plugin_requires_the_globally_advertised_tool_and_the_connec
         server: "calendar".into(),
         tool: "status".into(),
     };
-    let lookup =
-        || ResolvedStatuslineProvider::lookup(&client, thread, &cwd, ProviderSelection::Saved(&id));
+    let lookup = || {
+        ResolvedStatuslineProvider::lookup(
+            &client,
+            thread,
+            &cwd,
+            ProviderSelection::Saved(&id),
+            Instant::now() + LOOKUP_TIMEOUT,
+        )
+    };
     for _ in 0..rejected {
         assert!(lookup().await?.is_none());
     }

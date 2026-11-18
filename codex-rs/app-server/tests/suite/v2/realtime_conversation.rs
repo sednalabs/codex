@@ -6,6 +6,8 @@ use app_test_support::create_command_execution_sse_response;
 use app_test_support::create_final_assistant_message_sse_response;
 use app_test_support::create_mock_responses_server_sequence_unchecked;
 use codex_app_server_protocol::CommandExecutionStatus;
+use codex_app_server_protocol::ExperimentalFeatureEnablementSetParams;
+use codex_app_server_protocol::ExperimentalFeatureEnablementSetResponse;
 use codex_app_server_protocol::ItemCompletedNotification;
 use codex_app_server_protocol::ItemStartedNotification;
 use codex_app_server_protocol::JSONRPCError;
@@ -706,6 +708,7 @@ async fn realtime_conversation_streams_timeline_items() -> Result<()> {
         .await?;
     mcp.initialize().await?;
     login_with_api_key(&mut mcp, "sk-test-key").await?;
+    enable_local_realtime_frames(&mut mcp).await?;
 
     let thread_request = mcp
         .send_thread_start_request_with_auto_env(ThreadStartParams {
@@ -1250,6 +1253,7 @@ async fn realtime_timeline_splits_accepted_steering_and_persists_promoted_artifa
         ])]),
     )
     .await?;
+    enable_local_realtime_frames(&mut harness.mcp).await?;
     let thread_request = harness
         .mcp
         .send_thread_start_request_with_auto_env(ThreadStartParams {
@@ -1798,6 +1802,7 @@ async fn realtime_conversation_stop_emits_closed_notification(
         .build_initialized_with_timeout(DEFAULT_TIMEOUT)
         .await?;
     login_with_api_key(&mut mcp, "sk-test-key").await?;
+    enable_local_realtime_frames(&mut mcp).await?;
 
     let thread_start_request_id = mcp
         .send_thread_start_request_with_auto_env(ThreadStartParams {
@@ -1845,7 +1850,7 @@ async fn realtime_conversation_stop_emits_closed_notification(
             realtime_start_instructions: None,
             realtime_end_instructions: None,
             prompt: Some(Some("backend prompt".to_string())),
-            realtime_session_id: None,
+            realtime_session_id: Some("call:Voice/one".into()),
             voice_session_id: None,
             transport: None,
             version: Some(RealtimeConversationVersion::V1),
@@ -1897,15 +1902,60 @@ async fn realtime_conversation_stop_emits_closed_notification(
             .await?;
         let items: ThreadItemsListResponse =
             timeout(DEFAULT_TIMEOUT, mcp.read_response(request)).await??;
-        let tails = items.data.iter().filter(|entry| matches!(
+        let has_tail = items.data.iter().any(|entry| matches!(
             &entry.item.payload, ThreadItemPayload::UserMessage { content, .. }
             if content.iter().any(|part| matches!(part, V2UserInput::Text { text, .. }
                 if text.contains("<source>transcript_tail_flush</source>") && text.contains("user: final words")))
-        )).collect::<Vec<_>>();
-        assert_eq!(tails.len(), 1);
-        if let Some(id) = &running_turn_id {
-            assert_eq!(&tails[0].turn_id, id);
-        }
+        ));
+        assert!(has_tail, "protocol V1 keeps its legacy carryover behavior");
+        let request = mcp
+            .send_request(
+                "thread/realtime/list",
+                Some(serde_json::json!({"threadId": started.thread_id})),
+            )
+            .await?;
+        let history: codex_app_server_protocol::ThreadRealtimeListResponse =
+            timeout(DEFAULT_TIMEOUT, mcp.read_response(request)).await??;
+        let start_id = "realtime-session-start:call:Voice/one";
+        let request = mcp
+            .send_request(
+                "thread/realtime/list",
+                Some(serde_json::json!({"threadId": started.thread_id, "eventId": start_id})),
+            )
+            .await?;
+        let start: codex_app_server_protocol::ThreadRealtimeListResponse =
+            timeout(DEFAULT_TIMEOUT, mcp.read_response(request)).await??;
+        let [start] = start.data.as_slice() else {
+            panic!("the known call ID should resolve its opening marker");
+        };
+        assert_eq!(start.item.id, start_id);
+        assert!(matches!(
+            start.item.content,
+            ThreadRealtimeItemContent::RealtimeSessionStarted
+        ));
+        let end = history
+            .data
+            .iter()
+            .find(|entry| {
+                matches!(
+                    entry.item.content,
+                    ThreadRealtimeItemContent::RealtimeSessionClosed { .. }
+                )
+            })
+            .expect("a closed call has a closing marker");
+        assert!(start.position < end.position);
+        let realtime = history
+            .data
+            .iter()
+            .map(|entry| &entry.item)
+            .collect::<Vec<_>>();
+        assert!(
+            realtime.iter().any(|item| matches!(
+                &item.content, ThreadRealtimeItemContent::Frame { channels }
+                    if channels.voice_transcript.text == "final words"
+            )),
+            "sealed speech is readable immediately after Closed"
+        );
         let request = mcp
             .send_thread_turns_list_request(ThreadTurnsListParams {
                 thread_id: started.thread_id.clone(),
@@ -1917,7 +1967,6 @@ async fn realtime_conversation_stop_emits_closed_notification(
             .await?;
         let turns: ThreadTurnsListResponse =
             timeout(DEFAULT_TIMEOUT, mcp.read_response(request)).await??;
-        assert_eq!(tails[0].turn_id, turns.data[0].id);
         turns.data
     } else {
         let request = mcp
@@ -1936,15 +1985,20 @@ async fn realtime_conversation_stop_emits_closed_notification(
         history.thread.turns
     };
     assert_eq!(turns.len(), 1);
-    assert_eq!(
-        turns[0].status,
-        if running {
-            TurnStatus::InProgress
-        } else {
-            TurnStatus::Completed
+    if let Some(turn) = turns.first() {
+        assert_eq!(
+            turn.status,
+            if running {
+                TurnStatus::InProgress
+            } else {
+                TurnStatus::Completed
+            }
+        );
+        assert_eq!(Uuid::parse_str(&turn.id)?.get_version_num(), 7);
+        if let Some(id) = &running_turn_id {
+            assert_eq!(&turn.id, id);
         }
-    );
-    assert_eq!(Uuid::parse_str(&turns[0].id)?.get_version_num(), 7);
+    }
 
     response_tx.send(())?;
     if running {
@@ -4396,6 +4450,17 @@ async fn login_with_api_key(mcp: &mut TestAppServer, api_key: &str) -> Result<()
         timeout(DEFAULT_TIMEOUT, mcp.read_response(request_id)).await??;
     assert_eq!(login, LoginAccountResponse::ApiKey {});
 
+    Ok(())
+}
+
+async fn enable_local_realtime_frames(mcp: &mut TestAppServer) -> Result<()> {
+    let request = mcp
+        .send_experimental_feature_enablement_set_request(ExperimentalFeatureEnablementSetParams {
+            enablement: BTreeMap::from([("realtime_frames_local".to_string(), true)]),
+        })
+        .await?;
+    let _: ExperimentalFeatureEnablementSetResponse =
+        timeout(DEFAULT_TIMEOUT, mcp.read_response(request)).await??;
     Ok(())
 }
 

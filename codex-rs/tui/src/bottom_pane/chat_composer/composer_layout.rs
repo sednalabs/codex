@@ -229,7 +229,8 @@ impl ChatComposer {
         width: u16,
         options: ComposerRenderOptions<'_>,
     ) -> u16 {
-        let rows = self.composer_rows(width, options.max_height.unwrap_or(u16::MAX), options);
+        let height = self.height_budget(width, options);
+        let rows = self.composer_rows(width, height, options);
         [
             rows.input,
             rows.above_input,
@@ -280,7 +281,7 @@ impl ChatComposer {
             || matches!(
                 self.footer_mode(),
                 FooterMode::HistorySearch
-                    | FooterMode::ShortcutOverlay
+                    | FooterMode::ShortcutOverlay(_)
                     | FooterMode::QuitShortcutReminder
                     | FooterMode::EscHint
             );
@@ -296,7 +297,7 @@ impl ChatComposer {
         let find_active = options
             .footer
             .is_some_and(|footer| footer.cursor_column.is_some());
-        let footer = FooterLayout::new(
+        let mut footer = FooterLayout::new(
             workspace_height,
             self.footer_hint_height(width, options),
             /*priority_hint_rows*/ if find_active { 2 } else { 1 },
@@ -313,6 +314,16 @@ impl ChatComposer {
             available -= thumbnails;
         } else {
             thumbnails = 0;
+        }
+        if self.footer.status_line_enabled
+            && footer.wanted_hints == 0
+            && wanted_status > 0
+            && wanted_status < footer.cap.min(available)
+            && self.attachments.is_empty()
+            && !options.is_dialog_backdrop
+            && self.passive_hints(options).is_some()
+        {
+            footer.wanted_hints = 1;
         }
         ComposerRows {
             input: input_height,

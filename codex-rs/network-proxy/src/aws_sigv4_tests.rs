@@ -249,6 +249,7 @@ async fn rejects_wrong_transport_port_streaming_presigning_and_body_overflow() {
         );
     }
     for (name, value) in [
+        ("transfer-encoding", "chunked"),
         ("content-encoding", "aws-chunked"),
         ("x-amz-content-sha256", "STREAMING-AWS4-HMAC-SHA256-PAYLOAD"),
         ("content-length", "1"),

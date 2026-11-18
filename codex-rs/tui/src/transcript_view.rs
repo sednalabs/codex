@@ -10,6 +10,7 @@ mod bookmark;
 mod composer_gap;
 mod copy_mode;
 mod disclosure;
+mod document;
 mod follow_control;
 mod footer;
 mod input;
@@ -31,8 +32,10 @@ use crate::history_cell::HistoryCell;
 use crate::history_cell::HistoryRenderMode;
 use crate::pager_overlay::TranscriptHistoryState;
 use crate::terminal_hyperlinks::HyperlinkLine;
+use crate::terminal_hyperlinks::TerminalHyperlink;
 use crate::tui::SelectionCopy;
 use ratatui::buffer::Buffer;
+use ratatui::layout::Position as ScreenPosition;
 use ratatui::layout::Rect;
 use ratatui::style::Stylize;
 use ratatui::text::Line;
@@ -91,6 +94,8 @@ struct VisibleRow {
 /// Shared scrolling and interaction state for compact and detailed transcript presentations.
 pub(crate) struct TranscriptView {
     pub(crate) image_protocol: Option<crate::pets::ImageProtocol>,
+    pub(crate) agent_links: Option<crate::backend_id::BackendId>,
+    pub(crate) document_links: bool,
     pub(crate) mouse_scroll_speed: f64,
     pending_mouse_scroll: f64,
     pub(crate) copy_on_select: bool,
@@ -98,6 +103,7 @@ pub(crate) struct TranscriptView {
     pub(crate) primary_selection: bool,
     position: Position,
     follow_control: follow_control::FollowControl,
+    pub(crate) show_follow_control: bool,
     copy_feedback: Option<composer_gap::CopyFeedback>,
     composer_tip: Option<(Rect, HyperlinkLine)>,
     turn_tip_key: Option<EntryKey>,
@@ -132,6 +138,8 @@ impl Default for TranscriptView {
     fn default() -> Self {
         Self {
             image_protocol: None,
+            agent_links: None,
+            document_links: false,
             mouse_scroll_speed: 1.0,
             pending_mouse_scroll: 0.0,
             copy_on_select: false,
@@ -139,6 +147,7 @@ impl Default for TranscriptView {
             primary_selection: false,
             position: Position::Latest,
             follow_control: follow_control::FollowControl::default(),
+            show_follow_control: true,
             copy_feedback: None,
             composer_tip: None,
             turn_tip_key: None,
@@ -172,6 +181,17 @@ impl Default for TranscriptView {
 }
 
 impl TranscriptView {
+    pub(crate) fn can_scroll_without_refresh(
+        &self,
+        cells: &[Arc<dyn HistoryCell>],
+        live_key: Option<ActiveCellTranscriptKey>,
+    ) -> bool {
+        !self.area.is_empty()
+            && !self.cache.has_mutable_source()
+            && self.last_tail == cells.last().map(EntryKey::cell)
+            && self.live_key.map(|(_, key)| key) == live_key
+    }
+
     /// Rows left after the last render, including all startup notices and live entries.
     /// Callers can paint temporary UI here without changing selection or saved history.
     pub(crate) fn remaining_area(&self) -> Rect {
@@ -307,6 +327,9 @@ impl TranscriptView {
             };
             let row_area = Rect::new(area.x, y, area.width, /*height*/ 1);
             layout.render(row_area, buf, row);
+            if self.agent_links.is_some() {
+                layout.underline_agent_links(row_area, buf, row);
+            }
             self.render_disclosure(&activity_ids, &layout, row, row_area, buf);
             if self.highlight == Some(index) && self.selection.is_none() && !self.search.is_active()
             {
@@ -339,6 +362,62 @@ impl TranscriptView {
             self.scroll(current_cells, /*rows*/ 0);
         }
         self.render_search(buf);
+    }
+
+    pub(crate) fn has_document_link_at(&self, pointer: ScreenPosition) -> bool {
+        self.document_links
+            && self
+                .raw_link_at(pointer)
+                .is_some_and(|(_, link)| link.is_document())
+    }
+
+    fn raw_link_at(&self, pointer: ScreenPosition) -> Option<(&VisibleRow, &TerminalHyperlink)> {
+        if !self.area.contains(pointer) {
+            return None;
+        }
+        let row = self.visible.get(usize::from(pointer.y - self.area.y))?;
+        let link = row.layout.raw_link_at(row.row, pointer.x - self.area.x)?;
+        Some((row, link))
+    }
+
+    pub(crate) fn paint_document_links(&self, buf: &mut Buffer, pointer: Option<ScreenPosition>) {
+        let Some((hit_row, hit_link)) = pointer
+            .filter(|_| self.document_links && !self.has_active_interaction())
+            .and_then(|pointer| self.raw_link_at(pointer))
+            .filter(|(_, link)| link.is_document())
+        else {
+            return;
+        };
+        for (y, row) in (self.area.top()..self.area.bottom()).zip(&self.visible) {
+            if row.key != hit_row.key {
+                continue;
+            }
+            let Some((inset, links)) = row.layout.row_links(row.row) else {
+                continue;
+            };
+            for link in links.iter().filter(|link| link.is_document()) {
+                if !(std::ptr::eq(hit_link, link) && hit_row.row == row.row
+                    || hit_link.markdown_source.is_some()
+                        && hit_link.markdown_source == link.markdown_source
+                        && hit_link.destination == link.destination)
+                {
+                    continue;
+                }
+                let columns = (inset + link.columns.start)
+                    ..(inset + link.columns.end).min(usize::from(self.area.width));
+                if !columns.is_empty() {
+                    buf.set_style(
+                        Rect::new(
+                            self.area.x + columns.start as u16,
+                            y,
+                            columns.len() as u16,
+                            1,
+                        ),
+                        ratatui::style::Style::default().bold(),
+                    );
+                }
+            }
+        }
     }
 
     /// Persist the clamped reading position after the last paint at the final viewport height.
@@ -376,8 +455,14 @@ impl TranscriptView {
             if skip >= rows.len() {
                 continue;
             }
+            let image_indent = if visible.layout.image_left_aligned {
+                // Match the two-column prefix the assistant's Markdown uses.
+                2
+            } else {
+                self.area.width.saturating_sub(image.columns) / 2
+            };
             let area = Rect::new(
-                self.area.x + self.area.width.saturating_sub(image.columns) / 2,
+                self.area.x + image_indent,
                 entry_y + skip as u16,
                 image.columns,
                 (rows.len() - skip) as u16,
@@ -387,6 +472,7 @@ impl TranscriptView {
                 area,
                 first_row: visible.row.saturating_sub(image_start),
                 file: None,
+                terminal_id: None,
             });
         }
         placements
@@ -568,6 +654,15 @@ impl TranscriptView {
         }
     }
 
+    pub(crate) fn jump_to_offset(&mut self, cells: &[Arc<dyn HistoryCell>], offset: usize) {
+        self.position = Position::Reading(Anchor {
+            key: self.entry_key(cells, /*index*/ 0),
+            index: 0,
+            offset,
+            row_bias: 0,
+        });
+    }
+
     pub(crate) fn jump_to_latest(&mut self) {
         self.disclosure.resume_after_approval = None;
         self.cancel_search();
@@ -609,8 +704,7 @@ impl TranscriptView {
         }
         // Anchor visible content, not a hidden header that stays ahead of every older page.
         let index = self.next_nonempty(cells, index).unwrap_or(index);
-        let bottom = self.bottom_start(cells);
-        if rows > 0 && (index, row) >= bottom {
+        if rows > 0 && (index, row) >= self.bottom_start(cells) {
             if self.selection.is_none() && !self.search.is_active() {
                 self.jump_to_latest();
             } else {

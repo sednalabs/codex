@@ -1668,6 +1668,7 @@ description = "Day-to-day workspace access."
 enabled = true
 proxy_url = "http://127.0.0.1:43128"
 enable_socks5 = false
+transparent_tcp = false
 allow_upstream_proxy = false
 mode = "full"
 
@@ -1722,6 +1723,7 @@ strip_request_headers = ["authorization"]
                         ]),
                     }),
                     network: Some(NetworkToml {
+                        transparent_tcp: Some(false),
                         enabled: Some(true),
                         proxy_url: Some("http://127.0.0.1:43128".to_string()),
                         enable_socks5: Some(false),
@@ -2964,6 +2966,50 @@ async fn permission_profile_override_populates_runtime_permissions() -> std::io:
 }
 
 #[tokio::test]
+async fn persisted_read_only_respects_read_allowlist_and_drops_default_proxy() -> anyhow::Result<()>
+{
+    let codex_home = TempDir::new()?;
+    let cwd = TempDir::new()?;
+    let config_toml = toml::from_str(
+        r#"
+default_permissions = "dev"
+
+[permissions.dev.filesystem]
+":workspace_roots" = "write"
+
+[permissions.dev.network]
+enabled = true
+"#,
+    )?;
+    let config = Config::load_from_base_config_with_overrides(
+        config_toml,
+        ConfigOverrides {
+            cwd: Some(cwd.path().to_path_buf()),
+            persisted_permission_profile: Some(PermissionProfile::read_only()),
+            ..Default::default()
+        },
+        codex_home.abs(),
+    )
+    .await?;
+    let (file_system, network) = config
+        .permissions
+        .effective_permission_profile()
+        .to_runtime_permissions();
+    let cwd = cwd.path();
+    assert_eq!(
+        (
+            file_system.can_read_local_path_with_cwd(cwd, cwd),
+            file_system.can_write_local_path_with_cwd(cwd, cwd),
+            file_system.can_read_local_path_with_cwd(codex_home.path(), cwd),
+            network,
+        ),
+        (true, false, false, NetworkSandboxPolicy::Restricted)
+    );
+    assert!(config.permissions.network.is_none());
+    Ok(())
+}
+
+#[tokio::test]
 async fn persisted_permissions_initialize_proxy_with_expandable_managed_allowlist()
 -> anyhow::Result<()> {
     let codex_home = TempDir::new()?;
@@ -3070,20 +3116,20 @@ extends = ":workspace"
 }
 
 #[tokio::test]
-async fn missing_persisted_permission_profile_id_uses_configured_default() -> std::io::Result<()> {
+async fn missing_persisted_permission_profile_id_requires_explicit_selection() -> std::io::Result<()>
+{
     let codex_home = TempDir::new()?;
     let cwd = TempDir::new()?;
     let project_key = cwd.path().to_string_lossy().to_string();
 
-    for (configured_default, configured_sandbox, expected_active_profile) in [
+    for (configured_default, configured_sandbox) in [
         (
-            Some(BUILT_IN_PERMISSION_PROFILE_READ_ONLY.to_string()),
+            Some(BUILT_IN_PERMISSION_PROFILE_DANGER_FULL_ACCESS.to_string()),
             None,
-            Some(ActivePermissionProfile::read_only()),
         ),
-        (None, Some(SandboxMode::ReadOnly), None),
+        (None, Some(SandboxMode::WorkspaceWrite)),
     ] {
-        let config = Config::load_from_base_config_with_overrides(
+        let error = Config::load_from_base_config_with_overrides(
             ConfigToml {
                 default_permissions: configured_default,
                 sandbox_mode: configured_sandbox,
@@ -3102,34 +3148,34 @@ async fn missing_persisted_permission_profile_id_uses_configured_default() -> st
             },
             codex_home.abs(),
         )
-        .await?;
+        .await
+        .expect_err("a missing saved profile must require an explicit selection");
 
-        assert_eq!(
-            config.permissions.active_permission_profile(),
-            expected_active_profile
-        );
-        assert_eq!(
-            config.permissions.effective_permission_profile(),
-            PermissionProfile::read_only()
+        assert_eq!(error.kind(), std::io::ErrorKind::InvalidInput);
+        assert!(
+            error
+                .to_string()
+                .contains("saved permission profile `removed-profile`")
         );
     }
     Ok(())
 }
 
 #[tokio::test]
-async fn invalid_persisted_permission_profile_uses_configured_default() -> std::io::Result<()> {
+async fn invalid_persisted_permission_profile_requires_explicit_selection() -> std::io::Result<()> {
     let codex_home = TempDir::new()?;
     let cwd = TempDir::new()?;
     for invalid_profile in [
         "extends = \"removed-parent\"",
         "extends = \":read-only\"\n\n[permissions.dev.filesystem]\nglob_scan_max_depth = 0",
+        "extends = \"base\"\n\n[permissions.base]\nextends = \"dev\"",
     ] {
         let config_toml = toml::from_str(&format!(
             "default_permissions = \":danger-full-access\"\n\n[permissions.dev]\n{invalid_profile}"
         ))
         .expect("permission profile config should deserialize");
 
-        let config = Config::load_from_base_config_with_overrides(
+        let error = Config::load_from_base_config_with_overrides(
             config_toml,
             ConfigOverrides {
                 cwd: Some(cwd.path().to_path_buf()),
@@ -3138,60 +3184,12 @@ async fn invalid_persisted_permission_profile_uses_configured_default() -> std::
             },
             codex_home.abs(),
         )
-        .await?;
+        .await
+        .expect_err("an invalid saved profile must require an explicit selection");
 
-        assert_eq!(
-            config.permissions.active_permission_profile(),
-            Some(ActivePermissionProfile::new(
-                BUILT_IN_PERMISSION_PROFILE_DANGER_FULL_ACCESS,
-            ))
-        );
-        assert_eq!(
-            config.permissions.effective_permission_profile(),
-            PermissionProfile::Disabled
-        );
+        assert_eq!(error.kind(), std::io::ErrorKind::InvalidInput);
+        assert!(error.to_string().contains("saved permission profile `dev`"));
     }
-    Ok(())
-}
-
-#[tokio::test]
-async fn persisted_profile_cycle_uses_configured_default() -> std::io::Result<()> {
-    let codex_home = TempDir::new()?;
-    let cwd = TempDir::new()?;
-    let config_toml = toml::from_str(
-        r#"
-default_permissions = ":danger-full-access"
-
-[permissions.dev]
-extends = "base"
-
-[permissions.base]
-extends = "dev"
-"#,
-    )
-    .expect("permission profile config should deserialize");
-
-    let config = Config::load_from_base_config_with_overrides(
-        config_toml,
-        ConfigOverrides {
-            cwd: Some(cwd.path().to_path_buf()),
-            persisted_permission_profile_id: Some("dev".to_string()),
-            ..Default::default()
-        },
-        codex_home.abs(),
-    )
-    .await?;
-
-    assert_eq!(
-        config.permissions.active_permission_profile(),
-        Some(ActivePermissionProfile::new(
-            BUILT_IN_PERMISSION_PROFILE_DANGER_FULL_ACCESS,
-        ))
-    );
-    assert_eq!(
-        config.permissions.effective_permission_profile(),
-        PermissionProfile::Disabled
-    );
     Ok(())
 }
 
@@ -6499,7 +6497,16 @@ async fn add_dir_override_extends_workspace_writable_roots() -> std::io::Result<
 
     let overrides = ConfigOverrides {
         cwd: Some(frontend),
-        sandbox_mode: Some(SandboxMode::WorkspaceWrite),
+        // Preserve Windows coverage of the default read-only fallback.
+        sandbox_mode: cfg!(target_os = "windows").then_some(SandboxMode::WorkspaceWrite),
+        permission_profile: (!cfg!(target_os = "windows")).then_some(
+            PermissionProfile::workspace_write_with(
+                &[],
+                NetworkSandboxPolicy::Restricted,
+                /*exclude_tmpdir_env_var*/ true,
+                /*exclude_slash_tmp*/ true,
+            ),
+        ),
         additional_writable_roots: vec![PathBuf::from("../backend"), backend.clone()],
         ..Default::default()
     };
@@ -6737,6 +6744,7 @@ async fn memory_tool_makes_memories_root_readable_without_creating_or_widening_w
             &PermissionProfile::read_only()
         );
     } else {
+        assert!(file_system_policy.can_write_local_path_with_cwd(cwd.path(), cwd.path()));
         let writable_roots = config.permissions.user_visible_workspace_roots();
         assert!(!writable_roots.contains(&memories_root_abs));
     }
@@ -12858,6 +12866,7 @@ tool_namespace = "agents"
 hide_spawn_agent_metadata = true
 expose_spawn_agent_model_overrides = false
 wait_agent_enabled = false
+interrupt_at_item_boundary = true
 disable_native_tools = true
 disable_direct_message = true
 message_board_in_memory = true
@@ -12917,6 +12926,7 @@ max_concurrent_threads_per_session = 9
     assert!(!config.multi_agent_v2.preserve_fork_prefix);
     assert!(!config.multi_agent_v2.expose_spawn_agent_model_overrides);
     assert!(!config.multi_agent_v2.wait_agent_enabled);
+    assert!(config.multi_agent_v2.interrupt_at_item_boundary);
     assert!(config.multi_agent_v2.disable_native_tools);
     assert!(config.multi_agent_v2.disable_direct_message);
     assert!(config.multi_agent_v2.message_board_in_memory);

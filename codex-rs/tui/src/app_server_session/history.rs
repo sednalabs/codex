@@ -202,9 +202,13 @@ impl AppServerSession {
     }
 
     pub(crate) fn has_older_history(&self, thread_id: ThreadId) -> bool {
+        self.older_item_cursor(thread_id).is_some()
+    }
+
+    pub(crate) fn older_item_cursor(&self, thread_id: ThreadId) -> Option<&str> {
         self.history_pagination
             .get(&thread_id)
-            .is_some_and(|page| page.next_item_cursor.is_some())
+            .and_then(|page| page.next_item_cursor.as_deref())
     }
 
     pub(crate) fn begin_older_history_page(&mut self, thread_id: ThreadId) -> Option<String> {
@@ -341,8 +345,9 @@ impl AppServerSession {
             if let Some(turn) = turns.iter_mut().find(|turn| turn.id == entry.turn_id)
                 && !turn.items.iter().any(|item| item.id() == entry.item.id())
             {
+                let turn_id = entry.turn_id.clone();
                 let item = ThreadItem::try_from(entry)?;
-                items.push((turn.id.clone(), item.payload.clone()));
+                items.push((turn_id, item.payload.clone()));
                 turn.items.insert(/*index*/ 0, item);
                 turn.items_view = TurnItemsView::Summary;
             }

@@ -328,6 +328,99 @@ async fn recap_spacing_belongs_to_the_transcript_tail() -> Result<()> {
 }
 
 #[tokio::test]
+async fn shortcut_action_list_leaves_room_for_the_owned_transcript() -> Result<()> {
+    let mut app = crate::app::test_support::make_test_app().await;
+    attach_thread(&mut app, ThreadId::new());
+    app.transcript_cells
+        .push(Arc::new(crate::history_cell::PlainHistoryCell::new(vec![
+            "Conversation remains visible".into(),
+        ])));
+    let mut tui = crate::tui::test_support::make_test_tui()?;
+    tui.set_owned_screen(/*owned*/ true)?;
+    let size = Size::new(/*width*/ 60, /*height*/ 24);
+    tui.terminal.resize(size)?;
+
+    app.chat_widget.handle_key_event(KeyCode::Char('?').into());
+    app.render_owned_transcript(&mut tui, size)?;
+    let buffer = crate::custom_terminal::test_support::last_rendered_buffer(&tui.terminal);
+    let screen = buffer_text(buffer);
+    let visible_lines = screen
+        .lines()
+        .filter(|row| {
+            row.contains("Conversation remains visible")
+                || row.contains("Keyboard shortcuts")
+                || row.contains("resize to see all")
+                || row.contains("/keymap customize")
+                || row.contains("Ask Codex")
+                || row.contains("esc close")
+        })
+        .collect::<Vec<_>>()
+        .join("\n");
+    insta::assert_snapshot!(visible_lines, @"
+    Conversation remains visible
+      Keyboard shortcuts
+      … resize to see all
+      /keymap customize
+    › Ask Codex to do anything
+      ? / esc close
+    ");
+
+    assert!(
+        app.chat_widget
+            .handle_shortcut_view_key(KeyCode::Tab.into())
+    );
+    app.render_owned_transcript(&mut tui, size)?;
+    let buffer = crate::custom_terminal::test_support::last_rendered_buffer(&tui.terminal);
+    let screen = buffer_text(buffer);
+    assert!(screen.contains("Conversation remains visible"));
+    assert!(screen.contains("Keyboard unavailable"));
+
+    tui.set_owned_screen(/*owned*/ false)?;
+    Ok(())
+}
+
+#[tokio::test]
+async fn shortcut_keyboard_fits_in_owned_transcript_at_80x24() -> Result<()> {
+    let mut app = crate::app::test_support::make_test_app().await;
+    attach_thread(&mut app, ThreadId::new());
+    app.chat_widget.handle_key_event(KeyCode::Char('?').into());
+    assert!(
+        app.chat_widget
+            .handle_shortcut_view_key(KeyCode::Tab.into())
+    );
+
+    let mut tui = crate::tui::test_support::make_test_tui()?;
+    tui.set_owned_screen(/*owned*/ true)?;
+    let size = Size::new(/*width*/ 80, /*height*/ 24);
+    tui.terminal.resize(size)?;
+    app.render_owned_transcript(&mut tui, size)?;
+    let buffer = crate::custom_terminal::test_support::last_rendered_buffer(&tui.terminal);
+    insta::assert_snapshot!(
+        "shortcut_keyboard_owned_transcript",
+        normalize_snapshot_paths(buffer_text(buffer))
+    );
+
+    app.transcript_cells.push(user_cell("needle"));
+    app.transcript_view.begin_search();
+    app.transcript_view.paste_search("needle");
+    app.render_owned_transcript(&mut tui, size)?;
+    assert!(app.transcript_view.is_search_editing());
+    assert!(!app.shortcut_guide_owns_input(&tui));
+
+    app.transcript_view
+        .handle_key(KeyCode::Enter.into(), &app.transcript_cells);
+    assert!(!app.transcript_view.is_search_editing());
+    assert!(app.transcript_view.has_active_interaction());
+    assert!(!app.shortcut_guide_owns_input(&tui));
+
+    app.transcript_view
+        .handle_key(KeyCode::Esc.into(), &app.transcript_cells);
+    assert!(app.shortcut_guide_owns_input(&tui));
+    tui.set_owned_screen(/*owned*/ false)?;
+    Ok(())
+}
+
+#[tokio::test]
 async fn owned_transcript_reserves_a_row_above_the_composer() -> Result<()> {
     let mut app = crate::app::test_support::make_test_app().await;
     attach_thread(&mut app, ThreadId::new());
@@ -556,7 +649,13 @@ async fn owned_details_keep_the_composer_cursor_and_screen() -> Result<()> {
     image::RgbaImage::from_pixel(8, 16, image::Rgba([80, 30, 20, 255])).save(&path)?;
     let protocol = crate::pets::ImageProtocol::KittyLocalFile;
     let image = Arc::new(
-        crate::transcript_image::TranscriptImage::load(&path, area.width, protocol).unwrap(),
+        crate::transcript_image::TranscriptImage::load(
+            &path,
+            area.width,
+            protocol,
+            crate::transcript_image::PreviewKind::Inspected,
+        )
+        .unwrap(),
     );
     let neighbor = Rect::new(/*x*/ 4, /*y*/ 9, image.columns, image.rows);
     let presented = |tui: &tui::Tui| {
@@ -583,6 +682,7 @@ async fn owned_details_keep_the_composer_cursor_and_screen() -> Result<()> {
                 area: neighbor,
                 first_row: 0,
                 file: None,
+                terminal_id: None,
             });
     })?;
     app.finish_conversation(&mut tui, painted)?;
@@ -1922,6 +2022,34 @@ async fn fullscreen_composer_mouse_copy_and_input_ownership() -> Result<()> {
         );
     }
     assert!(!app.handle_owned_transcript_event(&mut tui, &mut server, &mouse(Down(Left), x, y))?);
+    server.shutdown().await?;
+    tui.set_owned_screen(/*owned*/ false)?;
+    Ok(())
+}
+
+#[tokio::test]
+async fn user_turn_redraw_handles_terminal_shrink_without_resize_event() -> Result<()> {
+    let (mut app, _events, mut ops) = make_test_app_with_channels().await;
+    attach_thread(&mut app, ThreadId::new());
+    app.local_settings.tui.animations = false;
+    let mut server = Box::pin(crate::start_embedded_app_server_for_picker(&app.config)).await?;
+    let mut tui = crate::tui::test_support::make_test_tui()?;
+    tui.set_owned_screen(/*owned*/ true)?;
+    let backend_size = tui.terminal.size()?;
+    tui.terminal
+        .resize(Size::new(backend_size.width, backend_size.height + 13))?;
+
+    app.chat_widget
+        .apply_external_edit("resize regression".into());
+    app.chat_widget.handle_key_event(KeyCode::Enter.into());
+    let turn = std::iter::from_fn(|| ops.try_recv().ok())
+        .find(|op| matches!(op, AppCommand::UserTurn { .. }))
+        .expect("Enter submits a user turn");
+    Box::pin(app.handle_event(&mut tui, &mut server, AppEvent::CodexOp(turn))).await?;
+
+    assert_eq!(tui.terminal.last_known_screen_size, backend_size);
+    let buffer = crate::custom_terminal::test_support::last_rendered_buffer(&tui.terminal);
+    assert_eq!(buffer.area, Rect::from(backend_size));
     server.shutdown().await?;
     tui.set_owned_screen(/*owned*/ false)?;
     Ok(())

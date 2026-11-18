@@ -59,6 +59,7 @@ static ALLOCATOR: tikv_jemallocator::Jemalloc = tikv_jemallocator::Jemalloc;
 
 #[cfg(any(target_os = "macos", target_os = "windows"))]
 mod app_cmd;
+mod app_server_proxy;
 mod config_override_args;
 mod daemon_install;
 mod daemon_telemetry;
@@ -244,10 +245,6 @@ enum Subcommand {
     /// Internal: run the responses API proxy.
     #[clap(hide = true)]
     ResponsesApiProxy(ResponsesApiProxyArgs),
-
-    /// Internal: relay stdio to a Unix domain socket.
-    #[clap(hide = true, name = "stdio-to-uds")]
-    StdioToUds(StdioToUdsCommand),
 
     /// [EXPERIMENTAL] Run the standalone exec-server service.
     ExecServer(ExecServerCommand),
@@ -495,7 +492,7 @@ enum SandboxSubcommand {
 #[cfg(target_os = "macos")]
 type HostSandboxArgs = codex_cli::SeatbeltCommand;
 #[cfg(target_os = "linux")]
-type HostSandboxArgs = codex_cli::LandlockCommand;
+type HostSandboxArgs = codex_cli::LinuxSandboxCommand;
 #[cfg(target_os = "windows")]
 type HostSandboxArgs = codex_cli::WindowsCommand;
 
@@ -766,13 +763,6 @@ struct GenerateInternalJsonSchemaCommand {
     /// Output directory where internal JSON Schema artifacts will be written
     #[arg(short = 'o', long = "out", value_name = "DIR")]
     out_dir: PathBuf,
-}
-
-#[derive(Debug, Parser)]
-struct StdioToUdsCommand {
-    /// Path to the Unix domain socket to connect to.
-    #[arg(value_name = "SOCKET_PATH", value_parser = parse_socket_path)]
-    socket_path: AbsolutePathBuf,
 }
 
 fn parse_socket_path(raw: &str) -> Result<AbsolutePathBuf, String> {
@@ -1098,12 +1088,18 @@ async fn dispatch_cli(
         Some(Subcommand::Agents(options)) => Some(options),
         _ => None,
     };
-    if let Some(options) = agents_options
+    let session_remote = match &subcommand {
+        Some(Subcommand::Agents(options)) => Some(("agents", &options.remote)),
+        Some(Subcommand::Resume(options)) => Some(("resume", &options.remote)),
+        Some(Subcommand::Fork(options)) => Some(("fork", &options.remote)),
+        _ => None,
+    };
+    if let Some((command, options)) = session_remote
         && let Some(root_endpoint) = &remote.remote
-        && let Some(agents_endpoint) = &options.remote.remote
-        && root_endpoint != agents_endpoint
+        && let Some(command_endpoint) = &options.remote
+        && root_endpoint != command_endpoint
     {
-        anyhow::bail!("`codex agents` received conflicting remote server endpoints");
+        anyhow::bail!("`codex {command}` received conflicting remote server endpoints");
     }
     let root_remote = agents_options
         .and_then(|options| options.remote.remote.clone())
@@ -1169,8 +1165,8 @@ async fn dispatch_cli(
                 arg0_paths,
             )));
         }
-        Some(Subcommand::TcpTunnel(args)) if args.auth_token_stdin => {
-            codex_tcp_tunnel::run(args).await?;
+        Some(Subcommand::TcpTunnel(args)) if args.token_file.is_some() => {
+            codex_tcp_tunnel::run_ssh_proxy_from_file(args, tokio::io::stdout()).await?;
         }
         Some(Subcommand::TcpTunnel(args)) => {
             let config =
@@ -1535,7 +1531,7 @@ async fn dispatch_cli(
                             codex_app_server::app_server_control_socket_path(&codex_home)?
                         }
                     };
-                    codex_stdio_to_uds::run(socket_path.as_path()).await?;
+                    app_server_proxy::run(socket_path.as_path()).await?;
                 }
                 Some(AppServerSubcommand::GenerateTs(gen_cli)) => {
                     let options = codex_app_server_protocol::GenerateTsOptions {
@@ -1860,7 +1856,7 @@ async fn dispatch_cli(
             )
             .await?;
             #[cfg(target_os = "linux")]
-            codex_cli::run_command_under_landlock(
+            codex_cli::run_command_under_linux_sandbox(
                 sandbox_cli,
                 arg0_paths.codex_linux_sandbox_exe.clone(),
                 loader_overrides,
@@ -1957,15 +1953,6 @@ async fn dispatch_cli(
             )?;
             tokio::task::spawn_blocking(move || codex_responses_api_proxy::run_main(args))
                 .await??;
-        }
-        Some(Subcommand::StdioToUds(cmd)) => {
-            reject_remote_mode_for_subcommand(
-                root_remote.as_deref(),
-                root_remote_auth_token_env.as_deref(),
-                "stdio-to-uds",
-            )?;
-            let socket_path = cmd.socket_path;
-            codex_stdio_to_uds::run(socket_path.as_path()).await?;
         }
         Some(Subcommand::ExecServer(mut cmd)) => {
             reject_remote_mode_for_subcommand(
@@ -2464,7 +2451,6 @@ fn unsupported_subcommand_name_for_strict_config(
         Some(Subcommand::Execpolicy(_)) => Some("execpolicy"),
         Some(Subcommand::Apply(_)) => Some("apply"),
         Some(Subcommand::ResponsesApiProxy(_)) => Some("responses-api-proxy"),
-        Some(Subcommand::StdioToUds(_)) => Some("stdio-to-uds"),
         Some(Subcommand::Features(_)) => Some("features"),
         Some(Subcommand::TcpTunnel(_)) => Some("tcp-tunnel"),
     }
@@ -3521,32 +3507,18 @@ enabled = true
     }
 
     #[test]
-    fn tcp_tunnel_is_hidden_and_accepts_its_control_input_contract() {
+    fn tcp_tunnel_is_hidden_and_accepts_an_ssh_proxy_route() {
         let root_help = help_from_args(&["codex", "--help"]);
         assert!(!root_help.contains("tcp-tunnel"), "{root_help}");
-        let help = help_from_args(&["codex", "tcp-tunnel", "--help"]);
-        for option in [
-            "--target",
-            "--auth-token-stdin",
-            "--auth-token-updates-stdin",
-            "--connect-headers-stdin",
-        ] {
-            assert!(help.contains(option), "{help}");
-        }
         let cli = MultitoolCli::try_parse_from([
             "codex",
             "tcp-tunnel",
-            "--proxy-url",
-            "https://proxy.example.org",
-            "--proxy-origins-file",
-            "/tmp/approved-origins",
-            "--target",
-            "[::1]:22",
-            "--auth-token-stdin",
-            "--auth-token-updates-stdin",
-            "--connect-headers-stdin",
+            "--environment-id",
+            "ccarenv_test",
+            "--token-file",
+            "/private/token",
         ])
-        .expect("generic tunnel should parse");
+        .expect("SSH proxy route should parse");
         assert!(matches!(cli.subcommand, Some(Subcommand::TcpTunnel(_))));
     }
 

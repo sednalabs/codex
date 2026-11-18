@@ -16,6 +16,7 @@ use crate::tools::handlers::multi_agents_spec::SpawnAgentToolOptions;
 use crate::tools::handlers::multi_agents_spec::create_spawn_agent_tool_v1;
 use codex_protocol::protocol::MultiAgentVersion;
 use codex_tools::ToolSpec;
+use codex_user_input::ResolvedUserInput;
 
 #[derive(Default)]
 pub(crate) struct Handler {
@@ -80,6 +81,10 @@ async fn handle_spawn_agent(
             "Agent depth limit reached. Solve the task yourself.".to_string(),
         ));
     }
+    let input_items = input_items
+        .into_iter()
+        .map(ResolvedUserInput::from_client)
+        .collect();
     session
         .emit_turn_item_started(
             turn,
@@ -136,6 +141,7 @@ async fn handle_spawn_agent(
                 parent_thread_id: Some(session.thread_id),
                 parent_turn_id: Some(turn.sub_id.clone()),
                 root_turn_id: turn.turn_metadata_state.root_turn_id(),
+                inherited_client_metadata: turn.turn_metadata_state.client_metadata_for_child(),
                 turn_trigger: turn.turn_metadata_state.current_turn_trigger(),
                 environments: Some(step_context.inherited_environments.clone()),
                 disabled_plugin_ids: Some(turn.disabled_plugin_ids.clone()),

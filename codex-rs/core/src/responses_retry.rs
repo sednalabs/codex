@@ -41,6 +41,7 @@ pub(crate) fn is_terminal_sampling_outcome(error: &CodexErr) -> bool {
         CodexErrorDetails::ResponseIncomplete(_)
             | CodexErrorDetails::UsageAccountingFailed(_)
             | CodexErrorDetails::SessionBudgetExceeded
+            | CodexErrorDetails::APISpendLimitExceeded(_)
             | CodexErrorDetails::InferenceHookDenied { .. }
     )
 }

@@ -207,7 +207,12 @@ fn authorization_keys(auth: &str) -> impl Iterator<Item = &str> {
 }
 
 fn unsupported_signing_headers(headers: &HeaderMap) -> bool {
-    !crate::body_budget::supported_transfer_framing(headers)
+    // Rama's HTTP/1 parser removes Content-Length before this hook, so a
+    // conflicting Content-Length plus Transfer-Encoding request is
+    // indistinguishable here from ordinary chunked framing. Signed
+    // transfer-encoded requests therefore fail closed.
+    headers.contains_key("transfer-encoding")
+        || !crate::body_budget::supported_transfer_framing(headers)
         || crate::body_budget::is_amazon_event_stream(headers)
         || headers.contains_key("trailer")
         || headers.contains_key("x-amz-trailer")

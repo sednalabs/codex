@@ -32,6 +32,8 @@ use crate::terminal_hyperlinks::HyperlinkLine;
 use crate::terminal_hyperlinks::HyperlinkParagraph;
 use crate::terminal_hyperlinks::LineWrapPolicy;
 use crate::terminal_hyperlinks::LogicalLineSource;
+use crate::terminal_hyperlinks::ReaderLink;
+use crate::terminal_hyperlinks::TerminalHyperlink;
 use crate::terminal_hyperlinks::remap_source_wrapped_line;
 use crate::width::display_width;
 use crate::wrapping::RtOptions;
@@ -45,6 +47,7 @@ use ratatui::text::Line;
 /// One cell's logical text and its width-dependent display rows.
 pub(crate) struct TextLayout {
     pub(super) image: Option<std::sync::Arc<crate::transcript_image::TranscriptImage>>,
+    pub(super) image_left_aligned: bool,
     logical: Vec<LogicalLine>,
     text: String,
     rows: Vec<TextRow>,
@@ -210,6 +213,7 @@ impl TextLayout {
             layout = layout.with_control(control.label.clone(), control.anchor);
         }
         layout.image = self.image.clone();
+        layout.image_left_aligned = self.image_left_aligned;
         if self.leading_blank_hidden {
             layout = layout.without_leading_blank_row();
         }
@@ -847,15 +851,83 @@ impl TextLayout {
         }
     }
 
-    /// Resolve the displayed link using the same destination policy as terminal OSC-8 output.
-    pub(super) fn link_at(&self, row: usize, column: u16) -> Option<String> {
+    pub(super) fn underline_agent_links(&self, area: Rect, buf: &mut Buffer, row: usize) {
+        let Some((inset, links)) = self.row_links(row) else {
+            return;
+        };
+        for link in links.iter().filter(|link| link.agent_id().is_some()) {
+            let columns = (inset + link.columns.start)
+                ..(inset + link.columns.end).min(usize::from(area.width));
+            if !columns.is_empty() {
+                buf.set_style(
+                    Rect::new(
+                        area.x + columns.start as u16,
+                        area.y,
+                        columns.len() as u16,
+                        1,
+                    ),
+                    Style::default().underlined(),
+                );
+            }
+        }
+    }
+
+    pub(super) fn document_links(&self) -> Vec<(Range<usize>, ReaderLink)> {
+        let mut stops: Vec<(Range<usize>, ReaderLink)> = Vec::new();
+        let mut previous_source = None;
+        for (index, row) in self.rows.iter().enumerate() {
+            let inset = row.first_column - row.prefix_columns;
+            for link in &row.line.hyperlinks {
+                let Some(destination) = link.reader_destination(/*documents*/ true) else {
+                    continue;
+                };
+                let offset = |column: usize| {
+                    self.position_at(index, (inset + column).min(usize::from(u16::MAX)) as u16)
+                };
+                let range = offset(link.columns.start)..offset(link.columns.end);
+                if range.is_empty() {
+                    continue;
+                }
+                if let Some((previous, previous_destination)) = stops.last_mut()
+                    && *previous_destination == destination
+                    && previous_source == link.markdown_source
+                    && (previous.end == range.start
+                        || (previous_source.is_some()
+                            && self
+                                .text
+                                .get(previous.end..range.start)
+                                .is_some_and(|gap| gap.chars().all(char::is_whitespace))))
+                {
+                    previous.end = range.end;
+                } else {
+                    previous_source = link.markdown_source;
+                    stops.push((range, destination));
+                }
+            }
+        }
+        stops
+    }
+
+    /// Resolve an OSC-8 destination or a document target when the workspace enables previews.
+    #[cfg(test)]
+    pub(super) fn reader_link_at(
+        &self,
+        row: usize,
+        column: u16,
+        documents: bool,
+    ) -> Option<ReaderLink> {
+        self.raw_link_at(row, column)?.reader_destination(documents)
+    }
+
+    pub(super) fn raw_link_at(&self, row: usize, column: u16) -> Option<&TerminalHyperlink> {
+        let (inset, links) = self.row_links(row)?;
+        let column = usize::from(column).checked_sub(inset)?;
+        links.iter().find(|link| link.columns.contains(&column))
+    }
+
+    pub(super) fn row_links(&self, row: usize) -> Option<(usize, &[TerminalHyperlink])> {
         let row = self.rows.get(row)?;
-        let column = usize::from(column).checked_sub(row.first_column - row.prefix_columns)?;
-        row.line
-            .hyperlinks
-            .iter()
-            .find(|link| link.columns.contains(&column))?
-            .terminal_destination()
+        Some((row.first_column - row.prefix_columns, &row.line.hyperlinks))
     }
 
     fn visible_rows(&self, area: Rect, start_row: usize) -> impl Iterator<Item = (u16, &TextRow)> {
@@ -892,6 +964,7 @@ impl TextLayout {
         }
         Self {
             image: None,
+            image_left_aligned: false,
             logical,
             text,
             rows,

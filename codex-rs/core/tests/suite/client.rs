@@ -38,6 +38,7 @@ use codex_protocol::config_types::ReasoningSummary;
 use codex_protocol::config_types::Settings;
 use codex_protocol::config_types::Verbosity;
 use codex_protocol::error::CodexErr;
+use codex_protocol::items::TurnItem;
 use codex_protocol::models::AudioReference;
 use codex_protocol::models::ContentItem;
 use codex_protocol::models::DEFAULT_IMAGE_DETAIL;
@@ -56,6 +57,7 @@ use codex_protocol::models::WebSearchAction;
 use codex_protocol::openai_models::InputModality;
 use codex_protocol::openai_models::ReasoningEffort;
 use codex_protocol::protocol::EventMsg;
+use codex_protocol::protocol::ItemCompletedEvent;
 use codex_protocol::protocol::Op;
 use codex_protocol::protocol::SessionMeta;
 use codex_protocol::protocol::SessionMetaLine;
@@ -73,6 +75,7 @@ use core_test_support::responses::ev_completed_with_tokens;
 use core_test_support::responses::ev_function_call;
 use core_test_support::responses::ev_message_item_added;
 use core_test_support::responses::ev_output_text_delta;
+use core_test_support::responses::ev_reasoning_item;
 use core_test_support::responses::ev_response_created;
 use core_test_support::responses::mount_sse_once;
 use core_test_support::responses::mount_sse_once_match;
@@ -88,6 +91,7 @@ use core_test_support::test_codex::TestCodex;
 use core_test_support::test_codex::local_requests;
 use core_test_support::test_codex::test_codex;
 use core_test_support::wait_for_event;
+use core_test_support::wait_for_event_match;
 use futures::StreamExt;
 use pretty_assertions::assert_eq;
 use serde_json::json;
@@ -254,6 +258,97 @@ async fn responses_request_uses_implicit_default_tier_for_bedrock() -> anyhow::R
             "provider={provider_id}",
         );
     }
+    Ok(())
+}
+
+#[test_case::test_case(AMAZON_BEDROCK_PROVIDER_ID; "mantle")]
+#[test_case::test_case(AMAZON_BEDROCK_RUNTIME_PROVIDER_ID; "runtime")]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn bedrock_function_continuation_replays_assistant_commentary(
+    provider_id: &'static str,
+) -> anyhow::Result<()> {
+    skip_if_no_network!(Ok(()));
+    let server = start_mock_server().await;
+    let mut commentary = ev_assistant_message("msg_progress", "Checking.");
+    commentary["item"]["phase"] = json!("commentary");
+    commentary["item"]["content"] = json!([
+        {"type": "output_text", "text": "Checking.", "annotations": [], "logprobs": []},
+        {"type": "output_text", "text": "Source", "annotations": [{
+            "type": "url_citation", "url": "https://example.org", "title": "Source",
+            "start_index": 0, "end_index": 6
+        }]}
+    ]);
+    let mut expected_content = commentary["item"]["content"].clone();
+    if provider_id == AMAZON_BEDROCK_PROVIDER_ID {
+        expected_content[0]
+            .as_object_mut()
+            .expect("output text part")
+            .remove("annotations");
+    }
+    let reasoning = ev_reasoning_item("rs_plan", &[], &[]);
+    let mut answer = ev_assistant_message("msg_answer", "Checked.");
+    answer["item"]["phase"] = json!("final_answer");
+    answer["item"]["content"][0]["annotations"] = json!([]);
+    let mock = mount_sse_sequence(
+        &server,
+        vec![
+            sse(vec![
+                commentary,
+                reasoning.clone(),
+                ev_function_call(
+                    "plan",
+                    "update_plan",
+                    r#"{"plan":[{"step":"Check","status":"completed"}]}"#,
+                ),
+                ev_completed("tool"),
+            ]),
+            sse(vec![answer.clone(), ev_completed("answer")]),
+            sse(vec![ev_completed("next")]),
+        ],
+    )
+    .await;
+    let test = test_codex()
+        .with_auth(CodexAuth::BedrockApiKey(BedrockApiKeyAuth {
+            api_key: "dummy".to_string(),
+            region: "us-east-1".to_string(),
+        }))
+        .with_config(move |config| {
+            let base_url = config.model_provider.base_url.clone();
+            config.model_provider_id = provider_id.to_string();
+            config.model_provider = built_in_model_providers(/*openai_base_url*/ None)
+                .remove(provider_id)
+                .expect("built-in Bedrock provider");
+            config.model_provider.base_url = base_url;
+            config.model_provider.supports_websockets = false;
+            config.update_plan_enabled = true;
+        })
+        .build_with_auto_env(&server)
+        .await?;
+    test.submit_text_turn("Check the plan.").await?;
+    test.submit_text_turn("Continue.").await?;
+
+    let requests = mock.requests();
+    assert_eq!(requests.len(), 3);
+    for request in &requests[1..] {
+        let input = request.input();
+        let progress = input
+            .iter()
+            .position(|item| item["id"] == "msg_progress")
+            .expect("replayed commentary");
+        assert_eq!(input[progress]["content"], expected_content);
+        assert_eq!(
+            input[progress + 1]["encrypted_content"],
+            reasoning["item"]["encrypted_content"]
+        );
+        assert_eq!(input[progress + 2]["type"], "function_call");
+        assert_eq!(input[progress + 3]["type"], "function_call_output");
+    }
+    let input = requests[2].input();
+    let replayed_answer = input
+        .iter()
+        .find(|item| item["id"] == "msg_answer")
+        .expect("replayed final answer");
+    assert_eq!(replayed_answer["content"], answer["item"]["content"]);
     Ok(())
 }
 
@@ -566,26 +661,63 @@ async fn sends_local_audio_to_responses() -> anyhow::Result<()> {
         sse(vec![ev_response_created("resp1"), ev_completed("resp1")]),
     )
     .await;
-    let codex = test_codex()
+    let test = test_codex()
         .with_model_info_override("gpt-5.5", |model_info| {
             model_info.input_modalities.push(InputModality::Audio);
         })
-        .build(&server)
-        .await?
-        .codex;
+        .build_with_auto_env(&server)
+        .await?;
+    // Client-selected attachments live on the app-server host, even with a remote executor.
     let temp_dir = tempfile::tempdir()?;
     let audio_path = temp_dir.path().join("recording.wav");
     std::fs::write(&audio_path, b"audio")?;
 
-    codex
-        .start_or_steer_turn(TurnInputRequest::user_input(vec![UserInput::LocalAudio {
+    let unsupported = temp_dir.path().join("clip.flac");
+    std::fs::write(&unsupported, b"audio")?;
+    let missing = temp_dir.path().join("missing.wav");
+    let inline = "data:audio/wav;base64,YXVkaW8=";
+    let input = vec![
+        UserInput::Audio {
+            audio: AudioReference::Inline {
+                audio_url: inline.into(),
+            },
+        },
+        UserInput::LocalAudio {
+            path: unsupported.clone(),
+        },
+        UserInput::LocalAudio {
             path: audio_path.clone(),
-        }]))
+        },
+        UserInput::LocalAudio {
+            path: missing.clone(),
+        },
+    ];
+    test.codex
+        .start_or_steer_turn(TurnInputRequest::user_input(input.clone()))
         .await?;
-    wait_for_event(&codex, |event| matches!(event, EventMsg::TurnComplete(_))).await;
+    let displayed_input = wait_for_event_match(&test.codex, |event| match event {
+        EventMsg::ItemCompleted(ItemCompletedEvent {
+            item: TurnItem::UserMessage(message),
+            ..
+        }) => Some(message.content.clone()),
+        _ => None,
+    })
+    .await;
+    assert_eq!(displayed_input, input);
+    wait_for_event(&test.codex, |event| {
+        matches!(event, EventMsg::TurnComplete(_))
+    })
+    .await;
 
     let request = response_mock.single_request();
-    assert!(request.has_content_kinds(&["user.text", "user.audio", "user.text"]));
+    assert!(request.has_content_kinds(&[
+        "user.audio",
+        "user.text",
+        "user.text",
+        "user.audio",
+        "user.text",
+        "user.text"
+    ]));
     let user_message = request
         .input()
         .into_iter()
@@ -593,12 +725,20 @@ async fn sends_local_audio_to_responses() -> anyhow::Result<()> {
         .find(|item| item.get("role").and_then(serde_json::Value::as_str) == Some("user"))
         .expect("request should include a user message");
     let audio_path = audio_path.display();
+    let unsupported = unsupported.display();
+    let missing_error = std::fs::File::open(&missing).unwrap_err();
+    let missing = missing.display();
     assert_eq!(
         user_message["content"],
         json!([
+            {"type": "input_audio", "audio_url": inline},
             {
                 "type": "input_text",
-                "text": format!(r#"<audio name=[Audio #1] path="{audio_path}">"#),
+                "text": format!("Codex cannot attach audio at `{unsupported}`: unsupported audio format; use wav, mp3, m4a, webm, or ogg."),
+            },
+            {
+                "type": "input_text",
+                "text": format!(r#"<audio name=[Audio #3] path="{audio_path}">"#),
             },
             {
                 "type": "input_audio",
@@ -607,6 +747,10 @@ async fn sends_local_audio_to_responses() -> anyhow::Result<()> {
             {
                 "type": "input_text",
                 "text": "</audio>",
+            },
+            {
+                "type": "input_text",
+                "text": format!("Codex could not read the local audio at `{missing}`: {missing_error}"),
             },
         ])
     );

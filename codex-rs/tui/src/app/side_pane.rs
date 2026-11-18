@@ -137,10 +137,18 @@ pub(super) fn pair_layout(
         return None;
     }
     let active = app.current_displayed_thread_id()?;
-    let side = app.side_threads.get(&child)?;
+    let owner = app
+        .side_threads
+        .get(&child)
+        .map(|side| side.parent_thread_id)
+        .or_else(|| {
+            app.docked_agent()
+                .filter(|(_, agent)| *agent == child)
+                .map(|(parent, _)| parent)
+        })?;
     let [tab_strip, sidebar] = tab_and_body(sidebar);
     let (focused, passive, passive_thread) = if active == child {
-        (sidebar, parent, side.parent_thread_id)
+        (sidebar, parent, owner)
     } else {
         (parent, sidebar, child)
     };
@@ -167,7 +175,7 @@ pub(super) fn sidebar_areas(app: &App, tui: &Tui, area: Rect, fraction: f64) -> 
         .filter(|drag| {
             !drag.guide_only && drag.matches(area, app) && app.conversation_focus_available(tui)
         })
-        .and_then(|drag| drag.percent());
+        .map(|drag| drag.width);
     let saved = app.local_settings.tui.sidebar_width_percent;
     let keyboard_width = app
         .pane_resize
@@ -175,12 +183,13 @@ pub(super) fn sidebar_areas(app: &App, tui: &Tui, area: Rect, fraction: f64) -> 
         .and_then(|mode| mode.preview_width);
     let child_width = match (keyboard_width, preview, app.exact_sidebar_width) {
         (Some(width), _, _) => sidebar_width(i32::from(width), area.width),
-        (_, None, Some((total, width)))
+        (None, Some(width), _) => width,
+        (None, None, Some((total, width)))
             if total == area.width && saved == Some(width_percent(width, total)) =>
         {
             width
         }
-        _ => preferred_width(area.width, preview.or(saved)),
+        _ => preferred_width(area.width, saved),
     };
     // A newly focused composer needs a cell even on the first opening frame.
     let open = target.is_some();
@@ -410,15 +419,22 @@ impl App {
                 let Some(mut drag) = self.divider_drag.take() else {
                     return Ok(false);
                 };
-                let screen = tui.prepare_draw_size()?.into();
+                let screen = tui.terminal.last_known_screen_size.into();
                 if drag.matches(screen, self) && visible_split(self, tui, screen).is_some() {
                     let width = i32::from(drag.initial_width) + i32::from(drag.press)
                         - i32::from(mouse.column);
-                    drag.width = sidebar_width(width, screen.width);
+                    let width = sidebar_width(width, screen.width);
+                    let changed = drag.width != width;
+                    drag.width = width;
                     if mouse.kind == Drag(Left) {
                         self.divider_drag = Some(drag);
-                    } else if let Some(percent) = drag.percent() {
-                        self.save_sidebar_width(percent).await;
+                        if !changed {
+                            return Ok(true);
+                        }
+                    } else if let Some(percent) = drag.percent()
+                        && self.save_sidebar_width(percent).await
+                    {
+                        self.exact_sidebar_width = Some((screen.width, width));
                     }
                 }
             }
@@ -444,19 +460,28 @@ impl SidePaneLayout {
         frame: &mut Frame<'_>,
         collapse_turn_details: bool,
         frames: &FrameRequester,
+        watch_only: bool,
     ) {
         companion.flush_answer();
         let area = self.passive;
         // Keep the live composer's bottom hint row blank on the inactive side.
         let hint_rows = 1;
-        let composer_height = area.height.saturating_sub(hint_rows).min(3);
+        let composer_height = if watch_only {
+            0
+        } else {
+            area.height.saturating_sub(hint_rows).min(3)
+        };
         let available = area.height - composer_height;
         let footer = FooterLayout::new(
             Some(composer_height_limit(area.height)),
             hint_rows,
             /*priority_hint_rows*/ hint_rows,
         );
-        let status = companion.display.status_line.as_ref();
+        let status = companion
+            .display
+            .status_line
+            .as_ref()
+            .filter(|_| !watch_only);
         let wanted_status = status.map_or(0, |status| {
             status.height(footer.status_bounds(area.width, available))
         });
@@ -476,14 +501,16 @@ impl SidePaneLayout {
                 frames.schedule_frame_in(Duration::from_secs(1));
             }
         }
-        companion.view.render_parked(
-            transcript,
-            frame.buffer,
-            &companion.cells,
-            companion.display.active.as_deref(),
-            &companion.display.auxiliary,
-            collapse_turn_details,
-        );
+        crate::markdown_render::preferences::with_visible_local_paths(|| {
+            companion.view.render_parked(
+                transcript,
+                frame.buffer,
+                &companion.cells,
+                companion.display.active.as_deref(),
+                &companion.display.auxiliary,
+                collapse_turn_details,
+            );
+        });
         frame
             .image_placements
             .extend(companion.view.image_placements());
@@ -530,13 +557,9 @@ pub(super) fn paint_divider(
 ) {
     // Draw after both panes registered their images. Clearing a guide to the left
     // of retained pixels can erase the rest of that terminal row.
-    let guide = drag.filter(|drag| drag.guide_only).map_or(divider, |drag| {
-        drag.screen.right()
-            - drag.percent().map_or(drag.initial_width, |p| {
-                preferred_width(drag.screen.width, Some(p))
-            })
-            - GAP
-    });
+    let guide = drag
+        .filter(|drag| drag.guide_only)
+        .map_or(divider, |drag| drag.screen.right() - drag.width - GAP);
     let style = if highlight_divider || drag.is_some() {
         crate::style::accent_style()
     } else {

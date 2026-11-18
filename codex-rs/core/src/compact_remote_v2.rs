@@ -38,6 +38,7 @@ use crate::responses_retry::capacity_retry::retry_deadline;
 use crate::responses_retry::capacity_retry::wait_for_capacity;
 use crate::responses_retry::handle_response_stream_error;
 use crate::session::RequestEffortUsage;
+use crate::session::SamplingInterrupt;
 use crate::session::session::Session;
 use crate::session::step_context::StepContext;
 use crate::session::turn_context::TurnContext;
@@ -253,7 +254,10 @@ async fn run_remote_compact_task_inner(
         fallback,
     ))
     .await;
-    if matches!(result, Ok(false)) {
+    // Keep the registration through installation, not just through receiving the summary.
+    let interrupted = SamplingInterrupt::enabled(turn_context)
+        && SamplingInterrupt::unregister(sess, turn_context).await;
+    if matches!(result, Ok(false)) && !interrupted {
         if let Some(item) = started_item {
             sess.emit_turn_item_completed(turn_context, item).await;
         }
@@ -261,7 +265,7 @@ async fn run_remote_compact_task_inner(
     }
     let status = compaction_status_from_result(&result);
     let codex_error = result.as_ref().err();
-    if result.is_ok() {
+    if result.is_ok() && !interrupted {
         let post_compact_outcome = run_post_compact_hooks(sess, turn_context, trigger).await;
         if let PostCompactHookOutcome::Stopped = post_compact_outcome {
             attempt
@@ -273,6 +277,11 @@ async fn run_remote_compact_task_inner(
     attempt
         .track(sess.as_ref(), status, codex_error, analytics_details)
         .await;
+    let result = if interrupted {
+        Err(CodexErr::TurnAborted)
+    } else {
+        result
+    };
     let result = sess.finish_compaction(turn_context, phase, result);
     match result {
         Ok(installed) => Ok(installed),
@@ -428,27 +437,36 @@ async fn run_remote_compaction_request_v2(
     let mut retry_state = ResponsesStreamRetryState::default();
     let mut capacity_retries = 0;
     let cancellation = &step_context.turn_cancellation;
+    let interrupt_request = cancellation.child_token();
+    let interrupt_at_boundary = SamplingInterrupt::enabled(turn_context);
     loop {
+        let trace = InferenceTraceContext::disabled();
+        let send = client_session.open_model_response(
+            prompt,
+            &settings.model_info,
+            &turn_context.session_telemetry,
+            SamplingOptions {
+                reasoning_effort: sess
+                    .reasoning_effort_for_request(settings, RequestEffortUsage::Compaction)
+                    .await,
+                reasoning_summary: settings.reasoning_summary,
+                service_tier: step_context.settings.service_tier.clone(),
+            },
+            responses_metadata,
+            &trace,
+        );
         let result = match request
             .open(
                 sess,
                 step_context,
                 &settings.model_info.slug,
                 cancellation,
-                client_session.open_model_response(
-                    prompt,
-                    &settings.model_info,
-                    &turn_context.session_telemetry,
-                    SamplingOptions {
-                        reasoning_effort: sess
-                            .reasoning_effort_for_request(settings, RequestEffortUsage::Compaction)
-                            .await,
-                        reasoning_summary: settings.reasoning_summary,
-                        service_tier: step_context.settings.service_tier.clone(),
-                    },
-                    responses_metadata,
-                    &InferenceTraceContext::disabled(),
-                ),
+                async {
+                    if interrupt_at_boundary {
+                        SamplingInterrupt::register(sess, turn_context, &interrupt_request).await?;
+                    }
+                    send.await
+                },
             )
             .or_cancel(cancellation)
             .await?
@@ -464,6 +482,12 @@ async fn run_remote_compaction_request_v2(
             }
             Err(err) => Err(err),
         };
+        if result.is_err()
+            && interrupt_at_boundary
+            && SamplingInterrupt::unregister(sess, turn_context).await
+        {
+            return Err(CodexErr::TurnAborted);
+        }
         match result {
             Ok(compaction_output) => return Ok(compaction_output),
             Err(err)

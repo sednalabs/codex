@@ -105,6 +105,8 @@ pub(crate) struct Session {
     pub(crate) parent_observer_event_tx: OnceLock<Sender<Event>>,
     pub(super) agent_status: watch::Sender<AgentStatus>,
     pub(super) state: Mutex<SessionState>,
+    /// Serializes initial prefix publication until its reference context is installed.
+    pub(super) initial_context_publication: Semaphore,
     /// Orders accepted settings commits and their persisted events with compaction checkpoints.
     /// Keep this separate from `state` so storage I/O does not block runtime state access.
     pub(super) thread_settings_persistence: Semaphore,
@@ -651,10 +653,12 @@ async fn warm_plugins_and_skills_for_session_init(
 
 impl Session {
     pub(crate) fn turn_starts_closed(&self) -> bool {
-        self.services
-            .local_agent_runtime
-            .suspension_root()
-            .is_some()
+        self.conversation.history_recovery_required()
+            || self
+                .services
+                .local_agent_runtime
+                .suspension_root()
+                .is_some()
             || self
                 .outcome_reporting
                 .as_ref()
@@ -1312,11 +1316,18 @@ impl Session {
             })?;
         // Keep the large initialization future out of callers' stack frames.
         let session_result: anyhow::Result<Arc<Self>> = Box::pin(async {
-            if let InitialHistory::Resumed(resumed) = &mut initial_history
-                && let Some(history) = resume_context
-            {
-                resumed.history = history;
-                resumed.history_revision = None;
+            if let InitialHistory::Resumed(resumed) = &mut initial_history {
+                if let Some(history) = resume_context {
+                    resumed.history = history;
+                    resumed.history_revision = None;
+                }
+                let version = initial_multi_agent_version
+                    .unwrap_or_else(|| config.multi_agent_version_from_features());
+                crate::agent::sanitize_referenced_agent_fork(
+                    resumed.conversation_id,
+                    &mut resumed.history,
+                    version,
+                )?;
             }
             let super::model_ids::InitialModelIds {
                 item_id_generator,
@@ -1713,13 +1724,15 @@ impl Session {
                 &session_configuration.disabled_plugin_ids,
             )
             .await;
+            let hook_mcp_executor = Arc::new(CoreHookMcpExecutor {
+                runtime: Arc::clone(&mcp_runtime),
+                thread_id,
+                session: OnceLock::new(),
+            });
             let (hooks, async_hook_results) = Hooks::new(
                 hooks_config,
                 thread_id,
-                Arc::new(CoreHookMcpExecutor {
-                    runtime: Arc::clone(&mcp_runtime),
-                    thread_id,
-                }),
+                hook_mcp_executor.clone(),
             )?;
             for warning in hooks.startup_warnings() {
                 post_session_configured_events.push(Event {
@@ -1993,7 +2006,7 @@ impl Session {
                     parent_rollout_thread_trace.start_child_thread_trace(trace_metadata)
                 }
             } else {
-                ThreadTraceContext::start_root(trace_metadata)
+                ThreadTraceContext::start_root(trace_metadata, config.rollout_trace_limits)
             };
             let rollout_thread_trace = rollout_thread_trace.unwrap_or_else(|err| {
                 startup_error.get_or_insert_with(|| {
@@ -2109,6 +2122,7 @@ impl Session {
                 parent_observer_event_tx: OnceLock::new(),
                 agent_status,
                 state: Mutex::new(state),
+                initial_context_publication: Semaphore::new(/*permits*/ 1),
                 thread_settings_persistence: Semaphore::new(/*permits*/ 1),
                 code_mode_message_tasks: CodeModeMessageTasks::default(),
                 managed_network_proxy_refresh_lock: Semaphore::new(/*permits*/ 1),
@@ -2143,6 +2157,7 @@ impl Session {
                 forked_from_ordinal_exclusive,
                 next_internal_sub_id: AtomicU64::new(0),
             });
+            let _ = hook_mcp_executor.session.set(Arc::downgrade(&sess));
             if let Some(startup) = &startup {
                 startup.set_session(Arc::clone(&sess));
             }
@@ -2244,8 +2259,15 @@ impl Session {
                 &inherited_environments,
                 &session_configuration.environments,
             );
-            sess.schedule_startup_prewarm(super::startup_prewarm::PrewarmInput::Base)
-                .await;
+            let (input, history_ready) = if sess.features().enabled(Feature::RestoredHistoryPrewarm)
+                && matches!(&initial_history, InitialHistory::Resumed(saved) if !saved.history.is_empty())
+            {
+                let (sender, receiver) = tokio::sync::oneshot::channel();
+                (super::startup_prewarm::PrewarmInput::Restoring(receiver), Some(sender))
+            } else {
+                (super::startup_prewarm::PrewarmInput::Base, None)
+            };
+            sess.schedule_startup_prewarm(input).await;
             let session_start_source = match &initial_history {
                 InitialHistory::Forked(_) if forked_from_id.is_some() => {
                     codex_hooks::SessionStartSource::Fork
@@ -2276,6 +2298,9 @@ impl Session {
             {
                 let mut state = sess.state.lock().await;
                 state.queue_pending_session_start_source(session_start_source);
+            }
+            if let Some(sender) = history_ready {
+                let _ = sender.send(sess.clone_history().await);
             }
             Ok(sess)
         })

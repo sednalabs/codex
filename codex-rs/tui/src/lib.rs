@@ -219,6 +219,7 @@ mod session_start;
 mod session_state;
 mod shortcut_help;
 mod sidebar_chooser;
+mod sidebar_image;
 mod sidebar_tab_strip;
 mod skills_helpers;
 mod slash_command;
@@ -231,6 +232,7 @@ mod startup_presentation;
 mod startup_recovery;
 mod status;
 mod status_indicator_widget;
+mod statusline_metrics;
 mod statusline_provider;
 mod streaming;
 mod style;
@@ -1160,6 +1162,7 @@ async fn run_ratatui_app(
     mut app_server_target: AppServerTarget,
     remote_cwd_override: Option<PathBuf>,
     initial_config: Config,
+    statusline_metrics: statusline_metrics::StatuslineMetrics,
     manually_selected_oss_provider: Option<String>,
     overrides: ConfigOverrides,
     cli_kv_overrides: Vec<(String, toml::Value)>,
@@ -2105,6 +2108,10 @@ async fn run_ratatui_app(
 
     let local_settings = crate::local_settings::LocalSettings::for_tui(&config, &tui);
     crate::markdown_render::preferences::init(local_settings.tui.rendering);
+    crate::markdown_render::preferences::set_document_links(
+        local_settings.workspace_enabled(&config)
+            && app_server_target.thread_params_mode() != ThreadParamsMode::Cloud,
+    );
     // Configure syntax highlighting theme from the final config — onboarding
     // and resume/fork can both reload config with a different tui_theme, so
     // this must happen after the last possible reload.
@@ -2290,6 +2297,7 @@ async fn run_ratatui_app(
         &mut tui,
         initial_backends,
         config,
+        statusline_metrics,
         current_cwd.to_path_buf(),
         backend_preference_context,
         cli_kv_overrides.clone(),

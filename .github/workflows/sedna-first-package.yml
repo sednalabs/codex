@@ -130,17 +130,30 @@ jobs:
 
           source_short="$(git rev-parse --short=8 "${SOURCE_SHA}")"
           latest_tag="$(git tag --merged "${SOURCE_SHA}" --list 'v*-sedna.*' --sort=-version:refname | head -n 1)"
+          tag_is_above_model_floor=false
           if [[ -n "${latest_tag}" ]]; then
-            base_version="${latest_tag#v}"
-          else
-            base_version="0.0.0-sedna.0"
+            tag_core="${latest_tag#v}"
+            tag_core="${tag_core%%[-+]*}"
+            IFS=. read -r tag_major tag_minor tag_patch _ <<< "${tag_core}"
+            if (( tag_major > 0 || tag_minor > 166 || (tag_minor == 166 && tag_patch > 0) )); then
+              tag_is_above_model_floor=true
+            fi
           fi
-          if [[ "${base_version}" == *+* ]]; then
-            base_build_metadata="${base_version#*+}"
-            base_version="${base_version%%+*}"
-            package_version="${base_version}-ci.${GITHUB_RUN_NUMBER}+${base_build_metadata}.g${source_short}"
+
+          if [[ "${tag_is_above_model_floor}" == "true" ]]; then
+            base_version="${latest_tag#v}"
+            if [[ "${base_version}" == *+* ]]; then
+              base_build_metadata="${base_version#*+}"
+              base_version="${base_version%%+*}"
+              package_version="${base_version}-ci.${GITHUB_RUN_NUMBER}+${base_build_metadata}.g${source_short}"
+            else
+              package_version="${base_version}-ci.${GITHUB_RUN_NUMBER}+g${source_short}"
+            fi
           else
-            package_version="${base_version}-ci.${GITHUB_RUN_NUMBER}+g${source_short}"
+            # The current upstream model catalog requires Codex 0.166.0 for
+            # GPT-6.2. Keep that compatibility version while marking this as
+            # an internal source build; do not claim a public release.
+            package_version="0.166.0+sedna.${GITHUB_RUN_NUMBER}.g${source_short}"
           fi
 
           required_package_paths=(

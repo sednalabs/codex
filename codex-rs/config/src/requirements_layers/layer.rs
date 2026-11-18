@@ -67,7 +67,7 @@ impl RequirementsLayerEntry {
             base_dir,
             path_context: _,
         } = self;
-        let toml = parse_layer_toml(&toml, &source)?;
+        let toml = parse_layer_toml(toml, &source)?;
         Ok((source, toml, base_dir))
     }
 }
@@ -100,7 +100,7 @@ impl ComposableRequirementsLayer {
             let _guard = base_dir
                 .as_ref()
                 .map(|base_dir| AbsolutePathBufGuard::new(base_dir.as_path()));
-            let mut regular_toml = parse_layer_toml(&toml, &source)?;
+            let mut regular_toml = parse_layer_toml(toml, &source)?;
 
             if matches!(source, RequirementSource::EnterpriseManaged { .. })
                 && regular_toml.get("config_server").is_some()
@@ -110,6 +110,44 @@ impl ComposableRequirementsLayer {
                     message: "config_server may only be configured in local managed requirements"
                         .into(),
                 });
+            }
+
+            if let Some(otel) = regular_toml.get("otel")
+                && (otel.get("headers_helper").is_some()
+                    || otel.get("headers_helper_refresh_interval_ms").is_some())
+                && !matches!(
+                    source,
+                    RequirementSource::SystemRequirementsToml { .. }
+                        | RequirementSource::MdmManagedPreferences { .. }
+                )
+            {
+                return Err(RequirementsCompositionError::Parse {
+                    layer_source: source,
+                    message:
+                        "OTel headers helpers may only be configured in local managed requirements"
+                            .into(),
+                });
+            }
+
+            if let Some(command) = regular_toml
+                .get("otel")
+                .and_then(|otel| otel.get("headers_helper"))
+                .and_then(TomlValue::as_str)
+            {
+                let convention = path_context.as_ref().map_or_else(
+                    crate::path_context::convention,
+                    ConfigPathContext::convention,
+                );
+                if codex_utils_path_uri::PathUri::resolve_config_path_uri(
+                    command, convention, /*base*/ None, /*user_home_dir*/ None,
+                )
+                .is_err()
+                {
+                    return Err(RequirementsCompositionError::Parse {
+                        layer_source: source,
+                        message: "otel.headers_helper must be an absolute executable path in managed requirements".into(),
+                    });
+                }
             }
 
             // These fields can only be set locally; ignore them before validating cloud policy.
@@ -202,19 +240,19 @@ pub(super) struct DomainMergedRequirementsFields {
 }
 
 fn parse_layer_toml(
-    toml: &RequirementsLayerToml,
+    toml: RequirementsLayerToml,
     source: &RequirementSource,
 ) -> Result<TomlValue, RequirementsCompositionError> {
     match toml {
         RequirementsLayerToml::String(contents) => {
-            toml::from_str(contents).map_err(|err: toml::de::Error| {
+            toml::from_str(&contents).map_err(|err: toml::de::Error| {
                 RequirementsCompositionError::Parse {
                     layer_source: source.clone(),
                     message: err.to_string(),
                 }
             })
         }
-        RequirementsLayerToml::Value(value) => Ok(value.clone()),
+        RequirementsLayerToml::Value(value) => Ok(value),
     }
 }
 

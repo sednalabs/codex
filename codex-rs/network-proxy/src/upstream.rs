@@ -9,13 +9,18 @@ use rama_core::error::ErrorExt as _;
 use rama_core::error::extra::OpaqueError;
 use rama_core::extensions::ExtensionsRef;
 use rama_core::service::BoxService;
+use rama_core::service::service_fn;
 use rama_http::Body;
+use rama_http::HeaderName;
+use rama_http::HeaderValue;
 use rama_http::Request;
 use rama_http::Response;
+use rama_http::Uri;
 use rama_http::Version;
 use rama_http::layer::version_adapter::RequestVersionAdapter;
 use rama_http_backend::client::HttpClientService;
 use rama_http_backend::client::HttpConnectorLayer;
+use rama_http_backend::client::proxy::layer::HttpProxyConnector;
 use rama_http_backend::client::proxy::layer::HttpProxyConnectorLayer;
 use rama_net::AuthorityInputExt;
 use rama_net::ProtocolInputExt;
@@ -36,16 +41,40 @@ use tracing::warn;
 #[cfg(target_os = "macos")]
 use rama_unix::client::UnixConnector;
 
+const TOOL_CALL_HEADER: HeaderName = HeaderName::from_static("x-openai-internal-tool-call-id");
+
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct OptionsAsterisk;
+
+impl rama_core::extensions::Extension for OptionsAsterisk {}
+
+#[derive(Clone)]
+struct ToolCallAttribution {
+    endpoint: ProxyAddress,
+    call_id: HeaderValue,
+}
+
+impl ToolCallAttribution {
+    fn call_id_for(&self, proxy: &ProxyAddress) -> Option<HeaderValue> {
+        let http = &rama_net::Protocol::HTTP;
+        (self.endpoint.address == proxy.address
+            && self.endpoint.protocol.as_ref().unwrap_or(http)
+                == proxy.protocol.as_ref().unwrap_or(http))
+        .then(|| self.call_id.clone())
+    }
+}
+
 #[derive(Clone, Default)]
 struct ProxyConfig {
     http: Option<ProxyAddress>,
     https: Option<ProxyAddress>,
     all: Option<ProxyAddress>,
     proxy_private_ips_via_upstream: bool,
+    attribution: Option<ToolCallAttribution>,
 }
 
 impl ProxyConfig {
-    fn from_env(proxy_private_ips_via_upstream: bool) -> Self {
+    fn from_env(state: &NetworkProxyState) -> Self {
         let http = read_proxy_env(&["HTTP_PROXY", "http_proxy"]);
         let https = read_proxy_env(&["HTTPS_PROXY", "https_proxy"]);
         let all = read_proxy_env(&["ALL_PROXY", "all_proxy"]);
@@ -53,7 +82,18 @@ impl ProxyConfig {
             http,
             https,
             all,
-            proxy_private_ips_via_upstream,
+            proxy_private_ips_via_upstream: state.proxy_private_ips_via_upstream,
+            attribution: state
+                .process_log_metadata
+                .tool_call_id
+                .as_deref()
+                .and_then(|id| {
+                    let endpoint = read_proxy_env(&["CODEX_TOOL_CALL_ATTRIBUTION_PROXY"])?;
+                    Some(ToolCallAttribution {
+                        endpoint,
+                        call_id: HeaderValue::from_str(id).ok()?,
+                    })
+                }),
         }
     }
 
@@ -77,6 +117,7 @@ impl ProxyConfig {
         self.proxy_for_protocol(is_secure)
     }
 }
+
 
 fn read_proxy_env(keys: &[&str]) -> Option<ProxyAddress> {
     for key in keys {
@@ -110,9 +151,27 @@ fn read_proxy_env(keys: &[&str]) -> Option<ProxyAddress> {
 pub(crate) fn proxy_for_connect(
     target: &HostWithPort,
     state: &NetworkProxyState,
-) -> Option<ProxyAddress> {
-    ProxyConfig::from_env(state.proxy_private_ips_via_upstream)
-        .proxy_for_target(target, /*is_secure*/ true)
+) -> (Option<ProxyAddress>, Option<HeaderValue>) {
+    let config = ProxyConfig::from_env(state);
+    let proxy = config.proxy_for_target(target, /*is_secure*/ true);
+    let call_id = config
+        .attribution
+        .as_ref()
+        .zip(proxy.as_ref())
+        .and_then(|(attribution, proxy)| attribution.call_id_for(proxy));
+    (proxy, call_id)
+}
+
+
+pub(crate) fn upstream_proxy_connector(
+    transport: TargetCheckedTcpConnector,
+    connect_call_id: Option<HeaderValue>,
+) -> HttpProxyConnector<TargetCheckedTcpConnector> {
+    let layer = match connect_call_id {
+        Some(id) => HttpProxyConnectorLayer::optional().custom_header(TOOL_CALL_HEADER, id),
+        None => HttpProxyConnectorLayer::optional(),
+    };
+    layer.into_layer(transport)
 }
 
 #[derive(Clone)]
@@ -136,7 +195,7 @@ impl UpstreamClient {
 
     pub(crate) fn from_env_proxy(state: Arc<NetworkProxyState>) -> Self {
         Self::new(
-            ProxyConfig::from_env(state.proxy_private_ips_via_upstream),
+            ProxyConfig::from_env(&state),
             TargetCheckedTcpConnector::new(state),
             client_root_certs(),
         )
@@ -158,7 +217,7 @@ impl UpstreamClient {
         tls_root_store: Arc<rustls::RootCertStore>,
     ) -> Self {
         Self::new(
-            ProxyConfig::from_env(state.proxy_private_ips_via_upstream),
+            ProxyConfig::from_env(&state),
             TargetCheckedTcpConnector::new(state),
             tls_root_store,
         )
@@ -178,7 +237,7 @@ impl UpstreamClient {
         transport: TargetCheckedTcpConnector,
         tls_root_store: Arc<rustls::RootCertStore>,
     ) -> Self {
-        let connector = build_http_connector(transport, tls_root_store);
+        let connector = build_http_connector(transport, tls_root_store, proxy_config.attribution.clone());
         Self {
             connector,
             proxy_config,
@@ -190,7 +249,28 @@ impl Service<Request<Body>> for UpstreamClient {
     type Output = Response;
     type Error = OpaqueError;
 
-    async fn serve(&self, req: Request<Body>) -> Result<Self::Output, Self::Error> {
+    async fn serve(&self, mut req: Request<Body>) -> Result<Self::Output, Self::Error> {
+        let options_asterisk = req
+            .extensions()
+            .get_ref::<OptionsAsterisk>()
+            .is_some();
+        if options_asterisk && req.method().as_str() != "OPTIONS" {
+            return Err(OpaqueError::from_display(
+                "asterisk request-target is only supported for OPTIONS",
+            ));
+        }
+        if req.uri().as_str() == "*" && !options_asterisk {
+            return Err(OpaqueError::from_display(
+                "asterisk request-target requires an authorized route",
+            ));
+        }
+        if options_asterisk {
+            // Establish the authorized route using the original absolute
+            // authority, then restore the asterisk form for HTTP/1.1. Rama 0.3's
+            // HTTP/2 adapter cannot preserve trusted authority and the asterisk path.
+            *req.version_mut() = Version::HTTP_11;
+        }
+
         let protocol = req.protocol();
         let secure = protocol.is_some_and(rama_net::Protocol::is_secure);
         let default_port = protocol
@@ -219,6 +299,7 @@ impl Service<Request<Body>> for UpstreamClient {
             || self.proxy_config.proxy_for_protocol(/*is_secure*/ false),
             |target| self.proxy_config.proxy_for_target(target, secure),
         );
+        req.headers_mut().remove(TOOL_CALL_HEADER);
         match proxy.as_ref() {
             Some(proxy) => info!(
                 "HTTP upstream route selected (target={authority}, route=upstream_proxy, proxy={})",
@@ -227,12 +308,18 @@ impl Service<Request<Body>> for UpstreamClient {
             None => info!("HTTP upstream route selected (target={authority}, route=direct)"),
         }
         if let Some(proxy) = proxy {
+            if protocol.is_some_and(|protocol| *protocol == rama_net::Protocol::HTTP)
+                && let Some(attribution) = &self.proxy_config.attribution
+                && let Some(id) = attribution.call_id_for(&proxy)
+            {
+                req.headers_mut().insert(TOOL_CALL_HEADER, id);
+            }
             req.extensions().insert(proxy);
         }
 
         let connect_started_at = Instant::now();
         let EstablishedClientConnection {
-            input: req,
+            input: mut req,
             conn: http_connection,
         } = match self.connector.serve(req).await {
             Ok(connection) => {
@@ -252,6 +339,12 @@ impl Service<Request<Body>> for UpstreamClient {
         };
 
         req.extensions().extend(http_connection.extensions());
+
+        if options_asterisk {
+            *req.uri_mut() = Uri::parse("*".to_string())
+                .map_err(|err| OpaqueError::from_display(err))?;
+            *req.version_mut() = Version::HTTP_11;
+        }
 
         let request_started_at = Instant::now();
         match http_connection.serve(req).await {
@@ -275,28 +368,51 @@ impl Service<Request<Body>> for UpstreamClient {
     }
 }
 
+fn is_options_asterisk_request(req: &Request<Body>) -> bool {
+    req.method().as_str() == "OPTIONS"
+        && req.extensions().get_ref::<OptionsAsterisk>().is_some()
+}
+
 fn build_http_connector(
     transport: TargetCheckedTcpConnector,
     tls_root_store: Arc<rustls::RootCertStore>,
+    attribution: Option<ToolCallAttribution>,
 ) -> BoxService<
     Request<Body>,
     EstablishedClientConnection<HttpClientService<Body>, Request<Body>>,
     OpaqueError,
 > {
     ensure_rustls_crypto_provider();
-    let proxy = HttpProxyConnectorLayer::optional().into_layer(transport);
-    let mut client_config =
-        rustls::ClientConfig::builder_with_protocol_versions(rustls::ALL_VERSIONS)
-            .with_root_certificates(tls_root_store)
-            .with_no_client_auth();
-    client_config.alpn_protocols = vec![b"h2".to_vec(), b"http/1.1".to_vec()];
-    let tls_config =
-        TlsClientConfig::new().with_modify_rustls_config(move |_| Ok(client_config.clone()));
-    let tls = TlsConnectorLayer::auto()
-        .with_base_config(tls_config)
-        .into_layer(proxy);
-    let tls = RequestVersionAdapter::new(tls).with_default_version(Version::HTTP_11);
-    let connector = HttpConnectorLayer::<Body>::default().into_layer(tls);
+    let connector = service_fn(move |req: Request<Body>| {
+        let transport = transport.clone();
+        let tls_root_store = tls_root_store.clone();
+        let attribution = attribution.clone();
+        let options_asterisk = is_options_asterisk_request(&req);
+        async move {
+            let connect_call_id = attribution
+                .as_ref()
+                .zip(req.extensions().get_ref::<ProxyAddress>())
+                .and_then(|(attribution, proxy)| attribution.call_id_for(proxy));
+            let proxy = upstream_proxy_connector(transport, connect_call_id);
+            let mut client_config =
+                rustls::ClientConfig::builder_with_protocol_versions(rustls::ALL_VERSIONS)
+                    .with_root_certificates(tls_root_store)
+                    .with_no_client_auth();
+            client_config.alpn_protocols = if options_asterisk {
+                vec![b"http/1.1".to_vec()]
+            } else {
+                vec![b"h2".to_vec(), b"http/1.1".to_vec()]
+            };
+            let tls_config =
+                TlsClientConfig::new().with_modify_rustls_config(move |_| Ok(client_config.clone()));
+            let tls = TlsConnectorLayer::auto()
+                .with_base_config(tls_config)
+                .into_layer(proxy);
+            let tls = RequestVersionAdapter::new(tls).with_default_version(Version::HTTP_11);
+            let connector = HttpConnectorLayer::<Body>::default().into_layer(tls);
+            connector.serve(req).await
+        }
+    });
     connector.boxed()
 }
 

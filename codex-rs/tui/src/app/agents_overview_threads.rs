@@ -112,6 +112,9 @@ impl App {
                 | ServerNotification::ThreadDeleted(_)
         ) {
             self.agents_overview.blank_sessions.remove(&thread_id);
+            self.agents_overview
+                .draft_cloud_environments
+                .remove(&thread_id);
         }
         self.track_agents_overview_activity(thread_id, notification);
         let thread = self
@@ -590,6 +593,6 @@ impl App {
             .await;
             app_event_tx.send(AppEvent::AgentsOverviewThreadsLoaded { request_id, result });
         });
-        self.agents_overview.refresh_task = Some(refresh_task.abort_handle());
+        self.agents_overview.refresh_task = Some(refresh_task);
     }
 }

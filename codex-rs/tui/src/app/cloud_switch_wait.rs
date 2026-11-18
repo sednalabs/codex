@@ -14,7 +14,6 @@ use crossterm::event::KeyCode;
 use crossterm::event::KeyEvent;
 use crossterm::event::KeyEventKind;
 use crossterm::event::KeyModifiers;
-use ratatui::layout::Size;
 use std::future::Future;
 use std::ops::ControlFlow;
 use tokio_stream::Stream;
@@ -48,12 +47,18 @@ fn handle_cloud_switch_event(
     };
     // Clipboard text is delivered on Draw after ordinary input invalidation and target checks.
     app.invalidate_right_click_paste(&event);
+    if matches!(event, tui::TuiEvent::FocusLost | tui::TuiEvent::Resume) {
+        for pane in app.sidebars.values_mut() {
+            pane.cancel_hidden_document_primary(/*visible*/ false);
+        }
+    }
     // Polling retains copy feedback for the ordinary event loop.
     tui.clipboard.poll();
     let event = app.finish_right_click_paste(tui, event);
     if app.pending_right_click_paste.is_some() {
         if matches!(event, tui::TuiEvent::Draw) {
             // A PRIMARY read may be waiting for an earlier copy or publication.
+            app.cancel_hidden_sidebar_primary(tui);
             tui.clipboard.advance(tui.frame_requester());
         } else if matches!(event, tui::TuiEvent::Resize(_)) {
             // A size change can consume the worker's completion frame.
@@ -114,7 +119,7 @@ fn handle_cloud_switch_event(
                 return ControlFlow::Continue(());
             }
             app.chat_widget.pre_draw_tick();
-            draw_cloud_switch(app, tui, screen_size);
+            draw_cloud_switch(app, tui);
         }
         tui::TuiEvent::FocusLost => {
             app.cancel_pending_key_chord();
@@ -141,8 +146,13 @@ fn clear_cloud_switch_hint(app: &mut App) {
     app.chat_widget.set_footer_hint_override(/*items*/ None);
 }
 
-fn draw_cloud_switch(app: &mut App, tui: &mut tui::Tui, screen_size: Size) {
-    if let Err(error) = app.render_chat_widget_frame(tui, screen_size) {
+fn draw_cloud_switch(app: &mut App, tui: &mut tui::Tui) {
+    let result = (|| {
+        let screen_size = tui.prepare_draw_size()?;
+        app.handle_draw_pre_render(tui, screen_size)?;
+        app.render_chat_widget_frame(tui, screen_size)
+    })();
+    if let Err(error) = result {
         tracing::warn!(%error, "failed to render during cloud switch");
     }
 }
@@ -155,7 +165,7 @@ pub(super) async fn finish_failed_cloud_switch(
 ) -> ControlFlow<()> {
     let progress = CloudSwitchProgress::Failed;
     show_cloud_switch_hint(app, progress);
-    draw_cloud_switch(app, tui, tui.terminal.last_known_screen_size);
+    draw_cloud_switch(app, tui);
     drain_cloud_switch_events(app, tui, &mut events, progress).await
 }
 
@@ -214,7 +224,7 @@ pub(crate) async fn wait_for_cloud_switch<T, E>(
     let progress = CloudSwitchProgress::Connecting(clipboard_handoff);
     app.cancel_pending_key_chord();
     show_cloud_switch_hint(app, progress);
-    draw_cloud_switch(app, tui, tui.terminal.last_known_screen_size);
+    draw_cloud_switch(app, tui);
     if app.pending_right_click_paste.is_some() {
         // A completion frame can arrive between Cloud preparation phases.
         tui.frame_requester().schedule_frame();
