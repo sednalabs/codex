@@ -272,6 +272,7 @@ impl Service<Request<Body>> for UpstreamClient {
             .as_ref()
             .is_some_and(rama_net::Protocol::is_secure);
         let default_port = protocol
+            .as_ref()
             .and_then(|protocol| protocol.default_port())
             .unwrap_or(80);
         // The alpha request context preferred a domain ProxyTarget after the
