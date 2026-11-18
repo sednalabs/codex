@@ -15,7 +15,7 @@ use rama_http::HeaderName;
 use rama_http::HeaderValue;
 use rama_http::Request;
 use rama_http::Response;
-use rama_http::Uri;
+use rama_net::uri::Uri;
 use rama_http::Version;
 use rama_http::layer::version_adapter::RequestVersionAdapter;
 use rama_http_backend::client::HttpClientService;
@@ -118,7 +118,6 @@ impl ProxyConfig {
     }
 }
 
-
 fn read_proxy_env(keys: &[&str]) -> Option<ProxyAddress> {
     for key in keys {
         let Ok(value) = std::env::var(key) else {
@@ -162,13 +161,12 @@ pub(crate) fn proxy_for_connect(
     (proxy, call_id)
 }
 
-
 pub(crate) fn upstream_proxy_connector(
     transport: TargetCheckedTcpConnector,
     connect_call_id: Option<HeaderValue>,
 ) -> HttpProxyConnector<TargetCheckedTcpConnector> {
     let layer = match connect_call_id {
-        Some(id) => HttpProxyConnectorLayer::optional().custom_header(TOOL_CALL_HEADER, id),
+        Some(id) => HttpProxyConnectorLayer::optional().set_custom_header(TOOL_CALL_HEADER, id),
         None => HttpProxyConnectorLayer::optional(),
     };
     layer.into_layer(transport)
@@ -237,7 +235,8 @@ impl UpstreamClient {
         transport: TargetCheckedTcpConnector,
         tls_root_store: Arc<rustls::RootCertStore>,
     ) -> Self {
-        let connector = build_http_connector(transport, tls_root_store, proxy_config.attribution.clone());
+        let connector =
+            build_http_connector(transport, tls_root_store, proxy_config.attribution.clone());
         Self {
             connector,
             proxy_config,
@@ -250,17 +249,14 @@ impl Service<Request<Body>> for UpstreamClient {
     type Error = OpaqueError;
 
     async fn serve(&self, mut req: Request<Body>) -> Result<Self::Output, Self::Error> {
-        let options_asterisk = req
-            .extensions()
-            .get_ref::<OptionsAsterisk>()
-            .is_some();
+        let options_asterisk = req.extensions().get_ref::<OptionsAsterisk>().is_some();
         if options_asterisk && req.method().as_str() != "OPTIONS" {
-            return Err(OpaqueError::from_display(
+            return Err(OpaqueError::from_static_str(
                 "asterisk request-target is only supported for OPTIONS",
             ));
         }
         if req.uri().as_str() == "*" && !options_asterisk {
-            return Err(OpaqueError::from_display(
+            return Err(OpaqueError::from_static_str(
                 "asterisk request-target requires an authorized route",
             ));
         }
@@ -341,8 +337,8 @@ impl Service<Request<Body>> for UpstreamClient {
         req.extensions().extend(http_connection.extensions());
 
         if options_asterisk {
-            *req.uri_mut() = Uri::parse("*".to_string())
-                .map_err(|err| OpaqueError::from_display(err))?;
+            *req.uri_mut() =
+                Uri::parse("*".to_string()).map_err(|err| err.into_opaque_error())?;
             *req.version_mut() = Version::HTTP_11;
         }
 
@@ -369,8 +365,7 @@ impl Service<Request<Body>> for UpstreamClient {
 }
 
 fn is_options_asterisk_request(req: &Request<Body>) -> bool {
-    req.method().as_str() == "OPTIONS"
-        && req.extensions().get_ref::<OptionsAsterisk>().is_some()
+    req.method().as_str() == "OPTIONS" && req.extensions().get_ref::<OptionsAsterisk>().is_some()
 }
 
 fn build_http_connector(
@@ -403,8 +398,8 @@ fn build_http_connector(
             } else {
                 vec![b"h2".to_vec(), b"http/1.1".to_vec()]
             };
-            let tls_config =
-                TlsClientConfig::new().with_modify_rustls_config(move |_| Ok(client_config.clone()));
+            let tls_config = TlsClientConfig::new()
+                .with_modify_rustls_config(move |_| Ok(client_config.clone()));
             let tls = TlsConnectorLayer::auto()
                 .with_base_config(tls_config)
                 .into_layer(proxy);

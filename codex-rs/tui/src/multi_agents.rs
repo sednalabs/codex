@@ -688,7 +688,9 @@ fn wait_complete_lines(
             .map(|(thread_id, metadata, status)| {
                 let mut line = agent_label_line(agent_label(thread_id, &metadata));
                 line.line.push_span(": ".dim());
-                line.line.spans.extend(status_summary_spans(status, /*include_details*/ false));
+                line.line
+                    .spans
+                    .extend(status_summary_spans(status, /*include_details*/ false));
                 line
             })
             .collect()

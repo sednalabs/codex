@@ -340,7 +340,9 @@ async fn forward_request(req: Request, request_ctx: &MitmRequestContext) -> Resu
 
     let options_asterisk = method == "OPTIONS" && path == "*";
     if path == "*" && !options_asterisk {
-        return Err(anyhow!("asterisk request-target is only supported for OPTIONS"));
+        return Err(anyhow!(
+            "asterisk request-target is only supported for OPTIONS"
+        ));
     }
 
     let (mut parts, body) = req.into_parts();
