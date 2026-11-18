@@ -1164,6 +1164,8 @@ impl CodexThread {
                         other_recipients: Vec::new(),
                         content: text.clone(),
                         encrypted_content: None,
+                        intent: None,
+                        origin: None,
                         internal_chat_message_metadata_passthrough:
                             internal_chat_message_metadata_passthrough.clone(),
                         trigger_turn: false,
