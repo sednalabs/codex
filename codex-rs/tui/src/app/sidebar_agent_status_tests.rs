@@ -64,6 +64,9 @@ fn idle_preserves_explicit_outcome_until_new_work() {
             prompt: None,
             model: None,
             reasoning_effort: None,
+            completion_reason: None,
+            return_when: None,
+            completed_target_thread_ids: Vec::new(),
             agents_states: HashMap::from([(
                 id.to_string(),
                 codex_app_server_protocol::CollabAgentState {

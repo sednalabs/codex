@@ -462,13 +462,13 @@ fn waiting_end(
     )
 }
 
-fn terminal_condition_line(return_when: Option<&CollabAgentWaitReturnWhen>) -> Line<'static> {
+fn terminal_condition_line(return_when: Option<&CollabAgentWaitReturnWhen>) -> HyperlinkLine {
     let condition = match return_when {
         Some(CollabAgentWaitReturnWhen::Any) => "Terminal condition: any selected target completes",
         Some(CollabAgentWaitReturnWhen::All) => "Terminal condition: all selected targets complete",
         None => "Terminal condition unavailable",
     };
-    Line::from(Span::from(condition).dim())
+    Line::from(Span::from(condition).dim()).into()
 }
 
 fn wait_completion_title(reason: Option<&CollabAgentWaitCompletionReason>) -> &'static str {
@@ -491,7 +491,7 @@ fn wait_completion_title(reason: Option<&CollabAgentWaitCompletionReason>) -> &'
 fn completed_target_line(
     completed_target_thread_ids: &[String],
     agent_metadata: &mut impl FnMut(ThreadId) -> AgentMetadata,
-) -> Option<Line<'static>> {
+) -> Option<HyperlinkLine> {
     if completed_target_thread_ids.is_empty() {
         return None;
     }
@@ -510,15 +510,18 @@ fn completed_target_line(
     Some(Line::from(format!(
         "Completed targets: {}",
         targets.join(", ")
-    )))
+    )).into())
 }
 
 fn agent_label_text(agent: AgentLabel<'_>) -> String {
-    let mut label = String::new();
-    for span in agent_label_spans(agent) {
-        label.push_str(span.content.as_ref());
-    }
-    label
+    agent_label_line(agent)
+        .line
+        .spans
+        .iter()
+        .fold(String::new(), |mut label, span| {
+            label.push_str(span.content.as_ref());
+            label
+        })
 }
 
 fn close_end(
