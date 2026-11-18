@@ -165,10 +165,10 @@ pub(crate) fn upstream_proxy_connector(
     transport: TargetCheckedTcpConnector,
     connect_call_id: Option<HeaderValue>,
 ) -> HttpProxyConnector<TargetCheckedTcpConnector> {
-    let layer = match connect_call_id {
-        Some(id) => HttpProxyConnectorLayer::optional().set_custom_header(TOOL_CALL_HEADER, id),
-        None => HttpProxyConnectorLayer::optional(),
-    };
+    let mut layer = HttpProxyConnectorLayer::optional();
+    if let Some(id) = connect_call_id {
+        layer.set_custom_header(TOOL_CALL_HEADER, id);
+    }
     layer.into_layer(transport)
 }
 
@@ -267,8 +267,10 @@ impl Service<Request<Body>> for UpstreamClient {
             *req.version_mut() = Version::HTTP_11;
         }
 
-        let protocol = req.protocol();
-        let secure = protocol.is_some_and(rama_net::Protocol::is_secure);
+        let protocol = req.protocol().cloned();
+        let secure = protocol
+            .as_ref()
+            .is_some_and(rama_net::Protocol::is_secure);
         let default_port = protocol
             .and_then(rama_net::Protocol::default_port)
             .unwrap_or(80);
@@ -304,7 +306,9 @@ impl Service<Request<Body>> for UpstreamClient {
             None => info!("HTTP upstream route selected (target={authority}, route=direct)"),
         }
         if let Some(proxy) = proxy {
-            if protocol.is_some_and(|protocol| *protocol == rama_net::Protocol::HTTP)
+            if protocol
+                .as_ref()
+                .is_some_and(|protocol| *protocol == rama_net::Protocol::HTTP)
                 && let Some(attribution) = &self.proxy_config.attribution
                 && let Some(id) = attribution.call_id_for(&proxy)
             {
