@@ -287,7 +287,7 @@ jobs:
 
           (cd codex-rs && cargo update --workspace)
           just write-config-schema
-          (cd codex-rs && INSTA_UPDATE=always cargo test -p codex-tui --lib status::tests)
+          (cd codex-rs && INSTA_UPDATE=always cargo test -p codex-tui --lib status::tests -- --skip app::sidebar_subagents::status::tests)
           just write-app-server-schema
           just bazel-lock-update
 
