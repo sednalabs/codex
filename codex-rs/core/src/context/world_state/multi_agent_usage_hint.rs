@@ -20,10 +20,7 @@ pub(crate) struct MultiAgentUsageHintState {
     namespace: Option<ContentItemNamespace>,
 }
 
-fn fingerprint(
-    instructions: &MultiAgentRoleInstructions,
-    client_owned: bool,
-) -> WorldStateHash {
+fn fingerprint(instructions: &MultiAgentRoleInstructions, client_owned: bool) -> WorldStateHash {
     let domain = if client_owned {
         "codex-multi-agent-usage-hint/client-owned/v1"
     } else {

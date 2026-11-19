@@ -1,7 +1,7 @@
 use super::MultiAgentUsageHintState;
+use super::PreviousSectionState;
 use super::WorldStateHash;
 use super::WorldStateSection;
-use super::PreviousSectionState;
 use crate::context::ContextualUserFragment;
 use crate::context::MultiAgentRoleInstructions;
 use crate::context::world_state::test_support::FragmentSectionTestExt as _;
@@ -10,10 +10,7 @@ fn instructions() -> MultiAgentRoleInstructions {
     MultiAgentRoleInstructions::Configured("same instructions".to_string())
 }
 
-fn emitted_content_kind(
-    current: &MultiAgentUsageHintState,
-    previous: &WorldStateHash,
-) -> String {
+fn emitted_content_kind(current: &MultiAgentUsageHintState, previous: &WorldStateHash) -> String {
     current
         .render_fragment_diff(PreviousSectionState::Known(previous))
         .1
@@ -44,8 +41,8 @@ fn origin_free_legacy_hash_reemits_for_both_ownership_values() {
     let legacy_fingerprint = WorldStateHash::from_fragment(&instructions);
 
     for client_owned in [false, true] {
-        let current = MultiAgentUsageHintState::new(instructions.clone())
-            .with_client_ownership(client_owned);
+        let current =
+            MultiAgentUsageHintState::new(instructions.clone()).with_client_ownership(client_owned);
         assert!(
             current
                 .render_fragment_diff(PreviousSectionState::Known(&legacy_fingerprint))
