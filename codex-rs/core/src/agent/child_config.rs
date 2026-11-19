@@ -89,6 +89,8 @@ pub(crate) async fn prepare_agent_spawn_config(
             config
                 .developer_instructions
                 .clone_from(&turn.developer_instructions);
+            config.client_owned_developer_instructions =
+                turn_developer_guidance_is_client_owned(turn);
         }
     }
     if shares_service_tier {
@@ -167,19 +169,43 @@ fn build_agent_shared_config(turn: &TurnContext) -> Result<Config, String> {
         .or(turn.model_info().default_reasoning_level.as_ref())
         .cloned();
     config.model_reasoning_summary = Some(turn.reasoning_summary());
-    config.developer_instructions = inherited_developer_instructions(turn);
+    // The selected text can come from a different config layer than the parent's
+    // active developer instructions. Carry its own classification into the child.
+    let guidance = inherited_developer_guidance(turn);
+    config.developer_instructions = guidance.map(|(text, _)| text.to_owned());
+    config.client_owned_developer_instructions =
+        guidance.is_some_and(|(_, client_owned)| client_owned);
     apply_spawn_agent_runtime_overrides(&mut config, turn)?;
 
     Ok(config)
 }
 
 pub(crate) fn inherited_developer_instructions(turn: &TurnContext) -> Option<String> {
+    inherited_developer_guidance(turn).map(|(text, _)| text.to_owned())
+}
+
+fn inherited_developer_guidance(turn: &TurnContext) -> Option<(&str, bool)> {
     if turn.multi_agent_version == MultiAgentVersion::V2
-        && let Some(instructions) = &turn.config.multi_agent_v2.subagent_developer_instructions
+        && let Some(instructions) = turn
+            .config
+            .multi_agent_v2
+            .subagent_developer_instructions
+            .as_deref()
     {
-        return Some(instructions.clone());
+        let client_owned = turn
+            .config
+            .multi_agent_text_is_client_owned("subagent_developer_instructions", instructions);
+        return Some((instructions, client_owned));
     }
-    turn.developer_instructions.clone()
+    turn.developer_instructions
+        .as_deref()
+        .map(|text| (text, turn_developer_guidance_is_client_owned(turn)))
+}
+
+fn turn_developer_guidance_is_client_owned(turn: &TurnContext) -> bool {
+    turn.developer_instructions.is_some()
+        && turn.config.client_owned_developer_instructions
+        && turn.developer_instructions == turn.config.developer_instructions
 }
 
 fn reject_full_fork_agent_type_override(agent_type: Option<&str>) -> Result<(), String> {

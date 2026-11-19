@@ -452,6 +452,81 @@ async fn same_manager_creation_preserves_live_bindings_and_attachments(
     Ok(())
 }
 
+#[test_case::test_case(false; "fresh")]
+#[test_case::test_case(true; "forked")]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn worker_overlay_edits_configured_child_guidance(fork_history: bool) -> Result<()> {
+    skip_if_no_network!(Ok(()));
+    let server = start_mock_server().await;
+    let home = Arc::new(tempfile::tempdir()?);
+    std::fs::write(
+        home.path().join("config.toml"),
+        r#"
+[features.multi_agent_v2]
+subagent_developer_instructions = "Original worker guidance."
+
+[agents.worker]
+description = "Test worker"
+config_file = "worker.toml"
+"#,
+    )?;
+    std::fs::write(
+        home.path().join("worker.toml"),
+        r#"
+[[instruction_overlays.developer_guidance.edits]]
+op = "replace_exact"
+from = "Original worker guidance."
+to = "Edited worker guidance."
+expected_matches = 1
+"#,
+    )?;
+    let (test, parent, controller) = host_spawn_fixture(
+        &server,
+        test_codex().with_home(home),
+        NetworkPolicy::unmanaged(),
+        /*thread_instructions_provider*/ None,
+    )
+    .await?;
+    let invocation = host_spawn_invocation(
+        &server,
+        &parent,
+        "spawn-overlay-worker",
+        TurnInputRequest::user_input(vec![text("Start a worker.")]),
+    )
+    .await?;
+    let context = parent.tool_invocation(&invocation.turn_id, &invocation.call_id)?;
+    let mut request = create_request("worker", fork_history);
+    request.agent_type = Some("worker".into());
+    let child_id = ThreadId::new();
+    parent
+        .create_child(
+            &context,
+            request,
+            HostThreadSpawnReservation {
+                thread_id: child_id,
+                control: controller,
+                turn_admission: None,
+                usage_accounting: None,
+            },
+        )
+        .await?;
+    let worker = test.thread_manager.get_thread(child_id).await?;
+    finish_spawn_tool(&server, &parent, &invocation).await?;
+    let mock = responses::mount_sse_once(&server, sse(vec![ev_completed("worker-done")])).await;
+    worker
+        .start_or_steer_turn(TurnInputRequest::user_input(vec![text(
+            "Report your findings.",
+        )]))
+        .await?;
+    wait_for_successful_turn(&worker).await;
+    let request = mock.single_request();
+    assert!(request.body_contains_text("Edited worker guidance."));
+    assert!(!request.body_contains_text("Original worker guidance."));
+    worker.shutdown_and_wait().await?;
+    parent.shutdown_and_wait().await?;
+    Ok(())
+}
+
 struct ChildStartupGate {
     child_id: ThreadId,
     entered: Notify,

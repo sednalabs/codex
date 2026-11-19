@@ -7,6 +7,7 @@ use crate::ConfigRefreshOutcome;
 use crate::HostThreadSpawnReservation;
 use crate::HostToolInvocationLookup;
 use crate::ThreadManager;
+use crate::agent::child_config::build_agent_resume_config;
 use crate::agent::host::InvocationReservation;
 use crate::config::ConfigBuilder;
 use crate::thread_manager::StartThreadOptions;
@@ -55,6 +56,42 @@ async fn spawn_call(parent: &CodexThread) -> anyhow::Result<ToolInvocation> {
         native_call: None,
         environments: Default::default(),
     })
+}
+
+#[tokio::test]
+async fn child_does_not_inherit_client_ownership_for_unclassified_guidance() -> anyhow::Result<()> {
+    let home = tempfile::tempdir()?;
+    let mut config = ConfigBuilder::without_managed_config_for_tests()
+        .codex_home(home.path().to_path_buf())
+        .cli_overrides(vec![(
+            "developer_instructions".into(),
+            "Operator's parent guidance.".into(),
+        )])
+        .build()
+        .await?;
+    assert!(config.client_owned_developer_instructions);
+    config.features.enable(Feature::MultiAgentV2)?;
+    config.multi_agent_v2.subagent_developer_instructions =
+        Some("Unclassified child guidance.".into());
+    let manager = ThreadManager::with_models_provider_and_home_for_tests(
+        CodexAuth::from_api_key("dummy"),
+        config.model_provider.clone(),
+        home.path().to_path_buf(),
+        Arc::new(codex_exec_server::EnvironmentManager::default_for_tests()),
+    );
+    let parent = manager
+        .start_thread(StartThreadOptions::new(config))
+        .await?
+        .thread;
+    let call = spawn_call(&parent).await?;
+    let child = build_agent_resume_config(&call.turn).map_err(anyhow::Error::msg)?;
+    assert_eq!(
+        child.developer_instructions.as_deref(),
+        Some("Unclassified child guidance.")
+    );
+    assert!(!child.client_owned_developer_instructions);
+    parent.shutdown_and_wait().await?;
+    Ok(())
 }
 
 #[tokio::test]
