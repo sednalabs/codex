@@ -271,7 +271,7 @@ impl Service<Request<Body>> for UpstreamClient {
         let secure = protocol.as_ref().is_some_and(rama_net::Protocol::is_secure);
         let default_port = protocol
             .as_ref()
-            .and_then(|protocol| protocol.default_port())
+            .and_then(rama_net::Protocol::default_port)
             .unwrap_or(80);
         // The alpha request context preferred a domain ProxyTarget after the
         // URI authority and before TLS SNI, Forwarded, and Host fallback.
@@ -340,7 +340,7 @@ impl Service<Request<Body>> for UpstreamClient {
         req.extensions().extend(http_connection.extensions());
 
         if options_asterisk {
-            *req.uri_mut() = Uri::parse("*".to_string()).map_err(|err| err.into_opaque_error())?;
+            *req.uri_mut() = Uri::parse("*".to_string()).map_err(rama_core::rama_error::ErrorExt::into_opaque_error)?;
             *req.version_mut() = Version::HTTP_11;
         }
 
