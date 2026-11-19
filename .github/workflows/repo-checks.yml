@@ -68,7 +68,16 @@ jobs:
         run: python3 scripts/readme_toc.py README.md
 
       - name: Check formatting (run `just fmt` to fix)
+        id: format_check
         run: just fmt-check
+
+      - name: Show buildifier diff for reported formatting candidates
+        if: failure() && steps.format_check.outcome == 'failure'
+        continue-on-error: true
+        run: |
+          dotslash tools/buildifier -mode=diff -lint=off \
+            bazel/rules/testing/wine/BUILD.bazel \
+            codex-rs/core/tests/remote_env_windows/BUILD.bazel
 
       - name: Prettier (run `pnpm run format:fix` to fix)
         run: pnpm run format
