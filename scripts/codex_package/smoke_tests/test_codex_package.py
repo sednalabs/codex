@@ -164,7 +164,11 @@ def test_packaged_executor_initializes_and_enforces_sandbox(
             reported_environment = initialized["result"]["environmentInfo"]
             metadata = json.loads((root / "codex-package.json").read_text())
             executor_version = metadata["version"].split("+", 1)[0]
-            assert reported_environment["executorVersion"] == executor_version
+            # Compare protocol compatibility, not internal SemVer build provenance.
+            reported_executor_version = (
+                reported_environment["executorVersion"].split("+", 1)[0]
+            )
+            assert reported_executor_version == executor_version
             process.stdin.write('{"method":"initialized","params":{}}\n')
 
             def file_request(
