@@ -507,10 +507,7 @@ fn completed_target_line(
                 .unwrap_or_else(|| thread_id.clone())
         })
         .collect::<Vec<_>>();
-    Some(Line::from(format!(
-        "Completed targets: {}",
-        targets.join(", ")
-    )).into())
+    Some(Line::from(format!("Completed targets: {}", targets.join(", "))).into())
 }
 
 fn agent_label_text(agent: AgentLabel<'_>) -> String {

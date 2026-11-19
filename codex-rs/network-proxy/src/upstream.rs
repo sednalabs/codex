@@ -15,7 +15,6 @@ use rama_http::HeaderName;
 use rama_http::HeaderValue;
 use rama_http::Request;
 use rama_http::Response;
-use rama_net::uri::Uri;
 use rama_http::Version;
 use rama_http::layer::version_adapter::RequestVersionAdapter;
 use rama_http_backend::client::HttpClientService;
@@ -28,6 +27,7 @@ use rama_net::address::Host;
 use rama_net::address::HostWithPort;
 use rama_net::address::ProxyAddress;
 use rama_net::client::EstablishedClientConnection;
+use rama_net::uri::Uri;
 use rama_tls_rustls::client::RustlsClientConfigExt;
 use rama_tls_rustls::client::TlsConnectorLayer;
 use rama_tls_rustls::client::client_root_certs;
@@ -268,9 +268,7 @@ impl Service<Request<Body>> for UpstreamClient {
         }
 
         let protocol = req.protocol().cloned();
-        let secure = protocol
-            .as_ref()
-            .is_some_and(rama_net::Protocol::is_secure);
+        let secure = protocol.as_ref().is_some_and(rama_net::Protocol::is_secure);
         let default_port = protocol
             .as_ref()
             .and_then(|protocol| protocol.default_port())
@@ -342,8 +340,7 @@ impl Service<Request<Body>> for UpstreamClient {
         req.extensions().extend(http_connection.extensions());
 
         if options_asterisk {
-            *req.uri_mut() =
-                Uri::parse("*".to_string()).map_err(|err| err.into_opaque_error())?;
+            *req.uri_mut() = Uri::parse("*".to_string()).map_err(|err| err.into_opaque_error())?;
             *req.version_mut() = Version::HTTP_11;
         }
 

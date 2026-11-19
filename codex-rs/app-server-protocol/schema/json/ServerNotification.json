@@ -50,6 +50,13 @@
       ],
       "type": "object"
     },
+    "AccountUpdateReason": {
+      "enum": [
+        "workspaceRoutingReady",
+        "unknown"
+      ],
+      "type": "string"
+    },
     "AccountUpdatedNotification": {
       "properties": {
         "authMode": {
@@ -71,6 +78,17 @@
               "type": "null"
             }
           ]
+        },
+        "reason": {
+          "anyOf": [
+            {
+              "$ref": "#/definitions/AccountUpdateReason"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Set when initial routing discovery completes for the same authenticated owner."
         }
       },
       "type": "object"
@@ -862,12 +880,16 @@
             "contextWindowExceeded",
             "sessionBudgetExceeded",
             "usageLimitExceeded",
+            "apiKeySpendLimitExceeded",
+            "projectSpendLimitExceeded",
+            "organizationSpendLimitExceeded",
             "rateLimitExceeded",
             "flexUnavailable",
             "serverOverloaded",
             "modelNotFound",
             "policyCapacityUnavailable",
             "cyberPolicy",
+            "bioPolicy",
             "misalignmentPolicyViolation",
             "tooManyDenials",
             "internalServerError",
@@ -6192,7 +6214,7 @@
       "type": "object"
     },
     "ThreadRealtimeFrameChannels": {
-      "description": "A frame holds one or more payloads, at most one per channel. They share one ID, observation time, and seal. V1 requires its only channel, `voice_transcript`.",
+      "description": "A frame holds one or more payloads, at most one per channel. They share one ID, observation time, and seal. Currently, `voice_transcript` is required.",
       "properties": {
         "voice_transcript": {
           "$ref": "#/definitions/ThreadRealtimeVoiceTranscript"
@@ -6372,6 +6394,9 @@
             "input_item_id": {
               "type": "string"
             },
+            "reason": {
+              "$ref": "#/definitions/ThreadRealtimeSessionInputReason"
+            },
             "source_event_ids": {
               "items": {
                 "type": "string"
@@ -6380,19 +6405,20 @@
             },
             "type": {
               "enum": [
-                "sessionEndInputSaved"
+                "sessionInputSaved"
               ],
-              "title": "SessionEndInputSavedThreadRealtimeItemType",
+              "title": "SessionInputSavedThreadRealtimeItemType",
               "type": "string"
             }
           },
           "required": [
             "input",
             "input_item_id",
+            "reason",
             "source_event_ids",
             "type"
           ],
-          "title": "SessionEndInputSavedThreadRealtimeItem",
+          "title": "SessionInputSavedThreadRealtimeItem",
           "type": "object"
         }
       ],
@@ -6516,6 +6542,13 @@
       ],
       "type": "object"
     },
+    "ThreadRealtimeSessionInputReason": {
+      "enum": [
+        "chunk",
+        "sessionEnd"
+      ],
+      "type": "string"
+    },
     "ThreadRealtimeSessionOutcome": {
       "enum": [
         "ended",
@@ -6617,6 +6650,40 @@
       },
       "required": [
         "threadId"
+      ],
+      "type": "object"
+    },
+    "ThreadSearchPartialNotification": {
+      "description": "A best-effort incremental batch for `thread/search/stream`. Match `requestId` to the request on this connection. Only a small subset of verified matches may be emitted; rows are unique and arrive in discovery order, but may be dropped under load or fall outside the final sorted page. Thread fields use stored metadata and the current watched status; live thread settings are enriched in the final response. Replace provisional rows with the authoritative final response. No partials follow it or an error.",
+      "properties": {
+        "data": {
+          "items": {
+            "$ref": "#/definitions/ThreadSearchResult"
+          },
+          "type": "array"
+        },
+        "requestId": {
+          "$ref": "#/definitions/RequestId"
+        }
+      },
+      "required": [
+        "data",
+        "requestId"
+      ],
+      "type": "object"
+    },
+    "ThreadSearchResult": {
+      "properties": {
+        "snippet": {
+          "type": "string"
+        },
+        "thread": {
+          "$ref": "#/definitions/Thread"
+        }
+      },
+      "required": [
+        "snippet",
+        "thread"
       ],
       "type": "object"
     },
@@ -8465,6 +8532,26 @@
         "params"
       ],
       "title": "Process/outputDeltaNotification",
+      "type": "object"
+    },
+    {
+      "properties": {
+        "method": {
+          "enum": [
+            "thread/search/partial"
+          ],
+          "title": "Thread/search/partialNotificationMethod",
+          "type": "string"
+        },
+        "params": {
+          "$ref": "#/definitions/ThreadSearchPartialNotification"
+        }
+      },
+      "required": [
+        "method",
+        "params"
+      ],
+      "title": "Thread/search/partialNotification",
       "type": "object"
     },
     {
