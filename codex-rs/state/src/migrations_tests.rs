@@ -1160,7 +1160,7 @@ async fn runtime_migrator_applies_pending_migrations_with_high_extension_rows() 
     for (offset, (description, checksum)) in identities.into_iter().enumerate() {
         let checksum: Vec<u8> = checksum
             .as_bytes()
-            .chunks_exact(2)
+            .as_chunks::<2>().0.iter()
             .map(|pair| u8::from_str_radix(std::str::from_utf8(pair).unwrap(), 16).unwrap())
             .collect();
         sqlx::query("INSERT INTO _sqlx_migrations (version, description, success, checksum, execution_time) VALUES (?, ?, 1, ?, 17)")
