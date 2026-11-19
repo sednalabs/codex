@@ -20,9 +20,21 @@ pub(crate) struct MultiAgentUsageHintState {
     namespace: Option<ContentItemNamespace>,
 }
 
+fn fingerprint(
+    instructions: &MultiAgentRoleInstructions,
+    client_owned: bool,
+) -> WorldStateHash {
+    let domain = if client_owned {
+        "codex-multi-agent-usage-hint/client-owned/v1"
+    } else {
+        "codex-multi-agent-usage-hint/not-client-owned/v1"
+    };
+    WorldStateHash::from_fragment(instructions).with_domain(domain)
+}
+
 impl MultiAgentUsageHintState {
     pub(crate) fn new(instructions: MultiAgentRoleInstructions) -> Self {
-        let fingerprint = WorldStateHash::from_fragment(&instructions);
+        let fingerprint = fingerprint(&instructions, /*client_owned*/ false);
         Self {
             instructions,
             fingerprint,
@@ -37,10 +49,8 @@ impl MultiAgentUsageHintState {
     }
 
     pub(crate) fn with_client_ownership(mut self, client_owned: bool) -> Self {
-        if client_owned {
-            self.client_owned = true;
-            self.fingerprint = WorldStateHash::from_fragment(&self);
-        }
+        self.client_owned = client_owned;
+        self.fingerprint = fingerprint(&self.instructions, client_owned);
         self
     }
 }
@@ -110,3 +120,7 @@ impl WorldStateSection for MultiAgentUsageHintState {
         )
     }
 }
+
+#[cfg(test)]
+#[path = "multi_agent_usage_hint_tests.rs"]
+mod tests;

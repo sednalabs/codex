@@ -450,6 +450,15 @@ impl WorldStateHash {
         }
         Self(format!("{:x}", hasher.finalize()))
     }
+
+    /// Separates a persisted fragment hash from hashes with additional semantic meaning.
+    pub(crate) fn with_domain(self, domain: &str) -> Self {
+        let mut hasher = Sha1::new();
+        hasher.update(b"codex-world-state-domain-v1\0");
+        hash_component(&mut hasher, domain);
+        hash_component(&mut hasher, &self.0);
+        Self(format!("{:x}", hasher.finalize()))
+    }
 }
 
 fn hash_component(hasher: &mut Sha1, value: &str) {
