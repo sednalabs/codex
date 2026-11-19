@@ -121,28 +121,6 @@ fn may_need_opening_preview(model_context: &[RolloutItem]) -> bool {
         .any(|item| matches!(item, RolloutItem::Compacted(_)))
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use serde_json::json;
-
-    #[test]
-    fn preview_is_needed_even_when_turn_records_precede_compaction() {
-        let turn: RolloutItem = serde_json::from_value(json!({
-            "type": "event_msg", "payload": {"type": "turn_started", "turn_id": "turn"}
-        }))
-        .expect("turn fixture");
-        let checkpoint: RolloutItem = serde_json::from_value(json!({
-            "type": "compacted", "payload": {
-                "message": "summary", "replacement_history": [], "window_number": 1
-            }
-        }))
-        .expect("checkpoint fixture");
-        assert!(!may_need_opening_preview(std::slice::from_ref(&turn)));
-        assert!(may_need_opening_preview(&[turn, checkpoint]));
-    }
-}
-
 pub(super) async fn history_base_at_boundary(
     store: &LocalThreadStore,
     thread_id: ThreadId,
@@ -248,5 +226,27 @@ fn missing_turn_position(turn_id: &str) -> ThreadStoreError {
 fn invalid_turn_position(turn_id: &str) -> ThreadStoreError {
     ThreadStoreError::Internal {
         message: format!("invalid rollout position for turn {turn_id}"),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+
+    #[test]
+    fn preview_is_needed_even_when_turn_records_precede_compaction() {
+        let turn: RolloutItem = serde_json::from_value(json!({
+            "type": "event_msg", "payload": {"type": "turn_started", "turn_id": "turn"}
+        }))
+        .expect("turn fixture");
+        let checkpoint: RolloutItem = serde_json::from_value(json!({
+            "type": "compacted", "payload": {
+                "message": "summary", "replacement_history": [], "window_number": 1
+            }
+        }))
+        .expect("checkpoint fixture");
+        assert!(!may_need_opening_preview(std::slice::from_ref(&turn)));
+        assert!(may_need_opening_preview(&[turn, checkpoint]));
     }
 }
