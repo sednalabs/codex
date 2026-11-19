@@ -6,6 +6,7 @@ wine_rust_test(
     srcs = ["remote_env_windows_test.rs"],
     crate_name = "remote_env_windows_test",
     crate_root = "remote_env_windows_test.rs",
+    tags = ["manual"],
     windows_binaries = {
         "wine-windows-exec-server": "//codex-rs/exec-server/testing:exec-server",
     },
@@ -21,5 +22,4 @@ wine_rust_test(
         "@crates//serde_json",
         "@crates//tokio",
     ],
-    tags = ["manual"],
 )
