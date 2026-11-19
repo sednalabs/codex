@@ -70,6 +70,7 @@ use crate::oauth_http_client::OAuthHttpClientAdapter;
 use crate::oauth_http_client::PROACTIVE_REFRESH_TIMEOUT;
 use crate::startup_error::is_authentication_required_error;
 
+#[tokio::test(flavor = "current_thread")]
 async fn device_only_refresh_uses_issuer_bound_metadata_in_both_modes() -> Result<()> {
     let _env = TempCodexHome::new();
     let server = MockServer::start().await;
