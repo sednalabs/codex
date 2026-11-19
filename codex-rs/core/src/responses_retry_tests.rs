@@ -109,21 +109,23 @@ async fn server_overloaded_uses_separate_capacity_budget_for_sampling() {
     let mut client_session = session.services.model_client.new_session();
     let mut retry_state = ResponsesStreamRetryState::default();
 
-    let retry = handle_response_stream_error(
-        &mut retry_state,
-        /*max_retries*/ 0,
-        CodexErr::ServerOverloaded,
-        &mut client_session,
-        &session,
-        &step_context,
-        ResponsesStreamRequest::Sampling,
-    );
-    tokio::pin!(retry);
-    assert!(futures::poll!(&mut retry).is_pending());
-    tokio::time::advance(Duration::from_secs(61)).await;
-    retry
-        .await
-        .expect("capacity error should retain the request loop");
+    {
+        let retry = handle_response_stream_error(
+            &mut retry_state,
+            /*max_retries*/ 0,
+            CodexErr::ServerOverloaded,
+            &mut client_session,
+            &session,
+            &step_context,
+            ResponsesStreamRequest::Sampling,
+        );
+        tokio::pin!(retry);
+        assert!(futures::poll!(&mut retry).is_pending());
+        tokio::time::advance(Duration::from_secs(61)).await;
+        retry
+            .await
+            .expect("capacity error should retain the request loop");
+    }
 
     assert_eq!(retry_state.retries, 0);
     assert_eq!(retry_state.capacity_retries, 1);
@@ -138,19 +140,21 @@ async fn policy_capacity_retries_only_with_server_advice() {
     let mut retry_state = ResponsesStreamRetryState::default();
     let advice = RetryAfter::from_delay(Duration::from_secs(10)).expect("retry deadline");
 
-    let retry = handle_response_stream_error(
-        &mut retry_state,
-        /*max_retries*/ 2,
-        CodexErr::new(CodexErrorDetails::PolicyCapacityUnavailable).with_retry_after(advice),
-        &mut client_session,
-        &session,
-        &step_context,
-        ResponsesStreamRequest::Sampling,
-    );
-    tokio::pin!(retry);
-    assert!(futures::poll!(&mut retry).is_pending());
-    tokio::time::advance(Duration::from_secs(11)).await;
-    retry.await.expect("server-authorized retry should proceed");
+    {
+        let retry = handle_response_stream_error(
+            &mut retry_state,
+            /*max_retries*/ 2,
+            CodexErr::new(CodexErrorDetails::PolicyCapacityUnavailable).with_retry_after(advice),
+            &mut client_session,
+            &session,
+            &step_context,
+            ResponsesStreamRequest::Sampling,
+        );
+        tokio::pin!(retry);
+        assert!(futures::poll!(&mut retry).is_pending());
+        tokio::time::advance(Duration::from_secs(11)).await;
+        retry.await.expect("server-authorized retry should proceed");
+    }
 
     assert_eq!(retry_state.retries, 1);
     assert_eq!(retry_state.capacity_retries, 0);

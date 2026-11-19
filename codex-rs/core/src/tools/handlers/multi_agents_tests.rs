@@ -48,6 +48,8 @@ use codex_protocol::config_types::ApprovalsReviewer;
 use codex_protocol::config_types::ReasoningSummary;
 use codex_protocol::config_types::ServiceTier;
 use codex_protocol::config_types::ShellEnvironmentPolicy;
+use codex_protocol::items::CollabAgentWaitCompletionReason;
+use codex_protocol::items::CollabAgentWaitReturnWhen;
 use codex_protocol::items::TurnItem;
 use codex_protocol::mcp::ClientMcpExtensions;
 use codex_protocol::models::BaseInstructions;
@@ -3060,6 +3062,10 @@ async fn multi_agent_v2_wait_agent_accepts_timeout_only_argument() {
         crate::tools::handlers::multi_agents_v2::wait::WaitAgentResult {
             message: "Wait completed.".to_string(),
             timed_out: false,
+            completion_reason: CollabAgentWaitCompletionReason::ActionableMessage,
+            return_when: CollabAgentWaitReturnWhen::Any,
+            receiver_thread_ids: Vec::new(),
+            completed_target_thread_ids: Vec::new(),
         }
     );
     assert_eq!(success, None);
@@ -3107,6 +3113,10 @@ async fn multi_agent_v2_wait_agent_clamps_timeout_below_configured_min() {
                 "Wait timed out.\n\nRequested timeout of 1ms was clamped to the minimum of 50ms."
                     .to_string(),
             timed_out: true,
+            completion_reason: CollabAgentWaitCompletionReason::TimedOut,
+            return_when: CollabAgentWaitReturnWhen::Any,
+            receiver_thread_ids: Vec::new(),
+            completed_target_thread_ids: Vec::new(),
         }
     );
     assert_eq!(success, None);
@@ -3142,6 +3152,10 @@ async fn multi_agent_v2_wait_agent_accepts_explicit_timeout_at_configured_min() 
         crate::tools::handlers::multi_agents_v2::wait::WaitAgentResult {
             message: "Wait timed out.".to_string(),
             timed_out: true,
+            completion_reason: CollabAgentWaitCompletionReason::TimedOut,
+            return_when: CollabAgentWaitReturnWhen::Any,
+            receiver_thread_ids: Vec::new(),
+            completed_target_thread_ids: Vec::new(),
         }
     );
     assert_eq!(success, None);
@@ -3197,6 +3211,10 @@ async fn multi_agent_v2_wait_agent_uses_configured_default_timeout() {
         crate::tools::handlers::multi_agents_v2::wait::WaitAgentResult {
             message: "Wait timed out.".to_string(),
             timed_out: true,
+            completion_reason: CollabAgentWaitCompletionReason::TimedOut,
+            return_when: CollabAgentWaitReturnWhen::Any,
+            receiver_thread_ids: Vec::new(),
+            completed_target_thread_ids: Vec::new(),
         }
     );
     assert_eq!(success, None);
@@ -3237,6 +3255,10 @@ async fn multi_agent_v2_wait_agent_allows_zero_configured_timeout() {
         crate::tools::handlers::multi_agents_v2::wait::WaitAgentResult {
             message: "Wait timed out.".to_string(),
             timed_out: true,
+            completion_reason: CollabAgentWaitCompletionReason::TimedOut,
+            return_when: CollabAgentWaitReturnWhen::Any,
+            receiver_thread_ids: Vec::new(),
+            completed_target_thread_ids: Vec::new(),
         }
     );
     assert_eq!(success, None);
@@ -3302,6 +3324,10 @@ async fn multi_agent_v2_wait_agent_accepts_explicit_timeout_at_configured_max() 
         crate::tools::handlers::multi_agents_v2::wait::WaitAgentResult {
             message: "Wait timed out.".to_string(),
             timed_out: true,
+            completion_reason: CollabAgentWaitCompletionReason::TimedOut,
+            return_when: CollabAgentWaitReturnWhen::Any,
+            receiver_thread_ids: Vec::new(),
+            completed_target_thread_ids: Vec::new(),
         }
     );
     assert_eq!(success, None);
@@ -3561,6 +3587,10 @@ async fn multi_agent_v2_wait_agent_returns_summary_for_mailbox_activity() {
         crate::tools::handlers::multi_agents_v2::wait::WaitAgentResult {
             message: "Wait completed.".to_string(),
             timed_out: false,
+            completion_reason: CollabAgentWaitCompletionReason::ActionableMessage,
+            return_when: CollabAgentWaitReturnWhen::Any,
+            receiver_thread_ids: Vec::new(),
+            completed_target_thread_ids: Vec::new(),
         }
     );
     assert_eq!(success, None);
@@ -3646,6 +3676,10 @@ async fn multi_agent_v2_wait_agent_returns_for_already_queued_mail() {
         crate::tools::handlers::multi_agents_v2::wait::WaitAgentResult {
             message: "Wait completed.".to_string(),
             timed_out: false,
+            completion_reason: CollabAgentWaitCompletionReason::ActionableMessage,
+            return_when: CollabAgentWaitReturnWhen::Any,
+            receiver_thread_ids: Vec::new(),
+            completed_target_thread_ids: Vec::new(),
         }
     );
     assert_eq!(success, None);
@@ -3741,6 +3775,10 @@ async fn multi_agent_v2_wait_agent_wakes_on_any_mailbox_notification() {
         crate::tools::handlers::multi_agents_v2::wait::WaitAgentResult {
             message: "Wait completed.".to_string(),
             timed_out: false,
+            completion_reason: CollabAgentWaitCompletionReason::ActionableMessage,
+            return_when: CollabAgentWaitReturnWhen::Any,
+            receiver_thread_ids: Vec::new(),
+            completed_target_thread_ids: Vec::new(),
         }
     );
     assert_eq!(success, None);
@@ -3833,6 +3871,10 @@ async fn multi_agent_v2_wait_agent_does_not_return_completed_content() {
         crate::tools::handlers::multi_agents_v2::wait::WaitAgentResult {
             message: "Wait completed.".to_string(),
             timed_out: false,
+            completion_reason: CollabAgentWaitCompletionReason::ActionableMessage,
+            return_when: CollabAgentWaitReturnWhen::Any,
+            receiver_thread_ids: Vec::new(),
+            completed_target_thread_ids: Vec::new(),
         }
     );
     assert!(!content.contains("sensitive child output"));

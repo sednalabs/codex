@@ -719,7 +719,7 @@ mod tests {
             .await
             .expect("bounded poll must complete after cancellation")
             .expect("dispatch must return a tool response");
-        let ResponseInputItem::FunctionCallOutput { output, .. } = response.item else {
+        let codex_extension_api::ResponseItem::FunctionCallOutput { output, .. } = response.item else {
             panic!("expected function output");
         };
         let FunctionCallOutputBody::Text(rendered) = output.body else {

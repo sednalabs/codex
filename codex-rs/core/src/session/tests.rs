@@ -6961,6 +6961,7 @@ pub(crate) async fn make_session_and_context() -> (Session, TurnContext) {
     let services = SessionServices {
         mcp_runtime,
         mcp_handler_cache: Default::default(),
+        usage_logger: None,
         unified_exec_manager: UnifiedExecProcessManager::new(
             config.background_terminal_max_timeout,
         ),
@@ -9318,6 +9319,7 @@ where
     let services = SessionServices {
         mcp_runtime,
         mcp_handler_cache: Default::default(),
+        usage_logger: None,
         unified_exec_manager: UnifiedExecProcessManager::new(
             config.background_terminal_max_timeout,
         ),
