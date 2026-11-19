@@ -28,19 +28,21 @@ on:
   workflow_dispatch:
     inputs:
       operation:
-        description: Generate selected-tree outputs, or build and consume this protected main commit.
+        description: Generate selected-tree outputs, build this protected main commit, or re-consume the exact reviewed 016 package artifacts.
         required: true
         default: prepare
         type: choice
         options:
           - prepare
           - package
+          - consume-existing
 
 concurrency:
   group: sedna-first-package-${{ github.event.pull_request.number || github.ref }}-${{ inputs.operation || 'package' }}
   cancel-in-progress: false
 
 permissions:
+  actions: read
   contents: read
 
 jobs:
@@ -74,6 +76,10 @@ jobs:
           PR_HEAD_REPOSITORY: ${{ github.event.pull_request.head.repo.full_name }}
           REPOSITORY: ${{ github.repository }}
           OPERATION_INPUT: ${{ inputs.operation }}
+          EXPECTED_PRODUCER_SOURCE_SHA: "016eb01eaa03727e5c2dfe2d31e4f4aab88badbe"
+          EXPECTED_PRODUCER_SOURCE_TREE: "08af5e4f4f8697af5ea990b2015e90b0034aa7ce"
+          EXPECTED_PRODUCER_PACKAGE_VERSION: "0.166.0+sedna.1013.g016eb01e"
+          CONSUMER_PARENT_SHA: "dcaeb1486fe53bde7d842f96974aea14846f3950"
         run: |
           set -euo pipefail
 
@@ -111,8 +117,8 @@ jobs:
               echo "Manual runs require the selected ref as their exact source and workflow host." >&2
               exit 1
             fi
-            if [[ "${OPERATION_INPUT}" != "prepare" && "${OPERATION_INPUT}" != "package" ]]; then
-              echo "Manual operation must be prepare or package." >&2
+            if [[ "${OPERATION_INPUT}" != "prepare" && "${OPERATION_INPUT}" != "package" && "${OPERATION_INPUT}" != "consume-existing" ]]; then
+              echo "Manual operation must be prepare, package, or consume-existing." >&2
               exit 1
             fi
             if [[ "${OPERATION_INPUT}" == "prepare" && "${EVENT_REF}" != refs/heads/* ]]; then
@@ -122,6 +128,44 @@ jobs:
             if [[ "${OPERATION_INPUT}" == "package" && "${EVENT_REF}" != "refs/heads/main" ]]; then
               echo "Manual package builds and consumers require protected main." >&2
               exit 1
+            fi
+            if [[ "${OPERATION_INPUT}" == "consume-existing" ]]; then
+              if [[ "${EVENT_REF}" != "refs/heads/work/upstream-convergence-0184-20261116" ]]; then
+                echo "Existing-package consumption is limited to the exact convergence branch." >&2
+                exit 1
+              fi
+              if [[ "$(git rev-parse "${WORKFLOW_HOST_SHA}^")" != "${CONSUMER_PARENT_SHA}" ]]; then
+                echo "Existing-package consumption requires the reviewed consumer-only successor." >&2
+                exit 1
+              fi
+              expected_changed_paths=(
+                ".github/workflows/sedna-first-package.yml"
+                "bazel/rules/testing/wine/BUILD.bazel"
+                "codex-rs/core/tests/remote_env_windows/BUILD.bazel"
+                "codex-rs/state/src/migrations_tests.rs"
+                "scripts/codex_package/smoke_tests/test_codex_package.py"
+              )
+              mapfile -t actual_changed_paths < <(git diff --name-only "${EXPECTED_PRODUCER_SOURCE_SHA}" "${WORKFLOW_HOST_SHA}" | LC_ALL=C sort)
+              mapfile -t expected_changed_paths < <(printf '%s\n' "${expected_changed_paths[@]}" | LC_ALL=C sort)
+              if [[ "${actual_changed_paths[*]}" != "${expected_changed_paths[*]}" ]]; then
+                echo "Existing-package consumption refuses any source delta beyond the reviewed test/workflow files." >&2
+                printf '%s\n' "${actual_changed_paths[@]}" >&2
+                exit 1
+              fi
+              expected_path_blobs=(
+                "bazel/rules/testing/wine/BUILD.bazel 77faa6c3c44bd8d0fe550bd50d31e9823b1cc3f2"
+                "codex-rs/core/tests/remote_env_windows/BUILD.bazel 9deacf76ebd73882627333402c87d847184e50bf"
+                "codex-rs/state/src/migrations_tests.rs 221ce1085ebf568058be9e6910715e4f8cc18039"
+                "scripts/codex_package/smoke_tests/test_codex_package.py 12afe7dd4785cc308782bc2ec0b4719c94ce60c2"
+              )
+              for expected_entry in "${expected_path_blobs[@]}"; do
+                read -r path expected_blob_sha <<< "${expected_entry}"
+                actual_blob_sha="$(git rev-parse "${WORKFLOW_HOST_SHA}:${path}")"
+                if [[ "${actual_blob_sha}" != "${expected_blob_sha}" ]]; then
+                  echo "Existing-package consumption refuses an unreviewed consumer input: ${path}." >&2
+                  exit 1
+                fi
+              done
             fi
           else
             echo "Unsupported event for the package route." >&2
@@ -154,6 +198,9 @@ jobs:
             # GPT-6.2. Keep that compatibility version while marking this as
             # an internal source build; do not claim a public release.
             package_version="0.166.0+sedna.${GITHUB_RUN_NUMBER}.g${source_short}"
+          fi
+          if [[ "${OPERATION_INPUT}" == "consume-existing" ]]; then
+            package_version="${EXPECTED_PRODUCER_PACKAGE_VERSION}"
           fi
 
           required_package_paths=(
@@ -198,7 +245,7 @@ jobs:
 
   prepare-source:
     name: Generate exact-source locks and schemas
-    if: ${{ needs.identity.result == 'success' }}
+    if: ${{ needs.identity.result == 'success' && inputs.operation != 'consume-existing' }}
     needs: identity
     runs-on: ubuntu-24.04
     timeout-minutes: 210
@@ -569,7 +616,7 @@ jobs:
   consume-package:
     name: Consume exact downloaded packages (${{ matrix.target }})
     # Run each architecture's existing consumer after producers settle; a failed peer must not hide a successful artifact.
-    if: ${{ always() && !cancelled() && needs.identity.outputs.package_available == 'true' && needs.prepare-source.outputs.source_ready == 'true' && (github.event_name == 'pull_request' || (github.event_name == 'workflow_dispatch' && (inputs.operation == 'package'))) }}
+    if: ${{ always() && !cancelled() && needs.identity.result == 'success' && needs.identity.outputs.package_available == 'true' && ((github.event_name == 'workflow_dispatch' && inputs.operation == 'consume-existing') || (needs.prepare-source.outputs.source_ready == 'true' && (github.event_name == 'pull_request' || (github.event_name == 'workflow_dispatch' && inputs.operation == 'package')))) }}
     needs:
       - identity
       - prepare-source
@@ -583,11 +630,19 @@ jobs:
             arch: x86_64
             binary_kind: x86-64
             loader: /lib64/ld-linux-x86-64.so.2
+            artifact_id: "14513981218"
+            artifact_name: sedna-first-package-016eb01e-x86_64-44481500978
+            artifact_digest: sha256:a84e8e1be049b0e1ab4513d77125f9a60c2f35e6ac03e49bc77a341a2d773b64
+            artifact_size: "1031691830"
           - target: aarch64-unknown-linux-gnu
             runner: ubuntu-24.04-arm
             arch: aarch64
             binary_kind: ARM aarch64
             loader: /lib/ld-linux-aarch64.so.1
+            artifact_id: "14516977287"
+            artifact_name: sedna-first-package-016eb01e-aarch64-44481500978
+            artifact_digest: sha256:7cdd7a05e04aabf167ca6d149bd6753ac11e8888d29c0c136d24b7f2afade61a
+            artifact_size: "1020725213"
     runs-on: ${{ matrix.runner }}
     timeout-minutes: 90
     env:
@@ -597,6 +652,15 @@ jobs:
       PACKAGE_VERSION: ${{ needs.identity.outputs.package_version }}
       WORKFLOW_HOST_SHA: ${{ needs.identity.outputs.workflow_host_sha }}
       WORKFLOW_HOST_TREE: ${{ needs.identity.outputs.workflow_host_tree }}
+      PACKAGE_SOURCE_SHA: ${{ inputs.operation == 'consume-existing' && '016eb01eaa03727e5c2dfe2d31e4f4aab88badbe' || needs.identity.outputs.source_sha }}
+      PACKAGE_SOURCE_TREE: ${{ inputs.operation == 'consume-existing' && '08af5e4f4f8697af5ea990b2015e90b0034aa7ce' || needs.identity.outputs.source_tree }}
+      PACKAGE_WORKFLOW_HOST_SHA: ${{ inputs.operation == 'consume-existing' && '42c3829a0f7179a1cfd28692e67bcdba1d20ebe9' || needs.identity.outputs.workflow_host_sha }}
+      PACKAGE_WORKFLOW_HOST_TREE: ${{ inputs.operation == 'consume-existing' && '08af5e4f4f8697af5ea990b2015e90b0034aa7ce' || needs.identity.outputs.workflow_host_tree }}
+      PACKAGE_RUN_ID: ${{ inputs.operation == 'consume-existing' && '44481500978' || github.run_id }}
+      EXPECTED_ARTIFACT_ID: ${{ matrix.artifact_id }}
+      EXPECTED_ARTIFACT_NAME: ${{ matrix.artifact_name }}
+      EXPECTED_ARTIFACT_DIGEST: ${{ matrix.artifact_digest }}
+      EXPECTED_ARTIFACT_SIZE: ${{ matrix.artifact_size }}
       OPENAI_API_KEY: ""
     steps:
       - uses: actions/checkout@v7
@@ -628,10 +692,144 @@ jobs:
             exit 1
           fi
 
+      - name: Verify exact existing producer run and artifact
+        if: ${{ inputs.operation == 'consume-existing' }}
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PRODUCER_RUN_ID: "44481500978"
+          PRODUCER_SOURCE_SHA: "016eb01eaa03727e5c2dfe2d31e4f4aab88badbe"
+          PRODUCER_SOURCE_TREE: "08af5e4f4f8697af5ea990b2015e90b0034aa7ce"
+          PRODUCER_HOST_SHA: "42c3829a0f7179a1cfd28692e67bcdba1d20ebe9"
+          PRODUCER_HOST_TREE: "08af5e4f4f8697af5ea990b2015e90b0034aa7ce"
+          PRODUCER_BASE_SHA: "04a76a98ca1c6ebe79417fc5e904f7562c7a0a5b"
+          EXPECTED_ARTIFACT_ID: ${{ matrix.artifact_id }}
+          EXPECTED_ARTIFACT_NAME: ${{ matrix.artifact_name }}
+          EXPECTED_ARTIFACT_DIGEST: ${{ matrix.artifact_digest }}
+          EXPECTED_ARTIFACT_SIZE: ${{ matrix.artifact_size }}
+        run: |
+          python3 - <<'PY'
+          import json
+          import os
+          import urllib.request
+
+          repository = os.environ["GITHUB_REPOSITORY"]
+          headers = {
+              "Accept": "application/vnd.github+json",
+              "Authorization": f"Bearer {os.environ['GH_TOKEN']}",
+              "X-GitHub-Api-Version": "2022-11-28",
+          }
+
+          def get_json(path):
+              request = urllib.request.Request(
+                  f"https://api.github.com/repos/{repository}{path}",
+                  headers=headers,
+              )
+              with urllib.request.urlopen(request, timeout=20) as response:
+                  return json.load(response)
+
+          run_id = os.environ["PRODUCER_RUN_ID"]
+          run = get_json(f"/actions/runs/{run_id}")
+          expected_run = {
+              "id": int(run_id),
+              "name": "sedna-first-package [event=pull_request host=42c3829a0f7179a1cfd28692e67bcdba1d20ebe9]",
+              "path": ".github/workflows/sedna-first-package.yml",
+              "workflow_id": 378675771,
+              "event": "pull_request",
+              "head_branch": "work/upstream-convergence-0184-20261116",
+              "head_sha": os.environ["PRODUCER_SOURCE_SHA"],
+              "run_number": 1013,
+              "status": "completed",
+          }
+          for key, expected in expected_run.items():
+              if run.get(key) != expected:
+                  raise SystemExit(f"Producer run identity mismatch: {key}.")
+          if run.get("head_commit", {}).get("tree_id") != os.environ["PRODUCER_SOURCE_TREE"]:
+              raise SystemExit("Producer source tree mismatch.")
+          if run.get("repository", {}).get("full_name") != repository:
+              raise SystemExit("Producer repository mismatch.")
+
+          pull_requests = run.get("pull_requests", [])
+          if len(pull_requests) != 1:
+              raise SystemExit("Producer pull-request identity mismatch.")
+          pull_request = pull_requests[0]
+          if (
+              pull_request.get("number") != 1039
+              or pull_request.get("head", {}).get("ref") != "work/upstream-convergence-0184-20261116"
+              or pull_request.get("head", {}).get("repo", {}).get("full_name") != repository
+              or pull_request.get("base", {}).get("ref") != "main"
+          ):
+              raise SystemExit("Producer pull-request source or base mismatch.")
+
+          host_sha = os.environ["PRODUCER_HOST_SHA"]
+          host_commit = get_json(f"/commits/{host_sha}")
+          if host_commit.get("sha") != host_sha:
+              raise SystemExit("Producer workflow-host commit mismatch.")
+          if host_commit.get("commit", {}).get("tree", {}).get("sha") != os.environ["PRODUCER_HOST_TREE"]:
+              raise SystemExit("Producer workflow-host tree mismatch.")
+          expected_parents = {
+              os.environ["PRODUCER_BASE_SHA"],
+              os.environ["PRODUCER_SOURCE_SHA"],
+          }
+          actual_parents = {
+              parent.get("sha")
+              for parent in host_commit.get("parents", [])
+          }
+          if actual_parents != expected_parents:
+              raise SystemExit("Producer workflow-host ancestry mismatch.")
+
+          producer_jobs = get_json(f"/actions/runs/{run_id}/jobs?per_page=100").get("jobs", [])
+          expected_jobs = {
+              "Build exact Linux package pair (x86_64-unknown-linux-gnu)",
+              "Build exact Linux package pair (aarch64-unknown-linux-gnu)",
+          }
+          for name in expected_jobs:
+              matches = [job for job in producer_jobs if job.get("name") == name]
+              if (
+                  len(matches) != 1
+                  or matches[0].get("run_id") != int(run_id)
+                  or matches[0].get("head_sha") != os.environ["PRODUCER_SOURCE_SHA"]
+                  or matches[0].get("status") != "completed"
+                  or matches[0].get("conclusion") != "success"
+              ):
+                  raise SystemExit("Producer architecture build did not succeed for the exact source.")
+
+          artifacts = get_json(f"/actions/runs/{run_id}/artifacts?per_page=100").get("artifacts", [])
+          matches = [
+              item
+              for item in artifacts
+              if str(item.get("id")) == os.environ["EXPECTED_ARTIFACT_ID"]
+          ]
+          if len(matches) != 1:
+              raise SystemExit("Expected producer artifact ID was not unique.")
+          artifact = matches[0]
+          expected_artifact = {
+              "name": os.environ["EXPECTED_ARTIFACT_NAME"],
+              "digest": os.environ["EXPECTED_ARTIFACT_DIGEST"],
+              "size_in_bytes": int(os.environ["EXPECTED_ARTIFACT_SIZE"]),
+              "expired": False,
+          }
+          for key, expected in expected_artifact.items():
+              if artifact.get(key) != expected:
+                  raise SystemExit(f"Producer artifact metadata mismatch: {key}.")
+          PY
+
       - name: Download the exact same-run architecture artifact
+        if: ${{ inputs.operation != 'consume-existing' }}
         uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with:
           name: sedna-first-package-${{ needs.identity.outputs.source_short }}-${{ matrix.arch }}-${{ github.run_id }}
+          path: dist
+
+      - name: Download the exact existing producer artifact
+        if: ${{ inputs.operation == 'consume-existing' }}
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          artifact-ids: ${{ matrix.artifact_id }}
+          repository: ${{ github.repository }}
+          run-id: "44481500978"
+          github-token: ${{ github.token }}
+          digest-mismatch: error
           path: dist
 
       - name: Verify artifact identity, hashes, and packaged architecture
@@ -647,11 +845,12 @@ jobs:
           manifest = json.loads(Path("dist/release-manifest.json").read_text())
           expected = {
               "repository": os.environ["GITHUB_REPOSITORY"],
-              "sourceCommit": os.environ["SOURCE_SHA"],
-              "sourceTree": os.environ["SOURCE_TREE"],
-              "workflowHostCommit": os.environ["WORKFLOW_HOST_SHA"],
-              "workflowHostTree": os.environ["WORKFLOW_HOST_TREE"],
-              "workflowRunId": os.environ["GITHUB_RUN_ID"],
+              "sourceCommit": os.environ["PACKAGE_SOURCE_SHA"],
+              "sourceTree": os.environ["PACKAGE_SOURCE_TREE"],
+              "workflowHostCommit": os.environ["PACKAGE_WORKFLOW_HOST_SHA"],
+              "workflowHostTree": os.environ["PACKAGE_WORKFLOW_HOST_TREE"],
+              "workflowRunId": os.environ["PACKAGE_RUN_ID"],
+              "workflow": f'{os.environ["GITHUB_SERVER_URL"]}/{os.environ["GITHUB_REPOSITORY"]}/actions/runs/{os.environ["PACKAGE_RUN_ID"]}',
               "target": os.environ["TARGET"],
               "packageVersion": os.environ["PACKAGE_VERSION"],
           }
