@@ -340,7 +340,7 @@ impl Service<Request<Body>> for UpstreamClient {
         req.extensions().extend(http_connection.extensions());
 
         if options_asterisk {
-            *req.uri_mut() = Uri::parse("*".to_string()).map_err(rama_core::rama_error::ErrorExt::into_opaque_error)?;
+            *req.uri_mut() = Uri::parse("*".to_string()).map_err(rama_core::error::ErrorExt::into_opaque_error)?;
             *req.version_mut() = Version::HTTP_11;
         }
 
