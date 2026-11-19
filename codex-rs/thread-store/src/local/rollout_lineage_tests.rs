@@ -195,17 +195,46 @@ async fn unreadable_ancestor_recovers_from_another_copy_of_the_same_rollout() {
         .expect("page with only the short active copy");
     assert_eq!(page.segments[0].rollout_path, compressed);
     let child_contents = fs::read_to_string(&child_path).expect("read child");
-    let checkpoint = serde_json::json!({
-        "timestamp": "2026-07-16T00:00:00.000Z", "ordinal": 5, "type": "compacted",
-        "payload": {"message": "child checkpoint", "replacement_history": [], "window_number": 1}
-    });
-    fs::write(&child_path, format!("{child_contents}{checkpoint}\n")).expect("append checkpoint");
+    // A checkpoint alone is not enough: the bounded replay also needs a compatible user-turn
+    // context. Put a complete turn before the checkpoint so the corrupt ancestor can be skipped.
+    let suffix = [
+        serde_json::json!({"type": "event_msg", "payload": {
+            "type": "turn_started", "turn_id": "child-turn"
+        }}),
+        serde_json::json!({"type": "event_msg", "payload": {
+            "type": "user_message", "message": "child question", "images": null
+        }}),
+        serde_json::json!({"type": "turn_context", "payload": {
+            "turn_id": "child-turn", "cwd": home, "approval_policy": "never",
+            "sandbox_policy": {"type": "read-only"}, "model": "test", "summary": "auto"
+        }}),
+        serde_json::json!({"type": "event_msg", "payload": {
+            "type": "turn_complete", "turn_id": "child-turn", "last_agent_message": null
+        }}),
+        serde_json::json!({"type": "compacted", "payload": {
+            "message": "child checkpoint", "replacement_history": [], "window_number": 1
+        }}),
+    ];
+    let mut amended = child_contents.clone();
+    for (index, item) in suffix.into_iter().enumerate() {
+        let mut line = item.as_object().expect("fixture object").clone();
+        line.insert("timestamp".to_string(), "2026-07-16T00:00:00.000Z".into());
+        line.insert("ordinal".to_string(), (index as u64 + 5).into());
+        amended.push_str(&serde_json::to_string(&line).expect("serialize fixture"));
+        amended.push('\n');
+    }
+    fs::write(&child_path, amended).expect("append turn and checkpoint");
     let context = load_context()
         .await
         .expect("resume at the newer checkpoint");
     assert!(matches!(
         context.items.as_slice(),
-        [RolloutItem::SessionMeta(_), RolloutItem::Compacted(item)] if item.message == "child checkpoint"
+        [RolloutItem::SessionMeta(_),
+         RolloutItem::EventMsg(codex_protocol::protocol::EventMsg::TurnStarted(_)),
+         RolloutItem::EventMsg(codex_protocol::protocol::EventMsg::UserMessage(_)),
+         RolloutItem::TurnContext(_),
+         RolloutItem::EventMsg(codex_protocol::protocol::EventMsg::TurnComplete(_)),
+         RolloutItem::Compacted(item)] if item.message == "child checkpoint"
     ));
     fs::write(&child_path, child_contents).expect("restore child");
     fs::write(

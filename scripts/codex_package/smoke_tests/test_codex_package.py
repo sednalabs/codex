@@ -128,7 +128,10 @@ def test_packaged_executor_initializes_and_enforces_sandbox(
         .strip()
         .split()[-1]
     )
-    assert version == package.run("--version").stdout.strip().split()[-1]
+    package_version = package.run("--version").stdout.strip().split()[-1]
+    # Build metadata identifies the Sedna artifact but does not change its
+    # SemVer API version.
+    assert version == package_version.split("+", 1)[0]
     with (
         ThreadPoolExecutor(max_workers=1) as reader,
         subprocess.Popen(
@@ -160,7 +163,8 @@ def test_packaged_executor_initializes_and_enforces_sandbox(
             assert initialized["result"]["sessionId"]
             reported_environment = initialized["result"]["environmentInfo"]
             metadata = json.loads((root / "codex-package.json").read_text())
-            assert reported_environment["executorVersion"] == metadata["version"]
+            executor_version = metadata["version"].split("+", 1)[0]
+            assert reported_environment["executorVersion"] == executor_version
             process.stdin.write('{"method":"initialized","params":{}}\n')
 
             def file_request(

@@ -163,17 +163,11 @@ async fn high_stdio_descriptors_use_compatible_fallback() -> anyhow::Result<()> 
     let raw = unsafe { libc::fcntl(file.as_raw_fd(), libc::F_DUPFD, 3) };
     anyhow::ensure!(raw >= 3, "{}", io::Error::last_os_error());
     let sentinel = unsafe { OwnedFd::from_raw_fd(raw) };
-    let mut occupied = Vec::new();
-    loop {
-        let descriptor = file.try_clone()?;
-        let raw = descriptor.as_raw_fd();
-        occupied.push(descriptor);
-        // Darwin's spawn file actions reject valid descriptors >= OPEN_MAX
-        // (10240), even when RLIMIT_NOFILE allows the descriptor to be opened.
-        if raw >= 10_240 {
-            break;
-        }
-    }
+    // SAFETY: Duplicate one live descriptor directly above Darwin OPEN_MAX so the
+    // test exercises the fallback without consuming thousands of file descriptors.
+    let high_raw = unsafe { libc::fcntl(file.as_raw_fd(), libc::F_DUPFD, 10_240) };
+    anyhow::ensure!(high_raw >= 10_240, "{}", io::Error::last_os_error());
+    let _high_descriptor = unsafe { OwnedFd::from_raw_fd(high_raw) };
 
     let mut strict = Command::new("/usr/bin/true");
     strict.fallback(SpawnFallback::ReturnError);

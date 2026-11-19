@@ -509,7 +509,7 @@ jobs:
 
           symbols_dir="${RUNNER_TEMP}/sedna-first-symbols"
           mkdir -p "${symbols_dir}"
-          for binary in codex codex-app-server codex-code-mode-host; do
+          for binary in codex codex-app-server codex-code-mode-host codex-exec-server; do
             objcopy --only-keep-debug \
               "${CARGO_TARGET_DIR}/${TARGET}/release/${binary}" \
               "${symbols_dir}/${binary}.debug"
@@ -694,6 +694,16 @@ jobs:
         uses: astral-sh/setup-uv@20cfd1bf945f4377ade1205e4dbc17946fc9a30d # v10.0.1
         with:
           version: "0.11.3"
+
+      - name: Enable Linux sandbox prerequisites
+        if: runner.os == 'Linux'
+        shell: bash
+        run: |
+          set -euo pipefail
+          sudo sysctl -w kernel.unprivileged_userns_clone=1
+          if sudo sysctl -a 2>/dev/null | grep -q '^kernel.apparmor_restrict_unprivileged_userns'; then
+            sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
+          fi
 
       - name: Run existing package and exact packaged TUI consumers
         shell: bash
