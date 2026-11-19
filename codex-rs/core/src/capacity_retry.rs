@@ -13,7 +13,7 @@ pub(crate) fn retry_deadline(error: &CodexErr, attempt: u64) -> Instant {
     let local = now + crate::util::backoff(attempt.min(MAX_BACKOFF_ATTEMPT)).min(MAX_DELAY);
     error
         .retry_after()
-        .map(|advice| advice.deadline())
+        .map(codex_http_client::RetryAfter::deadline)
         .unwrap_or(local)
         .max(local)
 }

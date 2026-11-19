@@ -57,7 +57,7 @@ pub(super) enum RemoteCompactV2AttemptInput<'a> {
         client_session: Option<&'a mut ModelClientSession>,
         capacity_retry_disposition: CapacityRetryDisposition,
     },
-    Background(BackgroundCompactionInput),
+    Background(Box<BackgroundCompactionInput>),
 }
 
 pub(crate) struct BackgroundCompactionCandidate {
@@ -131,7 +131,11 @@ pub(super) async fn run_remote_compact_v2_attempt(
             } else {
                 resolved_base
                     .clone()
-                    .expect("non-incremental baseline is resolved")
+                    .ok_or_else(|| {
+                        CodexErr::Fatal(
+                            "non-incremental baseline was not resolved before compaction".into(),
+                        )
+                    })?
             };
             let (rewritten_outputs, estimated_deleted_tokens) =
                 trim_function_call_history_to_fit_context_window(
@@ -410,7 +414,7 @@ pub(crate) async fn run_background_compaction(
         &CompactionTraceContext::disabled(),
         metadata,
         &mut CompactionAnalyticsDetails::default(),
-        RemoteCompactV2AttemptInput::Background(prepared_input),
+        RemoteCompactV2AttemptInput::Background(Box::new(prepared_input)),
     )
     .await?;
     Ok(BackgroundCompactionCandidate {

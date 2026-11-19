@@ -4,6 +4,7 @@
 
 use std::time::Duration;
 
+use crate::capacity_retry;
 use crate::client::ModelClientSession;
 use crate::context::ContentFilterGuidance;
 use crate::context::ContextualUserFragment;
@@ -19,9 +20,6 @@ use codex_protocol::protocol::EventMsg;
 use codex_protocol::protocol::WarningEvent;
 use tokio::time::Instant;
 use tracing::warn;
-
-#[path = "capacity_retry.rs"]
-pub(crate) mod capacity_retry;
 
 const INITIAL_CONNECTION_RETRY_DELAY: Duration = Duration::from_secs(5);
 const MAX_CONNECTION_RETRY_DELAY: Duration = Duration::from_secs(60);

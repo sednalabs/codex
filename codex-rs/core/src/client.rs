@@ -1373,24 +1373,22 @@ impl ModelClient {
             active_baseline_overlay = false;
             suppressed_baseline = true;
         }
-        if active_baseline_overlay {
-            if !baseline_authorized {
-                let outcome = match &authority.provenance {
-                    Some(BaseInstructionsProvenance::Custom) => "blocked: protected baseline",
-                    Some(BaseInstructionsProvenance::Model { .. }) => {
-                        "blocked: untrusted model baseline"
-                    }
-                    None => "blocked: unknown baseline",
-                };
-                self.report_instruction_overlay(responses_metadata, outcome);
-                if optional_baseline {
-                    active_baseline_overlay = false;
-                    suppressed_baseline = true;
-                } else {
-                    return Err(CodexErr::InvalidRequest(format!(
-                        "instruction overlay {outcome}"
-                    )));
+        if active_baseline_overlay && !baseline_authorized {
+            let outcome = match &authority.provenance {
+                Some(BaseInstructionsProvenance::Custom) => "blocked: protected baseline",
+                Some(BaseInstructionsProvenance::Model { .. }) => {
+                    "blocked: untrusted model baseline"
                 }
+                None => "blocked: unknown baseline",
+            };
+            self.report_instruction_overlay(responses_metadata, outcome);
+            if optional_baseline {
+                active_baseline_overlay = false;
+                suppressed_baseline = true;
+            } else {
+                return Err(CodexErr::InvalidRequest(format!(
+                    "instruction overlay {outcome}"
+                )));
             }
         }
         if active_baseline_overlay {
@@ -1422,7 +1420,11 @@ impl ModelClient {
                     ));
                 }
             }
-            let baseline_plan = baseline_plan.expect("active baseline overlay has a plan");
+            let Some(baseline_plan) = baseline_plan else {
+                return Err(CodexErr::Fatal(
+                    "active instruction overlay is missing its baseline plan".into(),
+                ));
+            };
             let allow_multiple =
                 baseline_plan.selection == codex_config::InstructionOverlaySelection::AllClassified;
             if active_baseline_overlay

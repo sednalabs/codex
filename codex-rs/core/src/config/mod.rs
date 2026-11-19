@@ -3556,13 +3556,13 @@ impl Config {
         config_layer_stack.validate_project_mitm_profiles()?;
         // Keep the large config-construction future off small test thread stacks.
         Box::pin(async move {
-        if cfg.historical_baseline_adoption.is_some() {
-            if !Self::historical_baseline_adoption_is_user_owned(&config_layer_stack) {
-                return Err(std::io::Error::new(
-                    std::io::ErrorKind::InvalidInput,
-                    "historical baseline adoption must be supplied by the local user config",
-                ));
-            }
+        if cfg.historical_baseline_adoption.is_some()
+            && !Self::historical_baseline_adoption_is_user_owned(&config_layer_stack)
+        {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::InvalidInput,
+                "historical baseline adoption must be supplied by the local user config",
+            ));
         }
         if let Some(overlays) = &cfg.instruction_overlays {
             overlays.validate_all().map_err(|error| std::io::Error::new(

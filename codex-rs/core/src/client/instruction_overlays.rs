@@ -168,7 +168,7 @@ pub(super) fn transform_current_model_transitions(
                             InstructionOverlayComponent::ModelBaseline,
                             Some(template),
                         )?
-                        .expect("present baseline stays present");
+                        .ok_or_else(|| anyhow::anyhow!("present baseline stays present"))?;
                     if updated != *template {
                         *current = text(fragment(&updated));
                         *id = None;
