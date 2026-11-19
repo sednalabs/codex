@@ -387,6 +387,8 @@ jobs:
     timeout-minutes: 210
     env:
       CARGO_INCREMENTAL: "0"
+      # Use fewer simultaneous rustc processes on the public ARM runner while preserving the x86 default.
+      CARGO_BUILD_JOBS: ${{ matrix.target == 'aarch64-unknown-linux-gnu' && '2' || '4' }}
       SOURCE_SHA: ${{ needs.identity.outputs.source_sha }}
       SOURCE_TREE: ${{ needs.identity.outputs.source_tree }}
       PACKAGE_VERSION: ${{ needs.identity.outputs.package_version }}
@@ -471,21 +473,32 @@ jobs:
           fi
 
           mkdir -p "${DIST_DIR}"
-          cargo build --locked --target "${TARGET}" --release --bin codex-responses-api-proxy
-          just --justfile ../justfile assemble-codex-package \
-            --target "${TARGET}" \
-            --variant codex \
-            --package-version "${PACKAGE_VERSION}" \
-            --cargo-profile release \
-            --archive-output "${DIST_DIR}/codex-cli-${TARGET}.tar.gz" \
-            --force
-          just --justfile ../justfile assemble-codex-package \
-            --target "${TARGET}" \
-            --variant codex-app-server \
-            --package-version "${PACKAGE_VERSION}" \
-            --cargo-profile release \
-            --archive-output "${DIST_DIR}/codex-app-server-${TARGET}.tar.gz" \
-            --force
+          printf 'Package target=%s runner_arch=%s cargo_jobs=%s\n' "${TARGET}" "$(uname -m)" "${CARGO_BUILD_JOBS}"
+          if [[ "${TARGET}" == "aarch64-unknown-linux-gnu" ]]; then
+            echo "ARM package runner resource snapshot:"
+            printf 'cpu_count='; nproc
+            grep -E '^(MemTotal|MemAvailable):' /proc/meminfo
+            df -h "${RUNNER_TEMP}" "${GITHUB_WORKSPACE}"
+            if [[ -r /proc/pressure/memory ]]; then cat /proc/pressure/memory; fi
+          fi
+          /usr/bin/time -f 'responses-api-proxy elapsed=%E max-rss-kb=%M exit=%x' \
+            cargo build --locked --target "${TARGET}" --release --bin codex-responses-api-proxy
+          /usr/bin/time -f 'codex-cli package elapsed=%E max-rss-kb=%M exit=%x' \
+            just --justfile ../justfile assemble-codex-package \
+              --target "${TARGET}" \
+              --variant codex \
+              --package-version "${PACKAGE_VERSION}" \
+              --cargo-profile release \
+              --archive-output "${DIST_DIR}/codex-cli-${TARGET}.tar.gz" \
+              --force
+          /usr/bin/time -f 'codex-app-server package elapsed=%E max-rss-kb=%M exit=%x' \
+            just --justfile ../justfile assemble-codex-package \
+              --target "${TARGET}" \
+              --variant codex-app-server \
+              --package-version "${PACKAGE_VERSION}" \
+              --cargo-profile release \
+              --archive-output "${DIST_DIR}/codex-app-server-${TARGET}.tar.gz" \
+              --force
 
           install -Dm 0755 "${CARGO_TARGET_DIR}/${TARGET}/release/codex-responses-api-proxy" \
             "${DIST_DIR}/codex-responses-api-proxy"
@@ -555,7 +568,8 @@ jobs:
 
   consume-package:
     name: Consume exact downloaded packages (${{ matrix.target }})
-    if: ${{ needs.identity.outputs.package_available == 'true' && needs.prepare-source.outputs.source_ready == 'true' && (github.event_name == 'pull_request' || (github.event_name == 'workflow_dispatch' && (inputs.operation == 'package'))) }}
+    # Run each architecture's existing consumer after producers settle; a failed peer must not hide a successful artifact.
+    if: ${{ always() && !cancelled() && needs.identity.outputs.package_available == 'true' && needs.prepare-source.outputs.source_ready == 'true' && (github.event_name == 'pull_request' || (github.event_name == 'workflow_dispatch' && (inputs.operation == 'package'))) }}
     needs:
       - identity
       - prepare-source
