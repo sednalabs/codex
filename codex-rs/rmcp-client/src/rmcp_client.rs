@@ -2052,8 +2052,8 @@ async fn create_oauth_transport_and_runtime(
                 credential_store,
                 DefaultKeyringStore,
                 oauth_config.cloned(),
-            )
-            .with_device_metadata_client(oauth_http_client.clone());
+                /*device_metadata_client*/ Some(oauth_http_client.clone()),
+            );
             manager.set_credential_store(store.clone());
             Some(store)
         }

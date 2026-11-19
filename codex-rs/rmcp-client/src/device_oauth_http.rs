@@ -63,7 +63,7 @@ pub(crate) async fn execute_same_origin(
         if redirects == MAX_REDIRECTS {
             bail!("OAuth device request exceeded redirect limit");
         }
-        if matches!(status, 301 | 302 | 303)
+        if matches!(status, 301..=303)
             && parts.method != Method::GET
             && parts.method != Method::HEAD
         {

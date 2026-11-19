@@ -77,6 +77,7 @@ impl<K: KeyringStore + Clone + 'static> OAuthCredentialStore<K> {
         store: ResolvedOAuthCredentialStore,
         keyring: K,
         oauth_config: Option<McpServerOAuthConfig>,
+        device_metadata_client: Option<Arc<crate::oauth_http_client::OAuthHttpClientAdapter>>,
     ) -> Self {
         Self {
             inner: Arc::new(OAuthCredentialStoreInner {
@@ -87,23 +88,13 @@ impl<K: KeyringStore + Clone + 'static> OAuthCredentialStore<K> {
                 store,
                 keyring,
                 oauth_config,
-                device_metadata_client: None,
+                device_metadata_client,
                 last_credentials: Mutex::new(Some(tokens)),
                 rejected_credentials: Mutex::new(None),
                 refresh_guard: Mutex::new(Weak::new()),
             }),
             held_refresh_guard: None,
         }
-    }
-
-    pub(crate) fn with_device_metadata_client(
-        mut self,
-        client: Arc<crate::oauth_http_client::OAuthHttpClientAdapter>,
-    ) -> Self {
-        Arc::get_mut(&mut self.inner)
-            .expect("new OAuth credential store has one owner")
-            .device_metadata_client = Some(client);
-        self
     }
 
     pub(crate) async fn refresh_if_needed(&self, manager: &mut AuthorizationManager) -> Result<()> {
