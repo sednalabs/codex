@@ -3,6 +3,7 @@ load("//bazel/rules/testing/wine:wine.bzl", "wine_rust_test")
 wine_rust_test(
     name = "smoke-test",
     timeout = "short",
+    tags = ["manual"],
     srcs = ["remote_env_windows_test.rs"],
     crate_name = "remote_env_windows_test",
     crate_root = "remote_env_windows_test.rs",

@@ -317,6 +317,13 @@ buffer limit (16 MiB maximum). An explicit `UNSIGNED-PAYLOAD` streams without
 using the signing buffer. OpenSearch Serverless requires a literal payload hash.
 Masked presigned URLs, SigV4a, AWS signed streams and declared trailers are denied.
 
+Selected AWS SigV4 credential-signing requests that use `Transfer-Encoding` are
+also rejected, including ordinary chunked payloads. The HTTP/1 parser removes
+`Content-Length` before the signing hook can distinguish ordinary chunked
+framing from conflicting `Content-Length` plus `Transfer-Encoding`, so this
+integration fails that signing mode closed. Fixed-length signed requests remain
+supported; unsigned requests and other network traffic are unchanged.
+
 An injected header can additionally set `placeholder` to require one exact
 whole-header value before substituting the secret. Missing, mismatched, or
 duplicate values fail closed. This form requires HTTPS port 443 and cannot

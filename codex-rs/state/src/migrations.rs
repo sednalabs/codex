@@ -234,7 +234,7 @@ fn checksum_matches_hex(checksum: &[u8], expected: &str) -> bool {
     }
     checksum
         .iter()
-        .zip(expected.as_bytes().chunks_exact(2))
+        .zip(expected.as_bytes().as_chunks::<2>().0.iter())
         .all(|(actual, pair)| {
             hex_nibble(pair[0])
                 .zip(hex_nibble(pair[1]))

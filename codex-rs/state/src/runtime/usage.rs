@@ -114,6 +114,10 @@ impl UsageLogger {
         .await
     }
 
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "usage initialization preserves distinct thread identity and lineage inputs"
+    )]
     pub async fn try_new_with_thread_source(
         state: Arc<StateRuntime>,
         thread_id: ThreadId,

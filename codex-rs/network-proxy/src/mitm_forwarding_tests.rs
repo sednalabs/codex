@@ -320,25 +320,42 @@ async fn signs_only_supported_http1_requests_for_an_http2_origin() {
     });
 
     let auth = guest_authorization("s3", "host;x-amz-date");
-    for (extra_headers, status) in [
-        ("Content-Length: 1\r\nTransfer-Encoding: chunked\r\n", 403),
-        ("Transfer-Encoding: gzip, chunked\r\n", 403),
+    let chunked_body = "3\r\nabc\r\n0\r\n\r\n";
+    for (extra_headers, wire_body, status) in [
+        (
+            "Content-Length: 1\r\nTransfer-Encoding: chunked\r\n",
+            chunked_body,
+            403,
+        ),
+        // Selected signed requests using transfer encoding fail closed, even
+        // for ordinary chunked bodies, because the parser removes Content-Length
+        // before the signing hook can distinguish conflicting framing.
+        ("Transfer-Encoding: chunked\r\n", chunked_body, 403),
+        ("Transfer-Encoding: gzip, chunked\r\n", chunked_body, 403),
         (
             "Transfer-Encoding: chunked\r\nConnection: Authorization\r\n",
+            chunked_body,
             403,
         ),
         (
             "Transfer-Encoding: chunked\r\nX-Amz-Trailer: checksum\r\n",
+            chunked_body,
             403,
         ),
         (
             "Transfer-Encoding: chunked\r\nContent-Encoding: aws-chunked\r\nConnection: content-encoding\r\n",
+            chunked_body,
             403,
         ),
-        // Rama discards Content-Length when it appears after Transfer-Encoding.
-        // Verify that the retained chunk framing and the signed payload agree.
         (
             "Transfer-Encoding: chunked\r\nContent-Length: 1\r\nKeep-Alive: timeout=5\r\nSec-WebSocket-Key: test\r\n",
+            chunked_body,
+            403,
+        ),
+        // Fixed-length signed bodies remain supported.
+        (
+            "Content-Length: 3\r\nKeep-Alive: timeout=5\r\nSec-WebSocket-Key: test\r\n",
+            "abc",
             200,
         ),
     ] {
@@ -355,7 +372,7 @@ async fn signs_only_supported_http1_requests_for_an_http2_origin() {
                 .expect("serve guest");
         });
         let request = format!(
-            "POST /key HTTP/1.1\r\nHost: localhost:{}\r\nAuthorization: {auth}\r\nX-Amz-Date: 20150830T123600Z\r\n{extra_headers}Connection: close\r\n\r\n3\r\nabc\r\n0\r\n\r\n",
+            "POST /key HTTP/1.1\r\nHost: localhost:{}\r\nAuthorization: {auth}\r\nX-Amz-Date: 20150830T123600Z\r\n{extra_headers}Connection: close\r\n\r\n{wire_body}",
             context.policy.target_port
         );
         guest
