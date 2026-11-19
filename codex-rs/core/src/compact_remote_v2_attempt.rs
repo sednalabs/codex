@@ -129,13 +129,11 @@ pub(super) async fn run_remote_compact_v2_attempt(
                     provenance: None,
                 }
             } else {
-                resolved_base
-                    .clone()
-                    .ok_or_else(|| {
-                        CodexErr::Fatal(
-                            "non-incremental baseline was not resolved before compaction".into(),
-                        )
-                    })?
+                resolved_base.clone().ok_or_else(|| {
+                    CodexErr::Fatal(
+                        "non-incremental baseline was not resolved before compaction".into(),
+                    )
+                })?
             };
             let (rewritten_outputs, estimated_deleted_tokens) =
                 trim_function_call_history_to_fit_context_window(

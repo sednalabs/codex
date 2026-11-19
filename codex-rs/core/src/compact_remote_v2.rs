@@ -7,6 +7,8 @@ use crate::compact_retained_tool_outputs::is_retained_tool_output;
 use crate::session::FileAudioDurations;
 
 use crate::Prompt;
+use crate::capacity_retry::retry_deadline;
+use crate::capacity_retry::wait_for_capacity;
 use crate::client::ModelClientSession;
 use crate::client::ResponsesHttpExecutor;
 use crate::client::SamplingOptions;
@@ -34,8 +36,6 @@ use crate::responses_metadata::CodexResponsesMetadata;
 use crate::responses_metadata::CompactionTurnMetadata;
 use crate::responses_retry::ResponsesStreamRequest;
 use crate::responses_retry::ResponsesStreamRetryState;
-use crate::capacity_retry::retry_deadline;
-use crate::capacity_retry::wait_for_capacity;
 use crate::responses_retry::handle_response_stream_error;
 use crate::session::RequestEffortUsage;
 use crate::session::SamplingInterrupt;
