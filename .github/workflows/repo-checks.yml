@@ -70,11 +70,6 @@ jobs:
       - name: Check formatting (run `just fmt` to fix)
         run: just fmt-check
 
-      - name: Show Ruff diff for failing package smoke test (temporary)
-        if: failure()
-        continue-on-error: true
-        run: uv run --frozen --project scripts ruff format --diff scripts/codex_package/smoke_tests/test_codex_package.py
-
       - name: Prettier (run `pnpm run format:fix` to fix)
         run: pnpm run format
 
