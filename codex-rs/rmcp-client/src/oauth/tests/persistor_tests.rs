@@ -132,8 +132,8 @@ async fn device_only_refresh_uses_issuer_bound_metadata_in_both_modes() -> Resul
                     ResolvedOAuthCredentialStore::file(),
                     DefaultKeyringStore,
                     None,
-                )
-                .with_device_metadata_client(client.clone());
+                    Some(client.clone()),
+                );
                 manager.lock().await.set_credential_store(store.clone());
                 OAuthRuntime::Coordinated {
                     auth_manager: manager,
@@ -303,6 +303,7 @@ async fn coordinated_401_refresh_rereads_and_persists_before_retry() -> Result<(
         ResolvedOAuthCredentialStore::file(),
         DefaultKeyringStore,
         /*oauth_config*/ None,
+        /*device_metadata_client*/ None,
     ));
     let client = AuthClient::new(
         StreamableHttpClientAdapter::new(
@@ -1112,6 +1113,7 @@ async fn coordinated_manager_for(
         ResolvedOAuthCredentialStore::file(),
         DefaultKeyringStore,
         /*oauth_config*/ None,
+        /*device_metadata_client*/ None,
     );
     manager.set_credential_store(store.clone());
     Ok((Arc::new(TokioMutex::new(manager)), store))

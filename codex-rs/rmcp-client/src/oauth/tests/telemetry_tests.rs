@@ -330,6 +330,7 @@ async fn coordinated_refresh_persistence_records_success_and_failure() -> Result
             resolved.store,
             keyring.clone(),
             /*oauth_config*/ None,
+            /*device_metadata_client*/ None,
         );
         let _guard = store.acquire_transaction_guard().await?;
         let mut credentials = store.load().await?.unwrap();
