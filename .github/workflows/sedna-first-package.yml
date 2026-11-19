@@ -79,7 +79,7 @@ jobs:
           EXPECTED_PRODUCER_SOURCE_SHA: "016eb01eaa03727e5c2dfe2d31e4f4aab88badbe"
           EXPECTED_PRODUCER_SOURCE_TREE: "08af5e4f4f8697af5ea990b2015e90b0034aa7ce"
           EXPECTED_PRODUCER_PACKAGE_VERSION: "0.166.0+sedna.1013.g016eb01e"
-          CONSUMER_PARENT_SHA: "dcaeb1486fe53bde7d842f96974aea14846f3950"
+          CONSUMER_PARENT_SHA: "7847b8c7e7b6182c7f197bb1c42e843686765f16"
         run: |
           set -euo pipefail
 
@@ -756,7 +756,7 @@ jobs:
           if (
               pull_request.get("number") != 1039
               or pull_request.get("head", {}).get("ref") != "work/upstream-convergence-0184-20261116"
-              or pull_request.get("head", {}).get("repo", {}).get("full_name") != repository
+              or pull_request.get("head", {}).get("repo", {}).get("id") != run.get("repository", {}).get("id")
               or pull_request.get("base", {}).get("ref") != "main"
           ):
               raise SystemExit("Producer pull-request source or base mismatch.")
