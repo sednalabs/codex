@@ -6,6 +6,8 @@
 //! `reqwest::ClientBuilder` or rustls client config, layer in custom CA support, and either get
 //! back a configured transport or a user-facing error that explains how to fix a misconfigured CA
 //! bundle.
+//! Concurrent native-root reads may share one in-flight load; later builds reload trust, and
+//! custom CA files are read independently for every build.
 //!
 //! The module intentionally has a narrow responsibility:
 //!
@@ -243,20 +245,26 @@ fn build_rustls_client_config(
     bundle: Option<&ConfiguredCaBundle>,
 ) -> Result<Arc<ClientConfig>, BuildCustomCaTransportError> {
     ensure_rustls_crypto_provider();
+    Ok(Arc::new(
+        ClientConfig::builder()
+            .with_root_certificates(build_rustls_root_store(bundle)?)
+            .with_no_client_auth(),
+    ))
+}
 
+#[cfg(windows)]
+pub(crate) fn build_rustls_root_store_with_custom_ca()
+-> Result<RootCertStore, BuildCustomCaTransportError> {
+    build_rustls_root_store(ProcessEnv.configured_ca_bundle().as_ref())
+}
+
+fn build_rustls_root_store(
+    bundle: Option<&ConfiguredCaBundle>,
+) -> Result<RootCertStore, BuildCustomCaTransportError> {
     // Start from the platform roots so websocket callers keep the same baseline trust behavior
     // they would get from tungstenite's default rustls connector, then layer in the Codex custom
     // CA bundle on top when configured.
-    let mut root_store = RootCertStore::empty();
-    let rustls_native_certs::CertificateResult { certs, errors, .. } =
-        rustls_native_certs::load_native_certs();
-    if !errors.is_empty() {
-        warn!(
-            native_root_error_count = errors.len(),
-            "encountered errors while loading native root certificates"
-        );
-    }
-    let _ = root_store.add_parsable_certificates(certs);
+    let mut root_store = (*crate::native_roots::load()).clone();
 
     if let Some(bundle) = bundle {
         let certificates = bundle.load_certificates()?;
@@ -279,11 +287,7 @@ fn build_rustls_client_config(
         }
     }
 
-    Ok(Arc::new(
-        ClientConfig::builder()
-            .with_root_certificates(root_store)
-            .with_no_client_auth(),
-    ))
+    Ok(root_store)
 }
 
 /// Builds a reqwest client using an injected environment source and reqwest builder.
@@ -297,9 +301,8 @@ fn build_reqwest_client_with_env(
     env_source: &dyn EnvSource,
     mut builder: reqwest::ClientBuilder,
 ) -> Result<reqwest::Client, BuildCustomCaTransportError> {
-    ensure_rustls_crypto_provider();
-
     if let Some(bundle) = env_source.configured_ca_bundle() {
+        ensure_rustls_crypto_provider();
         info!(
             source_env = bundle.source_env,
             ca_path = %bundle.path.display(),
@@ -725,7 +728,6 @@ mod tests {
     use super::CODEX_CA_CERT_ENV;
     use super::EnvSource;
     use super::SSL_CERT_FILE_ENV;
-    use super::build_reqwest_client_with_env;
     use super::maybe_build_rustls_client_config_with_env;
 
     const TEST_CERT: &str = include_str!("../tests/fixtures/test-ca.pem");
@@ -807,16 +809,6 @@ mod tests {
     }
 
     #[test]
-    fn reqwest_client_builder_installs_rustls_provider_without_custom_ca() {
-        let env = map_env(&[]);
-
-        let _client = build_reqwest_client_with_env(&env, reqwest::Client::builder().no_proxy())
-            .expect("reqwest client");
-
-        assert!(rustls::crypto::CryptoProvider::get_default().is_some());
-    }
-
-    #[test]
     fn rustls_config_reports_invalid_ca_file() {
         let temp_dir = TempDir::new().expect("tempdir");
         let cert_path = write_cert_file(&temp_dir, "empty.pem", "");
@@ -830,3 +822,7 @@ mod tests {
         ));
     }
 }
+
+#[cfg(test)]
+#[path = "custom_ca_tls_tests.rs"]
+mod tls_tests;

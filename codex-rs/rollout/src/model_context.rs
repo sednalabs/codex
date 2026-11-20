@@ -1,9 +1,8 @@
+use crate::RolloutItem;
 use codex_protocol::items::TurnItem;
 use codex_protocol::models::ResponseItem;
 use codex_protocol::protocol::EventMsg;
 use codex_protocol::protocol::InterAgentCommunication;
-use codex_protocol::protocol::RolloutItem;
-use codex_protocol::protocol::SessionMetaLine;
 
 /// Whether a reverse model-context scan needs more rollout items.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -61,19 +60,12 @@ impl ModelContextScan {
         progress
     }
 
-    /// Returns the collected items in chronological order with canonical head metadata.
+    /// Returns the collected items in chronological order.
     ///
     /// Call this after the reader reaches the beginning of its source or after [`Self::push`]
     /// returns [`ModelContextScanProgress::Complete`].
-    pub fn finish(mut self, session_meta: SessionMetaLine) -> Vec<RolloutItem> {
+    pub fn finish(mut self) -> Vec<RolloutItem> {
         self.items_newest_first.reverse();
-        if self.has_bounded_cutoff() {
-            // A bounded scan stops before reaching the head. Prepend the separately loaded head
-            // SessionMeta, which remains canonical when copied fork history contains later
-            // metadata.
-            self.items_newest_first
-                .insert(0, RolloutItem::SessionMeta(session_meta));
-        }
         self.items_newest_first
     }
 
@@ -141,7 +133,7 @@ impl ModelContextScan {
             }
             RolloutItem::ResponseItem(response_item) => {
                 self.active_segment.has_user_turn |=
-                    response_item_counts_as_user_turn(response_item);
+                    response_item_counts_as_user_turn(&response_item.item);
             }
             RolloutItem::InterAgentCommunication(_) => {
                 self.active_segment.has_user_turn = true;
@@ -149,10 +141,7 @@ impl ModelContextScan {
             RolloutItem::EventMsg(EventMsg::UserMessage(_)) => {
                 self.active_segment.has_user_turn = true;
             }
-            RolloutItem::EventMsg(_)
-            | RolloutItem::SessionMeta(_)
-            | RolloutItem::InterAgentCommunicationMetadata { .. }
-            | RolloutItem::WorldState(_) => {}
+            _ => {}
         }
 
         if self.has_bounded_cutoff() {
@@ -193,5 +182,90 @@ fn response_item_counts_as_user_turn(response_item: &ResponseItem) -> bool {
             role == "assistant" && InterAgentCommunication::is_message_content(content)
         }
         _ => false,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+
+    fn item(value: serde_json::Value) -> RolloutItem {
+        serde_json::from_value(value).expect("valid rollout fixture")
+    }
+
+    fn event(payload: serde_json::Value) -> RolloutItem {
+        item(json!({"type": "event_msg", "payload": payload}))
+    }
+
+    fn checkpoint(window: Option<u64>) -> RolloutItem {
+        item(json!({"type": "compacted", "payload": {
+            "message": "summary", "replacement_history": [], "window_number": window
+        }}))
+    }
+
+    fn context() -> RolloutItem {
+        item(json!({"type": "turn_context", "payload": {
+            "turn_id": "turn", "cwd": "/tmp", "approval_policy": "never",
+            "sandbox_policy": {"type": "read-only"}, "model": "test", "summary": "auto"
+        }}))
+    }
+
+    fn started() -> RolloutItem {
+        event(json!({"type": "turn_started", "turn_id": "turn"}))
+    }
+
+    fn user() -> RolloutItem {
+        event(json!({"type": "user_message", "message": "question", "images": null}))
+    }
+
+    #[test]
+    fn bounded_replay_preserves_action_and_completion_suffix() {
+        let mut scan = ModelContextScan::default();
+        let suffix = vec![
+            checkpoint(Some(1)),
+            started(),
+            user(),
+            context(),
+            item(json!({"type": "response_item", "payload": {
+                "type": "function_call_output", "call_id": "call-1", "output": "done"
+            }})),
+            event(json!({"type": "turn_complete", "turn_id": "turn", "last_agent_message": null})),
+        ];
+        for (index, value) in suffix.into_iter().rev().enumerate() {
+            let progress = scan.push(value);
+            assert_eq!(
+                progress,
+                if index == 5 {
+                    ModelContextScanProgress::Complete
+                } else {
+                    ModelContextScanProgress::Continue
+                }
+            );
+        }
+        let replay = scan.finish();
+        assert_eq!(replay.len(), 6);
+        assert!(matches!(&replay[4], RolloutItem::ResponseItem(_)));
+        assert!(matches!(
+            &replay[5],
+            RolloutItem::EventMsg(EventMsg::TurnComplete(_))
+        ));
+    }
+
+    #[test]
+    fn missing_context_rollback_and_incomplete_checkpoint_prevent_cutoff() {
+        let mut missing = ModelContextScan::default();
+        for value in [user(), started(), checkpoint(Some(1))] {
+            assert_eq!(missing.push(value), ModelContextScanProgress::Continue);
+        }
+        for bad in [
+            event(json!({"type": "thread_rolled_back", "num_turns": 1})),
+            checkpoint(None),
+        ] {
+            let mut scan = ModelContextScan::default();
+            for value in [bad, context(), user(), started(), checkpoint(Some(1))] {
+                assert_eq!(scan.push(value), ModelContextScanProgress::Continue);
+            }
+        }
     }
 }

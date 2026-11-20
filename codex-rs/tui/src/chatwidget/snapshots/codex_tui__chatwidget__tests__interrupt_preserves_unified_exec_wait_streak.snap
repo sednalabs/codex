@@ -2,8 +2,5 @@
 source: tui/src/chatwidget/tests/exec_flow.rs
 expression: snapshot
 ---
-cells=2
-• Waiting · primitive: write_stdin(empty stdin poll) · just fix
-
-
-■ Conversation interrupted - tell the model what to do differently. Something went wrong? Hit `/feedback` to report the issue.
+cells=1
+■ Conversation interrupted - use /feedback if something went wrong

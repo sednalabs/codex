@@ -4,107 +4,35 @@ use http::HeaderValue;
 use http::Method;
 use serde::Serialize;
 use serde_json::Value;
-use std::sync::Arc;
-use std::sync::Mutex;
+use std::fmt;
 use std::time::Duration;
-
-/// Single-use authority retained until a concrete transport accepts ownership of a request.
-///
-/// Clones share one claim bit, so a retry, reconnect, or duplicate send cannot reuse authority
-/// admitted for an earlier attempt. The held value is intentionally opaque and never formatted.
-#[derive(Clone)]
-pub struct RequestInitiation {
-    state: Arc<RequestInitiationState>,
-}
-
-struct RequestInitiationState {
-    inner: Mutex<RequestInitiationInner>,
-}
-
-struct RequestInitiationInner {
-    claimed: bool,
-    authority: Option<Box<dyn Send + 'static>>,
-}
-
-impl std::fmt::Debug for RequestInitiation {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.write_str("RequestInitiation(<redacted>)")
-    }
-}
-
-impl RequestInitiation {
-    pub fn new<T: Send + 'static>(authority: T) -> Self {
-        Self {
-            state: Arc::new(RequestInitiationState {
-                inner: Mutex::new(RequestInitiationInner {
-                    claimed: false,
-                    authority: Some(Box::new(authority)),
-                }),
-            }),
-        }
-    }
-
-    /// Claims the one send that this authority snapshot admitted.
-    pub fn claim(&self) -> Result<ClaimedRequestInitiation, String> {
-        let mut inner = self
-            .state
-            .inner
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
-        if inner.claimed {
-            return Err("request initiation authority was already consumed".to_string());
-        }
-        inner.claimed = true;
-        drop(inner);
-        Ok(ClaimedRequestInitiation {
-            initiation: Some(self.clone()),
-        })
-    }
-
-    /// Releases authority without admitting a send, for a pre-transport failure or cancellation.
-    pub fn cancel(&self) {
-        let mut inner = self
-            .state
-            .inner
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
-        inner.claimed = true;
-        inner.authority.take();
-    }
-}
-
-/// An exactly-once initiation claim. Dropping it releases authority if the transport fails before
-/// acknowledging request ownership.
-pub struct ClaimedRequestInitiation {
-    initiation: Option<RequestInitiation>,
-}
-
-impl ClaimedRequestInitiation {
-    pub fn acknowledge(mut self) {
-        if let Some(initiation) = self.initiation.take() {
-            initiation.cancel();
-        }
-    }
-}
-
-impl Drop for ClaimedRequestInitiation {
-    fn drop(&mut self) {
-        if let Some(initiation) = self.initiation.take() {
-            initiation.cancel();
-        }
-    }
-}
 
 /// A JSON request body serialized once into reference-counted bytes.
 ///
 /// Clones share the encoded allocation. Internally, the body can also hold the
 /// final compressed wire bytes while retaining the original JSON only when
 /// request-body trace logging is enabled.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Clone, PartialEq, Eq)]
 pub struct EncodedJsonBody {
     bytes: Bytes,
     trace_bytes: Option<Bytes>,
     prepared: bool,
+    private: bool,
+}
+
+impl fmt::Debug for EncodedJsonBody {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let mut body = f.debug_struct("EncodedJsonBody");
+        if self.private {
+            return body
+                .field("byte_len", &self.bytes.len())
+                .finish_non_exhaustive();
+        }
+        body.field("bytes", &self.bytes)
+            .field("trace_bytes", &self.trace_bytes)
+            .field("prepared", &self.prepared)
+            .finish()
+    }
 }
 
 impl EncodedJsonBody {
@@ -114,12 +42,28 @@ impl EncodedJsonBody {
             bytes: Bytes::from(bytes),
             trace_bytes: None,
             prepared: false,
+            private: false,
         })
     }
 
     /// Returns the encoded bytes currently stored by this body.
     pub fn as_bytes(&self) -> &[u8] {
         &self.bytes
+    }
+
+    /// Observers can clone this handle to retain the transport JSON without copying it.
+    pub fn shared_bytes(&self) -> &Bytes {
+        &self.bytes
+    }
+
+    /// Send richer JSON only to the configured origin and use the original body in traces.
+    pub fn with_private_json(&self, json: String) -> Self {
+        Self {
+            bytes: Bytes::from(json),
+            trace_bytes: Some(self.bytes.clone()),
+            prepared: false,
+            private: true,
+        }
     }
 
     pub(crate) fn trace_bytes(&self) -> &[u8] {
@@ -162,6 +106,12 @@ impl PreparedRequestBody {
     }
 }
 
+// Wire bytes can contain private connector results. Deliberately omit Debug.
+pub(crate) struct WireBody {
+    pub(crate) headers: HeaderMap,
+    pub(crate) body: Option<Bytes>,
+}
+
 #[derive(Debug, Clone)]
 pub struct Request {
     pub method: Method,
@@ -170,6 +120,9 @@ pub struct Request {
     pub body: Option<RequestBody>,
     pub compression: RequestCompression,
     pub timeout: Option<Duration>,
+    /// Maximum accepted response-body bytes, including streaming and error bodies.
+    /// `None` leaves the response unbounded.
+    pub response_body_limit_bytes: Option<usize>,
 }
 
 impl Request {
@@ -181,6 +134,7 @@ impl Request {
             body: None,
             compression: RequestCompression::None,
             timeout: None,
+            response_body_limit_bytes: None,
         }
     }
 
@@ -209,7 +163,14 @@ impl Request {
             self.body,
             Some(RequestBody::Json(_) | RequestBody::EncodedJson(_))
         );
-        let trace_bytes = if self.compression != RequestCompression::None
+        let private_trace = match &self.body {
+            Some(RequestBody::EncodedJson(body)) if body.private => body.trace_bytes.clone(),
+            _ => None,
+        };
+        let private = private_trace.is_some();
+        let trace_bytes = if private {
+            private_trace
+        } else if self.compression != RequestCompression::None
             && tracing::enabled!(target: "codex_http_client::transport", tracing::Level::TRACE)
         {
             match self.body.as_ref() {
@@ -222,13 +183,14 @@ impl Request {
         } else {
             None
         };
-        let prepared = self.prepare_body_for_send()?;
+        let prepared = self.prepare_wire_body()?;
         self.headers = prepared.headers;
         self.body = match (is_json, prepared.body) {
             (true, Some(bytes)) => Some(RequestBody::EncodedJson(EncodedJsonBody {
                 bytes,
                 trace_bytes,
                 prepared: true,
+                private,
             })),
             (false, Some(body)) => Some(RequestBody::Raw(body)),
             (_, None) => None,
@@ -241,15 +203,31 @@ impl Request {
     ///
     /// Auth schemes such as AWS SigV4 need to sign the final body bytes, including
     /// compression and content headers. Calling this method does not mutate the
-    /// request.
+    /// request. Use [`Self::into_prepared`] for private JSON to retain its redacted
+    /// debug representation.
     pub fn prepare_body_for_send(&self) -> Result<PreparedRequestBody, String> {
+        if self.has_private_body() {
+            return Err("private JSON requires Request::into_prepared".to_string());
+        }
+        let wire = self.prepare_wire_body()?;
+        Ok(PreparedRequestBody {
+            headers: wire.headers,
+            body: wire.body,
+        })
+    }
+
+    pub(crate) fn has_private_body(&self) -> bool {
+        matches!(&self.body, Some(RequestBody::EncodedJson(body)) if body.private)
+    }
+
+    pub(crate) fn prepare_wire_body(&self) -> Result<WireBody, String> {
         let headers = self.headers.clone();
         match self.body.as_ref() {
             Some(RequestBody::Raw(raw_body)) => {
                 if self.compression != RequestCompression::None {
                     return Err("request compression cannot be used with raw bodies".to_string());
                 }
-                Ok(PreparedRequestBody {
+                Ok(WireBody {
                     headers,
                     body: Some(raw_body.clone()),
                 })
@@ -259,7 +237,7 @@ impl Request {
                 self.prepare_encoded_json(headers, &body)
             }
             Some(RequestBody::EncodedJson(body)) => self.prepare_encoded_json(headers, body),
-            None => Ok(PreparedRequestBody {
+            None => Ok(WireBody {
                 headers,
                 body: None,
             }),
@@ -270,9 +248,9 @@ impl Request {
         &self,
         mut headers: HeaderMap,
         body: &EncodedJsonBody,
-    ) -> Result<PreparedRequestBody, String> {
+    ) -> Result<WireBody, String> {
         if body.prepared {
-            return Ok(PreparedRequestBody {
+            return Ok(WireBody {
                 headers,
                 body: Some(body.bytes.clone()),
             });
@@ -320,32 +298,10 @@ impl Request {
             );
         }
 
-        Ok(PreparedRequestBody {
+        Ok(WireBody {
             headers,
             body: Some(bytes),
         })
-    }
-}
-
-#[cfg(test)]
-mod request_initiation_tests {
-    use super::RequestInitiation;
-
-    #[test]
-    fn cancellation_and_claim_are_single_use_and_secret_safe() {
-        let cancelled = RequestInitiation::new("authority-secret".to_string());
-        let stale = cancelled.clone();
-        cancelled.cancel();
-        assert!(stale.claim().is_err());
-
-        let claimed = RequestInitiation::new("other-secret".to_string());
-        let duplicate = claimed.clone();
-        claimed.claim().expect("first claim should succeed");
-        assert!(duplicate.claim().is_err());
-
-        let debug = format!("{cancelled:?} {claimed:?}");
-        assert!(!debug.contains("authority-secret"));
-        assert!(!debug.contains("other-secret"));
     }
 }
 
@@ -429,6 +385,92 @@ mod tests {
             request.headers.get(http::header::CONTENT_TYPE),
             Some(&HeaderValue::from_static("application/json"))
         );
+    }
+
+    #[test]
+    fn ordinary_request_bodies_keep_debug_fields() {
+        let canonical = EncodedJsonBody::encode(&json!({"model": "test"})).expect("valid JSON");
+        let json = &canonical.bytes;
+        assert_eq!(
+            format!("{canonical:?}"),
+            format!("EncodedJsonBody {{ bytes: {json:?}, trace_bytes: None, prepared: false }}")
+        );
+
+        for compression in [RequestCompression::None, RequestCompression::Zstd] {
+            let mut request = Request::new(Method::POST, "https://example.com".to_string())
+                .with_compression(compression);
+            request
+                .headers
+                .insert("x-test", HeaderValue::from_static("header-marker"));
+            request.body = Some(RequestBody::EncodedJson(canonical.clone()));
+            let subscriber = tracing_subscriber::registry();
+            let prepared =
+                tracing::subscriber::with_default(subscriber, || request.into_prepared())
+                    .expect("body should prepare");
+            let wire = prepared.prepare_body_for_send().expect("prepared body");
+            let Some(RequestBody::EncodedJson(encoded)) = prepared.body.as_ref() else {
+                panic!("expected encoded JSON");
+            };
+            let PreparedRequestBody { headers, body } = &wire;
+            let bytes = body.as_ref().expect("wire bytes");
+            let trace_bytes = (compression == RequestCompression::Zstd).then_some(json);
+            assert_eq!(
+                format!("{encoded:?}"),
+                format!(
+                    "EncodedJsonBody {{ bytes: {bytes:?}, trace_bytes: {trace_bytes:?}, prepared: true }}"
+                )
+            );
+            assert_eq!(
+                format!("{wire:?}"),
+                format!("PreparedRequestBody {{ headers: {headers:?}, body: Some({bytes:?}) }}")
+            );
+        }
+    }
+
+    #[test]
+    fn private_json_keeps_canonical_trace_body() {
+        let mut call = json!({
+            "arguments": "argument-marker",
+            "tool_result_metadata": "metadata-marker"
+        });
+        let canonical = EncodedJsonBody::encode(&call).expect("valid JSON");
+        call["tool_result"] = json!("private-result-marker");
+        let wire = call.to_string();
+        let enriched = canonical.with_private_json(wire.clone());
+        for compression in [RequestCompression::None, RequestCompression::Zstd] {
+            let mut request = Request::new(Method::POST, "https://example.com".to_string())
+                .with_compression(compression);
+            request.body = Some(RequestBody::EncodedJson(enriched.clone()));
+            let prepared = request
+                .clone()
+                .into_prepared()
+                .expect("body should prepare");
+            for request in [&request, &prepared] {
+                assert_eq!(
+                    request.prepare_body_for_send().unwrap_err(),
+                    "private JSON requires Request::into_prepared"
+                );
+            }
+            let Some(RequestBody::EncodedJson(body)) = prepared.body.as_ref() else {
+                panic!("expected encoded JSON");
+            };
+            for encoded in [&enriched, body] {
+                let len = encoded.as_bytes().len();
+                assert_eq!(
+                    format!("{encoded:?}"),
+                    format!("EncodedJsonBody {{ byte_len: {len}, .. }}")
+                );
+            }
+            assert_eq!(body.trace_bytes(), canonical.as_bytes());
+            let wire_body = prepared.prepare_wire_body().expect("wire body");
+            let bytes = wire_body.body.as_deref().expect("wire bytes");
+            assert_eq!(bytes, body.as_bytes());
+            let bytes = match compression {
+                RequestCompression::None => bytes.to_vec(),
+                RequestCompression::Zstd => zstd::stream::decode_all(bytes).expect("valid zstd"),
+            };
+            assert_eq!(bytes, wire.as_bytes());
+        }
     }
 }
 

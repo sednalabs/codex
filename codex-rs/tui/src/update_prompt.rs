@@ -1,21 +1,27 @@
-#![cfg(not(debug_assertions))]
+//! Shared picker presentation for the installed CLI's update choices.
+//! Update discovery and execution remain disabled in debug builds.
 
-use crate::contributor_slots::UpdatePromptContribution;
-use crate::contributor_slots::contribute_update_prompt;
+#![cfg(any(not(debug_assertions), test))]
+
+use crate::bottom_pane::picker_option_list;
+use crate::bottom_pane::render_menu_surface;
 use crate::key_hint;
+#[cfg(not(debug_assertions))]
 use crate::legacy_core::config::Config;
 use crate::render::Insets;
-use crate::render::renderable::ColumnRenderable;
+use crate::render::renderable::FlexRenderable;
 use crate::render::renderable::Renderable;
 use crate::render::renderable::RenderableExt as _;
-use crate::selection_list::selection_option_row;
+use crate::render::renderable::RenderableItem;
 use crate::tui::FrameRequester;
+#[cfg(not(debug_assertions))]
 use crate::tui::Tui;
+#[cfg(not(debug_assertions))]
 use crate::tui::TuiEvent;
 use crate::update_action::UpdateAction;
+#[cfg(not(debug_assertions))]
 use crate::updates;
-use crate::version::CODEX_DISPLAY_VERSION;
-use crate::version::latest_release_notes_url;
+#[cfg(not(debug_assertions))]
 use color_eyre::Result;
 use crossterm::event::KeyCode;
 use crossterm::event::KeyEvent;
@@ -27,14 +33,21 @@ use ratatui::prelude::Widget;
 use ratatui::style::Stylize as _;
 use ratatui::text::Line;
 use ratatui::widgets::Clear;
+use ratatui::widgets::Paragraph;
 use ratatui::widgets::WidgetRef;
+use ratatui::widgets::Wrap;
+#[cfg(not(debug_assertions))]
 use tokio_stream::StreamExt;
 
+const RELEASE_NOTES_URL: &str = "https://github.com/openai/codex/releases/latest";
+
+#[cfg(not(debug_assertions))]
 pub(crate) enum UpdatePromptOutcome {
     Continue,
     RunUpdate(UpdateAction),
 }
 
+#[cfg(not(debug_assertions))]
 pub(crate) async fn run_update_prompt_if_needed(
     tui: &mut Tui,
     config: &Config,
@@ -42,8 +55,7 @@ pub(crate) async fn run_update_prompt_if_needed(
     let Some(latest_version) = updates::get_upgrade_version_for_popup(config) else {
         return Ok(UpdatePromptOutcome::Continue);
     };
-    let Some(update_action) = crate::update_action::get_update_action(config.sedna_release_channel)
-    else {
+    let Some(update_action) = crate::update_action::get_update_action() else {
         return Ok(UpdatePromptOutcome::Continue);
     };
 
@@ -53,15 +65,17 @@ pub(crate) async fn run_update_prompt_if_needed(
         frame.render_widget_ref(&screen, frame.area());
     })?;
 
+    tui.discard_pending_input_before_interactive_screen()?;
     let events = tui.event_stream();
     tokio::pin!(events);
 
     while !screen.is_done() {
         if let Some(event) = events.next().await {
+            tui.screen_size_for_event(&event)?;
             match event {
                 TuiEvent::Key(key_event) => screen.handle_key(key_event),
-                TuiEvent::Paste(_) => {}
-                TuiEvent::Draw | TuiEvent::Resize => {
+                TuiEvent::Paste(_) | TuiEvent::FocusLost | TuiEvent::Mouse(_) => {}
+                TuiEvent::Draw | TuiEvent::Resume | TuiEvent::Resize(_) | TuiEvent::FocusGained => {
                     tui.draw(u16::MAX, |frame| {
                         frame.render_widget_ref(&screen, frame.area());
                     })?;
@@ -97,7 +111,8 @@ enum UpdateSelection {
 struct UpdatePromptScreen {
     request_frame: FrameRequester,
     latest_version: String,
-    copy: UpdatePromptContribution,
+    current_version: String,
+    update_action: UpdateAction,
     highlighted: UpdateSelection,
     selection: Option<UpdateSelection>,
 }
@@ -108,16 +123,11 @@ impl UpdatePromptScreen {
         latest_version: String,
         update_action: UpdateAction,
     ) -> Self {
-        let update_command = update_action.command_str();
-        let copy = contribute_update_prompt(UpdatePromptContribution::new(
-            CODEX_DISPLAY_VERSION,
-            latest_version.as_str(),
-            update_command.as_str(),
-        ));
         Self {
             request_frame,
             latest_version,
-            copy,
+            current_version: env!("CARGO_PKG_VERSION").to_string(),
+            update_action,
             highlighted: UpdateSelection::UpdateNow,
             selection: None,
         }
@@ -166,6 +176,7 @@ impl UpdatePromptScreen {
         self.selection
     }
 
+    #[cfg(not(debug_assertions))]
     fn latest_version(&self) -> &str {
         self.latest_version.as_str()
     }
@@ -192,68 +203,102 @@ impl UpdateSelection {
 impl WidgetRef for &UpdatePromptScreen {
     fn render_ref(&self, area: Rect, buf: &mut Buffer) {
         Clear.render(area, buf);
-        let release_notes_url = latest_release_notes_url();
-        let mut column = ColumnRenderable::new();
+        let mut column = FlexRenderable::new();
 
-        column.push("");
-        column.push(Line::from(vec![
-            "  ✨\u{200A}".bold().cyan(),
-            self.copy.title.clone().bold(),
-            " ".into(),
-            self.copy.version_label.clone().dim(),
-        ]));
-        column.push("");
+        let update_command = self.update_action.command_str();
+
+        column.push(/*flex*/ 1, RenderableItem::Borrowed(&""));
         column.push(
-            Line::from(vec![
-                self.copy.release_notes_label.clone().dim(),
-                release_notes_url.as_str().dim().underlined(),
-            ])
-            .inset(Insets::tlbr(0, 2, 0, 0)),
+            /*flex*/ 0,
+            Paragraph::new(Line::from(vec![
+                "Update available".bold(),
+                " · ".dim(),
+                format!(
+                    "{current} → {latest}",
+                    current = self.current_version,
+                    latest = self.latest_version
+                )
+                .dim(),
+            ]))
+            .wrap(Wrap { trim: false })
+            .inset(Insets::vh(/*v*/ 0, /*h*/ 2)),
         );
-        column.push("");
-        column.push(selection_option_row(
-            0,
-            self.copy.update_now_label.clone(),
-            self.highlighted == UpdateSelection::UpdateNow,
-        ));
-        column.push(selection_option_row(
-            1,
-            self.copy.skip_label.clone(),
-            self.highlighted == UpdateSelection::NotNow,
-        ));
-        column.push(selection_option_row(
-            2,
-            self.copy.skip_until_next_version_label.clone(),
-            self.highlighted == UpdateSelection::DontRemind,
-        ));
-        column.push("");
         column.push(
-            Line::from(vec![
-                "Press ".dim(),
+            /*flex*/ 1,
+            Paragraph::new(Line::from(vec![
+                "Release notes: ".dim(),
+                RELEASE_NOTES_URL.dim().underlined(),
+            ]))
+            .wrap(Wrap { trim: false })
+            .inset(Insets::vh(/*v*/ 0, /*h*/ 2)),
+        );
+        let selected_index = match self.highlighted {
+            UpdateSelection::UpdateNow => 0,
+            UpdateSelection::NotNow => 1,
+            UpdateSelection::DontRemind => 2,
+        };
+        column.push(
+            /*flex*/ 1,
+            picker_option_list(
+                vec![
+                    format!("Update now (runs `{update_command}`)"),
+                    "Skip".to_string(),
+                    "Skip until next version".to_string(),
+                ],
+                selected_index,
+            ),
+        );
+        column.push(
+            /*flex*/ 0,
+            Paragraph::new(Line::from(vec![
                 key_hint::plain(KeyCode::Enter).into(),
-                format!(" {}", self.copy.continue_hint).dim(),
-            ])
-            .inset(Insets::tlbr(0, 2, 0, 0)),
+                " continue · ".dim(),
+                key_hint::plain(KeyCode::Esc).into(),
+                " skip".dim(),
+            ]))
+            .wrap(Wrap { trim: false })
+            .inset(Insets::vh(/*v*/ 0, /*h*/ 2)),
         );
-        column.render(area, buf);
-        crate::terminal_hyperlinks::mark_underlined_hyperlink(buf, area, &release_notes_url);
+        column.push(/*flex*/ 1, RenderableItem::Borrowed(&""));
+        let panel = Rect {
+            height: column.desired_height(area.width).min(area.height),
+            ..area
+        };
+        render_menu_surface(panel, buf);
+        column.render(panel, buf);
+        crate::terminal_hyperlinks::mark_underlined_hyperlink(buf, area, RELEASE_NOTES_URL);
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::test_backend::VT100Backend;
     use crate::tui::FrameRequester;
     use crossterm::event::KeyCode;
     use crossterm::event::KeyEvent;
     use crossterm::event::KeyModifiers;
+    use pretty_assertions::assert_eq;
+    use ratatui::Terminal;
+    use ratatui::widgets::FrameExt;
 
     fn new_prompt() -> UpdatePromptScreen {
         UpdatePromptScreen::new(
             FrameRequester::test_dummy(),
             "9.9.9".into(),
-            UpdateAction::StandaloneUnix(codex_utils_version::SednaReleaseChannel::Stable),
+            UpdateAction::NpmGlobalLatest,
         )
+    }
+
+    #[test]
+    fn update_prompt_snapshot() {
+        let screen = new_prompt();
+        let mut terminal =
+            Terminal::new(VT100Backend::new(/*width*/ 80, /*height*/ 12)).expect("terminal");
+        terminal
+            .draw(|frame| frame.render_widget_ref(&screen, frame.area()))
+            .expect("render update prompt");
+        insta::assert_snapshot!("update_prompt_modal", terminal.backend());
     }
 
     #[test]
@@ -298,5 +343,25 @@ mod tests {
         assert_eq!(screen.highlighted, UpdateSelection::DontRemind);
         screen.handle_key(KeyEvent::new(KeyCode::Down, KeyModifiers::NONE));
         assert_eq!(screen.highlighted, UpdateSelection::UpdateNow);
+    }
+
+    #[test]
+    fn long_update_command_keeps_selected_skip_visible_in_a_short_viewport() {
+        let mut screen = new_prompt();
+        screen.update_action = UpdateAction::StandaloneWindows;
+        screen.handle_key(KeyEvent::new(KeyCode::Up, KeyModifiers::NONE));
+        let (width, height) = (28, 12);
+        let mut terminal = Terminal::new(VT100Backend::new(width, height)).expect("terminal");
+        terminal
+            .draw(|frame| frame.render_widget_ref(&screen, frame.area()))
+            .expect("render resized update picker");
+        let rendered = terminal.backend().to_string();
+        assert!(rendered.contains("› 3. Skip until next version"));
+        let words = rendered.split_whitespace().collect::<Vec<_>>().join(" ");
+        assert!(words.contains("enter continue · esc skip"));
+        assert_eq!(screen.selection(), None);
+        insta::assert_snapshot!(format!("update_picker_selected_{width}x{height}"), rendered);
+        screen.handle_key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
+        assert_eq!(screen.selection(), Some(UpdateSelection::NotNow));
     }
 }

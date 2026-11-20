@@ -1,44 +1,38 @@
-use crate::oauth_metadata::discover_metadata;
+//! Headless OAuth device grant for MCP servers.
 use std::collections::HashMap;
-use std::fmt;
+use std::sync::Arc;
 use std::time::Duration;
 
 use anyhow::Context;
 use anyhow::Result;
 use anyhow::anyhow;
+use anyhow::bail;
+use codex_config::types::AuthKeyringBackendKind;
+use codex_config::types::OAuthCredentialsStoreMode;
+use codex_exec_server::HttpClient;
 use oauth2::PkceCodeChallenge;
-use reqwest::Client;
-use reqwest::StatusCode;
-use reqwest::header::HeaderMap;
-use reqwest::header::HeaderValue;
-use reqwest::header::USER_AGENT;
-use rmcp::transport::AuthorizationManager;
 use rmcp::transport::auth::OAuthTokenResponse;
 use serde::Deserialize;
 use serde::Serialize;
 use tokio::time::Instant;
-use tokio::time::sleep;
-use tokio::time::timeout_at;
 use url::Url;
 
-use crate::StoredOAuthTokens;
-use crate::WrappedOAuthTokenResponse;
+use crate::device_oauth_http::execute_same_origin;
+use crate::device_oauth_metadata::discover_device_metadata;
+use crate::http_client_adapter::StreamableHttpRedirectMode;
+use crate::oauth::StoredOAuthTokens;
+use crate::oauth::WrappedOAuthTokenResponse;
 use crate::oauth::compute_expires_at_millis;
-use crate::perform_oauth_login::OAuthProviderError;
-use crate::save_oauth_tokens_locked;
-use crate::utils::MCP_USER_AGENT;
+use crate::oauth::save_oauth_tokens;
+use crate::oauth_http_client::OAuthHttpClientAdapter;
 use crate::utils::build_default_headers;
-use crate::utils::build_reqwest_client;
-use codex_config::types::AuthKeyringBackendKind;
-use codex_config::types::OAuthCredentialsStoreMode;
 
-const DEVICE_CODE_GRANT_TYPE: &str = "urn:ietf:params:oauth:grant-type:device_code";
-const DEFAULT_DEVICE_EXPIRES_IN_SECS: u64 = 900;
-const MIN_DEVICE_EXPIRES_IN_SECS: u64 = 1;
-const MAX_DEVICE_EXPIRES_IN_SECS: u64 = 86_400;
-const DEFAULT_DEVICE_POLL_INTERVAL_SECS: u64 = 5;
-const MIN_DEVICE_POLL_INTERVAL_SECS: u64 = 1;
-const MAX_ERROR_BODY_PREVIEW_CHARS: usize = 500;
+const DEVICE_GRANT: &str = "urn:ietf:params:oauth:grant-type:device_code";
+
+pub struct DeviceAuthorizationPrompt {
+    pub verification_uri: String,
+    pub user_code: String,
+}
 
 #[allow(clippy::too_many_arguments)]
 pub async fn perform_oauth_device_login(
@@ -49,712 +43,392 @@ pub async fn perform_oauth_device_login(
     http_headers: Option<HashMap<String, String>>,
     env_http_headers: Option<HashMap<String, String>>,
     scopes: &[String],
-    oauth_client_id: Option<&str>,
-    oauth_resource: Option<&str>,
-    issuer: &str,
-    device_authorization_endpoint: &str,
-    token_endpoint: &str,
-    mut show_authorization_prompt: impl FnMut(DeviceAuthorizationPrompt),
+    use_metadata_scopes: bool,
+    client_id: Option<&str>,
+    resource: Option<&str>,
+    http_client: Arc<dyn HttpClient>,
+    mut show_prompt: impl FnMut(DeviceAuthorizationPrompt),
 ) -> Result<()> {
-    anyhow::ensure!(
-        !issuer.trim().is_empty(),
-        "OAuth device login requires issuer-bound metadata"
+    let configured_headers = http_headers.as_ref().is_some_and(|h| !h.is_empty())
+        || env_http_headers.as_ref().is_some_and(|h| !h.is_empty());
+    let headers = build_default_headers(http_headers, env_http_headers)?;
+    let client = Arc::new(
+        OAuthHttpClientAdapter::new_with_max_timeout_and_redirect_mode(
+            http_client,
+            headers,
+            server_url,
+            Duration::from_secs(30),
+            configured_headers,
+            StreamableHttpRedirectMode::Legacy,
+        )?,
     );
-    let default_headers = build_default_headers(http_headers, env_http_headers)?;
-    let discovery = crate::auth_status::discover_streamable_http_oauth_with_headers(
-        server_url,
-        &default_headers,
-    )
-    .await?
-    .ok_or_else(|| anyhow!("OAuth device login requires published authorization metadata"))?;
-    anyhow::ensure!(
-        discovery.issuer.as_deref() == Some(issuer)
-            && discovery.token_endpoint == token_endpoint
-            && discovery.device_authorization_endpoint.as_deref()
-                == Some(device_authorization_endpoint),
-        "OAuth device authorization metadata changed before login"
-    );
-    anyhow::ensure!(
-        discovery
-            .grant_types_supported
-            .as_ref()
-            .is_none_or(|grant_types| {
-                grant_types
-                    .iter()
-                    .any(|grant| grant == DEVICE_CODE_GRANT_TYPE)
-            }),
-        "OAuth device authorization grant is not advertised"
-    );
-    let device_client =
-        oauth_device_client(server_url, device_authorization_endpoint, &default_headers)?;
-    let token_client = oauth_device_client(server_url, token_endpoint, &default_headers)?;
-    let oauth_client_id = resolve_device_oauth_client_id(
-        server_url,
-        &default_headers,
+    let metadata = discover_device_metadata(server_url, client.clone()).await?;
+    let discovered_scopes = if use_metadata_scopes && scopes.is_empty() {
+        metadata.scopes_supported.as_ref().map(|values| {
+            let mut normalized = Vec::new();
+            for value in values {
+                let value = value.trim();
+                if !value.is_empty() && !normalized.iter().any(|existing| existing == value) {
+                    normalized.push(value.to_string());
+                }
+            }
+            normalized
+        })
+    } else {
+        None
+    };
+    let scopes = discovered_scopes.as_deref().unwrap_or(scopes);
+    let client_id = match client_id.map(str::trim).filter(|s| !s.is_empty()) {
+        Some(id) => id.to_string(),
+        None => {
+            let endpoint = metadata.registration_endpoint.as_deref().ok_or_else(|| {
+                anyhow!("device login requires a public client ID or dynamic client registration")
+            })?;
+            register_device_client(&client, endpoint, scopes, &metadata.grant_types_supported)
+                .await?
+        }
+    };
+    // Refuse changed metadata before sending the device request or token polling.
+    let current = discover_device_metadata(server_url, client.clone()).await?;
+    if current.issuer != metadata.issuer
+        || current.token_endpoint != metadata.token_endpoint
+        || current.device_authorization_endpoint != metadata.device_authorization_endpoint
+        || current.registration_endpoint != metadata.registration_endpoint
+    {
+        bail!("OAuth device authorization metadata changed during login");
+    }
+    let mut pkce = Some(DevicePkce::new());
+    let details = match request_device_code(
+        &client,
+        &metadata.device_authorization_endpoint,
+        &client_id,
         scopes,
-        oauth_client_id,
-        issuer,
+        resource,
+        pkce.as_ref(),
     )
-    .await?;
-    let (details, pkce) = request_device_authorization_with_pkce_fallback(
-        &device_client,
-        device_authorization_endpoint,
-        &oauth_client_id,
-        scopes,
-        oauth_resource,
-    )
-    .await?;
-
-    show_authorization_prompt(DeviceAuthorizationPrompt::new(server_name, &details));
-
-    let token_response = match poll_device_token(
-        &token_client,
-        token_endpoint,
-        &oauth_client_id,
-        oauth_resource,
+    .await
+    {
+        Err(error)
+            if error
+                .downcast_ref::<ProviderError>()
+                .is_some_and(|e| e.0 == "invalid_request") =>
+        {
+            pkce = None;
+            request_device_code(
+                &client,
+                &metadata.device_authorization_endpoint,
+                &client_id,
+                scopes,
+                resource,
+                None,
+            )
+            .await?
+        }
+        result => result?,
+    };
+    prompt(&details, &mut show_prompt)?;
+    let token = match poll_token(
+        &client,
+        &metadata.token_endpoint,
+        &client_id,
+        resource,
         &details,
         pkce.as_ref(),
     )
     .await
     {
-        Ok(token_response) => token_response,
-        Err(err) if pkce.is_some() && is_invalid_request_provider_error(&err) => {
-            let details = request_device_authorization(
-                &device_client,
-                device_authorization_endpoint,
-                &oauth_client_id,
+        Err(error)
+            if pkce.is_some()
+                && error
+                    .downcast_ref::<ProviderError>()
+                    .is_some_and(|e| e.0 == "invalid_request") =>
+        {
+            let details = request_device_code(
+                &client,
+                &metadata.device_authorization_endpoint,
+                &client_id,
                 scopes,
-                oauth_resource,
-                /*pkce*/ None,
+                resource,
+                None,
             )
-            .await
-            .context(
-                "OAuth device token endpoint rejected PKCE verifier, and retry without PKCE failed during device authorization",
-            )?;
-            show_authorization_prompt(DeviceAuthorizationPrompt::new(server_name, &details));
-            poll_device_token(
-                &token_client,
-                token_endpoint,
-                &oauth_client_id,
-                oauth_resource,
+            .await?;
+            prompt(&details, &mut show_prompt)?;
+            poll_token(
+                &client,
+                &metadata.token_endpoint,
+                &client_id,
+                resource,
                 &details,
-                /*pkce*/ None,
+                None,
             )
-            .await
-            .context(
-                "OAuth device token endpoint rejected PKCE verifier, and retry without PKCE failed",
-            )?
+            .await?
         }
-        Err(err) => return Err(err),
+        result => result?,
     };
-    let expires_at = compute_expires_at_millis(&token_response);
+    let expires_at = compute_expires_at_millis(&token);
     let stored = StoredOAuthTokens {
         server_name: server_name.to_string(),
         url: server_url.to_string(),
-        issuer: Some(issuer.to_string()),
-        client_id: oauth_client_id,
-        token_response: WrappedOAuthTokenResponse(token_response),
+        issuer: Some(metadata.issuer),
+        client_id,
+        token_response: WrappedOAuthTokenResponse(token),
         expires_at,
     };
-    save_oauth_tokens_locked(server_name, &stored, store_mode, keyring_backend_kind).await
-}
-
-fn oauth_device_client(
-    resource_url: &str,
-    endpoint: &str,
-    default_headers: &HeaderMap,
-) -> Result<Client> {
-    let resource = validate_oauth_endpoint(resource_url)?;
-    let endpoint = validate_oauth_endpoint(endpoint)?;
-    let headers = if resource.origin() == endpoint.origin() {
-        default_headers.clone()
-    } else {
-        let mut headers = HeaderMap::new();
-        headers.insert(USER_AGENT, HeaderValue::from_static(MCP_USER_AGENT));
-        headers
-    };
-    build_reqwest_client(
-        Client::builder().timeout(Duration::from_secs(30)).redirect(
-            reqwest::redirect::Policy::custom(|attempt| {
-                if attempt.previous().len() >= 10 {
-                    return attempt.error("OAuth device request exceeded redirect limit");
-                }
-                if attempt
-                    .previous()
-                    .first()
-                    .is_some_and(|first| first.origin() == attempt.url().origin())
-                {
-                    attempt.follow()
-                } else {
-                    attempt.stop()
-                }
-            }),
-        ),
-        &headers,
-    )
-}
-
-fn validate_oauth_endpoint(endpoint: &str) -> Result<Url> {
-    let endpoint = Url::parse(endpoint).context("OAuth endpoint must be a valid URL")?;
-    anyhow::ensure!(
-        matches!(endpoint.scheme(), "http" | "https")
-            && endpoint.username().is_empty()
-            && endpoint.password().is_none()
-            && endpoint.fragment().is_none(),
-        "OAuth endpoint must be an HTTP or HTTPS URL without credentials or a fragment"
-    );
-    Ok(endpoint)
-}
-
-async fn resolve_device_oauth_client_id(
-    server_url: &str,
-    default_headers: &HeaderMap,
-    scopes: &[String],
-    oauth_client_id: Option<&str>,
-    expected_issuer: &str,
-) -> Result<String> {
-    if let Some(client_id) = oauth_client_id.filter(|client_id| !client_id.trim().is_empty()) {
-        return Ok(client_id.trim().to_string());
-    }
-
-    let client = codex_http_client::HttpClientBuilder::new()
-        .without_redirects()
-        .without_retries()
-        .without_request_logging()
-        .build_direct()?;
-    let oauth_client = crate::oauth_http_client::OAuthHttpClientAdapter::new_direct_scoped(
-        client,
-        default_headers.clone(),
-        server_url,
-        crate::auth_status::OAuthDiscoveryTimeout::Capped(Duration::from_secs(30)),
-    )?;
-    let auth_manager = AuthorizationManager::new_with_oauth_http_client(
-        server_url,
-        std::sync::Arc::new(oauth_client),
-    )
-    .await?;
-    let metadata = discover_metadata(&auth_manager).await?;
-    anyhow::ensure!(
-        metadata.issuer.as_deref() == Some(expected_issuer),
-        "OAuth authorization server issuer changed during device login"
-    );
-    crate::oauth::validate_authorization_server_endpoints(&metadata)?;
-    let registration_endpoint = metadata
-        .registration_endpoint
-        .as_deref()
-        .filter(|endpoint| !endpoint.trim().is_empty())
-        .ok_or_else(|| {
-            anyhow!(
-                "OAuth device login requires a configured public OAuth client id because the authorization server does not advertise dynamic client registration."
-            )
-        })?;
-    let supports_refresh_token = metadata_supports_refresh_token(&metadata.additional_fields);
-
-    let registration_client =
-        oauth_device_client(server_url, registration_endpoint, default_headers)?;
-    register_device_oauth_client(
-        &registration_client,
-        registration_endpoint,
-        scopes,
-        supports_refresh_token,
-    )
-    .await
-}
-
-async fn register_device_oauth_client(
-    http_client: &Client,
-    registration_endpoint: &str,
-    scopes: &[String],
-    supports_refresh_token: bool,
-) -> Result<String> {
-    let mut grant_types = vec![DEVICE_CODE_GRANT_TYPE];
-    if supports_refresh_token {
-        grant_types.push("refresh_token");
-    }
-    let request = DeviceClientRegistrationRequest {
-        client_name: "Codex",
-        grant_types,
-        token_endpoint_auth_method: "none",
-        scope: (!scopes.is_empty()).then(|| scopes.join(" ")),
-    };
-    let response = http_client
-        .post(registration_endpoint)
-        .json(&request)
-        .send()
-        .await
-        .context("failed to dynamically register OAuth device client")?;
-    let status = response.status();
-    let body = response
-        .bytes()
-        .await
-        .context("failed to read OAuth dynamic client registration response")?;
-    if !status.is_success() {
-        return Err(anyhow!(
-            "OAuth dynamic client registration failed with HTTP {status}. Response: {}",
-            body_preview(&body)
-        ));
-    }
-
-    let registration = serde_json::from_slice::<DeviceClientRegistrationResponse>(&body)
-        .context("failed to parse OAuth dynamic client registration response")?;
-    let client_id = registration.client_id.trim();
-    if client_id.is_empty() {
-        return Err(anyhow!(
-            "OAuth dynamic client registration response did not include a client_id"
-        ));
-    }
-
-    Ok(client_id.to_string())
-}
-
-fn metadata_supports_refresh_token(additional_fields: &HashMap<String, serde_json::Value>) -> bool {
-    additional_fields
-        .get("grant_types_supported")
-        .and_then(serde_json::Value::as_array)
-        .is_none_or(|grant_types| {
-            grant_types
-                .iter()
-                .any(|grant_type| grant_type.as_str() == Some("refresh_token"))
-        })
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct DeviceAuthorizationPrompt {
-    server_name: String,
-    verification_uri: String,
-    user_code: String,
-}
-
-impl DeviceAuthorizationPrompt {
-    fn new(server_name: &str, details: &DeviceAuthorizationResponse) -> Self {
-        Self {
-            server_name: server_name.to_string(),
-            verification_uri: details
-                .verification_uri_complete
-                .as_deref()
-                .unwrap_or(&details.verification_uri)
-                .to_string(),
-            user_code: details.user_code.clone(),
-        }
-    }
-
-    pub fn server_name(&self) -> &str {
-        &self.server_name
-    }
-
-    pub fn verification_uri(&self) -> &str {
-        &self.verification_uri
-    }
-
-    pub fn user_code(&self) -> &str {
-        &self.user_code
-    }
-}
-
-async fn request_device_authorization_with_pkce_fallback(
-    http_client: &Client,
-    endpoint: &str,
-    client_id: &str,
-    scopes: &[String],
-    oauth_resource: Option<&str>,
-) -> Result<(DeviceAuthorizationResponse, Option<DevicePkce>)> {
-    let mut pkce = Some(DevicePkce::new_random());
-    match request_device_authorization(
-        http_client,
-        endpoint,
-        client_id,
-        scopes,
-        oauth_resource,
-        pkce.as_ref(),
-    )
-    .await
-    {
-        Ok(details) => Ok((details, pkce)),
-        Err(err) if is_invalid_request_provider_error(&err) => {
-            pkce = None;
-            let details = request_device_authorization(
-                http_client,
-                endpoint,
-                client_id,
-                scopes,
-                oauth_resource,
-                /*pkce*/ None,
-            )
-            .await
-            .context(
-                "OAuth device authorization rejected PKCE parameters, and retry without PKCE failed",
-            )?;
-            Ok((details, pkce))
-        }
-        Err(err) => Err(err),
-    }
-}
-
-async fn request_device_authorization(
-    http_client: &Client,
-    endpoint: &str,
-    client_id: &str,
-    scopes: &[String],
-    oauth_resource: Option<&str>,
-    pkce: Option<&DevicePkce>,
-) -> Result<DeviceAuthorizationResponse> {
-    let mut form = vec![("client_id", client_id.to_string())];
-    if !scopes.is_empty() {
-        form.push(("scope", scopes.join(" ")));
-    }
-    if let Some(resource) = oauth_resource.filter(|value| !value.trim().is_empty()) {
-        form.push(("resource", resource.to_string()));
-    }
-    if let Some(pkce) = pkce {
-        form.push(("code_challenge", pkce.code_challenge.clone()));
-        form.push(("code_challenge_method", "S256".to_string()));
-    }
-
-    let response = http_client
-        .post(endpoint)
-        .form(&form)
-        .send()
-        .await
-        .context("failed to request OAuth device authorization")?;
-    let status = response.status();
-    let body = response
-        .bytes()
-        .await
-        .context("failed to read OAuth device authorization response")?;
-    if !status.is_success() {
-        return Err(provider_error_from_body(
-            status,
-            &body,
-            "device authorization",
-        ));
-    }
-
-    serde_json::from_slice::<DeviceAuthorizationResponse>(&body)
-        .context("failed to parse OAuth device authorization response")
-}
-
-async fn poll_device_token(
-    http_client: &Client,
-    token_endpoint: &str,
-    client_id: &str,
-    oauth_resource: Option<&str>,
-    details: &DeviceAuthorizationResponse,
-    pkce: Option<&DevicePkce>,
-) -> Result<OAuthTokenResponse> {
-    let expires_in = device_authorization_expires_in(details);
-    let deadline = Instant::now() + Duration::from_secs(expires_in);
-    let mut interval = Duration::from_secs(
-        details
-            .interval
-            .unwrap_or(DEFAULT_DEVICE_POLL_INTERVAL_SECS),
-    )
-    .max(Duration::from_secs(MIN_DEVICE_POLL_INTERVAL_SECS));
-
-    loop {
-        if Instant::now() >= deadline {
-            return Err(anyhow!(
-                "OAuth device code expired before authorization completed"
-            ));
-        }
-
-        let outcome = timeout_at(
-            deadline,
-            poll_device_token_once(
-                http_client,
-                token_endpoint,
-                client_id,
-                oauth_resource,
-                &details.device_code,
-                pkce,
-            ),
-        )
-        .await
-        .map_err(|_| anyhow!("OAuth device code expired before authorization completed"))??;
-        if Instant::now() >= deadline {
-            return Err(anyhow!(
-                "OAuth device code expired before authorization completed"
-            ));
-        }
-        match outcome {
-            DevicePollOutcome::Authorized(token_response) => return Ok(token_response),
-            DevicePollOutcome::Pending => sleep_until_next_poll(interval, deadline).await?,
-            DevicePollOutcome::SlowDown => {
-                interval += Duration::from_secs(5);
-                sleep_until_next_poll(interval, deadline).await?;
-            }
-        }
-    }
-}
-
-fn device_authorization_expires_in(details: &DeviceAuthorizationResponse) -> u64 {
-    details
-        .expires_in
-        .unwrap_or(DEFAULT_DEVICE_EXPIRES_IN_SECS)
-        .clamp(MIN_DEVICE_EXPIRES_IN_SECS, MAX_DEVICE_EXPIRES_IN_SECS)
-}
-
-async fn poll_device_token_once(
-    http_client: &Client,
-    token_endpoint: &str,
-    client_id: &str,
-    oauth_resource: Option<&str>,
-    device_code: &str,
-    pkce: Option<&DevicePkce>,
-) -> Result<DevicePollOutcome> {
-    let mut form = vec![
-        ("grant_type", DEVICE_CODE_GRANT_TYPE.to_string()),
-        ("device_code", device_code.to_string()),
-        ("client_id", client_id.to_string()),
-    ];
-    if let Some(resource) = oauth_resource.filter(|value| !value.trim().is_empty()) {
-        form.push(("resource", resource.to_string()));
-    }
-    if let Some(pkce) = pkce {
-        form.push(("code_verifier", pkce.code_verifier.clone()));
-    }
-
-    let response = http_client
-        .post(token_endpoint)
-        .form(&form)
-        .send()
-        .await
-        .context("failed to poll OAuth device token")?;
-    let status = response.status();
-    let body = response
-        .bytes()
-        .await
-        .context("failed to read OAuth device token response")?;
-
-    if status.is_success() {
-        let token_response = serde_json::from_slice::<OAuthTokenResponse>(&body)
-            .context("failed to parse OAuth device token response")?;
-        return Ok(DevicePollOutcome::Authorized(token_response));
-    }
-
-    let error = parse_provider_error(status, &body, "device token")?;
-    match error.error.as_str() {
-        "authorization_pending" => Ok(DevicePollOutcome::Pending),
-        "slow_down" => Ok(DevicePollOutcome::SlowDown),
-        "expired_token" => Err(anyhow!(
-            "OAuth device code expired before authorization completed"
-        )),
-        "access_denied" => Err(anyhow!("OAuth device authorization was denied")),
-        _ => Err(anyhow::Error::new(DeviceProviderError::new(
-            status,
-            "device token",
-            error,
-        ))),
-    }
-}
-
-async fn sleep_until_next_poll(interval: Duration, deadline: Instant) -> Result<()> {
-    let now = Instant::now();
-    if now >= deadline {
-        return Err(anyhow!(
-            "OAuth device code expired before authorization completed"
-        ));
-    }
-    sleep(interval.min(deadline - now)).await;
-    Ok(())
-}
-
-fn provider_error_from_body(status: StatusCode, body: &[u8], context: &str) -> anyhow::Error {
-    match parse_provider_error(status, body, context) {
-        Ok(error) => anyhow::Error::new(DeviceProviderError::new(status, context, error)),
-        Err(err) => err,
-    }
-}
-
-fn parse_provider_error(status: StatusCode, body: &[u8], context: &str) -> Result<DeviceError> {
-    let body_preview = body_preview(body);
-    let error_context =
-        format!("OAuth {context} failed with HTTP {status}. Response: {body_preview}");
-    serde_json::from_slice::<DeviceError>(body).with_context(|| error_context)
-}
-
-fn body_preview(body: &[u8]) -> String {
-    let body = String::from_utf8_lossy(body);
-    let mut chars = body.chars();
-    let mut preview: String = chars.by_ref().take(MAX_ERROR_BODY_PREVIEW_CHARS).collect();
-    if chars.next().is_some() {
-        preview.push_str("...");
-    }
-    preview
-}
-
-fn is_invalid_request_provider_error(err: &anyhow::Error) -> bool {
-    err.downcast_ref::<DeviceProviderError>()
-        .is_some_and(|err| err.error.error == "invalid_request")
-}
-
-#[derive(Debug, Deserialize)]
-struct DeviceAuthorizationResponse {
-    device_code: String,
-    user_code: String,
-    verification_uri: String,
-    #[serde(default)]
-    verification_uri_complete: Option<String>,
-    #[serde(default)]
-    expires_in: Option<u64>,
-    #[serde(default)]
-    interval: Option<u64>,
-}
-
-#[derive(Debug, Deserialize)]
-struct DeviceError {
-    error: String,
-    #[serde(default)]
-    error_description: Option<String>,
+    save_oauth_tokens(server_name, &stored, store_mode, keyring_backend_kind).await
 }
 
 #[derive(Debug)]
-struct DeviceProviderError {
-    status: StatusCode,
-    context: String,
-    error: DeviceError,
-}
-
-impl DeviceProviderError {
-    fn new(status: StatusCode, context: &str, error: DeviceError) -> Self {
-        Self {
-            status,
-            context: context.to_string(),
-            error,
-        }
+struct ProviderError(String);
+impl std::fmt::Display for ProviderError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "OAuth device request was rejected ({})", self.0)
     }
 }
+impl std::error::Error for ProviderError {}
 
-impl fmt::Display for DeviceProviderError {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(
-            f,
-            "OAuth {} failed with HTTP {}: {}",
-            self.context,
-            self.status,
-            OAuthProviderError::new(
-                Some(self.error.error.clone()),
-                self.error.error_description.clone()
+async fn post(
+    client: &OAuthHttpClientAdapter,
+    endpoint: &str,
+    content_type: &str,
+    body: Vec<u8>,
+) -> Result<oauth2::HttpResponse> {
+    let request = oauth2::http::Request::builder()
+        .method("POST")
+        .uri(endpoint)
+        .header("content-type", content_type)
+        .body(body)?;
+    execute_same_origin(client, request, Duration::from_secs(30)).await
+}
+
+fn form(items: &[(&str, String)]) -> Vec<u8> {
+    let mut serializer = url::form_urlencoded::Serializer::new(String::new());
+    for (name, value) in items {
+        serializer.append_pair(name, value);
+    }
+    serializer.finish().into_bytes()
+}
+
+fn provider_error(response: &oauth2::HttpResponse) -> anyhow::Error {
+    #[derive(Deserialize)]
+    struct Body {
+        error: String,
+    }
+    let error = serde_json::from_slice::<Body>(response.body())
+        .ok()
+        .map(|body| body.error)
+        .filter(|s| {
+            matches!(
+                s.as_str(),
+                "invalid_request"
+                    | "authorization_pending"
+                    | "slow_down"
+                    | "expired_token"
+                    | "access_denied"
+                    | "invalid_scope"
+                    | "invalid_client"
+                    | "unauthorized_client"
+                    | "unsupported_grant_type"
             )
-        )
-    }
+        })
+        .unwrap_or_else(|| format!("http_{}", response.status().as_u16()));
+    anyhow::Error::new(ProviderError(error))
 }
 
-impl std::error::Error for DeviceProviderError {}
-
-struct DevicePkce {
-    code_challenge: String,
-    code_verifier: String,
-}
-
-impl DevicePkce {
-    fn new_random() -> Self {
-        let (code_challenge, code_verifier) = PkceCodeChallenge::new_random_sha256();
-        Self {
-            code_challenge: code_challenge.as_str().to_string(),
-            code_verifier: code_verifier.secret().to_string(),
-        }
-    }
-}
-
-enum DevicePollOutcome {
-    Authorized(OAuthTokenResponse),
-    Pending,
-    SlowDown,
-}
-
-#[derive(Debug, Serialize)]
-struct DeviceClientRegistrationRequest<'a> {
-    client_name: &'a str,
+#[derive(Serialize)]
+struct Registration<'a> {
+    client_name: &'static str,
     grant_types: Vec<&'static str>,
-    token_endpoint_auth_method: &'a str,
+    token_endpoint_auth_method: &'static str,
     #[serde(skip_serializing_if = "Option::is_none")]
-    scope: Option<String>,
+    scope: Option<&'a str>,
 }
-
-#[derive(Debug, Deserialize)]
-struct DeviceClientRegistrationResponse {
+#[derive(Deserialize)]
+struct Registered {
     client_id: String,
 }
+async fn register_device_client(
+    client: &OAuthHttpClientAdapter,
+    endpoint: &str,
+    scopes: &[String],
+    grants: &Option<Vec<String>>,
+) -> Result<String> {
+    let mut grant_types = vec![DEVICE_GRANT];
+    if grants
+        .as_ref()
+        .is_none_or(|g| g.iter().any(|s| s == "refresh_token"))
+    {
+        grant_types.push("refresh_token");
+    }
+    let scope = scopes.join(" ");
+    let request = Registration {
+        client_name: "Codex",
+        grant_types,
+        token_endpoint_auth_method: "none",
+        scope: (!scope.is_empty()).then_some(scope.as_str()),
+    };
+    let response = post(
+        client,
+        endpoint,
+        "application/json",
+        serde_json::to_vec(&request)?,
+    )
+    .await?;
+    if !response.status().is_success() {
+        return Err(provider_error(&response));
+    }
+    let registration: Registered = serde_json::from_slice(response.body())
+        .context("invalid OAuth device client registration response")?;
+    let id = registration.client_id.trim();
+    if id.is_empty() {
+        bail!("device client registration returned an empty client ID");
+    }
+    Ok(id.to_string())
+}
 
-#[cfg(test)]
-#[path = "device_login_boundary_tests.rs"]
-mod boundary_tests;
+struct DevicePkce {
+    challenge: String,
+    verifier: String,
+}
+impl DevicePkce {
+    fn new() -> Self {
+        let (challenge, verifier) = PkceCodeChallenge::new_random_sha256();
+        Self {
+            challenge: challenge.as_str().to_string(),
+            verifier: verifier.secret().to_string(),
+        }
+    }
+}
+#[derive(Deserialize)]
+struct DeviceCode {
+    device_code: String,
+    user_code: String,
+    verification_uri: String,
+    verification_uri_complete: Option<String>,
+    expires_in: Option<u64>,
+    interval: Option<u64>,
+}
+fn prompt(details: &DeviceCode, show: &mut impl FnMut(DeviceAuthorizationPrompt)) -> Result<()> {
+    let uri = details
+        .verification_uri_complete
+        .as_ref()
+        .unwrap_or(&details.verification_uri);
+    let parsed = Url::parse(uri).context("invalid device verification URI")?;
+    if !matches!(parsed.scheme(), "http" | "https")
+        || parsed.host_str().is_none()
+        || !parsed.username().is_empty()
+        || parsed.password().is_some()
+        || parsed.fragment().is_some()
+    {
+        bail!("invalid device verification URI");
+    }
+    if details.device_code.is_empty()
+        || details.user_code.is_empty()
+        || details.user_code.chars().any(char::is_control)
+    {
+        bail!("device authorization response has an invalid code");
+    }
+    show(DeviceAuthorizationPrompt {
+        verification_uri: parsed.to_string(),
+        user_code: details.user_code.clone(),
+    });
+    Ok(())
+}
+async fn request_device_code(
+    client: &OAuthHttpClientAdapter,
+    endpoint: &str,
+    client_id: &str,
+    scopes: &[String],
+    resource: Option<&str>,
+    pkce: Option<&DevicePkce>,
+) -> Result<DeviceCode> {
+    let mut fields = vec![("client_id", client_id.to_string())];
+    if !scopes.is_empty() {
+        fields.push(("scope", scopes.join(" ")));
+    }
+    if let Some(value) = resource.filter(|s| !s.trim().is_empty()) {
+        fields.push(("resource", value.to_string()));
+    }
+    if let Some(pkce) = pkce {
+        fields.push(("code_challenge", pkce.challenge.clone()));
+        fields.push(("code_challenge_method", "S256".into()));
+    }
+    let response = post(
+        client,
+        endpoint,
+        "application/x-www-form-urlencoded",
+        form(&fields),
+    )
+    .await?;
+    if !response.status().is_success() {
+        return Err(provider_error(&response));
+    }
+    serde_json::from_slice(response.body()).context("invalid device authorization response")
+}
+async fn poll_token(
+    client: &OAuthHttpClientAdapter,
+    endpoint: &str,
+    client_id: &str,
+    resource: Option<&str>,
+    details: &DeviceCode,
+    pkce: Option<&DevicePkce>,
+) -> Result<OAuthTokenResponse> {
+    let deadline =
+        Instant::now() + Duration::from_secs(details.expires_in.unwrap_or(900).clamp(1, 86_400));
+    let mut interval = Duration::from_secs(details.interval.unwrap_or(5).max(1));
+    loop {
+        if Instant::now() >= deadline {
+            bail!("OAuth device code expired");
+        }
+        let mut fields = vec![
+            ("grant_type", DEVICE_GRANT.to_string()),
+            ("device_code", details.device_code.clone()),
+            ("client_id", client_id.to_string()),
+        ];
+        if let Some(value) = resource.filter(|s| !s.trim().is_empty()) {
+            fields.push(("resource", value.to_string()));
+        }
+        if let Some(pkce) = pkce {
+            fields.push(("code_verifier", pkce.verifier.clone()));
+        }
+        let response = tokio::time::timeout_at(
+            deadline,
+            post(
+                client,
+                endpoint,
+                "application/x-www-form-urlencoded",
+                form(&fields),
+            ),
+        )
+        .await
+        .map_err(|_| anyhow!("OAuth device code expired"))??;
+        if Instant::now() >= deadline {
+            bail!("OAuth device code expired");
+        }
+        if response.status().is_success() {
+            return serde_json::from_slice(response.body())
+                .context("invalid OAuth device token response");
+        }
+        let error = provider_error(&response);
+        match error.downcast_ref::<ProviderError>().map(|e| e.0.as_str()) {
+            Some("authorization_pending") => {}
+            Some("slow_down") => interval = interval.saturating_add(Duration::from_secs(5)),
+            Some("expired_token") => bail!("OAuth device code expired"),
+            Some("access_denied") => bail!("OAuth device authorization was denied"),
+            _ => return Err(error),
+        }
+        tokio::time::sleep(interval.min(deadline.saturating_duration_since(Instant::now()))).await;
+    }
+}
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use axum::Form;
-    use axum::Json;
-    use axum::Router;
-    use axum::http::StatusCode;
-    use axum::http::header::CONTENT_TYPE;
-    use axum::response::IntoResponse;
-    use axum::response::Response;
-    use axum::routing::get;
-    use axum::routing::post;
-    use oauth2::TokenResponse;
-    use pretty_assertions::assert_eq;
-    use serde_json::Value;
-    use serde_json::json;
-    use std::sync::Arc;
-    use std::sync::atomic::AtomicUsize;
-    use std::sync::atomic::Ordering;
-    use tokio::net::TcpListener;
-
-    fn json_response(status: StatusCode, value: serde_json::Value) -> Response {
-        (
-            status,
-            [(CONTENT_TYPE, "application/json")],
-            value.to_string(),
-        )
-            .into_response()
-    }
-
-    #[derive(Clone)]
-    struct RejectPkceState {
-        device_request_count: Arc<AtomicUsize>,
-        poll_count: Arc<AtomicUsize>,
-    }
-
-    #[derive(Clone)]
-    struct RegistrationState {
-        registration_count: Arc<AtomicUsize>,
-        expected_grant_types: Vec<&'static str>,
-    }
 
     #[tokio::test]
-    async fn device_client_does_not_forward_resource_headers_to_other_origins() -> Result<()> {
-        use wiremock::Mock;
-        use wiremock::MockServer;
-        use wiremock::ResponseTemplate;
-        use wiremock::matchers::method;
-        use wiremock::matchers::path;
-
-        let server = MockServer::start().await;
-        Mock::given(method("POST"))
-            .and(path("/token"))
-            .respond_with(ResponseTemplate::new(200))
-            .expect(1)
-            .mount(&server)
-            .await;
-        let defaults = build_default_headers(
-            Some(HashMap::from([(
-                "x-api-key".to_string(),
-                "synthetic-secret".to_string(),
-            )])),
-            /*env_http_headers*/ None,
-        )?;
-        let endpoint = format!("{}/token", server.uri());
-        let client = oauth_device_client("https://resource.example/mcp", &endpoint, &defaults)?;
-        client.post(endpoint).send().await?;
-        let requests = server.received_requests().await.expect("recorded request");
-        assert_eq!(requests.len(), 1);
-        assert!(!requests[0].headers.contains_key("x-api-key"));
-        Ok(())
-    }
-
-    #[tokio::test]
-    async fn device_post_follows_same_origin_redirects() -> Result<()> {
+    async fn device_post_follows_same_origin_redirects() {
+        use codex_exec_server::RouteAwareHttpClient;
+        use codex_http_client::HttpClientFactory;
+        use codex_http_client::OutboundProxyPolicy;
         use wiremock::Mock;
         use wiremock::MockServer;
         use wiremock::ResponseTemplate;
@@ -763,7 +437,7 @@ mod tests {
         use wiremock::matchers::method;
         use wiremock::matchers::path;
 
-        let resource = MockServer::start().await;
+        let provider = MockServer::start().await;
         let request_body = "synthetic-device-request";
         Mock::given(method("POST"))
             .and(path("/device"))
@@ -771,7 +445,7 @@ mod tests {
             .and(body_string(request_body))
             .respond_with(ResponseTemplate::new(307).insert_header("location", "/redirected"))
             .expect(1)
-            .mount(&resource)
+            .mount(&provider)
             .await;
         Mock::given(method("POST"))
             .and(path("/redirected"))
@@ -779,454 +453,187 @@ mod tests {
             .and(body_string(request_body))
             .respond_with(ResponseTemplate::new(200))
             .expect(1)
-            .mount(&resource)
+            .mount(&provider)
             .await;
-        let defaults = build_default_headers(
-            Some(HashMap::from([(
-                "x-api-key".to_string(),
-                "synthetic-secret".to_string(),
-            )])),
-            /*env_http_headers*/ None,
-        )?;
-        let endpoint = format!("{}/device", resource.uri());
-        let client = oauth_device_client(&format!("{}/mcp", resource.uri()), &endpoint, &defaults)?;
-        let response = client.post(endpoint).body(request_body).send().await?;
-        assert_eq!(response.status(), StatusCode::OK);
-        resource.verify().await;
-        Ok(())
+        let mut headers = http::HeaderMap::new();
+        headers.insert("x-api-key", "synthetic-secret".parse().unwrap());
+        let client = OAuthHttpClientAdapter::new_with_redirect_mode(
+            Arc::new(RouteAwareHttpClient::new(HttpClientFactory::new(
+                OutboundProxyPolicy::ReqwestDefault,
+            ))),
+            headers,
+            &format!("{}/mcp", provider.uri()),
+            true,
+            StreamableHttpRedirectMode::Legacy,
+        )
+        .unwrap();
+        let response = post(
+            &client,
+            &format!("{}/device", provider.uri()),
+            "application/x-www-form-urlencoded",
+            request_body.as_bytes().to_vec(),
+        )
+        .await
+        .unwrap();
+        assert_eq!(response.status(), http::StatusCode::OK);
+        provider.verify().await;
     }
 
     #[tokio::test]
-    async fn device_post_does_not_follow_cross_origin_redirects() -> Result<()> {
+    async fn device_requests_do_not_follow_redirects_with_codes() {
+        use codex_exec_server::RouteAwareHttpClient;
+        use codex_http_client::HttpClientFactory;
+        use codex_http_client::OutboundProxyPolicy;
         use wiremock::Mock;
         use wiremock::MockServer;
         use wiremock::ResponseTemplate;
         use wiremock::matchers::method;
         use wiremock::matchers::path;
 
-        let resource = MockServer::start().await;
-        let destination = MockServer::start().await;
+        let provider = MockServer::start().await;
+        let other = MockServer::start().await;
         Mock::given(method("POST"))
             .and(path("/device"))
             .respond_with(
                 ResponseTemplate::new(307)
-                    .insert_header("location", format!("{}/other", destination.uri())),
+                    .insert_header("location", format!("{}/capture", other.uri())),
             )
             .expect(1)
-            .mount(&resource)
+            .mount(&provider)
             .await;
         Mock::given(method("POST"))
-            .and(path("/other"))
+            .and(path("/capture"))
             .respond_with(ResponseTemplate::new(200))
             .expect(0)
-            .mount(&destination)
+            .mount(&other)
             .await;
-        let defaults = build_default_headers(
-            Some(HashMap::from([(
-                "x-api-key".to_string(),
-                "synthetic-secret".to_string(),
-            )])),
-            /*env_http_headers*/ None,
-        )?;
-        let endpoint = format!("{}/device", resource.uri());
-        let client = oauth_device_client(&format!("{}/mcp", resource.uri()), &endpoint, &defaults)?;
-        let response = client.post(endpoint).send().await?;
-        assert_eq!(response.status(), StatusCode::TEMPORARY_REDIRECT);
-        destination.verify().await;
-        Ok(())
+        let client = OAuthHttpClientAdapter::new_with_redirect_mode(
+            Arc::new(RouteAwareHttpClient::new(HttpClientFactory::new(
+                OutboundProxyPolicy::ReqwestDefault,
+            ))),
+            Default::default(),
+            &format!("{}/mcp", provider.uri()),
+            false,
+            StreamableHttpRedirectMode::Legacy,
+        )
+        .unwrap();
+        assert!(
+            request_device_code(
+                &client,
+                &format!("{}/device", provider.uri()),
+                "client",
+                &[],
+                None,
+                None
+            )
+            .await
+            .is_err()
+        );
+        provider.verify().await;
+        other.verify().await;
     }
 
     #[tokio::test]
-    async fn device_login_dynamic_registration_uses_device_grant_shape() {
-        let registration_count = Arc::new(AtomicUsize::new(0));
-        let server = spawn_device_registration_server(registration_count.clone()).await;
-        let client_id = resolve_device_oauth_client_id(
-            &format!("{server}/mcp"),
-            &HeaderMap::new(),
-            &["profile".to_string(), "ops:read".to_string()],
-            /*oauth_client_id*/ None,
-            &format!("{server}/mcp"),
+    async fn device_poll_handles_pending_and_sends_pkce_verifier() {
+        use codex_exec_server::RouteAwareHttpClient;
+        use codex_http_client::HttpClientFactory;
+        use codex_http_client::OutboundProxyPolicy;
+        use std::sync::atomic::AtomicUsize;
+        use std::sync::atomic::Ordering;
+        use wiremock::Mock;
+        use wiremock::MockServer;
+        use wiremock::ResponseTemplate;
+        use wiremock::matchers::body_string_contains;
+        use wiremock::matchers::method;
+        use wiremock::matchers::path;
+        let provider = MockServer::start().await;
+        let calls = Arc::new(AtomicUsize::new(0));
+        let response_calls = calls.clone();
+        Mock::given(method("POST")).and(path("/token"))
+            .and(body_string_contains("code_verifier=verifier"))
+            .respond_with(move |_: &wiremock::Request| {
+                if response_calls.fetch_add(1, Ordering::SeqCst) == 0 {
+                    ResponseTemplate::new(400).set_body_json(serde_json::json!({"error":"authorization_pending"}))
+                } else {
+                    ResponseTemplate::new(200).set_body_json(serde_json::json!({"access_token":"synthetic-token", "token_type":"Bearer"}))
+                }
+            }).expect(2).mount(&provider).await;
+        let client = OAuthHttpClientAdapter::new_with_redirect_mode(
+            Arc::new(RouteAwareHttpClient::new(HttpClientFactory::new(
+                OutboundProxyPolicy::ReqwestDefault,
+            ))),
+            Default::default(),
+            &format!("{}/mcp", provider.uri()),
+            false,
+            StreamableHttpRedirectMode::Legacy,
         )
-        .await
-        .expect("dynamic device registration");
-
-        assert_eq!(client_id, "dynamic-device-client");
-        assert_eq!(registration_count.load(Ordering::SeqCst), 1);
-    }
-
-    #[tokio::test]
-    async fn device_login_dynamic_registration_omits_refresh_when_not_supported() {
-        let registration_count = Arc::new(AtomicUsize::new(0));
-        let server = spawn_device_registration_server_with_grants(
-            registration_count.clone(),
-            vec![DEVICE_CODE_GRANT_TYPE],
-            vec![DEVICE_CODE_GRANT_TYPE],
-        )
-        .await;
-        let client_id = resolve_device_oauth_client_id(
-            &format!("{server}/mcp"),
-            &HeaderMap::new(),
-            &["profile".to_string(), "ops:read".to_string()],
-            /*oauth_client_id*/ None,
-            &format!("{server}/mcp"),
-        )
-        .await
-        .expect("dynamic device registration");
-
-        assert_eq!(client_id, "dynamic-device-client");
-        assert_eq!(registration_count.load(Ordering::SeqCst), 1);
-    }
-
-    #[tokio::test]
-    async fn device_login_configured_client_id_skips_dynamic_registration() {
-        let registration_count = Arc::new(AtomicUsize::new(0));
-        let server = spawn_device_registration_server(registration_count.clone()).await;
-        let client_id = resolve_device_oauth_client_id(
-            &format!("{server}/mcp"),
-            &HeaderMap::new(),
-            &["profile".to_string(), "ops:read".to_string()],
-            Some("configured-device-client"),
-            &format!("{server}/mcp"),
-        )
-        .await
-        .expect("configured client id");
-
-        assert_eq!(client_id, "configured-device-client");
-        assert_eq!(registration_count.load(Ordering::SeqCst), 0);
-    }
-
-    #[tokio::test]
-    async fn device_login_polls_until_authorized() {
-        let poll_count = Arc::new(AtomicUsize::new(0));
-        let server = spawn_device_server(poll_count.clone()).await;
-        let client = Client::builder().no_proxy().build().expect("client");
-        let details = request_device_authorization(
-            &client,
-            &format!("{server}/device"),
-            "codex-device",
-            &["ops:read".to_string(), "ops:write".to_string()],
-            /*oauth_resource*/ None,
-            Some(&DevicePkce {
-                code_challenge: "pkce-challenge".to_string(),
-                code_verifier: "pkce-verifier".to_string(),
-            }),
-        )
-        .await
-        .expect("device authorization");
-
-        let token = poll_device_token(
-            &client,
-            &format!("{server}/token"),
-            "codex-device",
-            /*oauth_resource*/ None,
-            &details,
-            Some(&DevicePkce {
-                code_challenge: "pkce-challenge".to_string(),
-                code_verifier: "pkce-verifier".to_string(),
-            }),
-        )
-        .await
-        .expect("device token");
-
-        assert_eq!(token.access_token().secret(), "access-token");
-        assert_eq!(poll_count.load(Ordering::SeqCst), 2);
-    }
-
-    #[tokio::test]
-    async fn device_login_retries_without_pkce_when_rejected() {
-        let device_request_count = Arc::new(AtomicUsize::new(0));
-        let poll_count = Arc::new(AtomicUsize::new(0));
-        let server =
-            spawn_device_server_rejecting_pkce(device_request_count.clone(), poll_count.clone())
-                .await;
-        let client = Client::builder().no_proxy().build().expect("client");
-
-        let (details, pkce) = request_device_authorization_with_pkce_fallback(
-            &client,
-            &format!("{server}/device"),
-            "codex-device",
-            &["ops:read".to_string()],
-            /*oauth_resource*/ None,
-        )
-        .await
-        .expect("device authorization");
-        assert!(pkce.is_none());
-
-        let token = poll_device_token(
-            &client,
-            &format!("{server}/token"),
-            "codex-device",
-            /*oauth_resource*/ None,
-            &details,
-            pkce.as_ref(),
-        )
-        .await
-        .expect("device token");
-
-        assert_eq!(token.access_token().secret(), "access-token");
-        assert_eq!(device_request_count.load(Ordering::SeqCst), 2);
-        assert_eq!(poll_count.load(Ordering::SeqCst), 2);
+        .unwrap();
+        let details = DeviceCode {
+            device_code: "synthetic-device".into(),
+            user_code: "synthetic-user".into(),
+            verification_uri: format!("{}/verify", provider.uri()),
+            verification_uri_complete: None,
+            expires_in: Some(10),
+            interval: Some(1),
+        };
+        let pkce = DevicePkce {
+            challenge: "challenge".into(),
+            verifier: "verifier".into(),
+        };
+        assert!(
+            poll_token(
+                &client,
+                &format!("{}/token", provider.uri()),
+                "client",
+                None,
+                &details,
+                Some(&pkce)
+            )
+            .await
+            .is_ok()
+        );
+        assert_eq!(calls.load(Ordering::SeqCst), 2);
+        provider.verify().await;
     }
 
     #[test]
-    fn device_authorization_expiry_uses_safe_bounds() {
-        let mut details = DeviceAuthorizationResponse {
-            device_code: "device-code".to_string(),
-            user_code: "USER-CODE".to_string(),
-            verification_uri: "https://issuer.test/device".to_string(),
+    fn provider_errors_do_not_echo_untrusted_response_bodies() {
+        let response = oauth2::http::Response::builder()
+            .status(400)
+            .body(br#"{"error":"invalid request with a secret"}"#.to_vec())
+            .unwrap();
+        let message = provider_error(&response).to_string();
+        assert!(!message.contains("secret"));
+        assert!(message.contains("http_400"));
+        let response = oauth2::http::Response::builder()
+            .status(400)
+            .body(br#"{"error":"topsecret"}"#.to_vec())
+            .unwrap();
+        assert!(!provider_error(&response).to_string().contains("topsecret"));
+        let response = oauth2::http::Response::builder()
+            .status(400)
+            .body(br#"{"error":"authorization_pending"}"#.to_vec())
+            .unwrap();
+        assert!(
+            provider_error(&response)
+                .to_string()
+                .contains("authorization_pending")
+        );
+    }
+
+    #[test]
+    fn prompt_rejects_non_web_verification_uris_and_empty_codes() {
+        let mut code = DeviceCode {
+            device_code: "device".into(),
+            user_code: "user".into(),
+            verification_uri: "javascript:alert(1)".into(),
             verification_uri_complete: None,
             expires_in: None,
             interval: None,
         };
-
-        assert_eq!(
-            device_authorization_expires_in(&details),
-            DEFAULT_DEVICE_EXPIRES_IN_SECS
-        );
-
-        let below_min_expires_in = MIN_DEVICE_EXPIRES_IN_SECS - 1;
-        details.expires_in = Some(below_min_expires_in);
-        assert_eq!(
-            device_authorization_expires_in(&details),
-            MIN_DEVICE_EXPIRES_IN_SECS
-        );
-
-        details.expires_in = Some(u64::MAX);
-        assert_eq!(
-            device_authorization_expires_in(&details),
-            MAX_DEVICE_EXPIRES_IN_SECS
-        );
-    }
-
-    async fn spawn_device_registration_server(registration_count: Arc<AtomicUsize>) -> String {
-        spawn_device_registration_server_with_grants(
-            registration_count,
-            vec![DEVICE_CODE_GRANT_TYPE, "refresh_token"],
-            vec![DEVICE_CODE_GRANT_TYPE, "refresh_token"],
-        )
-        .await
-    }
-
-    async fn spawn_device_registration_server_with_grants(
-        registration_count: Arc<AtomicUsize>,
-        grant_types_supported: Vec<&'static str>,
-        expected_grant_types: Vec<&'static str>,
-    ) -> String {
-        async fn register(
-            axum::extract::State(state): axum::extract::State<RegistrationState>,
-            Json(body): Json<Value>,
-        ) -> Response {
-            state.registration_count.fetch_add(1, Ordering::SeqCst);
-            assert_eq!(body["client_name"], "Codex");
-            assert_eq!(body["token_endpoint_auth_method"], "none");
-            assert_eq!(body["scope"], "profile ops:read");
-            assert_eq!(body["grant_types"], json!(state.expected_grant_types));
-            assert!(body.get("redirect_uris").is_none());
-            assert!(body.get("response_types").is_none());
-
-            json_response(
-                StatusCode::CREATED,
-                json!({
-                    "client_id": "dynamic-device-client"
-                }),
-            )
-        }
-
-        let listener = TcpListener::bind("127.0.0.1:0")
-            .await
-            .expect("bind metadata listener");
-        let addr = listener.local_addr().expect("read metadata listener addr");
-        let base_url = format!("http://{addr}");
-        let metadata = json!({
-            "issuer": base_url,
-            "authorization_endpoint": format!("{base_url}/oauth/authorize"),
-            "token_endpoint": format!("{base_url}/token"),
-            "registration_endpoint": format!("{base_url}/register"),
-            "device_authorization_endpoint": format!("{base_url}/device"),
-            "grant_types_supported": grant_types_supported,
-            "scopes_supported": ["offline_access"],
-        });
-        let mut path_scoped_metadata = metadata.clone();
-        path_scoped_metadata["issuer"] = json!(format!("{base_url}/mcp"));
-        let router = Router::new()
-            .route(
-                "/.well-known/oauth-authorization-server/mcp",
-                get(move || {
-                    let metadata = path_scoped_metadata.clone();
-                    async move { json_response(StatusCode::OK, metadata) }
-                }),
-            )
-            .route(
-                "/.well-known/oauth-authorization-server",
-                get(move || {
-                    let metadata = metadata.clone();
-                    async move { json_response(StatusCode::OK, metadata) }
-                }),
-            )
-            .route("/register", post(register))
-            .with_state(RegistrationState {
-                registration_count,
-                expected_grant_types,
-            });
-
-        tokio::spawn(async move {
-            axum::serve(listener, router)
-                .await
-                .expect("serve oauth metadata");
-        });
-        base_url
-    }
-
-    async fn spawn_device_server(poll_count: Arc<AtomicUsize>) -> String {
-        async fn device(Form(form): Form<HashMap<String, String>>) -> Response {
-            assert_eq!(
-                form,
-                HashMap::from([
-                    ("client_id".to_string(), "codex-device".to_string()),
-                    ("scope".to_string(), "ops:read ops:write".to_string()),
-                    ("code_challenge".to_string(), "pkce-challenge".to_string()),
-                    ("code_challenge_method".to_string(), "S256".to_string())
-                ])
-            );
-            json_response(
-                StatusCode::OK,
-                json!({
-                    "device_code": "device-code",
-                    "user_code": "USER-CODE",
-                    "verification_uri": "https://issuer.test/device",
-                    "expires_in": 60,
-                    "interval": 1
-                }),
-            )
-        }
-
-        async fn token(
-            axum::extract::State(poll_count): axum::extract::State<Arc<AtomicUsize>>,
-            Form(form): Form<HashMap<String, String>>,
-        ) -> Response {
-            assert_eq!(
-                form,
-                HashMap::from([
-                    ("grant_type".to_string(), DEVICE_CODE_GRANT_TYPE.to_string()),
-                    ("device_code".to_string(), "device-code".to_string()),
-                    ("client_id".to_string(), "codex-device".to_string()),
-                    ("code_verifier".to_string(), "pkce-verifier".to_string())
-                ])
-            );
-            if poll_count.fetch_add(1, Ordering::SeqCst) == 0 {
-                return json_response(
-                    StatusCode::BAD_REQUEST,
-                    json!({"error": "authorization_pending"}),
-                );
-            }
-            json_response(
-                StatusCode::OK,
-                json!({
-                    "access_token": "access-token",
-                    "refresh_token": "refresh-token",
-                    "token_type": "Bearer",
-                    "expires_in": 3600,
-                    "scope": "ops:read ops:write"
-                }),
-            )
-        }
-
-        let router = Router::new()
-            .route("/device", post(device))
-            .route("/token", post(token))
-            .with_state(poll_count);
-        let listener = TcpListener::bind("127.0.0.1:0")
-            .await
-            .expect("bind test server");
-        let addr = listener.local_addr().expect("local addr");
-        tokio::spawn(async move {
-            axum::serve(listener, router).await.expect("serve");
-        });
-        format!("http://{addr}")
-    }
-
-    async fn spawn_device_server_rejecting_pkce(
-        device_request_count: Arc<AtomicUsize>,
-        poll_count: Arc<AtomicUsize>,
-    ) -> String {
-        async fn device(
-            axum::extract::State(state): axum::extract::State<RejectPkceState>,
-            Form(form): Form<HashMap<String, String>>,
-        ) -> Response {
-            let request_count = state.device_request_count.fetch_add(1, Ordering::SeqCst);
-            if request_count == 0 {
-                assert!(form.contains_key("code_challenge"));
-                return json_response(
-                    StatusCode::BAD_REQUEST,
-                    json!({
-                        "error": "invalid_request",
-                        "error_description": "PKCE is not supported for device authorization"
-                    }),
-                );
-            }
-            assert_eq!(
-                form,
-                HashMap::from([
-                    ("client_id".to_string(), "codex-device".to_string()),
-                    ("scope".to_string(), "ops:read".to_string())
-                ])
-            );
-            json_response(
-                StatusCode::OK,
-                json!({
-                    "device_code": "device-code",
-                    "user_code": "USER-CODE",
-                    "verification_uri": "https://issuer.test/device",
-                    "expires_in": 60,
-                    "interval": 1
-                }),
-            )
-        }
-
-        async fn token(
-            axum::extract::State(state): axum::extract::State<RejectPkceState>,
-            Form(form): Form<HashMap<String, String>>,
-        ) -> Response {
-            assert_eq!(
-                form,
-                HashMap::from([
-                    ("grant_type".to_string(), DEVICE_CODE_GRANT_TYPE.to_string()),
-                    ("device_code".to_string(), "device-code".to_string()),
-                    ("client_id".to_string(), "codex-device".to_string())
-                ])
-            );
-            if state.poll_count.fetch_add(1, Ordering::SeqCst) == 0 {
-                return json_response(
-                    StatusCode::BAD_REQUEST,
-                    json!({"error": "authorization_pending"}),
-                );
-            }
-            json_response(
-                StatusCode::OK,
-                json!({
-                    "access_token": "access-token",
-                    "refresh_token": "refresh-token",
-                    "token_type": "Bearer",
-                    "expires_in": 3600,
-                    "scope": "ops:read"
-                }),
-            )
-        }
-
-        let router = Router::new()
-            .route("/device", post(device))
-            .route("/token", post(token))
-            .with_state(RejectPkceState {
-                device_request_count,
-                poll_count,
-            });
-        let listener = TcpListener::bind("127.0.0.1:0")
-            .await
-            .expect("bind test server");
-        let addr = listener.local_addr().expect("local addr");
-        tokio::spawn(async move {
-            axum::serve(listener, router).await.expect("serve");
-        });
-        format!("http://{addr}")
+        assert!(prompt(&code, &mut |_| panic!("invalid URI was shown")).is_err());
+        code.verification_uri = "https://example.test/verify".into();
+        code.user_code.clear();
+        assert!(prompt(&code, &mut |_| panic!("empty code was shown")).is_err());
     }
 }

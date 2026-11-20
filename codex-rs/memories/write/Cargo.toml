@@ -13,6 +13,7 @@ doctest = false
 workspace = true
 
 [dependencies]
+codex-thread-context-ids = { workspace = true }
 anyhow = { workspace = true }
 chrono = { workspace = true }
 codex-backend-client = { workspace = true }
@@ -35,12 +36,13 @@ codex-utils-template = { workspace = true }
 futures = { workspace = true }
 serde = { workspace = true, features = ["derive"] }
 serde_json = { workspace = true }
-sha2 = { workspace = true }
 tokio = { workspace = true, features = ["fs", "rt", "sync", "time"] }
 tracing = { workspace = true, features = ["log"] }
 uuid = { workspace = true, features = ["v4", "v5"] }
 
 [dev-dependencies]
+base64 = { workspace = true }
+codex-runtime-agent-instance = { workspace = true }
 codex-model-provider-info = { workspace = true }
 codex-models-manager = { workspace = true }
 core_test_support = { workspace = true }

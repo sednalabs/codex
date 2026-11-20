@@ -1,7 +1,7 @@
 use crate::state::NetworkProxyState;
 use rama_core::Service;
 use rama_core::error::BoxError;
-use rama_core::extensions::ExtensionsMut;
+use rama_core::extensions::ExtensionsRef;
 use rama_tcp::TcpStream;
 use std::io;
 use std::io::Write;
@@ -53,7 +53,9 @@ where
                     "unknown network proxy attribution token",
                 )
             })?,
-            None => self.state.as_ref().clone(),
+            None => self
+                .state
+                .for_environment_id(self.environment_id.as_deref()),
         };
         if let Some(expected_environment_id) = self.environment_id.as_deref()
             && state
@@ -66,7 +68,7 @@ where
             )
             .into());
         }
-        stream.extensions_mut().insert(Arc::new(state));
+        stream.extensions().insert_arc(Arc::new(state));
         self.inner.serve(stream).await.map_err(Into::into)
     }
 }

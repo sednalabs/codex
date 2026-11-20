@@ -19,6 +19,19 @@ pub struct TokenUsage {
     pub total_tokens: i64,
 }
 
+impl From<codex_app_server_protocol::TokenUsageBreakdown> for TokenUsage {
+    fn from(usage: codex_app_server_protocol::TokenUsageBreakdown) -> Self {
+        Self {
+            input_tokens: usage.input_tokens,
+            cached_input_tokens: usage.cached_input_tokens,
+            cache_write_input_tokens: usage.cache_write_input_tokens,
+            output_tokens: usage.output_tokens,
+            reasoning_output_tokens: usage.reasoning_output_tokens,
+            total_tokens: usage.total_tokens,
+        }
+    }
+}
+
 impl TokenUsage {
     pub fn is_zero(&self) -> bool {
         self.total_tokens == 0
@@ -26,10 +39,6 @@ impl TokenUsage {
 
     pub(crate) fn cached_input(&self) -> i64 {
         self.cached_input_tokens.max(0)
-    }
-
-    pub(crate) fn cache_write_input(&self) -> i64 {
-        self.cache_write_input_tokens.max(0)
     }
 
     pub(crate) fn non_cached_input(&self) -> i64 {
@@ -70,21 +79,13 @@ impl fmt::Display for TokenUsage {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(
             f,
-            "Token usage: total={} input={}{}{} output={}{}",
+            "Token usage: total={} input={}{} output={}{}",
             format_with_separators(self.blended_total()),
             format_with_separators(self.non_cached_input()),
             if self.cached_input() > 0 {
                 format!(
                     " (+ {} cached)",
                     format_with_separators(self.cached_input())
-                )
-            } else {
-                String::new()
-            },
-            if self.cache_write_input() > 0 {
-                format!(
-                    " cache-write={}",
-                    format_with_separators(self.cache_write_input())
                 )
             } else {
                 String::new()
@@ -99,36 +100,5 @@ impl fmt::Display for TokenUsage {
                 String::new()
             }
         )
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn display_includes_cache_write_without_changing_total() {
-        let usage = TokenUsage {
-            input_tokens: 5,
-            cache_write_input_tokens: 3,
-            output_tokens: 3,
-            total_tokens: 8,
-            ..Default::default()
-        };
-
-        assert_eq!(
-            usage.to_string(),
-            "Token usage: total=8 input=5 cache-write=3 output=3"
-        );
-    }
-
-    #[test]
-    fn deserialize_defaults_missing_cache_write_tokens() {
-        let usage: TokenUsage = serde_json::from_str(
-            r#"{"input_tokens":5,"cached_input_tokens":0,"output_tokens":3,"reasoning_output_tokens":0,"total_tokens":8}"#,
-        )
-        .expect("legacy usage should deserialize");
-
-        assert_eq!(usage.cache_write_input_tokens, 0);
     }
 }

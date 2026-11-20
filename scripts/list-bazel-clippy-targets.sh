@@ -30,7 +30,8 @@ manual_rust_test_targets="$(
 if [[ "${RUNNER_OS:-}" != "Windows" ]]; then
   # Non-Windows clippy jobs lint the native test binaries; the
   # Windows-cross binaries exist only for the fast Windows test leg.
-  manual_rust_test_targets="$(printf '%s\n' "${manual_rust_test_targets}" | grep -v -- '-windows-cross-bin$' || true)"
+  # Non-Windows Clippy should not explicitly re-add the opt-in Wine smoke test.
+  manual_rust_test_targets="$(printf '%s\n' "${manual_rust_test_targets}" | grep -v -- '-windows-cross-bin$' | grep -v -F -- '//codex-rs/core/tests/remote_env_windows:smoke-test' || true)"
 elif [[ $windows_cross_compile -eq 1 ]]; then
   # `bazel query` is intentionally pre-analysis and does not remove targets
   # made incompatible by `target_compatible_with`. Sharded integration tests

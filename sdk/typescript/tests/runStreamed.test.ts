@@ -35,13 +35,9 @@ describe("Codex", () => {
         },
         {
           type: "turn.started",
-          thread_id: expect.any(String),
-          turn_id: expect.any(String),
         },
         {
           type: "item.completed",
-          thread_id: expect.any(String),
-          turn_id: expect.any(String),
           item: {
             id: "item_0",
             type: "agent_message",
@@ -50,8 +46,6 @@ describe("Codex", () => {
         },
         {
           type: "turn.completed",
-          thread_id: expect.any(String),
-          turn_id: expect.any(String),
           usage: {
             cache_write_input_tokens: 0,
             cached_input_tokens: 12,
@@ -208,10 +202,8 @@ describe("Codex", () => {
 });
 
 async function drainEvents(events: AsyncGenerator<ThreadEvent>): Promise<void> {
-  for (;;) {
-    const event = await events.next();
-    if (event.done) {
-      return;
-    }
-  }
+  let done = false;
+  do {
+    done = (await events.next()).done ?? false;
+  } while (!done);
 }

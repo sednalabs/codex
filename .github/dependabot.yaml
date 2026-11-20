@@ -2,70 +2,35 @@
 
 version: 2
 updates:
-  - package-ecosystem: npm
-    directories:
-      - /
-      - /.devcontainer/codex-install
+  - package-ecosystem: bun
+    directory: .github/actions/codex
     schedule:
-      interval: daily
-      time: "03:00"
-      timezone: Etc/UTC
+      interval: weekly
     cooldown:
       default-days: 7
   - package-ecosystem: cargo
     directories:
-      - /codex-rs
-      - /tools/argument-comment-lint
+      - codex-rs
+      - codex-rs/*
     schedule:
-      interval: daily
-      time: "03:00"
-      timezone: Etc/UTC
-    ignore:
-      - dependency-name: keyring
-      - dependency-name: aws-config
-      - dependency-name: aws-sigv4
-  - package-ecosystem: pip
-    directories:
-      - /scripts
-      - /sdk/python
-      - /sdk/python-runtime
-    schedule:
-      interval: daily
-      time: "03:00"
-      timezone: Etc/UTC
-    ignore:
-      - dependency-name: openai-codex-cli-bin
-        update-types:
-          - version-update:semver-major
-          - version-update:semver-minor
-          - version-update:semver-patch
-  - package-ecosystem: devcontainers
-    directory: /
-    schedule:
-      interval: daily
-      time: "03:00"
-      timezone: Etc/UTC
+      interval: weekly
+    cooldown:
+      default-days: 7
   - package-ecosystem: docker
-    directories:
-      - /.devcontainer
+    directory: codex-cli
     schedule:
-      interval: daily
-      time: "03:00"
-      timezone: Etc/UTC
+      interval: weekly
+    cooldown:
+      default-days: 7
   - package-ecosystem: github-actions
     directory: /
     schedule:
-      interval: daily
-      time: "03:00"
-      timezone: Etc/UTC
-    ignore:
-      - dependency-name: dtolnay/rust-toolchain
-      - dependency-name: EmbarkStudios/cargo-deny-action
+      interval: weekly
+    cooldown:
+      default-days: 7
   - package-ecosystem: rust-toolchain
-    directories:
-      - /codex-rs
-      - /tools/argument-comment-lint
+    directory: codex-rs
     schedule:
-      interval: daily
-      time: "03:00"
-      timezone: Etc/UTC
+      interval: weekly
+    cooldown:
+      default-days: 7

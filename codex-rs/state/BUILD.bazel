@@ -7,14 +7,13 @@ codex_rust_crate(
         "logs_migrations/**",
         "memory_migrations/**",
         "migrations/**",
+        "queue_migrations/**",
         "thread_history_migrations/**",
-        "test_data/usage_migrations_t10/**",
         "usage_migrations/**",
     ]),
     crate_name = "codex_state",
-    test_data_extra = [
-        "//:scripts/codex_usage_report.py",
-        "//:scripts/test_codex_usage_report.py",
-        "//codex-rs/state:usage_migrations/0015_bounded_usage_reporting_indexes.sql",
-    ],
+    test_shard_counts = {
+        # Windows runs database-heavy Rust tests serially within each shard.
+        "state-unit-tests": 4,
+    },
 )

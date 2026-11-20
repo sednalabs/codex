@@ -1,4 +1,0 @@
-- description: Rust native visual response production queries.
-- query: queries/AndroidVisualToolMissingNativeImageGuard.ql
-- query: queries/NativeVisualResponseProductionCoverageMissing.ql
-- query: queries/NativeVisualResponseCoverageWitness.ql

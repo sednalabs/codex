@@ -3,28 +3,28 @@ source: tui/src/inline_visualization_tests.rs
 expression: "format!(\"before:\\n{unavailable}\\n\\nafter:\\n{available}\")"
 ---
 before:
- Transcript: verbose ───────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+/ T R A N S C R I P T / / / / / / / / / / / / / / / / / / / / / / / / / / / / / / / / / / / / / / / / / / / / / / / / / / / / / / / / / / / / / / / / / / / / / / / / / / / / / / / / / / / / / / / / / / / / / / / / / / / / / / / / / / / / /
 • Visualization unavailable on this device.
-~
-~
-~
-~
-~
-~
-───────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────── 0 / 0 · 100% ─
- ↑/↓ scroll   ←/→ prompts   pgup/pgdn page   home/end jump
- q quit   ctrl + o copy   ⌥ + r switch to raw render   v switch to compact view   esc/← edit prev
+
+
+
+
+
+
+⌃space select
+ ↑/↓ to scroll · pgup/pgdn to page · home/end to jump
+ q close · f3 find · esc browse prompts
 
 
 after:
- Transcript: verbose ───────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+/ T R A N S C R I P T / / / / / / / / / / / / / / / / / / / / / / / / / / / / / / / / / / / / / / / / / / / / / / / / / / / / / / / / / / / / / / / / / / / / / / / / / / / / / / / / / / / / / / / / / / / / / / / / / / / / / / / / / / / / /
 • Open chart visualization in the browser
   file://<viewer-path>
 
 • next message
-~
-~
-~
-───────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────── 0 / 0 · 100% ─
- ↑/↓ scroll   ←/→ prompts   pgup/pgdn page   home/end jump
- q quit   ctrl + o copy   ⌥ + r switch to raw render   v switch to compact view   esc/← edit prev
+
+
+
+⌃space select
+ ↑/↓ to scroll · pgup/pgdn to page · home/end to jump
+ q close · f3 find · esc browse prompts

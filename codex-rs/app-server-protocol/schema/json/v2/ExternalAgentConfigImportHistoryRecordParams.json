@@ -1,5 +1,68 @@
 {
-  "$defs": {
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "definitions": {
+    "ExternalAgentConfigImportHistoryRecordSuccessParams": {
+      "properties": {
+        "cwd": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "itemType": {
+          "$ref": "#/definitions/ExternalAgentConfigMigrationItemType"
+        },
+        "source": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "target": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "title": {
+          "default": null,
+          "description": "Original title for an imported session, when available.",
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "itemType"
+      ],
+      "type": "object"
+    },
+    "ExternalAgentConfigImportHistoryRecordTypeResultParams": {
+      "properties": {
+        "failures": {
+          "items": {
+            "$ref": "#/definitions/ExternalAgentConfigImportItemTypeFailure"
+          },
+          "type": "array"
+        },
+        "itemType": {
+          "$ref": "#/definitions/ExternalAgentConfigMigrationItemType"
+        },
+        "successes": {
+          "items": {
+            "$ref": "#/definitions/ExternalAgentConfigImportHistoryRecordSuccessParams"
+          },
+          "type": "array"
+        }
+      },
+      "required": [
+        "failures",
+        "itemType",
+        "successes"
+      ],
+      "type": "object"
+    },
     "ExternalAgentConfigImportItemTypeFailure": {
       "properties": {
         "cwd": {
@@ -18,7 +81,7 @@
           "type": "string"
         },
         "itemType": {
-          "$ref": "#/$defs/ExternalAgentConfigMigrationItemType"
+          "$ref": "#/definitions/ExternalAgentConfigMigrationItemType"
         },
         "message": {
           "type": "string"
@@ -37,63 +100,9 @@
         }
       },
       "required": [
-        "itemType",
         "failureStage",
-        "message"
-      ],
-      "type": "object"
-    },
-    "ExternalAgentConfigImportItemTypeSuccess": {
-      "properties": {
-        "cwd": {
-          "type": [
-            "string",
-            "null"
-          ]
-        },
-        "itemType": {
-          "$ref": "#/$defs/ExternalAgentConfigMigrationItemType"
-        },
-        "source": {
-          "type": [
-            "string",
-            "null"
-          ]
-        },
-        "target": {
-          "type": [
-            "string",
-            "null"
-          ]
-        }
-      },
-      "required": [
-        "itemType"
-      ],
-      "type": "object"
-    },
-    "ExternalAgentConfigImportTypeResult": {
-      "properties": {
-        "failures": {
-          "items": {
-            "$ref": "#/$defs/ExternalAgentConfigImportItemTypeFailure"
-          },
-          "type": "array"
-        },
-        "itemType": {
-          "$ref": "#/$defs/ExternalAgentConfigMigrationItemType"
-        },
-        "successes": {
-          "items": {
-            "$ref": "#/$defs/ExternalAgentConfigImportItemTypeSuccess"
-          },
-          "type": "array"
-        }
-      },
-      "required": [
         "itemType",
-        "successes",
-        "failures"
+        "message"
       ],
       "type": "object"
     },
@@ -113,12 +122,11 @@
       "type": "string"
     }
   },
-  "$schema": "https://json-schema.org/draft/2020-12/schema",
   "properties": {
     "itemTypeResults": {
       "description": "Completed results grouped by imported item type.",
       "items": {
-        "$ref": "#/$defs/ExternalAgentConfigImportTypeResult"
+        "$ref": "#/definitions/ExternalAgentConfigImportHistoryRecordTypeResultParams"
       },
       "type": "array"
     },
@@ -128,8 +136,8 @@
     }
   },
   "required": [
-    "providerId",
-    "itemTypeResults"
+    "itemTypeResults",
+    "providerId"
   ],
   "title": "ExternalAgentConfigImportHistoryRecordParams",
   "type": "object"

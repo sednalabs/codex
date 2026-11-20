@@ -1,11 +1,18 @@
 {
-  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$schema": "http://json-schema.org/draft-07/schema#",
   "description": "Final process exit notification for `process/spawn`.",
   "properties": {
     "exitCode": {
       "description": "Process exit code.",
       "format": "int32",
       "type": "integer"
+    },
+    "outputDrainTimedOut": {
+      "description": "Whether output collection hit its post-exit deadline before seeing EOF or reaching the requested byte cap on either stream. Older servers omit this field.",
+      "type": [
+        "boolean",
+        "null"
+      ]
     },
     "processHandle": {
       "description": "Client-supplied, connection-scoped `processHandle` from `process/spawn`.",
@@ -16,7 +23,7 @@
       "type": "string"
     },
     "stderrCapReached": {
-      "description": "Whether stderr reached `outputBytesCap`.\n\nIn streaming mode, stderr is empty and cap state is also reported on the\nfinal stderr `process/outputDelta` notification.",
+      "description": "Whether stderr reached `outputBytesCap`.\n\nIn streaming mode, stderr is empty and cap state is also reported on the final stderr `process/outputDelta` notification.",
       "type": "boolean"
     },
     "stdout": {
@@ -24,17 +31,17 @@
       "type": "string"
     },
     "stdoutCapReached": {
-      "description": "Whether stdout reached `outputBytesCap`.\n\nIn streaming mode, stdout is empty and cap state is also reported on the\nfinal stdout `process/outputDelta` notification.",
+      "description": "Whether stdout reached `outputBytesCap`.\n\nIn streaming mode, stdout is empty and cap state is also reported on the final stdout `process/outputDelta` notification.",
       "type": "boolean"
     }
   },
   "required": [
-    "processHandle",
     "exitCode",
-    "stdout",
-    "stdoutCapReached",
+    "processHandle",
     "stderr",
-    "stderrCapReached"
+    "stderrCapReached",
+    "stdout",
+    "stdoutCapReached"
   ],
   "title": "ProcessExitedNotification",
   "type": "object"

@@ -1,5 +1,5 @@
 #[cfg(any(target_os = "macos", windows))]
-use rama_tls_rustls::dep::pki_types::CertificateDer;
+use rama_crypto::pki_types::CertificateDer;
 use rustls_native_certs::CertificateResult;
 #[cfg(any(target_os = "macos", windows))]
 use rustls_native_certs::Error;

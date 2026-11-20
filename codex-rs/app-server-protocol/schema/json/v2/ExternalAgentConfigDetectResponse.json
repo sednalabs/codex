@@ -1,5 +1,6 @@
 {
-  "$defs": {
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "definitions": {
     "CommandMigration": {
       "properties": {
         "name": {
@@ -26,7 +27,7 @@
         "details": {
           "anyOf": [
             {
-              "$ref": "#/$defs/MigrationDetails"
+              "$ref": "#/definitions/MigrationDetails"
             },
             {
               "type": "null"
@@ -34,12 +35,12 @@
           ]
         },
         "itemType": {
-          "$ref": "#/$defs/ExternalAgentConfigMigrationItemType"
+          "$ref": "#/definitions/ExternalAgentConfigMigrationItemType"
         }
       },
       "required": [
-        "itemType",
-        "description"
+        "description",
+        "itemType"
       ],
       "type": "object"
     },
@@ -55,6 +56,34 @@
         "COMMANDS",
         "MEMORY",
         "SESSIONS"
+      ],
+      "type": "string"
+    },
+    "ExternalAgentDetectedConnectorCandidate": {
+      "properties": {
+        "name": {
+          "type": "string"
+        },
+        "sessionCount": {
+          "format": "uint32",
+          "minimum": 0.0,
+          "type": "integer"
+        },
+        "source": {
+          "$ref": "#/definitions/ExternalAgentDetectedConnectorSource"
+        }
+      },
+      "required": [
+        "name",
+        "sessionCount",
+        "source"
+      ],
+      "type": "object"
+    },
+    "ExternalAgentDetectedConnectorSource": {
+      "enum": [
+        "remoteMcpServersConfig",
+        "sessionToolUse"
       ],
       "type": "string"
     },
@@ -85,21 +114,21 @@
         "commands": {
           "default": [],
           "items": {
-            "$ref": "#/$defs/CommandMigration"
+            "$ref": "#/definitions/CommandMigration"
           },
           "type": "array"
         },
         "hooks": {
           "default": [],
           "items": {
-            "$ref": "#/$defs/HookMigration"
+            "$ref": "#/definitions/HookMigration"
           },
           "type": "array"
         },
         "mcpServers": {
           "default": [],
           "items": {
-            "$ref": "#/$defs/McpServerMigration"
+            "$ref": "#/definitions/McpServerMigration"
           },
           "type": "array"
         },
@@ -112,28 +141,28 @@
         "plugins": {
           "default": [],
           "items": {
-            "$ref": "#/$defs/PluginsMigration"
+            "$ref": "#/definitions/PluginsMigration"
           },
           "type": "array"
         },
         "sessions": {
           "default": [],
           "items": {
-            "$ref": "#/$defs/SessionMigration"
+            "$ref": "#/definitions/SessionMigration"
           },
           "type": "array"
         },
         "skills": {
           "default": [],
           "items": {
-            "$ref": "#/$defs/SkillMigration"
+            "$ref": "#/definitions/SkillMigration"
           },
           "type": "array"
         },
         "subagents": {
           "default": [],
           "items": {
-            "$ref": "#/$defs/SubagentMigration"
+            "$ref": "#/definitions/SubagentMigration"
           },
           "type": "array"
         }
@@ -174,8 +203,8 @@
         }
       },
       "required": [
-        "path",
-        "cwd"
+        "cwd",
+        "path"
       ],
       "type": "object"
     },
@@ -202,11 +231,17 @@
       "type": "object"
     }
   },
-  "$schema": "https://json-schema.org/draft/2020-12/schema",
   "properties": {
+    "connectors": {
+      "default": [],
+      "items": {
+        "$ref": "#/definitions/ExternalAgentDetectedConnectorCandidate"
+      },
+      "type": "array"
+    },
     "items": {
       "items": {
-        "$ref": "#/$defs/ExternalAgentConfigMigrationItem"
+        "$ref": "#/definitions/ExternalAgentConfigMigrationItem"
       },
       "type": "array"
     }

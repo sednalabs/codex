@@ -1,3 +1,4 @@
+use crate::error_subtype::http_status_sub_error_type;
 use crate::remote::RemotePluginServiceConfig;
 use codex_http_client::RouteAwareRequestError;
 use codex_login::CodexAuth;
@@ -73,8 +74,29 @@ pub enum RemotePluginMutationError {
     },
 }
 
+impl RemotePluginMutationError {
+    pub(crate) fn sub_error_type(&self) -> Option<String> {
+        match self {
+            Self::UnexpectedStatus { status, .. } => {
+                Some(http_status_sub_error_type(*status).to_string())
+            }
+            Self::AuthRequired
+            | Self::UnsupportedAuthMode
+            | Self::AuthToken(_)
+            | Self::InvalidBaseUrl(_)
+            | Self::InvalidBaseUrlPath
+            | Self::Request { .. }
+            | Self::Decode { .. }
+            | Self::UnexpectedPluginId { .. }
+            | Self::UnexpectedEnabledState { .. } => None,
+        }
+    }
+}
+
 #[derive(Debug, thiserror::Error)]
 pub enum RemotePluginFetchError {
+    #[error("failed to authenticate remote featured plugin request: {0}")]
+    AuthToken(#[source] std::io::Error),
     #[error("invalid chatgpt base url for remote featured plugin request: {0}")]
     InvalidBaseUrl(#[source] url::ParseError),
 
@@ -113,14 +135,15 @@ pub async fn fetch_remote_featured_plugin_ids(
         product.unwrap_or(Product::Codex).to_app_platform(),
     );
     let url = url.to_string();
-    let mut request = config
-        .http_request(Method::GET, &url)
-        .timeout(REMOTE_FEATURED_PLUGIN_FETCH_TIMEOUT);
-
-    if let Some(auth) = auth.filter(|auth| auth.uses_codex_backend()) {
-        request =
-            request.headers(codex_model_provider::auth_provider_from_auth(auth).to_auth_headers());
+    let request = match auth.filter(|auth| auth.uses_codex_backend()) {
+        Some(auth) => config
+            .authenticated_request(Method::GET, &url, auth)
+            .await
+            .map_err(std::io::Error::other)
+            .map_err(RemotePluginFetchError::AuthToken)?,
+        None => config.http_request(Method::GET, &url),
     }
+    .timeout(REMOTE_FEATURED_PLUGIN_FETCH_TIMEOUT);
 
     let response = request
         .send()
@@ -180,9 +203,11 @@ async fn post_remote_plugin_mutation(
     let auth = ensure_codex_backend_auth(auth)?;
     let url = remote_plugin_mutation_url(config, plugin_id, action)?;
     let request = config
-        .http_request(Method::POST, &url)
-        .timeout(REMOTE_PLUGIN_MUTATION_TIMEOUT)
-        .headers(codex_model_provider::auth_provider_from_auth(auth).to_auth_headers());
+        .authenticated_request(Method::POST, &url, auth)
+        .await
+        .map_err(std::io::Error::other)
+        .map_err(RemotePluginMutationError::AuthToken)?
+        .timeout(REMOTE_PLUGIN_MUTATION_TIMEOUT);
 
     let response = request
         .send()

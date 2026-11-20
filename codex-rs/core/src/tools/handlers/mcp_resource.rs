@@ -1,9 +1,13 @@
+use std::collections::HashMap;
+use std::future::Future;
 use std::sync::Arc;
 use std::time::Duration;
+use std::time::Instant;
 
 use codex_mcp::CODEX_APPS_MCP_SERVER_NAME;
 use codex_mcp::McpResourceListing;
-use codex_mcp::McpResourceListingFailure;
+use codex_mcp::McpServerExposure;
+use codex_mcp::McpServerKey;
 use codex_protocol::items::McpToolCallError;
 use codex_protocol::items::McpToolCallItem;
 use codex_protocol::items::McpToolCallStatus;
@@ -12,8 +16,10 @@ use codex_protocol::mcp::CallToolResult;
 use codex_protocol::models::function_call_output_content_items_to_text;
 use codex_protocol::protocol::TruncationPolicy;
 use codex_utils_output_truncation::truncate_text;
+use codex_utils_output_truncation::with_serialization_allowance;
 use rmcp::model::ListResourceTemplatesResult;
 use rmcp::model::ListResourcesResult;
+use rmcp::model::PaginatedRequestParams;
 use rmcp::model::ReadResourceResult;
 use rmcp::model::Resource;
 use rmcp::model::ResourceTemplate;
@@ -24,12 +30,15 @@ use serde_json::Value;
 
 use crate::function_tool::FunctionCallError;
 use crate::session::session::Session;
+use crate::session::step_context::StepContext;
 use crate::session::turn_context::TurnContext;
 use crate::tools::context::FunctionToolOutput;
+use crate::tools::context::ToolEnvironments;
+use crate::tools::context::ToolInvocation;
+use crate::tools::context::ToolOutput;
 use crate::tools::context::ToolPayload;
+use crate::tools::context::boxed_tool_output;
 use codex_protocol::protocol::McpInvocation;
-use codex_tools::ToolExecutionStatus;
-use codex_tools::ToolOutput;
 
 mod list_mcp_resource_templates;
 mod list_mcp_resources;
@@ -56,53 +65,223 @@ fn ensure_model_can_access_mcp_server(
     }
 }
 
-#[derive(Debug, Deserialize, Default)]
-struct ListResourcesArgs {
-    /// Lists all resources from all servers if not specified.
-    #[serde(default)]
-    server: Option<String>,
-    #[serde(default)]
-    cursor: Option<String>,
+enum ResourceOperation {
+    List,
+    Read,
 }
 
-#[derive(Debug, Deserialize, Default)]
-struct ListResourceTemplatesArgs {
-    /// Lists all resource templates from all servers if not specified.
+// Hooks and execution must choose the same server from this step's binding.
+fn resolve_resource_server<'a>(
+    step: &'a StepContext,
+    server: &str,
+    environment_id: Option<&str>,
+) -> Result<&'a McpServerKey, FunctionCallError> {
+    let catalog = &step.mcp.config().mcp_server_catalog;
+    let multi_environment = catalog.exposure() == McpServerExposure::EnvironmentQualified;
+    let environment_id = environment_id.filter(|_| multi_environment);
+    let registration = match environment_id {
+        Some(environment_id) => catalog
+            .server(&McpServerKey::in_environment(environment_id, server))
+            .or_else(|| catalog.server_by_name(server))
+            .filter(|registration| registration.config().environment_id == environment_id),
+        None => catalog.server_by_name(server),
+    }
+    .ok_or_else(|| {
+        FunctionCallError::RespondToModel(format!(
+            "unknown MCP server '{server}' for the selected environment"
+        ))
+    })?;
+    let key = registration.key();
+    ensure_model_can_access_mcp_server(&step.turn, key.name())?;
+    if catalog.exposure().environment_id(key).is_some()
+        && environment_id.is_none()
+        && step.environments.environments.len() > 1
+    {
+        return Err(FunctionCallError::RespondToModel(format!(
+            "environment_id is required for MCP server '{server}' when multiple environments are selected"
+        )));
+    }
+    Ok(key)
+}
+
+fn resource_environments(
+    invocation: &ToolInvocation,
+    operation: ResourceOperation,
+) -> Result<ToolEnvironments, FunctionCallError> {
+    let arguments = resource_arguments(&invocation.payload)?;
+    let (server, environment_id) = match operation {
+        ResourceOperation::List => {
+            let args = ListResourceArgs::parse(arguments)?;
+            (args.server, args.environment_id)
+        }
+        ResourceOperation::Read => {
+            let args = ReadResourceArgs::parse(arguments)?;
+            (Some(args.server), args.environment_id)
+        }
+    };
+    // Only an aggregate list has no owning server. A named but unknown server is an error.
+    let Some(server) = server else {
+        return Ok(ToolEnvironments::Mcp {
+            server: None,
+            owner: None,
+        });
+    };
+    let step = &invocation.step_context;
+    let server_key = resolve_resource_server(step, &server, environment_id.as_deref())?;
+    let environment_id = step.mcp.server_environment_id(server_key).ok_or_else(|| {
+        FunctionCallError::RespondToModel(format!("unknown MCP server '{server}'"))
+    })?;
+    Ok(ToolEnvironments::Mcp {
+        server: Some(server),
+        owner: Some(environment_id.to_owned()),
+    })
+}
+
+fn resource_arguments(payload: &ToolPayload) -> Result<Option<Value>, FunctionCallError> {
+    let ToolPayload::Function { arguments } = payload else {
+        return Err(FunctionCallError::Fatal(
+            "expected function arguments for MCP resource operation".to_string(),
+        ));
+    };
+    parse_arguments(arguments)
+}
+
+#[derive(Debug, Deserialize, Default, PartialEq, Eq)]
+struct ListResourceArgs {
     #[serde(default)]
     server: Option<String>,
     #[serde(default)]
     cursor: Option<String>,
+    environment_id: Option<String>,
+}
+
+impl ListResourceArgs {
+    fn parse(arguments: Option<Value>) -> Result<Self, FunctionCallError> {
+        parse_args_with_default::<Self>(arguments).map(Self::normalized)
+    }
+
+    fn normalized(self) -> Self {
+        Self {
+            server: normalize_optional_string(self.server),
+            cursor: normalize_optional_string(self.cursor),
+            environment_id: normalize_optional_string(self.environment_id),
+        }
+    }
+
+    fn target<'a>(
+        &self,
+        step: &'a StepContext,
+    ) -> Result<Option<(&'a McpServerKey, Option<PaginatedRequestParams>)>, FunctionCallError> {
+        match &self.server {
+            Some(server) => {
+                let server_key =
+                    resolve_resource_server(step, server, self.environment_id.as_deref())?;
+                let params = self
+                    .cursor
+                    .clone()
+                    .map(|cursor| PaginatedRequestParams::default().with_cursor(Some(cursor)));
+                Ok(Some((server_key, params)))
+            }
+            None if self.cursor.is_some() => Err(FunctionCallError::RespondToModel(
+                "cursor can only be used when a server is specified".to_string(),
+            )),
+            None if self.environment_id.is_some()
+                && step.mcp.config().mcp_server_catalog.exposure()
+                    == McpServerExposure::EnvironmentQualified =>
+            {
+                Err(FunctionCallError::RespondToModel(
+                    "environment_id can only be used when a server is specified".to_string(),
+                ))
+            }
+            None => Ok(None),
+        }
+    }
 }
 
 #[derive(Debug, Deserialize)]
 struct ReadResourceArgs {
     server: String,
     uri: String,
+    environment_id: Option<String>,
 }
 
-#[derive(Debug, Serialize)]
-struct ResourceWithServer {
-    server: String,
-    #[serde(flatten)]
-    resource: Resource,
-}
-
-impl ResourceWithServer {
-    fn new(server: String, resource: Resource) -> Self {
-        Self { server, resource }
+impl ReadResourceArgs {
+    fn parse(arguments: Option<Value>) -> Result<Self, FunctionCallError> {
+        let Self {
+            server,
+            uri,
+            environment_id,
+        } = parse_args(arguments)?;
+        Ok(Self {
+            server: normalize_required_string("server", server)?,
+            uri: normalize_required_string("uri", uri)?,
+            environment_id: normalize_optional_string(environment_id),
+        })
     }
 }
 
 #[derive(Debug, Serialize)]
-struct ResourceTemplateWithServer {
+struct ResourceWithServer<T> {
     server: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    environment_id: Option<String>,
     #[serde(flatten)]
-    template: ResourceTemplate,
+    resource: T,
 }
 
-impl ResourceTemplateWithServer {
-    fn new(server: String, template: ResourceTemplate) -> Self {
-        Self { server, template }
+impl<T> ResourceWithServer<T> {
+    fn new(server: &McpServerKey, resource: T, exposure: McpServerExposure) -> Self {
+        Self {
+            server: server.name().to_owned(),
+            environment_id: exposure.environment_id(server).map(str::to_owned),
+            resource,
+        }
+    }
+
+    fn from_server(
+        server: &McpServerKey,
+        resources: Vec<T>,
+        exposure: McpServerExposure,
+    ) -> Vec<Self> {
+        resources
+            .into_iter()
+            .map(|resource| Self::new(server, resource, exposure))
+            .collect()
+    }
+
+    fn from_all_servers(
+        resources_by_server: HashMap<McpServerKey, Vec<T>>,
+        exposure: McpServerExposure,
+    ) -> Vec<Self> {
+        let mut entries: Vec<_> = resources_by_server.into_iter().collect();
+        entries.sort_by(|(left, _), (right, _)| left.cmp(right));
+        entries
+            .into_iter()
+            .flat_map(|(server, resources)| Self::from_server(&server, resources, exposure))
+            .collect()
+    }
+}
+
+/// Identifies a server that can be started by a targeted resource request.
+#[derive(Debug, Serialize)]
+#[serde(untagged)]
+enum DeferredResourceServer {
+    Unscoped(String),
+    Scoped {
+        server: String,
+        environment_id: String,
+    },
+}
+
+impl DeferredResourceServer {
+    fn from_key(key: &McpServerKey, exposure: McpServerExposure) -> Self {
+        match exposure.environment_id(key) {
+            Some(environment_id) => Self::Scoped {
+                server: key.name().to_owned(),
+                environment_id: environment_id.to_owned(),
+            },
+            None => Self::Unscoped(key.name().to_owned()),
+        }
     }
 }
 
@@ -111,48 +290,44 @@ impl ResourceTemplateWithServer {
 struct ListResourcesPayload {
     #[serde(skip_serializing_if = "Option::is_none")]
     server: Option<String>,
-    resources: Vec<ResourceWithServer>,
+    #[serde(rename = "environment_id", skip_serializing_if = "Option::is_none")]
+    environment_id: Option<String>,
+    resources: Vec<ResourceWithServer<Resource>>,
     #[serde(skip_serializing_if = "Option::is_none")]
     next_cursor: Option<String>,
     #[serde(skip_serializing_if = "Vec::is_empty")]
-    failures: Vec<McpResourceListingFailure>,
+    deferred_servers: Vec<DeferredResourceServer>,
 }
 
 impl ListResourcesPayload {
-    fn from_single_server(server: String, result: ListResourcesResult) -> Self {
-        let resources = result
-            .resources
-            .into_iter()
-            .map(|resource| ResourceWithServer::new(server.clone(), resource))
-            .collect();
+    fn from_single_server(
+        server: &McpServerKey,
+        result: ListResourcesResult,
+        exposure: McpServerExposure,
+    ) -> Self {
         Self {
-            server: Some(server),
-            resources,
+            resources: ResourceWithServer::from_server(server, result.resources, exposure),
+            server: Some(server.name().to_owned()),
+            environment_id: exposure.environment_id(server).map(str::to_owned),
             next_cursor: result.next_cursor,
-            failures: Vec::new(),
+            deferred_servers: Vec::new(),
         }
     }
 
-    fn from_all_servers(listing: McpResourceListing<Resource>) -> Self {
-        let McpResourceListing {
-            by_server: resources_by_server,
-            failures,
-        } = listing;
-        let mut entries: Vec<(String, Vec<Resource>)> = resources_by_server.into_iter().collect();
-        entries.sort_by(|a, b| a.0.cmp(&b.0));
-
-        let mut resources = Vec::new();
-        for (server, server_resources) in entries {
-            for resource in server_resources {
-                resources.push(ResourceWithServer::new(server.clone(), resource));
-            }
-        }
-
+    fn from_all_servers(
+        listing: McpResourceListing<Resource>,
+        exposure: McpServerExposure,
+    ) -> Self {
         Self {
             server: None,
-            resources,
+            environment_id: None,
+            resources: ResourceWithServer::from_all_servers(listing.by_server, exposure),
             next_cursor: None,
-            failures,
+            deferred_servers: listing
+                .deferred_servers
+                .iter()
+                .map(|key| DeferredResourceServer::from_key(key, exposure))
+                .collect(),
         }
     }
 }
@@ -162,49 +337,48 @@ impl ListResourcesPayload {
 struct ListResourceTemplatesPayload {
     #[serde(skip_serializing_if = "Option::is_none")]
     server: Option<String>,
-    resource_templates: Vec<ResourceTemplateWithServer>,
+    #[serde(rename = "environment_id", skip_serializing_if = "Option::is_none")]
+    environment_id: Option<String>,
+    resource_templates: Vec<ResourceWithServer<ResourceTemplate>>,
     #[serde(skip_serializing_if = "Option::is_none")]
     next_cursor: Option<String>,
     #[serde(skip_serializing_if = "Vec::is_empty")]
-    failures: Vec<McpResourceListingFailure>,
+    deferred_servers: Vec<DeferredResourceServer>,
 }
 
 impl ListResourceTemplatesPayload {
-    fn from_single_server(server: String, result: ListResourceTemplatesResult) -> Self {
-        let resource_templates = result
-            .resource_templates
-            .into_iter()
-            .map(|template| ResourceTemplateWithServer::new(server.clone(), template))
-            .collect();
+    fn from_single_server(
+        server: &McpServerKey,
+        result: ListResourceTemplatesResult,
+        exposure: McpServerExposure,
+    ) -> Self {
         Self {
-            server: Some(server),
-            resource_templates,
+            resource_templates: ResourceWithServer::from_server(
+                server,
+                result.resource_templates,
+                exposure,
+            ),
+            server: Some(server.name().to_owned()),
+            environment_id: exposure.environment_id(server).map(str::to_owned),
             next_cursor: result.next_cursor,
-            failures: Vec::new(),
+            deferred_servers: Vec::new(),
         }
     }
 
-    fn from_all_servers(listing: McpResourceListing<ResourceTemplate>) -> Self {
-        let McpResourceListing {
-            by_server: templates_by_server,
-            failures,
-        } = listing;
-        let mut entries: Vec<(String, Vec<ResourceTemplate>)> =
-            templates_by_server.into_iter().collect();
-        entries.sort_by(|a, b| a.0.cmp(&b.0));
-
-        let mut resource_templates = Vec::new();
-        for (server, server_templates) in entries {
-            for template in server_templates {
-                resource_templates.push(ResourceTemplateWithServer::new(server.clone(), template));
-            }
-        }
-
+    fn from_all_servers(
+        listing: McpResourceListing<ResourceTemplate>,
+        exposure: McpServerExposure,
+    ) -> Self {
         Self {
             server: None,
-            resource_templates,
+            environment_id: None,
+            resource_templates: ResourceWithServer::from_all_servers(listing.by_server, exposure),
             next_cursor: None,
-            failures,
+            deferred_servers: listing
+                .deferred_servers
+                .iter()
+                .map(|key| DeferredResourceServer::from_key(key, exposure))
+                .collect(),
         }
     }
 }
@@ -212,97 +386,18 @@ impl ListResourceTemplatesPayload {
 #[derive(Debug, Serialize)]
 struct ReadResourcePayload {
     server: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    environment_id: Option<String>,
     uri: String,
     #[serde(flatten)]
     result: ReadResourceResult,
 }
-
-/// Separates the model-safe result from the complete resource payload that code mode exposes.
-///
-/// `read_mcp_resource` is an unusual built-in: an MCP resource can itself be structured data.
-/// Applying a generic middle truncation to its enclosing JSON string can make a declared JSON
-/// resource invalid. The model receives either the complete serialized payload or a small,
-/// explicit error. Code mode retains the unbounded resource payload, matching its pre-bounding
-/// result shape.
-struct ReadResourceToolOutput {
-    model_output: FunctionToolOutput,
-    raw_content: String,
-}
-
-impl ReadResourceToolOutput {
-    fn model_content(&self) -> String {
-        function_call_output_content_items_to_text(&self.model_output.body).unwrap_or_default()
-    }
-
-    #[cfg(test)]
-    fn model_success(&self) -> Option<bool> {
-        self.model_output.success
-    }
-
-    fn execution_status_for_source(
-        &self,
-        source: &crate::tools::context::ToolCallSource,
-    ) -> ToolExecutionStatus {
-        match source {
-            crate::tools::context::ToolCallSource::Direct => {
-                ToolExecutionStatus::from_success(self.success_for_logging())
-            }
-            crate::tools::context::ToolCallSource::CodeMode { .. } => {
-                ToolExecutionStatus::Completed
-            }
-        }
-    }
-}
-
-impl ToolOutput for ReadResourceToolOutput {
-    fn log_preview(&self) -> String {
-        self.model_output.log_preview()
-    }
-
-    fn success_for_logging(&self) -> bool {
-        self.model_output.success_for_logging()
-    }
-
-    fn code_mode_execution_status(&self) -> ToolExecutionStatus {
-        ToolExecutionStatus::Completed
-    }
-
-    fn to_response_item(
-        &self,
-        call_id: &str,
-        payload: &ToolPayload,
-    ) -> codex_protocol::models::ResponseInputItem {
-        self.model_output.to_response_item(call_id, payload)
-    }
-
-    fn code_mode_result(&self, _payload: &ToolPayload) -> Value {
-        Value::String(self.raw_content.clone())
-    }
-}
-
-// This is deliberately a fixed string rather than a serialized subset of the
-// resource metadata. A server name and resource URI are supplied by an MCP
-// server and may be arbitrarily large. Including either in the model-facing
-// error would let an otherwise bounded failure exceed the history cap.
-const BOUNDED_JSON_RESOURCE_MODEL_ERROR: &str = r#"{"error":{"code":"mcp_resource_model_output_too_large","message":"The resource contains JSON that exceeds the model output limit.","truncated":true}}"#;
 
 fn call_tool_result_from_content(content: &str, success: Option<bool>) -> CallToolResult {
     CallToolResult {
         content: vec![serde_json::json!({"type": "text", "text": content})],
         structured_content: None,
         is_error: success.map(|value| !value),
-        meta: None,
-    }
-}
-
-fn call_tool_result_from_execution_status(
-    content: &str,
-    execution_status: ToolExecutionStatus,
-) -> CallToolResult {
-    CallToolResult {
-        content: vec![serde_json::json!({"type": "text", "text": content})],
-        structured_content: None,
-        is_error: Some(!execution_status.is_completed()),
         meta: None,
     }
 }
@@ -315,20 +410,24 @@ async fn emit_tool_call_begin(
 ) {
     let McpInvocation {
         server,
+        environment_id,
         tool,
         arguments,
     } = invocation;
     let item = TurnItem::McpToolCall(McpToolCallItem {
         id: call_id.to_string(),
         server,
+        environment_id,
         tool,
         arguments: arguments.unwrap_or(Value::Null),
         connector_id: None,
         mcp_app_resource_uri: None,
+        mcp_app_ui: None,
         link_id: None,
         app_name: None,
         action_name: None,
         plugin_id: None,
+        read_only_hint: None,
         status: McpToolCallStatus::InProgress,
         result: None,
         error: None,
@@ -358,26 +457,80 @@ async fn emit_tool_call_end(
     };
     let McpInvocation {
         server,
+        environment_id,
         tool,
         arguments,
     } = invocation;
     let item = TurnItem::McpToolCall(McpToolCallItem {
         id: call_id.to_string(),
         server,
+        environment_id,
         tool,
         arguments: arguments.unwrap_or(Value::Null),
         connector_id: None,
         mcp_app_resource_uri: None,
+        mcp_app_ui: None,
         link_id: None,
         app_name: None,
         action_name: None,
         plugin_id: None,
+        read_only_hint: None,
         status,
         result,
         error,
         duration: Some(duration),
     });
     session.emit_turn_item_completed(turn, item).await;
+}
+
+async fn run_resource_operation<T>(
+    session: &Arc<Session>,
+    step_context: &StepContext,
+    call_id: &str,
+    invocation: McpInvocation,
+    operation: impl Future<Output = Result<T, FunctionCallError>>,
+) -> Result<Box<dyn ToolOutput>, FunctionCallError>
+where
+    T: Serialize,
+{
+    let turn = &step_context.turn;
+    emit_tool_call_begin(session, turn, call_id, invocation.clone()).await;
+    let start = Instant::now();
+    let result = operation.await.and_then(|payload| {
+        serialize_function_output(
+            payload,
+            step_context.settings.model_info.truncation_policy.into(),
+        )
+    });
+
+    match result {
+        Ok(output) => {
+            let content =
+                function_call_output_content_items_to_text(&output.body).unwrap_or_default();
+            emit_tool_call_end(
+                session,
+                turn,
+                call_id,
+                invocation,
+                start.elapsed(),
+                Ok(call_tool_result_from_content(&content, output.success)),
+            )
+            .await;
+            Ok(boxed_tool_output(output))
+        }
+        Err(error) => {
+            emit_tool_call_end(
+                session,
+                turn,
+                call_id,
+                invocation,
+                start.elapsed(),
+                Err(error.to_string()),
+            )
+            .await;
+            Err(error)
+        }
+    }
 }
 
 fn normalize_optional_string(input: Option<String>) -> Option<String> {
@@ -414,58 +567,9 @@ where
     })?;
     // Match regular MCP tool outputs by bounding the copy persisted to the
     // rollout and injected into model context.
-    let content = truncate_text(&content, truncation_policy * 1.2);
+    let content = truncate_text(&content, with_serialization_allowance(truncation_policy));
 
     Ok(FunctionToolOutput::from_text(content, Some(true)))
-}
-
-fn serialize_read_resource_output(
-    payload: ReadResourcePayload,
-    truncation_policy: TruncationPolicy,
-) -> Result<ReadResourceToolOutput, FunctionCallError> {
-    let raw_content = serde_json::to_string(&payload).map_err(|err| {
-        FunctionCallError::RespondToModel(format!(
-            "failed to serialize MCP resource response: {err}"
-        ))
-    })?;
-    let bounded_content = truncate_text(&raw_content, truncation_policy * 1.2);
-    let requires_structured_failure = bounded_content != raw_content
-        && payload.result.contents.iter().any(|content| {
-            matches!(
-                content,
-                rmcp::model::ResourceContents::TextResourceContents {
-                    mime_type: Some(mime_type),
-                    ..
-                } if is_json_media_type(mime_type)
-            )
-        });
-
-    let model_output = if requires_structured_failure {
-        FunctionToolOutput::from_text(BOUNDED_JSON_RESOURCE_MODEL_ERROR.to_string(), Some(false))
-    } else {
-        FunctionToolOutput::from_text(bounded_content, Some(true))
-    };
-
-    Ok(ReadResourceToolOutput {
-        model_output,
-        raw_content,
-    })
-}
-
-fn is_json_media_type(mime_type: &str) -> bool {
-    let essence = mime_type
-        .split(';')
-        .next()
-        .unwrap_or_default()
-        .trim()
-        .to_ascii_lowercase();
-
-    essence == "application/json"
-        || essence.strip_prefix("application/").is_some_and(|subtype| {
-            subtype
-                .strip_suffix("+json")
-                .is_some_and(|prefix| !prefix.is_empty())
-        })
 }
 
 fn parse_arguments(raw_args: &str) -> Result<Option<Value>, FunctionCallError> {

@@ -1,19 +1,20 @@
-use std::fs::File;
+//! Reconstructs model context and preserves source runtime metadata across fork cutoffs.
+
 use std::io;
+use std::path::Path;
 
 use codex_protocol::protocol::HistoryPosition;
-use codex_protocol::protocol::RolloutItem;
-use codex_protocol::protocol::RolloutLine;
-use codex_protocol::protocol::SessionMetaLine;
 use codex_protocol::protocol::ThreadHistoryMode;
 use codex_rollout::ModelContextScan;
 use codex_rollout::ModelContextScanProgress;
 use codex_rollout::ReverseJsonlScanner;
+use codex_rollout::RolloutItem;
 use codex_rollout::ScanOutcome;
 
 use super::LocalThreadStore;
 use super::read_thread;
 use super::rollout_lineage::RolloutLineage;
+use super::thread_rollout_resolver;
 use crate::LoadThreadHistoryParams;
 use crate::StoredModelContext;
 use crate::ThreadStoreError;
@@ -25,53 +26,70 @@ mod tests;
 
 /// Loads rollout items needed to reconstruct the latest model-visible context.
 ///
-/// Plain paginated JSONL rollouts use a reverse scan. When it finds both a usable replacement-
-/// history checkpoint and the completed user-turn context needed for resume metadata, the returned
-/// replay starts with the canonical head `SessionMeta` followed by that newest suffix. When no
-/// bounded cutoff is available, the scan continues to the beginning and returns the complete
-/// replay it already accumulated.
+/// Paginated JSONL rollouts use a reverse scan. A bounded suffix requires a usable compaction and
+/// a compatible real-user turn context. Incomplete compactions or rollback markers encountered
+/// during the scan require replay from the beginning of the lineage.
 ///
-/// Legacy and compressed rollout shapes keep the existing full-history path.
+/// Compressed segments are decoded before applying their original JSONL offsets. Legacy rollouts
+/// keep the existing full-history path.
 pub(super) async fn load_latest_model_context(
     store: &LocalThreadStore,
     params: LoadThreadHistoryParams,
 ) -> ThreadStoreResult<StoredModelContext> {
-    let path = read_thread::resolve_rollout_path(store, params.thread_id, params.include_archived)
-        .await?
-        .ok_or_else(|| ThreadStoreError::InvalidRequest {
-            message: format!("no rollout found for thread id {}", params.thread_id),
-        })?;
+    let resolved = if params.include_archived {
+        thread_rollout_resolver::resolve_current_including_archived(store, params.thread_id).await?
+    } else {
+        thread_rollout_resolver::resolve_current(store, params.thread_id).await?
+    };
+    let path =
+        resolved
+            .map(|resolved| resolved.path)
+            .ok_or_else(|| ThreadStoreError::InvalidRequest {
+                message: format!("no rollout found for thread id {}", params.thread_id),
+            })?;
 
-    let session_meta = codex_rollout::read_session_meta_line(path.as_path())
+    load_from_rollout_path(store, params.thread_id, &path).await
+}
+
+pub(super) async fn load_from_rollout_path(
+    store: &LocalThreadStore,
+    thread_id: codex_protocol::ThreadId,
+    path: &Path,
+) -> ThreadStoreResult<StoredModelContext> {
+    let before = super::history_revision::read(path).await;
+    let session_meta = codex_rollout::read_session_meta_line(path)
         .await
         .map_err(|err| ThreadStoreError::Internal {
             message: format!("failed to read session metadata {}: {err}", path.display()),
         })?;
-    if session_meta.meta.id != params.thread_id {
+    if session_meta.meta.id != thread_id {
         return Err(ThreadStoreError::InvalidRequest {
             message: format!(
                 "rollout at {} belongs to thread {}, not {}",
                 path.display(),
                 session_meta.meta.id,
-                params.thread_id
+                thread_id
             ),
         });
     }
 
-    let items = if matches!(session_meta.meta.history_mode, ThreadHistoryMode::Paginated)
-        && !path
-            .file_name()
-            .and_then(|file_name| file_name.to_str())
-            .is_some_and(|file_name| file_name.ends_with(".jsonl.zst"))
-    {
-        let lineage = store.resolve_rollout_lineage(params.thread_id).await?;
-        scan_model_context_from_lineage(lineage, session_meta).await?
+    let items = if matches!(session_meta.meta.history_mode, ThreadHistoryMode::Paginated) {
+        let lineage = store
+            .resolve_rollout_lineage(thread_id, Some(path.to_path_buf()))
+            .await?;
+        let mut items = lineage
+            .read_with_fallback(store, scan_model_context_from_lineage)
+            .await?;
+        items.insert(0, RolloutItem::SessionMeta(Box::new(session_meta)));
+        items
     } else {
-        read_thread::load_history_items(path.as_path()).await?
+        read_thread::load_history_items(path).await?
     };
 
+    let after = super::history_revision::read(path).await;
     Ok(StoredModelContext {
-        thread_id: params.thread_id,
+        revision: before.filter(|revision| Some(revision) == after.as_ref()),
+        thread_id,
         items,
     })
 }
@@ -88,7 +106,7 @@ pub(super) async fn load_for_fork(
         .ok_or_else(|| ThreadStoreError::Internal {
             message: "fork lineage has no source segment".to_string(),
         })?;
-    let session_meta = codex_rollout::read_session_meta_line(source_path)
+    let mut session_meta = codex_rollout::read_session_meta_line(source_path)
         .await
         .map_err(|err| ThreadStoreError::Internal {
             message: format!(
@@ -96,26 +114,67 @@ pub(super) async fn load_for_fork(
                 source_path.display()
             ),
         })?;
-    match history_base {
+    if session_meta.meta.multi_agent_version.is_none() {
+        // Recover only the runtime version before applying the fork cutoff. Stop at the
+        // newest version-bearing context instead of retaining the source's full replay.
+        let source_lineage = lineage.clone();
+        let (stop, keep_running) = tokio::sync::oneshot::channel::<()>();
+        session_meta.meta.multi_agent_version = tokio::task::spawn_blocking(move || {
+            for segment in source_lineage.segments().iter().rev() {
+                let file = source_lineage
+                    .reads
+                    .open(&segment.rollout_path, || stop.is_closed())?;
+                let mut scanner = match segment.end.map(|end| end.end_byte_offset) {
+                    Some(end_byte_offset) => ReverseJsonlScanner::new_at(file, end_byte_offset)?,
+                    None => ReverseJsonlScanner::new(file)?,
+                };
+                while let Some(outcome) = scanner.scan_next_rollout_line()? {
+                    let ScanOutcome::Parsed(line) = outcome else {
+                        continue;
+                    };
+                    if let Some(version) = codex_rollout::resume_multi_agent_version(&line.item) {
+                        return Ok(Some(version));
+                    }
+                    // Ancestor metadata does not describe the immediate source's runtime.
+                    if matches!(line.item, RolloutItem::SessionMeta(_)) {
+                        break;
+                    }
+                }
+            }
+            Ok::<_, io::Error>(None)
+        })
+        .await
+        .map_err(|err| ThreadStoreError::Internal {
+            message: format!("failed to join fork runtime version scan: {err}"),
+        })?
+        .map_err(|err| ThreadStoreError::Internal {
+            message: format!("failed to read fork runtime version: {err}"),
+        })?;
+        drop(keep_running);
+    }
+    let mut items = match history_base {
         Some(history_base) => {
             let lineage = lineage.truncate_at(history_base).await?;
-            scan_model_context_from_lineage(lineage, session_meta).await
+            scan_model_context_from_lineage(lineage).await?
         }
-        None => Ok(vec![RolloutItem::SessionMeta(session_meta)]),
-    }
+        None => Vec::new(),
+    };
+    items.insert(0, RolloutItem::SessionMeta(Box::new(session_meta)));
+    Ok(items)
 }
 
 async fn scan_model_context_from_lineage(
     lineage: RolloutLineage,
-    session_meta: SessionMetaLine,
 ) -> ThreadStoreResult<Vec<RolloutItem>> {
+    let (stop, keep_running) = tokio::sync::oneshot::channel::<()>();
     let scan = tokio::task::spawn_blocking(move || {
-        scan_model_context_from_lineage_blocking(&lineage, session_meta)
+        scan_model_context_from_lineage_blocking(&lineage, || stop.is_closed())
     })
     .await
     .map_err(|err| ThreadStoreError::Internal {
         message: format!("failed to join model context scan: {err}"),
     })?;
+    drop(keep_running);
     match scan {
         Ok(items) => Ok(items),
         Err(err) => Err(ThreadStoreError::Internal {
@@ -126,20 +185,20 @@ async fn scan_model_context_from_lineage(
 
 fn scan_model_context_from_lineage_blocking(
     lineage: &RolloutLineage,
-    session_meta: SessionMetaLine,
+    is_cancelled: impl Fn() -> bool,
 ) -> io::Result<Vec<RolloutItem>> {
     let mut scan = ModelContextScan::default();
     'segments: for segment in lineage.segments().iter().rev() {
-        let file = File::open(segment.rollout_path.as_path())?;
+        let file = lineage.reads.open(&segment.rollout_path, &is_cancelled)?;
         let mut scanner = match segment.end.map(|end| end.end_byte_offset) {
             Some(end_byte_offset) => ReverseJsonlScanner::new_at(file, end_byte_offset)?,
             None => ReverseJsonlScanner::new(file)?,
         };
-        while let Some(outcome) = scanner.scan_next::<RolloutLine>()? {
+        while let Some(outcome) = scanner.scan_next_rollout_line()? {
             let ScanOutcome::Parsed(line) = outcome else {
                 continue;
             };
-            // Each physical segment contributes only its local delta. Its head metadata is
+            // Each rollout segment contributes only its local delta. Its session metadata is
             // replaced with the requested thread's canonical SessionMeta after replay.
             if matches!(&line.item, RolloutItem::SessionMeta(_)) {
                 break;
@@ -151,10 +210,5 @@ fn scan_model_context_from_lineage_blocking(
         }
     }
 
-    let canonical_meta = session_meta.clone();
-    let mut items = scan.finish(session_meta);
-    if !matches!(items.first(), Some(RolloutItem::SessionMeta(_))) {
-        items.insert(0, RolloutItem::SessionMeta(canonical_meta));
-    }
-    Ok(items)
+    Ok(scan.finish())
 }

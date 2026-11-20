@@ -1,5 +1,6 @@
 {
-  "$defs": {
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "definitions": {
     "AppBranding": {
       "description": "EXPERIMENTAL - app metadata returned by app-list APIs.",
       "properties": {
@@ -48,7 +49,7 @@
         "appMetadata": {
           "anyOf": [
             {
-              "$ref": "#/$defs/AppMetadata"
+              "$ref": "#/definitions/AppMetadata"
             },
             {
               "type": "null"
@@ -58,7 +59,7 @@
         "branding": {
           "anyOf": [
             {
-              "$ref": "#/$defs/AppBranding"
+              "$ref": "#/definitions/AppBranding"
             },
             {
               "type": "null"
@@ -110,7 +111,7 @@
         },
         "isEnabled": {
           "default": true,
-          "description": "Whether this app is enabled in config.toml.\nExample:\n```toml\n[apps.bad_app]\nenabled = false\n```",
+          "description": "Whether this app is enabled in config.toml. Example: ```toml [apps.bad_app] enabled = false ```",
           "type": "boolean"
         },
         "labels": {
@@ -177,7 +178,7 @@
         "review": {
           "anyOf": [
             {
-              "$ref": "#/$defs/AppReview"
+              "$ref": "#/definitions/AppReview"
             },
             {
               "type": "null"
@@ -186,7 +187,7 @@
         },
         "screenshots": {
           "items": {
-            "$ref": "#/$defs/AppScreenshot"
+            "$ref": "#/definitions/AppScreenshot"
           },
           "type": [
             "array",
@@ -270,17 +271,16 @@
       "type": "object"
     }
   },
-  "$schema": "https://json-schema.org/draft/2020-12/schema",
   "description": "EXPERIMENTAL - app list response.",
   "properties": {
     "data": {
       "items": {
-        "$ref": "#/$defs/AppInfo"
+        "$ref": "#/definitions/AppInfo"
       },
       "type": "array"
     },
     "nextCursor": {
-      "description": "Opaque cursor to pass to the next call to continue after the last item.\nIf None, there are no more items to return.",
+      "description": "Opaque cursor to pass to the next call to continue after the last item. If None, there are no more items to return.",
       "type": [
         "string",
         "null"

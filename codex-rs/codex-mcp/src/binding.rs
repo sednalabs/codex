@@ -1,14 +1,26 @@
-//! Immutable MCP state bound to one model sampling request.
+//! Immutable MCP catalog and execution handles.
+
+#[path = "model_search.rs"]
+mod model_search;
+pub use model_search::SEARCH_CONNECTOR;
+pub use model_search::SearchDiscovery;
+pub use model_search::is_model_search_tool;
 
 use std::collections::HashMap;
 use std::fmt;
 use std::future::Future;
 use std::sync::Arc;
+use std::time::Duration;
 
 use anyhow::Context;
 use anyhow::Result;
 use codex_config::AppToolApproval;
+use codex_config::McpServerAuth;
+use codex_exec_server::FileSystemSandboxContext;
+use codex_protocol::auth::AuthMode;
 use codex_protocol::mcp::CallToolResult;
+use codex_protocol::models::PermissionProfile;
+use codex_utils_absolute_path::AbsolutePathBuf;
 use rmcp::model::ListResourceTemplatesResult;
 use rmcp::model::ListResourcesResult;
 use rmcp::model::PaginatedRequestParams;
@@ -17,24 +29,25 @@ use rmcp::model::ReadResourceResult;
 use rmcp::model::Resource;
 use rmcp::model::ResourceTemplate;
 use serde_json::Value as JsonValue;
-use tokio::sync::RwLock;
 
 use crate::McpConfig;
+use crate::McpServerKey;
 use crate::binding_clients::McpBindingClients;
 use crate::binding_clients::McpResourceListing;
+use crate::client_tool_catalog::ToolCatalogSnapshot;
 use crate::connection_manager::McpConnectionSet;
 use crate::rmcp_client::ManagedClient;
 use crate::server::McpServerMetadata;
 use crate::tools::ToolInfo;
 
-/// The exact tool catalog and execution handles for one model sampling request.
+/// The exact tool catalog and execution handles shared by compatible sampling steps.
 pub struct McpBinding {
     connections: Arc<McpConnectionSet>,
     clients: Arc<McpBindingClients>,
     config: Arc<McpConfig>,
     plugins_available: bool,
-    tools: Vec<ToolInfo>,
-    calls: HashMap<(String, String), PreparedMcpCall>,
+    tools: Arc<[ToolInfo]>,
+    calls: HashMap<(McpServerKey, String), PreparedMcpCall>,
 }
 
 impl McpBinding {
@@ -42,7 +55,7 @@ impl McpBinding {
     pub fn empty(config: Arc<McpConfig>) -> Self {
         Self::new(
             Arc::new(McpConnectionSet::empty(config.prefix_mcp_tool_names)),
-            Arc::new(McpBindingClients::new(HashMap::new(), Default::default())),
+            Arc::new(McpBindingClients::default()),
             config,
             /*plugins_available*/ false,
             Vec::new(),
@@ -55,15 +68,15 @@ impl McpBinding {
         clients: Arc<McpBindingClients>,
         config: Arc<McpConfig>,
         plugins_available: bool,
-        tools: Vec<ToolInfo>,
-        calls: HashMap<(String, String), PreparedMcpCall>,
+        tools: impl Into<Arc<[ToolInfo]>>,
+        calls: HashMap<(McpServerKey, String), PreparedMcpCall>,
     ) -> Self {
         Self {
             connections,
             clients,
             config,
             plugins_available,
-            tools,
+            tools: tools.into(),
             calls,
         }
     }
@@ -76,15 +89,23 @@ impl McpBinding {
         self.plugins_available
     }
 
-    /// Returns the frozen catalog advertised for this sampling request.
+    /// Returns the frozen model-visible catalog captured for this binding.
     pub fn tools(&self) -> &[ToolInfo] {
         &self.tools
     }
 
-    /// Binds a call to the exact client and metadata advertised by this binding.
-    pub fn prepare_call(&self, server: &str, tool: &str) -> Option<PreparedMcpCall> {
+    /// Returns permitted tool metadata, including app-only tools.
+    pub fn tool_info(&self, server: &McpServerKey, tool: &str) -> Option<&ToolInfo> {
         self.calls
-            .get(&(server.to_string(), tool.to_string()))
+            .get(&(server.clone(), tool.to_string()))
+            .map(PreparedMcpCall::tool_info)
+    }
+
+    /// Binds a model-visible call to the exact client and metadata in this binding.
+    pub fn prepare_call(&self, server: &McpServerKey, tool: &str) -> Option<PreparedMcpCall> {
+        self.calls
+            .get(&(server.clone(), tool.to_string()))
+            .filter(|call| crate::tool_is_model_visible(call.tool_info()))
             .cloned()
     }
 
@@ -92,44 +113,70 @@ impl McpBinding {
         self.connections.has_servers()
     }
 
-    pub async fn list_resources(
-        &self,
-        server: &str,
-        params: Option<PaginatedRequestParams>,
-    ) -> Result<ListResourcesResult> {
-        self.clients.list_resources(server, params).await
+    /// The environment owning this server in the step's connection set, even if it exposes no tools.
+    pub fn server_environment_id(&self, server: &McpServerKey) -> Option<&str> {
+        self.connections.server_environment_id(server)
     }
 
+    pub async fn list_resources(
+        &self,
+        server: &McpServerKey,
+        params: Option<PaginatedRequestParams>,
+    ) -> Result<ListResourcesResult> {
+        if self.clients.client(server).is_some() {
+            self.clients.list_resources(server, params).await
+        } else {
+            self.connections.list_resources(server, params).await
+        }
+    }
+
+    /// Lists ready servers' resources by exact key in this binding's catalog.
     pub async fn list_all_resources(
         &self,
-        include_server: impl Fn(&str) -> bool,
+        include_server: impl Fn(&McpServerKey) -> bool,
     ) -> McpResourceListing<Resource> {
         self.clients.list_all_resources(include_server).await
     }
 
     pub async fn list_resource_templates(
         &self,
-        server: &str,
+        server: &McpServerKey,
         params: Option<PaginatedRequestParams>,
     ) -> Result<ListResourceTemplatesResult> {
-        self.clients.list_resource_templates(server, params).await
+        if self.connections.skips_resource_template_listing(server) {
+            return Ok(ListResourceTemplatesResult::with_all_items(Vec::new()));
+        }
+        if self.clients.client(server).is_some() {
+            self.clients.list_resource_templates(server, params).await
+        } else {
+            self.connections
+                .list_resource_templates(server, params)
+                .await
+        }
     }
 
+    /// Lists ready servers' templates by exact key in this binding's catalog.
     pub async fn list_all_resource_templates(
         &self,
-        include_server: impl Fn(&str) -> bool,
+        include_server: impl Fn(&McpServerKey) -> bool,
     ) -> McpResourceListing<ResourceTemplate> {
         self.clients
-            .list_all_resource_templates(include_server)
+            .list_all_resource_templates(|server| {
+                include_server(server) && !self.connections.skips_resource_template_listing(server)
+            })
             .await
     }
 
     pub async fn read_resource(
         &self,
-        server: &str,
+        server: &McpServerKey,
         params: ReadResourceRequestParams,
     ) -> Result<ReadResourceResult> {
-        self.clients.read_resource(server, params).await
+        if self.clients.client(server).is_some() {
+            self.clients.read_resource(server, params).await
+        } else {
+            self.connections.read_resource(server, params).await
+        }
     }
 }
 
@@ -143,20 +190,67 @@ impl fmt::Debug for McpBinding {
     }
 }
 
-/// A call bound to the exact client, tool, timeout, and server metadata seen by
-/// one [`McpBinding`].
+/// A call bound to an exact client, catalog revision, timeout, and permission authority.
 #[derive(Clone)]
 pub struct PreparedMcpCall {
-    _connections: Arc<McpConnectionSet>,
+    connections: Arc<McpConnectionSet>,
     client: Arc<ManagedClient>,
     config: Arc<McpConfig>,
-    catalog_revision: u64,
-    catalog_revision_source: Arc<RwLock<u64>>,
-    tool_info: ToolInfo,
-    server_name: String,
+    catalog_snapshot: Arc<ToolCatalogSnapshot>,
+    tool_info: PreparedToolInfo,
     server_metadata: McpServerMetadata,
     plugin_id: Option<String>,
     selected_plugin_server: bool,
+}
+
+/// The rules for an MCP server or prepared call and the folders used to interpret them.
+pub enum McpPermissionSource<'a> {
+    Environment {
+        environment_id: &'a str,
+        sandbox: &'a Arc<FileSystemSandboxContext>,
+    },
+    Thread {
+        profile: &'a PermissionProfile,
+        host_cwd: &'a AbsolutePathBuf,
+    },
+}
+
+impl<'a> McpPermissionSource<'a> {
+    pub fn profile(&self) -> &'a PermissionProfile {
+        match self {
+            Self::Environment { sandbox, .. } => &sandbox.permissions,
+            Self::Thread { profile, .. } => profile,
+        }
+    }
+}
+
+#[derive(Clone)]
+pub(crate) struct PreparedToolInfo {
+    catalog: Arc<[ToolInfo]>,
+    index: usize,
+}
+
+impl PreparedToolInfo {
+    pub(crate) fn from_binding_catalog(catalog: Arc<[ToolInfo]>, index: usize) -> Self {
+        assert!(
+            index < catalog.len(),
+            "prepared tool index must refer to its binding catalog"
+        );
+        Self { catalog, index }
+    }
+
+    pub(crate) fn get(&self) -> &ToolInfo {
+        &self.catalog[self.index]
+    }
+}
+
+impl From<ToolInfo> for PreparedToolInfo {
+    fn from(tool_info: ToolInfo) -> Self {
+        Self {
+            catalog: Arc::new([tool_info]),
+            index: 0,
+        }
+    }
 }
 
 impl PreparedMcpCall {
@@ -168,30 +262,39 @@ impl PreparedMcpCall {
         connections: Arc<McpConnectionSet>,
         client: Arc<ManagedClient>,
         config: Arc<McpConfig>,
-        catalog_revision: u64,
-        catalog_revision_source: Arc<RwLock<u64>>,
-        tool_info: ToolInfo,
+        catalog_snapshot: Arc<ToolCatalogSnapshot>,
+        tool_info: impl Into<PreparedToolInfo>,
         server_metadata: McpServerMetadata,
         plugin_id: Option<String>,
         selected_plugin_server: bool,
-    ) -> Self {
-        let server_name = tool_info.server_name.clone();
-        Self {
-            _connections: connections,
+    ) -> Option<Self> {
+        let tool_info = tool_info.into();
+        config.permission_source_for_server(tool_info.get().server_key())?;
+        Some(Self {
+            connections,
             client,
             config,
-            catalog_revision,
-            catalog_revision_source,
+            catalog_snapshot,
             tool_info,
-            server_name,
             server_metadata,
             plugin_id,
             selected_plugin_server,
-        }
+        })
     }
 
     pub fn tool_info(&self) -> &ToolInfo {
-        &self.tool_info
+        self.tool_info.get()
+    }
+
+    /// Whether the server connection that issued the step's tools still owns this call.
+    pub fn uses_connection_from(&self, binding: &McpBinding) -> bool {
+        self.connections
+            .shares_server_connection(&binding.connections, self.server_key())
+    }
+
+    /// Identifies the exact server and environment captured for this call.
+    pub fn server_key(&self) -> &McpServerKey {
+        self.tool_info().server_key()
     }
 
     /// Returns the configuration and approval authority captured with this client.
@@ -199,8 +302,92 @@ impl PreparedMcpCall {
         &self.config
     }
 
+    /// A hosted app can run through the local server but use thread rules, not local environment rules.
+    pub fn permission_source(&self) -> McpPermissionSource<'_> {
+        let Some(source) = self.config.permission_source_for_server(self.server_key()) else {
+            unreachable!("prepared calls have a permission source");
+        };
+        source
+    }
+
+    /// Returns the owner permissions validated when this immutable call was prepared.
+    pub fn permission_profile(&self) -> &PermissionProfile {
+        self.permission_source().profile()
+    }
+
+    /// Attach policy aliases and the server-host launcher, replacing stale authority.
+    /// Callers negotiate the state capability before requesting this metadata.
+    pub async fn augment_sandbox_metadata(
+        &self,
+        meta: &mut Option<JsonValue>,
+        state: crate::SandboxState,
+    ) -> Result<()> {
+        crate::sandbox_metadata::augment_metadata(
+            meta,
+            state,
+            self.sandbox_codex_executable().await,
+        )
+    }
+
+    /// Full CLI path usable by a local stdio server. An HTTP endpoint (even on
+    /// loopback) or remote executor does not establish a shared filesystem.
+    /// Capability probes are cached process-wide by absolute executable path.
+    pub async fn sandbox_codex_executable(&self) -> Option<AbsolutePathBuf> {
+        crate::sandbox_metadata::sandbox_codex_executable(
+            &self.config,
+            self.server_key(),
+            self.server_environment_id(),
+        )
+        .await
+    }
+
     pub fn server_name(&self) -> &str {
-        &self.server_name
+        self.tool_info().server_name()
+    }
+
+    /// Returns whether this call is bound to the host-owned Codex Apps server.
+    pub fn is_host_owned_apps(&self) -> bool {
+        self.config
+            .mcp_server_catalog
+            .server(self.server_key())
+            .is_some_and(|registration| {
+                registration
+                    .source()
+                    .is_host_owned_apps(self.server_name(), registration.config())
+            })
+    }
+
+    /// Whether this completed Apps call can supply its result body to the session.
+    pub fn permits_result_body(&self, session_auth: AuthMode) -> bool {
+        let Some(server) = self.config.mcp_server_catalog.server(self.server_key()) else {
+            return false;
+        };
+        let config = server.config();
+        let codex_config::McpServerTransportConfig::StreamableHttp {
+            url,
+            http_headers,
+            env_http_headers,
+            bearer_token_env_var: None,
+            http_headers_helper: None,
+        } = &config.transport
+        else {
+            return false;
+        };
+        matches!(
+            session_auth,
+            AuthMode::Chatgpt | AuthMode::ChatgptAuthTokens
+        ) && config.auth == McpServerAuth::ChatGpt
+            && http_headers
+                .iter()
+                .flat_map(HashMap::keys)
+                .chain(env_http_headers.iter().flat_map(HashMap::keys))
+                .all(|name| is_apps_attribution_header(name))
+            && self.client.client.matches_result_body_source(
+                /*require_runtime_auth*/ true,
+                url,
+                http_headers.as_ref(),
+                env_http_headers.as_ref(),
+            )
     }
 
     pub fn server_origin(&self) -> Option<&str> {
@@ -220,7 +407,19 @@ impl PreparedMcpCall {
 
     pub fn tool_approval_mode(&self) -> AppToolApproval {
         self.server_metadata
-            .tool_approval_mode(&self.tool_info.tool.name)
+            .tool_approval_mode(&self.tool_info().tool.name)
+    }
+
+    /// Returns the explicit output budget captured with this call's effective server config.
+    pub fn output_token_limit(&self) -> Option<usize> {
+        self.config
+            .mcp_server_catalog
+            .server(self.server_key())?
+            .config()
+            .tools
+            .get(self.tool_info().tool.name.as_ref())?
+            .output_token_limit
+            .map(std::num::NonZeroUsize::get)
     }
 
     pub fn plugin_id(&self) -> Option<&str> {
@@ -239,43 +438,122 @@ impl PreparedMcpCall {
         &self,
         arguments: Option<JsonValue>,
         meta: Option<JsonValue>,
+        timeout: Option<Duration>,
     ) -> Result<CallToolResult> {
-        self.call_with_preparation(|| async move { Ok((arguments, meta)) })
+        self.call_with_preparation(timeout, || async move { Ok((arguments, meta)) })
             .await
     }
 
     /// Runs irreversible call preparation and execution under the authority of
-    /// this call's exact catalog revision.
-    #[expect(
-        clippy::await_holding_invalid_type,
-        reason = "catalog replacement must remain serialized with call preparation and execution"
-    )]
-    pub async fn call_with_preparation<F, Fut>(&self, prepare: F) -> Result<CallToolResult>
+    /// this call's captured catalog and the extensions owned by the Codex session.
+    /// A caller-supplied timeout can further restrict the server's configured timeout.
+    pub async fn call_with_preparation<F, Fut>(
+        &self,
+        requested_timeout: Option<Duration>,
+        prepare: F,
+    ) -> Result<CallToolResult>
     where
         F: FnOnce() -> Fut,
         Fut: Future<Output = Result<(Option<JsonValue>, Option<JsonValue>)>>,
     {
-        let tool_name = self.tool_info.tool.name.to_string();
-        let current_revision = self.catalog_revision_source.read().await;
-        if *current_revision != self.catalog_revision {
-            return Err(anyhow::anyhow!(
-                "tool call rejected because the catalog changed after `{}/{tool_name}` was prepared",
-                self.server_name
-            ));
-        }
-        let (arguments, meta) = prepare().await?;
-        let result = self
-            .client
-            .client
-            .call_tool(tool_name.clone(), arguments, meta, self.client.tool_timeout)
+        self.call_with_admission(requested_timeout, || Ok(()), prepare)
             .await
-            .with_context(|| format!("tool call failed for `{}/{tool_name}`", self.server_name))?;
-        drop(current_revision);
-        Ok(call_tool_result_from_rmcp(result))
+    }
+
+    /// Checks admission on the negotiated session immediately before handing a tool request
+    /// to the peer. An in-flight request can complete even if new work is stopped.
+    pub async fn call_with_admission<F, Fut>(
+        &self,
+        requested_timeout: Option<Duration>,
+        admit: impl Fn() -> Result<()> + Send + Sync,
+        prepare: F,
+    ) -> Result<CallToolResult>
+    where
+        F: FnOnce() -> Fut,
+        Fut: Future<Output = Result<(Option<JsonValue>, Option<JsonValue>)>>,
+    {
+        let effective_timeout = match (self.client.tool_timeout, requested_timeout) {
+            (Some(server_timeout), Some(requested_timeout)) => {
+                Some(server_timeout.min(requested_timeout))
+            }
+            (server_timeout, requested_timeout) => server_timeout.or(requested_timeout),
+        };
+        let server_name = self.server_name();
+        let tool_name = self.tool_info().tool.name.to_string();
+        let operation =
+            self.client
+                .tool_catalog
+                .run_with_snapshot(&self.catalog_snapshot, || async {
+                    let (arguments, meta) = prepare().await?;
+                    let timeout_deadline =
+                        effective_timeout.map(|timeout| tokio::time::Instant::now() + timeout);
+                    let add_trusted_access_context = self.connections.add_trusted_access_context(
+                        self.tool_info(),
+                        &self.server_metadata,
+                        arguments.as_ref(),
+                        meta,
+                    );
+                    let meta = match effective_timeout.zip(timeout_deadline) {
+                        Some((timeout, deadline)) => {
+                            tokio::time::timeout_at(deadline, add_trusted_access_context)
+                                .await
+                                .map_err(|_| {
+                                    codex_rmcp_client::request_timeout_error("tools/call", timeout)
+                                })?
+                        }
+                        None => add_trusted_access_context.await,
+                    };
+                    let remaining_timeout = match effective_timeout.zip(timeout_deadline) {
+                        Some((timeout, deadline)) => {
+                            let remaining =
+                                deadline.saturating_duration_since(tokio::time::Instant::now());
+                            if remaining.is_zero() {
+                                return Err(codex_rmcp_client::request_timeout_error(
+                                    "tools/call",
+                                    timeout,
+                                ));
+                            }
+                            Some(remaining)
+                        }
+                        None => None,
+                    };
+                    let policy_meta = self.connections.network_policy_meta_for_call(
+                        &self.client,
+                        Some(self.permission_profile()),
+                        self.server_environment_id(),
+                        meta,
+                    );
+                    self.client
+                        .call_tool(
+                            tool_name.clone(),
+                            arguments,
+                            |capabilities| {
+                                let meta = policy_meta(capabilities)?;
+                                admit()?;
+                                Ok(meta)
+                            },
+                            remaining_timeout,
+                        )
+                        .await
+                        .with_context(|| {
+                            format!("tool call failed for `{server_name}/{tool_name}`")
+                        })
+                });
+        self.client
+            .with_active_shared_lease(operation)
+            .await?
+            .ok_or_else(|| anyhow::anyhow!(
+                "tool call rejected because the catalog changed after `{server_name}/{tool_name}` was prepared"
+            ))?
+            .map(call_tool_result_from_rmcp)
     }
 }
 
-fn call_tool_result_from_rmcp(result: rmcp::model::CallToolResult) -> CallToolResult {
+fn is_apps_attribution_header(name: &str) -> bool {
+    name.eq_ignore_ascii_case("x-openai-product-sku") || name.eq_ignore_ascii_case("originator")
+}
+
+pub(crate) fn call_tool_result_from_rmcp(result: rmcp::model::CallToolResult) -> CallToolResult {
     let content = result
         .content
         .into_iter()

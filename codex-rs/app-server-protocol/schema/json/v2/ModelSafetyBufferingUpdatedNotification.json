@@ -1,5 +1,5 @@
 {
-  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$schema": "http://json-schema.org/draft-07/schema#",
   "properties": {
     "fasterModel": {
       "type": [
@@ -33,12 +33,12 @@
     }
   },
   "required": [
+    "model",
+    "reasons",
+    "showBufferingUi",
     "threadId",
     "turnId",
-    "model",
-    "useCases",
-    "reasons",
-    "showBufferingUi"
+    "useCases"
   ],
   "title": "ModelSafetyBufferingUpdatedNotification",
   "type": "object"

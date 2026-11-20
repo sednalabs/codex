@@ -1,6 +1,5 @@
 use super::sanitize_user_agent;
 use super::*;
-use codex_utils_version::RELEASE_VERSION;
 use core_test_support::skip_if_no_network;
 use pretty_assertions::assert_eq;
 use std::io;
@@ -45,10 +44,67 @@ fn test_get_codex_user_agent() {
     let originator = originator().value;
     let prefix = format!("{originator}/");
     assert!(user_agent.starts_with(&prefix));
-    assert!(user_agent.contains(concat!("/", env!("CARGO_PKG_VERSION"), " (")));
-    if RELEASE_VERSION != env!("CARGO_PKG_VERSION") {
-        assert!(!user_agent.contains(&format!("/{RELEASE_VERSION} (")));
+}
+
+#[test]
+#[cfg(target_os = "linux")]
+fn os_discovery_is_cached_without_freezing_user_agent_overrides() {
+    const PROBE_DIR: &str = "CODEX_TEST_USER_AGENT_PROBE_DIR";
+    if std::env::var_os(PROBE_DIR).is_some() {
+        // Race the first lookup as well as exercising repeated requests.
+        std::thread::scope(|scope| {
+            for _ in 0..8 {
+                scope.spawn(|| {
+                    for _ in 0..4 {
+                        assert!(get_codex_user_agent().contains("Ubuntu 99.7.3"));
+                    }
+                });
+            }
+        });
+        set_default_originator("cached-os-test".to_string()).expect("set originator");
+        *USER_AGENT_SUFFIX.lock().expect("suffix lock") = Some("updated-client".to_string());
+        let user_agent = get_codex_user_agent();
+        assert!(user_agent.starts_with("cached-os-test/"));
+        assert!(user_agent.ends_with(" (updated-client)"));
+        return;
     }
+
+    // Use a fresh process so neither the cached OS nor the mutable overrides can
+    // be initialized by another test. Only the child's environment is changed.
+    let temp = tempfile::tempdir().expect("probe directory");
+    for (program, output) in [
+        ("lsb_release", "Distributor ID: Ubuntu\nRelease: 99.7.3\n"),
+        ("getconf", "64\n"),
+    ] {
+        let script = temp.path().join(program);
+        codex_utils_cargo_bin::write_executable(
+            &script,
+            &format!(
+                "#!/bin/sh\nprintf '{program}\\n' >> \"${PROBE_DIR}/calls\"\nprintf '{output}'\n"
+            ),
+        )
+        .expect("write probe");
+    }
+    let output = std::process::Command::new(std::env::current_exe().expect("test executable"))
+        .args([
+            "--exact",
+            concat!(
+                module_path!(),
+                "::os_discovery_is_cached_without_freezing_user_agent_overrides"
+            )
+            .trim_start_matches("codex_login::"),
+            "--nocapture",
+        ])
+        .env(PROBE_DIR, temp.path())
+        .env("PATH", temp.path())
+        .env_remove(CODEX_INTERNAL_ORIGINATOR_OVERRIDE_ENV_VAR)
+        .output()
+        .expect("run isolated user-agent test");
+    assert!(output.status.success(), "{output:?}");
+    let calls = std::fs::read_to_string(temp.path().join("calls")).expect("probe calls");
+    let mut calls = calls.lines().collect::<Vec<_>>();
+    calls.sort_unstable();
+    assert_eq!(calls, vec!["getconf", "lsb_release"]);
 }
 
 #[test]
@@ -298,4 +354,62 @@ fn test_macos() {
     ))
     .unwrap();
     assert!(re.is_match(&user_agent));
+}
+
+#[tokio::test]
+async fn signed_reject_routes_preserve_invalid_ca_errors() {
+    const CHILD: &str = "CODEX_TEST_SIGNED_ROUTE_INVALID_CA";
+    if std::env::var_os(CHILD).is_none() {
+        let dir = tempfile::tempdir().unwrap();
+        let ca = dir.path().join("invalid.pem");
+        std::fs::write(&ca, "invalid certificate").unwrap();
+        let output = std::process::Command::new(std::env::current_exe().unwrap())
+            .arg("signed_reject_routes_preserve_invalid_ca_errors")
+            .arg("--nocapture")
+            .env(CHILD, "1")
+            .env("CODEX_CA_CERTIFICATE", ca)
+            .env_remove("SSL_CERT_FILE")
+            .output()
+            .unwrap();
+        assert!(
+            output.status.success(),
+            "{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        assert!(String::from_utf8_lossy(&output.stdout).contains("1 passed"));
+        return;
+    }
+
+    let url = "https://127.0.0.1:9/";
+    let factory = HttpClientFactory::new(OutboundProxyPolicy::ReqwestDefault)
+        .with_sensitive_header_protection();
+    let sync_client = create_client_for_route(
+        &factory,
+        url,
+        ClientRouteClass::Api,
+        ClientRedirectPolicy::Reject,
+    )
+    .unwrap();
+    let async_client = create_client_for_route_async(
+        factory,
+        url.into(),
+        ClientRouteClass::Api,
+        ClientRedirectPolicy::Reject,
+    )
+    .await
+    .unwrap();
+    for client in [sync_client, async_client] {
+        let error = client.get(url).send().await.unwrap_err();
+        assert!(
+            matches!(
+                error,
+                codex_http_client::HttpError::Route(
+                    codex_http_client::RouteAwareClientPoolError::Build(
+                        codex_http_client::BuildRouteAwareHttpClientError::CustomCa(_)
+                    )
+                )
+            ),
+            "{error}"
+        );
+    }
 }

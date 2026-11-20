@@ -10,7 +10,6 @@ workspace = true
 [dependencies]
 codex-utils-absolute-path = { workspace = true }
 dirs = { workspace = true }
-libc = { workspace = true }
 
 [dev-dependencies]
 pretty_assertions = { workspace = true }
