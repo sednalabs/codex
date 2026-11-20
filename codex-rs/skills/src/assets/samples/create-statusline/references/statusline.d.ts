@@ -46,11 +46,23 @@ export type Permissions = { display_name: string, profile_id?: string, } & ({ "t
 
 export type RateLimitSnapshot = { limit_id: string, limit_name: string | null, primary_limit: RateLimitWindow | null, secondary_limit: RateLimitWindow | null, };
 
+export type RowJustify = "start" | "center" | "end" | "between";
+
+/**
+ * A root row receives the available footer width. A row inside another row takes up to its content width.
+ * An explicit `justify` groups adjacent bare strings into one item. Use separate `text` or `row`
+ * elements to position fields independently. Omitting `justify` keeps gaps between authored children.
+ */
 export type RowProps = {
 /**
  * Horizontal spacing in terminal columns, expressed as a non-negative JavaScript-safe integer.
  */
-gap: number, background?: Color | null, wrap?: RowWrap, };
+gap: number, background?: Color | null, wrap?: RowWrap,
+/**
+ * Position each line's items at the `start`, `center`, or `end`.
+ * `between` distributes spare columns across the gaps between children.
+ */
+justify?: RowJustify, };
 
 export type RowWrap = "nowrap" | "wrap";
 

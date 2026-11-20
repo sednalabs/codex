@@ -43,6 +43,7 @@ use codex_protocol::protocol::InterAgentCommunication;
 use codex_protocol::protocol::PLUGINS_INSTRUCTIONS_OPEN_TAG;
 use codex_protocol::protocol::TurnContextItem;
 use codex_protocol_test_support::ContentItemTestExt;
+use codex_thread_context_ids_test_support::thread_context_ids;
 use codex_utils_absolute_path::AbsolutePathBuf;
 use codex_utils_output_truncation::TruncationPolicy;
 use codex_utils_output_truncation::truncate_text;
@@ -158,8 +159,9 @@ fn root_history() -> ContextManager {
     ContextManager::for_session(
         /*root_capabilities_restricted*/ false,
         &ManagedFeatures::from(codex_features::Features::with_defaults()),
+        /*reuse_parent_compaction*/ true,
         codex_guardian_context::ContextBudgeting::Fixed,
-        codex_protocol_test_support::uuid_v7_item_id_generator_for_test(),
+        thread_context_ids(),
     )
 }
 
@@ -591,8 +593,9 @@ fn guardian_checkpoint_applies_additional_context_policy_after_resume(include: b
     let mut history = ContextManager::for_session(
         /*root_capabilities_restricted*/ false,
         &features,
+        features.enabled(Feature::GuardianReuseParentCompaction),
         codex_guardian_context::ContextBudgeting::Fixed,
-        codex_protocol_test_support::uuid_v7_item_id_generator_for_test(),
+        thread_context_ids(),
     );
     let additional_context: ResponseItem = crate::context::AdditionalContextToolOutput::new(
         "browser_info",
@@ -634,8 +637,9 @@ fn guardian_checkpoint_applies_additional_context_policy_after_resume(include: b
     let mut resumed = ContextManager::for_session(
         /*root_capabilities_restricted*/ false,
         &features,
+        features.enabled(Feature::GuardianReuseParentCompaction),
         codex_guardian_context::ContextBudgeting::Fixed,
-        codex_protocol_test_support::uuid_v7_item_id_generator_for_test(),
+        thread_context_ids(),
     );
     resumed.replace_annotated(compacted);
     resumed.restore_review_context(

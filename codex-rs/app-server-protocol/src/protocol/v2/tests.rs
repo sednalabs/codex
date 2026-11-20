@@ -324,7 +324,7 @@ fn thread_resume_response_round_trips_initial_turns_page() {
             recency_at: Some(1),
             status: ThreadStatus::Idle,
             path: None,
-            cwd: absolute_path("tmp"),
+            cwd: absolute_path("tmp").into(),
             cli_version: "0.0.0".to_string(),
             source: SessionSource::Exec,
             can_accept_direct_input: None,
@@ -339,7 +339,7 @@ fn thread_resume_response_round_trips_initial_turns_page() {
         model: "gpt-5".to_string(),
         model_provider: "openai".to_string(),
         service_tier: None,
-        cwd: absolute_path("tmp"),
+        cwd: absolute_path("tmp").into(),
         runtime_workspace_roots: Vec::new(),
         instruction_sources: Vec::new(),
         approval_policy: AskForApproval::OnRequest,
@@ -1271,6 +1271,7 @@ fn fs_get_metadata_response_round_trips_minimal_fields() {
         is_symlink: false,
         created_at_ms: 123,
         modified_at_ms: 456,
+        size_bytes: Some(5),
     };
 
     let value = serde_json::to_value(&response).expect("serialize fs/getMetadata response");
@@ -1282,12 +1283,28 @@ fn fs_get_metadata_response_round_trips_minimal_fields() {
             "isSymlink": false,
             "createdAtMs": 123,
             "modifiedAtMs": 456,
+            "sizeBytes": 5,
         })
     );
 
-    let decoded = serde_json::from_value::<FsGetMetadataResponse>(value)
+    let decoded = serde_json::from_value::<FsGetMetadataResponse>(value.clone())
         .expect("deserialize fs/getMetadata response");
     assert_eq!(decoded, response);
+
+    let mut legacy_value = value;
+    legacy_value
+        .as_object_mut()
+        .expect("metadata object")
+        .remove("sizeBytes");
+    let legacy = serde_json::from_value::<FsGetMetadataResponse>(legacy_value)
+        .expect("deserialize fs/getMetadata response from an older server");
+    assert_eq!(
+        legacy,
+        FsGetMetadataResponse {
+            size_bytes: None,
+            ..response
+        }
+    );
 }
 
 #[test]
@@ -2015,7 +2032,7 @@ fn sandbox_policy_round_trips_external_sandbox_network_access() {
         network_access: NetworkAccess::Enabled,
     };
 
-    let core_policy = v2_policy.to_core();
+    let core_policy = v2_policy.try_to_core().unwrap();
     assert_eq!(
         core_policy,
         codex_protocol::protocol::SandboxPolicy::ExternalSandbox {
@@ -2033,7 +2050,7 @@ fn sandbox_policy_round_trips_read_only_network_access() {
         network_access: true,
     };
 
-    let core_policy = v2_policy.to_core();
+    let core_policy = v2_policy.try_to_core().unwrap();
     assert_eq!(
         core_policy,
         codex_protocol::protocol::SandboxPolicy::ReadOnly {
@@ -2889,13 +2906,13 @@ fn sandbox_policy_round_trips_workspace_write_access() {
     let root = AbsolutePathBuf::from_absolute_path(directory.path()).expect("absolute root");
     std::fs::create_dir(root.join(".git")).expect("git metadata");
     let v2_policy = SandboxPolicy::WorkspaceWrite {
-        writable_roots: vec![root.clone(), root.clone()],
+        writable_roots: vec![root.clone().into(), root.clone().into()],
         network_access: true,
         exclude_tmpdir_env_var: false,
         exclude_slash_tmp: false,
     };
 
-    let core_policy = v2_policy.to_core();
+    let core_policy = v2_policy.try_to_core().unwrap();
     assert_eq!(
         core_policy,
         codex_protocol::protocol::SandboxPolicy::WorkspaceWrite {
@@ -2907,7 +2924,7 @@ fn sandbox_policy_round_trips_workspace_write_access() {
     );
 
     let profile = codex_protocol::models::PermissionProfile::from_legacy_sandbox_policy_template(
-        &v2_policy.to_core(),
+        &core_policy,
     );
     assert!(
         !profile
@@ -2934,6 +2951,43 @@ fn sandbox_policy_round_trips_workspace_write_access() {
 
     let back_to_v2 = SandboxPolicy::from(core_policy);
     assert_eq!(back_to_v2, v2_policy);
+}
+
+#[test]
+fn sandbox_policy_template_preserves_foreign_writable_roots() {
+    let root = if cfg!(windows) { "/extra" } else { r"C:\extra" };
+    let policy: SandboxPolicy = serde_json::from_value(json!({
+        "type": "workspaceWrite",
+        "writableRoots": [root],
+    }))
+    .expect("workspace-write policy");
+    let root = PathUri::try_from(LegacyAppPathString::from_string(root)).expect("foreign root");
+    let file_system = policy
+        .permission_profile_template()
+        .expect("permission profile template")
+        .file_system_sandbox_policy();
+    assert!(file_system.entries.iter().any(|entry| {
+        entry.access.can_write()
+            && matches!(&entry.path, codex_protocol::permissions::FileSystemPath::Path { path } if path == &root)
+    }));
+}
+
+#[test]
+fn sandbox_policy_rejects_home_relative_writable_roots_for_enforcement() {
+    let policy: SandboxPolicy = serde_json::from_value(json!({
+        "type": "workspaceWrite",
+        "writableRoots": ["~/extra"],
+    }))
+    .expect("workspace-write policy");
+    let home = std::env::current_dir().expect("current directory");
+    let result =
+        codex_utils_absolute_path::AbsolutePathBufGuard::with_home_directory(&home, || {
+            policy.try_to_core()
+        });
+    assert_eq!(
+        result.expect_err("writable roots must be absolute").kind(),
+        std::io::ErrorKind::InvalidInput
+    );
 }
 
 #[test]
@@ -2971,7 +3025,7 @@ fn sandbox_policy_deserializes_legacy_workspace_write_full_access_field() {
     assert_eq!(
         policy,
         SandboxPolicy::WorkspaceWrite {
-            writable_roots: vec![absolute_path("/workspace")],
+            writable_roots: vec![absolute_path("/workspace").into()],
             network_access: true,
             exclude_tmpdir_env_var: true,
             exclude_slash_tmp: true,
@@ -5210,6 +5264,11 @@ fn thread_start_params_preserve_explicit_null_service_tier() {
 
 #[test]
 fn thread_lifecycle_responses_default_missing_optional_fields() {
+    let cwd = if cfg!(windows) {
+        "/home/alice/repo"
+    } else {
+        r"D:\repo"
+    };
     let response = json!({
         "thread": {
             "id": "thread-id",
@@ -5222,7 +5281,7 @@ fn thread_lifecycle_responses_default_missing_optional_fields() {
             "updatedAt": 1,
             "status": { "type": "idle" },
             "path": null,
-            "cwd": absolute_path_string("tmp"),
+            "cwd": cwd,
             "cliVersion": "0.0.0",
             "source": "exec",
             "agentNickname": null,
@@ -5234,10 +5293,11 @@ fn thread_lifecycle_responses_default_missing_optional_fields() {
         "model": "gpt-5",
         "modelProvider": "openai",
         "serviceTier": null,
-        "cwd": absolute_path_string("tmp"),
+        "cwd": cwd,
         "approvalPolicy": "on-request",
         "approvalsReviewer": "user",
-        "sandbox": { "type": "dangerFullAccess" },
+        "runtimeWorkspaceRoots": [cwd],
+        "sandbox": { "type": "workspaceWrite", "writableRoots": [cwd] },
         "reasoningEffort": null
     });
 
@@ -5248,6 +5308,12 @@ fn thread_lifecycle_responses_default_missing_optional_fields() {
     let fork: ThreadForkResponse =
         serde_json::from_value(response.clone()).expect("thread/fork response");
 
+    for encoded in [json!(start), json!(resume), json!(fork)] {
+        assert_eq!(encoded["thread"]["cwd"], cwd);
+        assert_eq!(encoded["cwd"], cwd);
+        assert_eq!(encoded["runtimeWorkspaceRoots"], json!([cwd]));
+        assert_eq!(encoded["sandbox"]["writableRoots"], json!([cwd]));
+    }
     assert_eq!(start.instruction_sources, Vec::<LegacyAppPathString>::new());
     assert_eq!(start.thread.parent_thread_id, None);
     assert_eq!(start.thread.recency_at, None);
@@ -5359,6 +5425,76 @@ fn turn_start_params_preserve_explicit_null_service_tier() {
     let serialized_without_override =
         serde_json::to_value(&without_override).expect("params should serialize");
     assert_eq!(serialized_without_override.get("serviceTier"), None);
+}
+
+#[test]
+fn model_access_programs_preserve_availability_across_wire_formats() {
+    use codex_protocol::openai_models::ModelAccessPrograms as CoreModelAccessPrograms;
+
+    for (core_availability, app_server_availability, normalized_availability) in [
+        (json!("available"), json!("available"), json!("available")),
+        (
+            json!("enrollment_required"),
+            json!("enrollmentRequired"),
+            json!("enrollmentRequired"),
+        ),
+        (
+            json!("unavailable_for_model"),
+            json!("unavailableForModel"),
+            json!("unavailableForModel"),
+        ),
+        (json!("default"), json!("default"), json!("default")),
+        (
+            json!("future_status"),
+            json!("futureStatus"),
+            json!("default"),
+        ),
+    ] {
+        let core: CoreModelAccessPrograms = serde_json::from_value(json!({
+            "cyber": ["standard", "daybreak_blue", "daybreak_red"],
+            "daybreak_availability": core_availability,
+        }))
+        .expect("catalog availability should deserialize");
+        let app_server: ModelAccessPrograms = serde_json::from_value(json!({
+            "cyber": ["standard", "daybreakBlue", "daybreakRed"],
+            "daybreakAvailability": app_server_availability,
+        }))
+        .expect("app-server availability should deserialize");
+
+        assert_eq!(ModelAccessPrograms::from(core.clone()), app_server);
+        assert_eq!(CoreModelAccessPrograms::from(app_server.clone()), core);
+        assert_eq!(
+            serde_json::to_value(app_server).expect("model access programs should serialize"),
+            json!({
+                "cyber": ["standard", "daybreakBlue", "daybreakRed"],
+                "daybreakAvailability": normalized_availability,
+            }),
+        );
+    }
+
+    let legacy_core: CoreModelAccessPrograms = serde_json::from_value(json!({
+        "cyber": ["standard", "daybreak_blue"],
+    }))
+    .expect("old catalog metadata should deserialize");
+    let legacy_app_server: ModelAccessPrograms = serde_json::from_value(json!({
+        "cyber": ["standard", "daybreakBlue"],
+    }))
+    .expect("old app-server metadata should deserialize");
+    assert_eq!(
+        ModelAccessPrograms::from(legacy_core.clone()),
+        legacy_app_server,
+    );
+    assert_eq!(
+        CoreModelAccessPrograms::from(legacy_app_server.clone()),
+        legacy_core
+    );
+    assert_eq!(
+        serde_json::to_value(legacy_app_server).expect("legacy programs should serialize"),
+        json!({
+            "cyber": ["standard", "daybreakBlue"],
+            "daybreakAvailability": "default",
+        }),
+    );
 }
 
 #[test]

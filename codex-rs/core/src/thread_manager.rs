@@ -1,8 +1,10 @@
 mod managed;
 mod model_catalog;
+mod registry;
 mod shared_instructions;
 mod shutdown;
 
+pub use registry::GuardianPolicyLoader;
 pub use shutdown::AgentTreeShutdown;
 pub use shutdown::AgentTreeShutdownFailure;
 pub use shutdown::AgentTreeShutdownFailureReason;
@@ -11,6 +13,7 @@ pub use shutdown::LoadedSuspendedAgent;
 pub use shutdown::SuspendedAgentTree;
 pub(crate) use shutdown::thread_store_error_kind;
 
+use self::registry::ThreadRegistry;
 use crate::CodexAppsToolsCache;
 use crate::CodexThreadSettingsOverrides;
 use crate::agent::AgentStatus;
@@ -21,6 +24,8 @@ use crate::agent::host::InheritedSessionId;
 use crate::agent::host::ServiceTierAcceptance;
 use crate::agents_md_manager::SessionInstructions;
 use crate::attestation::AttestationProvider;
+use crate::code_mode_host::LocalServerOutputProvider;
+use crate::code_mode_host::ProcessOwnedGrpcCodeModeSessionProvider;
 use crate::codex_thread::CodexThread;
 use crate::config::Config;
 use crate::current_time::TimeProvider;
@@ -51,7 +56,6 @@ use codex_attachment_store::AttachmentStore;
 use codex_attachment_store::InlineAttachmentStore;
 use codex_code_mode::CodeModeSessionProvider;
 use codex_code_mode::DisabledCodeModeSessionProvider;
-use codex_code_mode::ProcessOwnedCodeModeSessionProvider;
 use codex_core_plugins::PluginsManager;
 use codex_exec_server::EnvironmentManager;
 use codex_execpolicy::Policy;
@@ -106,6 +110,7 @@ use codex_protocol::protocol::W3cTraceContext;
 use codex_rollout::state_db::StateDbHandle;
 use codex_runtime_agent_instance::RuntimeAuthManager;
 use codex_skills_extension::HostSkillsService;
+use codex_thread_store::InheritedHistoryVisibility;
 use codex_thread_store::LoadThreadHistoryParams;
 use codex_thread_store::LocalThreadStore;
 use codex_thread_store::LocalThreadStoreConfig;
@@ -125,7 +130,6 @@ use codex_utils_git_discovery::GitRootDiscovery;
 use futures::StreamExt;
 use futures::future::BoxFuture;
 use futures::stream::FuturesUnordered;
-use std::collections::HashMap;
 use std::collections::HashSet;
 use std::future::Future;
 use std::path::PathBuf;
@@ -133,8 +137,8 @@ use std::sync::Arc;
 use std::sync::atomic::AtomicBool;
 use std::sync::atomic::Ordering;
 use std::time::Duration;
-use tokio::sync::RwLock;
 use tokio::sync::broadcast;
+use tokio::sync::watch;
 use tracing::instrument;
 use tracing::warn;
 
@@ -598,7 +602,8 @@ pub(crate) struct ResumeThreadWithHistoryOptions {
 /// function to require an `Arc<&Self>`.
 pub(crate) struct ThreadManagerState {
     // Eviction updates this registry and residency together, locking the registry first.
-    pub(crate) threads: Arc<RwLock<HashMap<ThreadId, Arc<CodexThread>>>>,
+    pub(crate) threads: ThreadRegistry,
+    guardian_policy_loader: Option<Arc<dyn GuardianPolicyLoader>>,
     shared_thread_instructions: shared_instructions::SharedThreadInstructionsProviders,
     thread_created_tx: broadcast::Sender<ThreadId>,
     thread_id_generator: ThreadIdGenerator,
@@ -701,7 +706,8 @@ impl ThreadManager {
             };
         Self {
             state: Arc::new(ThreadManagerState {
-                threads: Arc::new(RwLock::new(HashMap::new())),
+                threads: ThreadRegistry::default(),
+                guardian_policy_loader: None,
                 shared_thread_instructions: Default::default(),
                 thread_created_tx,
                 thread_id_generator: default_thread_id_generator(),
@@ -767,6 +773,15 @@ impl ThreadManager {
         self
     }
 
+    /// Installs the host loader used to read Guardian policy for startup and refresh.
+    pub fn with_guardian_policy_loader(mut self, loader: Arc<dyn GuardianPolicyLoader>) -> Self {
+        let Some(state) = Arc::get_mut(&mut self.state) else {
+            unreachable!("Guardian policy loader must be set before the thread manager is shared");
+        };
+        state.guardian_policy_loader = Some(loader);
+        self
+    }
+
     /// Samples host metrics without creating a Codex thread or code-mode session.
     /// Process-owned providers observe existing children; custom providers retain
     /// their transport's connection policy.
@@ -808,23 +823,14 @@ impl ThreadManager {
         config: &Config,
         host_program: PathBuf,
     ) -> Arc<dyn CodeModeSessionProvider> {
-        let provider: Arc<dyn CodeModeSessionProvider> =
-            if config.features.enabled(Feature::CodeModeHostGrpc) {
-                Arc::new(
-                crate::code_mode_host::ProcessOwnedGrpcCodeModeSessionProvider::with_host_program(
-                    host_program,
-                ),
-            )
-            } else {
-                Arc::new(ProcessOwnedCodeModeSessionProvider::with_host_program(
-                    host_program,
-                ))
-            };
+        let provider = Arc::new(ProcessOwnedGrpcCodeModeSessionProvider::with_host_program(
+            host_program,
+        ));
         if config
             .features
             .enabled(Feature::CodeModeHostOutputTruncation)
         {
-            Arc::new(crate::code_mode_host::LocalServerOutputProvider { inner: provider })
+            Arc::new(LocalServerOutputProvider { inner: provider })
         } else {
             provider
         }
@@ -914,7 +920,8 @@ impl ThreadManager {
         Self {
             state: Arc::new(ThreadManagerState {
                 runtime_auth,
-                threads: Arc::new(RwLock::new(HashMap::new())),
+                threads: ThreadRegistry::default(),
+                guardian_policy_loader: None,
                 shared_thread_instructions: Default::default(),
                 thread_created_tx,
                 thread_id_generator: default_thread_id_generator(),
@@ -1138,6 +1145,11 @@ impl ThreadManager {
         Arc::clone(&self.state.git_root_discovery)
     }
 
+    /// Finds the Git root using the shared, bounded background discovery service.
+    pub async fn discover_git_root(&self, cwd: AbsolutePathBuf) -> Option<PathBuf> {
+        self.state.git_root_discovery.discover(cwd).await
+    }
+
     /// Returns the startup catalog. Use [`CodexThread::model_info`] for a live chat or
     /// [`Self::models_manager_for_config`] for a new destination.
     pub fn get_models_manager(&self) -> SharedModelsManager {
@@ -1147,8 +1159,9 @@ impl ThreadManager {
     /// Select the app-server catalog using the same owner as thread requests.
     pub fn models_manager_for_config(&self, config: &Config) -> SharedModelsManager {
         self.state.model_catalog.for_config(
-            config,
+            &config.model_provider,
             config.model_catalog.as_ref(),
+            config.features.enabled(Feature::ApiKeyModelDiscovery),
             self.catalog_auth_context(config),
             /*same_owner*/ true,
         )
@@ -1169,17 +1182,8 @@ impl ThreadManager {
     }
 
     fn catalog_auth_context(&self, config: &Config) -> ProviderAuthContext {
-        let credentials = self.auth_manager();
-        let runtime = crate::runtime_auth::runtime_for_config(
-            &self.state.runtime_auth,
-            config,
-            Arc::clone(&credentials),
-            &self.state.installation_id,
-        );
-        ProviderAuthContext {
-            credentials,
-            runtime_auth: runtime.map(|runtime| (runtime, config.runtime_auth_mode)),
-        }
+        self.state
+            .thread_provider_auth(config, &self.state.auth_manager, &self.state.runtime_auth)
     }
 
     /// Resolves the model before starting or cold-resuming a thread with this manager's credentials.
@@ -1210,8 +1214,7 @@ impl ThreadManager {
             .state
             .models_for_thread(
                 &options.config,
-                &self.state.auth_manager,
-                &self.state.runtime_auth,
+                &self.catalog_auth_context(&options.config),
                 &originator,
                 &source,
             )
@@ -1250,6 +1253,22 @@ impl ThreadManager {
 
     pub async fn list_thread_ids(&self) -> Vec<ThreadId> {
         self.state.list_thread_ids().await
+    }
+
+    /// Reserves a Guardian policy revision before a host loads thread startup configuration.
+    pub async fn reserve_guardian_policy_revision(&self) -> std::io::Result<u64> {
+        self.state.threads.reserve_guardian_policy_revision().await
+    }
+
+    /// Loads managed Guardian requirements before publishing them to live and starting threads.
+    /// A live thread can reject the update after the policy has been published.
+    pub async fn refresh_guardian_policy(&self) -> std::io::Result<()> {
+        let loader = self
+            .state
+            .guardian_policy_loader
+            .as_deref()
+            .ok_or_else(|| std::io::Error::other("Guardian policy loader is not configured"))?;
+        self.state.threads.refresh_guardian_policy(loader).await
     }
 
     pub fn subscribe_thread_created(&self) -> broadcast::Receiver<ThreadId> {
@@ -1523,7 +1542,7 @@ impl ThreadManager {
             request
         };
         request.startup = startup;
-        Box::pin(self.state.spawn_thread(request)).await
+        self.state.spawn_thread(request).await
     }
 
     // TODO(jif) merge with fork_agent
@@ -1647,12 +1666,13 @@ impl ThreadManager {
             client_mcp_extensions,
             ..StartThreadOptions::new(config)
         };
-        Box::pin(self.state.spawn_thread(ThreadSpawnRequest::new(
-            options,
-            auth_manager,
-            agent_control,
-        )))
-        .await
+        self.state
+            .spawn_thread(ThreadSpawnRequest::new(
+                options,
+                auth_manager,
+                agent_control,
+            ))
+            .await
     }
 
     pub(crate) async fn start_thread_with_user_shell_override_for_tests(
@@ -1669,7 +1689,7 @@ impl ThreadManager {
         let mut request =
             ThreadSpawnRequest::new(options, Arc::clone(&self.state.auth_manager), agent_control);
         request.user_shell_override = Some(user_shell_override);
-        Box::pin(self.state.spawn_thread(request)).await
+        self.state.spawn_thread(request).await
     }
 
     pub(crate) async fn resume_legacy_thread_from_rollout_with_user_shell_override_for_tests(
@@ -1696,7 +1716,7 @@ impl ThreadManager {
         };
         let mut request = ThreadSpawnRequest::new(options, auth_manager, agent_control);
         request.user_shell_override = Some(user_shell_override);
-        Box::pin(self.state.spawn_thread(request)).await
+        self.state.spawn_thread(request).await
     }
 
     /// Removes the thread from the manager's internal map, though the thread is stored
@@ -1900,6 +1920,7 @@ impl ThreadManager {
         &self,
         options: StartThreadOptions,
         prepared: PreparedFork,
+        inherited_history_visibility: InheritedHistoryVisibility,
     ) -> CodexResult<NewThread> {
         let history = InitialHistory::Resumed(ResumedHistory {
             history_revision: None,
@@ -1910,6 +1931,7 @@ impl ThreadManager {
         let fork_persistence = ForkPersistence::Referenced {
             history_base: prepared.history_base,
             inherited_item_count: prepared.model_context.len(),
+            inherited_history_visibility,
         };
         let result = self
             .fork_thread_with_initial_history(
@@ -2000,7 +2022,7 @@ impl ThreadManager {
         request.forked_from_thread_id = source_thread_id;
         request.fork_persistence = fork_persistence;
         request.inherited_instructions = Some(instructions);
-        Box::pin(self.state.spawn_thread(request)).await
+        self.state.spawn_thread(request).await
     }
 
     pub(crate) fn agent_control(&self) -> LocalAgentControl {
@@ -2041,27 +2063,44 @@ impl ThreadManagerState {
     async fn models_for_thread(
         &self,
         config: &Config,
-        auth_manager: &Arc<AuthManager>,
-        runtime_auth: &crate::runtime_auth::RuntimeAuthSlot,
+        provider_auth: &ProviderAuthContext,
         originator: &str,
         session_source: &SessionSource,
     ) -> SharedModelsManager {
+        let manager = self.model_catalog.for_thread(
+            &config.model_provider,
+            config.model_catalog.as_ref(),
+            config.features.enabled(Feature::ApiKeyModelDiscovery),
+            provider_auth.clone(),
+            Arc::ptr_eq(&provider_auth.credentials, &self.auth_manager),
+            originator,
+        );
+        if session_source.is_non_root_agent() {
+            // The final provider/auth/originator catalog may be new even when the base
+            // manager was reused. Preserve loaded snapshots, including unsaved updates.
+            manager
+                .ensure_initialized(config.http_client_factory())
+                .await;
+        }
+        manager
+    }
+
+    fn thread_provider_auth(
+        &self,
+        config: &Config,
+        auth_manager: &Arc<AuthManager>,
+        runtime_auth: &crate::runtime_auth::RuntimeAuthSlot,
+    ) -> ProviderAuthContext {
         let runtime = crate::runtime_auth::runtime_for_config(
             runtime_auth,
             config,
             Arc::clone(auth_manager),
             &self.installation_id,
         );
-        self.model_catalog
-            .for_thread(
-                config,
-                Arc::clone(auth_manager),
-                runtime,
-                Arc::ptr_eq(auth_manager, &self.auth_manager),
-                originator,
-                session_source,
-            )
-            .await
+        ProviderAuthContext {
+            credentials: Arc::clone(auth_manager),
+            runtime_auth: runtime.map(|runtime| (runtime, config.runtime_auth_mode)),
+        }
     }
 
     pub(crate) fn shared_thread_instructions_provider(
@@ -2417,7 +2456,7 @@ impl ThreadManagerState {
             request.forked_from_thread_id = parent_thread_id;
             request.fork_persistence = ForkPersistence::CopiedDeferred;
         }
-        Box::pin(self.spawn_thread(request)).await
+        self.spawn_thread(request).await
     }
 
     /// Starts a host-reserved child using inheritance captured from this manager's parent.
@@ -2456,7 +2495,7 @@ impl ThreadManagerState {
             originator: inheritance.originator,
             attachment_source: inheritance.attachment_source,
         });
-        Box::pin(self.spawn_thread(request)).await
+        self.spawn_thread(request).await
     }
 
     pub(crate) async fn resume_thread_with_history_with_source(
@@ -2503,7 +2542,7 @@ impl ThreadManagerState {
         request.inherited_environments = inherited_environments;
         request.inherited_instructions = inherited_instructions;
         request.inherited_exec_policy = inherited_exec_policy;
-        Box::pin(self.spawn_thread(request)).await
+        self.spawn_thread(request).await
     }
 
     async fn inherited_child_auth(
@@ -2546,7 +2585,12 @@ impl ThreadManagerState {
     }
 
     /// Spawn a new thread with optional history and register it with the manager.
-    async fn spawn_thread(&self, mut request: ThreadSpawnRequest) -> CodexResult<NewThread> {
+    fn spawn_thread(&self, request: ThreadSpawnRequest) -> BoxFuture<'_, CodexResult<NewThread>> {
+        // Erase the startup future here so each caller doesn't compile its own copy.
+        Box::pin(self.spawn_thread_inner(request))
+    }
+
+    async fn spawn_thread_inner(&self, mut request: ThreadSpawnRequest) -> CodexResult<NewThread> {
         let cancellation = request
             .options
             .config
@@ -2735,6 +2779,21 @@ impl ThreadManagerState {
                 threads.remove(&resumed.conversation_id);
                 thread.session.services.mcp_runtime.revoke_ema();
             }
+        }
+        if !session_source.is_internal()
+            && let Err(error) = runtime
+                .shutdown
+                .run_until_cancelled(self.threads.prepare_startup_guardian_policy(
+                    &mut config,
+                    self.guardian_policy_loader.as_deref(),
+                ))
+                .await
+                .ok_or(CodexErr::TurnAborted)?
+        {
+            warn!(kind = ?error.kind(), "could not load Guardian policy for startup");
+            return Err(CodexErr::InvalidRequest(
+                "Could not load Guardian policy for thread startup".into(),
+            ));
         }
         let supplied_thread_instructions =
             thread_extension_init.remove::<InheritedThreadInstructions>();
@@ -2945,6 +3004,18 @@ impl ThreadManagerState {
         } else {
             Arc::new(mcp_manager.for_plugins_manager(Arc::clone(&plugins_manager)))
         };
+        let inherited_guardian =
+            thread_extension_init.get::<crate::guardian::GuardianReviewerInference>();
+        if inherited_guardian.is_some()
+            && !matches!(
+                &session_source,
+                SessionSource::Internal(InternalSessionSource::Guardian)
+            )
+        {
+            return Err(CodexErr::InvalidRequest(
+                "a shared Guardian catalog requires an internal Guardian reviewer".to_string(),
+            ));
+        }
         let models_manager = tokio::select! {
             biased;
             _ = agent_control.runtime().shutdown.cancelled() => {
@@ -2953,13 +3024,48 @@ impl ThreadManagerState {
                 }
                 return Err(CodexErr::TurnAborted);
             }
-            manager = self.models_for_thread(
-                &config,
-                &auth_manager,
-                &runtime_auth,
-                &startup_context.originator,
-                &session_source,
-            ) => manager,
+            manager = async {
+                let provider_auth = self.thread_provider_auth(&config, &auth_manager, &runtime_auth);
+                if let Some(guardian_provider) = &config.guardian_model_provider {
+                    let provider = provider_auth.model_provider(guardian_provider.info.clone());
+                    // A trusted provider catalog must not read snapshots from the Actor's cache.
+                    let mut settings = codex_models_manager::manager::ModelCatalogSettings::default();
+                    settings.skip_bundled_seed = guardian_provider.info.model_catalog_url.is_some();
+                    settings.api_key_model_discovery_default = config
+                        .config_layer_stack
+                        .requirements_toml()
+                        .feature_requirements
+                        .as_ref()
+                        .and_then(|requirements| requirements.entries.get(Feature::ApiKeyModelDiscovery.key()))
+                        .copied()
+                        .unwrap_or(true);
+                    let guardian_catalog = provider.models_manager_with_settings(
+                        /*config_model_catalog*/ None,
+                        settings,
+                    );
+                    let guardian_catalog = guardian_catalog
+                        .for_originator(&startup_context.originator)
+                        .unwrap_or(guardian_catalog);
+                    thread_extension_init.insert(crate::guardian::GuardianInferenceContext::resolve(
+                        &config,
+                        guardian_provider,
+                        provider_auth.clone(),
+                        provider,
+                        guardian_catalog,
+                    ));
+                }
+                if let Some(inference) = inherited_guardian {
+                    Arc::clone(&inference.0.models_manager)
+                } else {
+                    self.models_for_thread(
+                        &config,
+                        &provider_auth,
+                        &startup_context.originator,
+                        &session_source,
+                    )
+                    .await
+                }
+            } => manager,
         };
         let registered = Arc::new(AtomicBool::new(false));
         thread_extension_init.insert(ThreadRegistrationReceipt(Arc::clone(&registered)));
@@ -3056,9 +3162,11 @@ impl ThreadManagerState {
                 warn!(%thread_id, %source_thread_id, %error, "failed to copy fork attachments");
             }
         }
-        let finalize_result = self
-            .finalize_thread_spawn(session, io, tracked_session_source, &registered)
-            .await;
+        let finalize_result = tokio::select! {
+            biased;
+            _ = runtime.shutdown.cancelled() => Err(CodexErr::TurnAborted),
+            result = self.finalize_thread_spawn(session, io, tracked_session_source, &registered) => result,
+        };
         let (new_thread, tier_acceptance) = match finalize_result {
             Ok(registered) => registered,
             Err(error) => {
@@ -3104,7 +3212,7 @@ impl ThreadManagerState {
     ) -> CodexResult<(NewThread, Option<ServiceTierAcceptance>)> {
         let thread_id = session.thread_id();
         let event = io.next_event().await?;
-        let session_configured = match event {
+        let mut session_configured = match event {
             Event {
                 id,
                 msg: EventMsg::SessionConfigured(session_configured),
@@ -3114,13 +3222,37 @@ impl ThreadManagerState {
             }
         };
 
-        let ema_cancellation = session
-            .get_config()
-            .await
+        let mut startup_config = session.get_config().await;
+        let mcp_ema_cancellation = startup_config
             .config_layer_stack
             .mcp_ema_cancellation()
             .clone();
-        {
+        let policy_changed = "Guardian policy changed during startup; retry starting the thread";
+        let check_guardian = !session_source.is_internal();
+        let mut reload_policy = false;
+        let mut pending_refresh: Option<watch::Receiver<()>> = None;
+        let startup_error = loop {
+            if let Some(mut pending) = pending_refresh.take() {
+                let _ = pending.changed().await;
+            }
+            if std::mem::take(&mut reload_policy) {
+                // A revision orders load starts. Re-read here because the startup may
+                // have read newer local requirements than the published snapshot did.
+                let Ok(snapshot) = self
+                    .threads
+                    .load_startup_guardian_policy(self.guardian_policy_loader.as_deref())
+                    .await
+                else {
+                    break policy_changed.to_owned();
+                };
+                if session.refresh_guardian_policy(&snapshot).await
+                    != crate::ConfigRefreshOutcome::Published
+                {
+                    break policy_changed.to_owned();
+                }
+                startup_config = session.get_config().await;
+                session_configured.approvals_reviewer = startup_config.approvals_reviewer;
+            }
             let pending_service_tier = if self.agent_control_factory.is_some()
                 || matches!(
                     &session.agent_runtime,
@@ -3131,9 +3263,31 @@ impl ThreadManagerState {
             } else {
                 None
             };
-            let mut threads = self.threads.write().await;
-            if let std::collections::hash_map::Entry::Vacant(e) = threads.entry(thread_id) {
-                ema_cancellation.publish();
+            let mut registry = self.threads.state.write().await;
+            if check_guardian && let Some(wait) = registry.pending_guardian_refresh() {
+                pending_refresh = Some(wait);
+                continue;
+            }
+            let revision = startup_config.guardian_policy_revision;
+            let refresh_crossed_load = registry.published_guardian_revision > revision;
+            if let std::collections::hash_map::Entry::Vacant(entry) =
+                registry.threads.entry(thread_id)
+            {
+                if check_guardian && refresh_crossed_load {
+                    reload_policy = true;
+                    continue;
+                }
+                // Source validity is held through insertion, after the last await.
+                let binding = (check_guardian && revision != 0)
+                    .then(|| startup_config.config_layer_stack.guardian_policy_binding())
+                    .flatten()
+                    .map(codex_config::CloudConfigBundleBinding::read);
+                if binding.as_ref().is_some_and(|binding| {
+                    binding.status != codex_config::CloudConfigBundleBindingStatus::Current
+                }) {
+                    break policy_changed.to_owned();
+                }
+                mcp_ema_cancellation.publish();
                 let thread = Arc::new(CodexThread::new(
                     Arc::clone(&session),
                     io,
@@ -3143,7 +3297,7 @@ impl ThreadManagerState {
                 ));
                 // All registration checks passed; publish the receipt with this insertion.
                 registered.store(true, Ordering::Release);
-                e.insert(thread.clone());
+                entry.insert(Arc::clone(&thread));
                 let tier_acceptance = pending_service_tier.and_then(|(mut state, update)| {
                     state.service_tier_acceptance =
                         crate::agent::host::propagate_config_update(&session, update);
@@ -3157,14 +3311,13 @@ impl ThreadManagerState {
                 };
                 return Ok((new_thread, tier_acceptance));
             }
-        }
+            break format!("thread {thread_id} is already running");
+        };
 
         if let Err(err) = io.shutdown_and_wait().await {
-            warn!("failed to shut down duplicate thread {thread_id}: {err}");
+            warn!(%thread_id, %err, %startup_error, "failed to shut down rejected thread");
         }
-        Err(CodexErr::InvalidRequest(format!(
-            "thread {thread_id} is already running"
-        )))
+        Err(CodexErr::InvalidRequest(startup_error))
     }
 
     pub(crate) fn notify_thread_created(&self, thread_id: ThreadId) {

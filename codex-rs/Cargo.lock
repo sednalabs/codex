@@ -2102,6 +2102,7 @@ dependencies = [
  "eventsource-stream",
  "futures",
  "http 1.4.0",
+ "log",
  "pretty_assertions",
  "rcgen",
  "regex-lite",
@@ -2136,6 +2137,7 @@ dependencies = [
  "codex-analytics",
  "codex-app-server-daemon",
  "codex-app-server-protocol",
+ "codex-app-server-remote-client",
  "codex-app-server-transport",
  "codex-arg0",
  "codex-aws-auth",
@@ -2251,7 +2253,7 @@ dependencies = [
  "codex-api",
  "codex-app-server",
  "codex-app-server-protocol",
- "codex-app-server-transport",
+ "codex-app-server-remote-client",
  "codex-arg0",
  "codex-backend-client",
  "codex-cloud-client",
@@ -2265,7 +2267,6 @@ dependencies = [
  "codex-protocol",
  "codex-uds",
  "codex-utils-absolute-path",
- "codex-utils-rustls-provider",
  "color-eyre",
  "futures",
  "pretty_assertions",
@@ -2316,12 +2317,12 @@ name = "codex-app-server-protocol"
 version = "0.166.0"
 dependencies = [
  "anyhow",
+ "base64 0.22.1",
  "codex-app-server-protocol-noop-macros",
  "codex-experimental-api-macros",
  "codex-extension-items",
  "codex-history",
  "codex-protocol",
- "codex-protocol-test-support",
  "codex-rollout",
  "codex-secrets",
  "codex-shell-command",
@@ -2349,6 +2350,25 @@ dependencies = [
 [[package]]
 name = "codex-app-server-protocol-noop-macros"
 version = "0.166.0"
+
+[[package]]
+name = "codex-app-server-remote-client"
+version = "0.0.0"
+dependencies = [
+ "codex-app-server-protocol",
+ "codex-uds",
+ "codex-utils-absolute-path",
+ "codex-utils-rustls-provider",
+ "futures",
+ "pretty_assertions",
+ "serde",
+ "serde_json",
+ "tokio",
+ "tokio-tungstenite",
+ "tracing",
+ "url",
+ "zstd 0.13.3",
+]
 
 [[package]]
 name = "codex-app-server-test-client"
@@ -2383,6 +2403,7 @@ dependencies = [
  "chrono",
  "codex-api",
  "codex-app-server-protocol",
+ "codex-app-server-remote-client",
  "codex-config",
  "codex-core",
  "codex-features",
@@ -2418,7 +2439,6 @@ dependencies = [
  "url",
  "uuid",
  "wiremock",
- "zstd 0.13.3",
 ]
 
 [[package]]
@@ -2604,6 +2624,7 @@ dependencies = [
  "app_test_support",
  "assert_cmd",
  "assert_matches",
+ "base64 0.22.1",
  "chrono",
  "clap",
  "clap_complete",
@@ -2751,11 +2772,13 @@ dependencies = [
  "codex-backend-client",
  "codex-config",
  "codex-core",
+ "codex-exec-server",
  "codex-http-client",
  "codex-keyring-store",
  "codex-login",
  "codex-otel",
  "codex-protocol",
+ "codex-rmcp-client",
  "hmac 0.12.1",
  "pretty_assertions",
  "serde",
@@ -2840,11 +2863,11 @@ version = "0.166.0"
 dependencies = [
  "codex-code-mode-protocol",
  "codex-http-client",
- "codex-install-context",
  "codex-otel",
  "codex-protocol",
  "futures",
  "http-body-util",
+ "opentelemetry",
  "pretty_assertions",
  "prost",
  "rand 0.9.3",
@@ -2868,6 +2891,7 @@ dependencies = [
  "codex-code-mode",
  "codex-code-mode-protocol",
  "codex-code-mode-runtime",
+ "codex-core",
  "codex-http-client",
  "codex-otel",
  "codex-otel-trace-websocket",
@@ -2939,7 +2963,7 @@ version = "0.166.0"
 dependencies = [
  "anyhow",
  "base64 0.22.1",
- "codex-execpolicy",
+ "codex-execpolicy-rules",
  "codex-features",
  "codex-file-system",
  "codex-git-utils",
@@ -3117,6 +3141,8 @@ dependencies = [
  "codex-state",
  "codex-terminal-detection",
  "codex-test-binary-support",
+ "codex-thread-context-ids",
+ "codex-thread-context-ids-test-support",
  "codex-thread-store",
  "codex-tools",
  "codex-user-input",
@@ -3521,8 +3547,8 @@ name = "codex-execpolicy"
 version = "0.166.0"
 dependencies = [
  "anyhow",
- "caseless",
  "clap",
+ "codex-execpolicy-rules",
  "codex-utils-absolute-path",
  "multimap",
  "pretty_assertions",
@@ -3533,6 +3559,18 @@ dependencies = [
  "tempfile",
  "thiserror 2.0.18",
  "tokio",
+]
+
+[[package]]
+name = "codex-execpolicy-rules"
+version = "0.0.0"
+dependencies = [
+ "caseless",
+ "codex-utils-absolute-path",
+ "multimap",
+ "serde",
+ "shlex",
+ "thiserror 2.0.18",
  "unicode-normalization",
 ]
 
@@ -3771,6 +3809,8 @@ dependencies = [
  "codex-history",
  "codex-protocol",
  "codex-protocol-test-support",
+ "codex-thread-context-ids",
+ "codex-thread-context-ids-test-support",
  "codex-utils-output-truncation",
  "pretty_assertions",
  "serde",
@@ -3798,6 +3838,7 @@ dependencies = [
  "codex-protocol-test-support",
  "codex-rmcp-client",
  "codex-shell-command",
+ "codex-thread-context-ids",
  "codex-utils-output-truncation",
  "codex-utils-path-uri",
  "codex-utils-string",
@@ -3839,6 +3880,8 @@ dependencies = [
  "codex-protocol",
  "codex-protocol-test-support",
  "codex-runtime-agent-instance",
+ "codex-thread-context-ids",
+ "codex-thread-context-ids-test-support",
  "codex-utils-cargo-bin",
  "codex-websocket-client",
  "core_test_support",
@@ -3904,7 +3947,8 @@ version = "0.166.0"
 dependencies = [
  "anyhow",
  "codex-protocol",
- "codex-protocol-test-support",
+ "codex-thread-context-ids",
+ "codex-thread-context-ids-test-support",
  "codex-utils-absolute-path",
  "codex-utils-model-facing-id",
  "pretty_assertions",
@@ -4331,6 +4375,7 @@ dependencies = [
  "codex-secrets",
  "codex-state",
  "codex-terminal-detection",
+ "codex-thread-context-ids",
  "codex-utils-absolute-path",
  "codex-utils-output-truncation",
  "codex-utils-template",
@@ -4630,6 +4675,7 @@ dependencies = [
  "codex-http-headers-helper",
  "codex-protocol",
  "codex-utils-absolute-path",
+ "codex-utils-cargo-bin",
  "codex-utils-process",
  "codex-utils-stream-parser",
  "codex-utils-string",
@@ -4717,7 +4763,7 @@ dependencies = [
  "anyhow",
  "codex-collaboration-mode-templates",
  "codex-context-fragments",
- "codex-execpolicy",
+ "codex-execpolicy-rules",
  "codex-git-utils",
  "codex-guardian-context",
  "codex-protocol",
@@ -4737,7 +4783,7 @@ dependencies = [
  "chardetng",
  "chrono",
  "codex-async-utils",
- "codex-execpolicy",
+ "codex-execpolicy-rules",
  "codex-extension-items",
  "codex-http-client",
  "codex-network-proxy",
@@ -4781,7 +4827,6 @@ name = "codex-protocol-test-support"
 version = "0.166.0"
 dependencies = [
  "codex-protocol",
- "uuid",
 ]
 
 [[package]]
@@ -5018,7 +5063,6 @@ dependencies = [
  "tempfile",
  "tokio",
  "tracing",
- "url",
  "which 8.0.0",
 ]
 
@@ -5195,6 +5239,23 @@ dependencies = [
 ]
 
 [[package]]
+name = "codex-thread-context-ids"
+version = "0.0.0"
+dependencies = [
+ "codex-protocol",
+ "codex-thread-context-ids-test-support",
+ "pretty_assertions",
+ "uuid",
+]
+
+[[package]]
+name = "codex-thread-context-ids-test-support"
+version = "0.0.0"
+dependencies = [
+ "codex-thread-context-ids",
+]
+
+[[package]]
 name = "codex-thread-manager-sample"
 version = "0.166.0"
 dependencies = [
@@ -5217,9 +5278,9 @@ dependencies = [
  "codex-install-context",
  "codex-otel",
  "codex-protocol",
- "codex-protocol-test-support",
  "codex-rollout",
  "codex-state",
+ "codex-thread-context-ids-test-support",
  "codex-utils-absolute-path",
  "codex-utils-path",
  "codex-utils-path-uri",
@@ -16347,7 +16408,7 @@ dependencies = [
 [[package]]
 name = "tokio-tungstenite"
 version = "0.28.0"
-source = "git+https://github.com/openai-oss-forks/tokio-tungstenite?rev=7447c427513cfe685f236e1ac0513c4ea3dd9c0b#7447c427513cfe685f236e1ac0513c4ea3dd9c0b"
+source = "git+https://github.com/openai-oss-forks/tokio-tungstenite?rev=7a920470d62138955446b64220c7609e46ad770e#7a920470d62138955446b64220c7609e46ad770e"
 dependencies = [
  "futures-util",
  "log",
@@ -16841,7 +16902,7 @@ dependencies = [
 [[package]]
 name = "tungstenite"
 version = "0.27.0"
-source = "git+https://github.com/openai-oss-forks/tungstenite-rs?rev=bc589d684755a8c02da0fc7e58d0861cbfc306f1#bc589d684755a8c02da0fc7e58d0861cbfc306f1"
+source = "git+https://github.com/openai-oss-forks/tungstenite-rs?rev=e19950ef7828cb311e6d51a6bedcebf0192e055c#e19950ef7828cb311e6d51a6bedcebf0192e055c"
 dependencies = [
  "bytes",
  "data-encoding",

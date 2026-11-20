@@ -349,6 +349,7 @@ async fn refresh_retires_a_still_connected_old_executor() -> Result<()> {
     ));
     let cache = crate::ExecutorCapabilityDiscoveryV2Cache::default();
     let request = crate::DiscoverV2CapabilitiesRequest {
+        force_reload: false,
         cwd: codex_utils_path_uri::PathUri::from_host_native_path(&root)?,
         sandbox: None,
     };
@@ -697,8 +698,13 @@ async fn failed_replacement_connection_keeps_old_handles_retired_and_get_retries
         drop(unavailable.accept().await.unwrap());
     }));
     *registry.target.lock().unwrap() = target;
+    // The refresh now exhausts the transport retry window. Resume time to let it expire,
+    // then freeze it again for the following Noise handshake.
+    tokio::time::resume();
+    let refresh = client.refresh_connection().await;
+    tokio::time::pause();
     assert!(matches!(
-        client.refresh_connection().await,
+        refresh,
         Err(ExecServerError::ConnectionAttempt(_))
     ));
     assert!(original.inner.retired.is_cancelled());

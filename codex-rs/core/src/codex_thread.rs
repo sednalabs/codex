@@ -90,6 +90,7 @@ use codex_user_input::ResolvedUserInput;
 use codex_utils_absolute_path::AbsolutePathBuf;
 use codex_utils_path_uri::LegacyAppPathString;
 use codex_utils_path_uri::PathUri;
+use futures::future::BoxFuture;
 use rmcp::model::ReadResourceRequestParams;
 use std::any::Any;
 use std::path::PathBuf;
@@ -201,7 +202,7 @@ pub enum ConfigRefreshOutcome {
     Published,
     /// The captured owner changed; the caller must reload before retrying.
     Stale,
-    /// Resolution failed and a configuration disabling enterprise MCP was published.
+    /// Resolution failed. The scope may still have published a fail-closed configuration.
     Rejected,
 }
 
@@ -209,6 +210,21 @@ pub use codex_guardian_context::GuardianRootMessage;
 
 pub use codex_guardian_reviewer::GuardianAuthorizationVersion;
 pub use codex_guardian_reviewer::GuardianRootSnapshot;
+
+/// An atomic snapshot of admission for the thread's current turn slot.
+///
+/// A slot may be reserved before Core assigns it a turn ID. This snapshot does
+/// not include work draining after an abort removes the slot.
+#[derive(Clone, Debug, Eq, PartialEq)]
+#[must_use]
+pub enum TurnAdmissionState {
+    /// Core does not own a current turn slot.
+    Idle,
+    /// The slot is reserved, but execution has not been admitted.
+    Pending { turn_id: Option<String> },
+    /// Execution was admitted; the slot remains admitted through finishing.
+    Admitted { turn_id: String },
+}
 
 pub struct CodexThread {
     pub(crate) session: Arc<Session>,
@@ -412,9 +428,9 @@ impl CodexThread {
         &self.session.services.thread_extension_data
     }
 
-    /// Generator used for response items produced on behalf of this thread.
-    pub fn item_id_generator(&self) -> &codex_protocol::ItemIdGenerator {
-        &self.session.item_id_generator
+    /// Allocates context IDs on behalf of this thread.
+    pub fn context_ids(&self) -> &codex_thread_context_ids::ThreadContextIds {
+        &self.session.context_ids
     }
 
     /// Returns tools from this thread’s ready, unshared Apps MCP client.
@@ -895,6 +911,22 @@ impl CodexThread {
         self.session.active_turn.lock().await.is_some()
     }
 
+    /// Returns admission and turn identity from the same current-slot snapshot.
+    pub async fn turn_admission_state(&self) -> TurnAdmissionState {
+        let active = self.session.active_turn.lock().await;
+        match active.as_ref() {
+            None => TurnAdmissionState::Idle,
+            Some(turn) => match &turn.turn_id {
+                Some(turn_id) if turn.admitted => TurnAdmissionState::Admitted {
+                    turn_id: turn_id.clone(),
+                },
+                turn_id => TurnAdmissionState::Pending {
+                    turn_id: turn_id.clone(),
+                },
+            },
+        }
+    }
+
     /// Returns the current turn ID, including while its stop hook runs.
     pub async fn current_turn_id(&self) -> Option<String> {
         self.session
@@ -1135,7 +1167,15 @@ impl CodexThread {
     /// Inject raw Responses items. Plaintext agent-mail batches in a native MAv2
     /// runtime use queue-only mailbox delivery and its existing wake policy.
     /// Other batches retain history-injection semantics.
-    pub async fn inject_response_items(&self, items: Vec<ResponseItem>) -> CodexResult<()> {
+    pub fn inject_response_items(
+        &self,
+        items: Vec<ResponseItem>,
+    ) -> BoxFuture<'_, CodexResult<()>> {
+        // Keep the concrete future in core so callers don't each compile their own copy.
+        Box::pin(self.inject_response_items_inner(items))
+    }
+
+    async fn inject_response_items_inner(&self, items: Vec<ResponseItem>) -> CodexResult<()> {
         let config = self.session.get_config().await;
         // Native mail can represent this shape without changing its payload. Keep
         // mixed history and multipart/encrypted items on the raw injection path.
@@ -1245,22 +1285,27 @@ impl CodexThread {
             ));
         }
         let items: Vec<InjectedResponseItem> = items.into_iter().map(Into::into).collect();
+        for item in &items {
+            validate_injected_response_item(&item.item)?;
+        }
         let mut indexed_items = items.iter().enumerate();
         while let Some((index, item)) = indexed_items.next() {
-            validate_injected_response_item(&item.item)?;
-            if item.retention != ItemRetention::Always {
+            if matches!(
+                item.retention,
+                ItemRetention::Unspecified | ItemRetention::Default
+            ) {
                 continue;
             }
             let needs_call = crate::tools::output_call_id(&item.item).is_some()
                 && !matches!(&item.item, ResponseItem::ToolSearchOutput { execution, .. } if execution == "server");
             if (crate::tools::input_call_id(&item.item).is_some() || needs_call)
                 && !indexed_items.next().is_some_and(|(_, output)| {
-                    output.retention == ItemRetention::Always
+                    output.retention == item.retention
                         && crate::tools::is_matching_tool_output(&item.item, &output.item)
                 })
             {
                 return Err(CodexErr::InvalidRequest(format!(
-                    "items[{index}]: retained tool calls and outputs must be adjacent in the same request, call first, with both marked always"
+                    "items[{index}]: retained tool calls and outputs must be adjacent in the same request, call first, with the same retention policy"
                 )));
             }
         }
@@ -1562,6 +1607,13 @@ impl CodexThread {
                 .refresh_mcp_config(expected_config, next_config),
         )
         .await
+    }
+
+    /// Invalidates this thread's executor DiscoveryV2 inventory. The next discovery
+    /// consumer reloads it; unchanged turns and other reads share the cached inventory.
+    /// Environment/session, cwd, and sandbox changes also trigger discovery independently.
+    pub fn invalidate_executor_discovery(&self) {
+        self.session.invalidate_executor_discovery();
     }
 
     /// Refreshes this thread's Apps tools before returning their runtime state.

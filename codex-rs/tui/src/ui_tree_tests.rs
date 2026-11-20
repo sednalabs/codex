@@ -517,7 +517,7 @@ fn whitespace_collapses_across_styled_leaves() {
 }
 
 #[test]
-fn reads_row_wrap_without_moving_existing_positional_props() {
+fn reads_row_layout_without_moving_existing_positional_props() {
     let row = |props| json!({"type":"row","props":props,"children":["ok"]});
     assert_eq!(
         parse(row(json!([1, "red"]))).unwrap(),
@@ -530,6 +530,258 @@ fn reads_row_wrap_without_moving_existing_positional_props() {
     for invalid in [json!("wrap-reverse"), json!(null), json!({"wrap":null})] {
         assert!(parse(row(json!({"gap":0,"wrap":invalid}))).is_err());
     }
+    assert_eq!(
+        parse(row(json!([1, "red", "wrap"]))).unwrap(),
+        parse(row(json!({"gap":1,"background":"red","wrap":"wrap"}))).unwrap()
+    );
+    let explicit = row(json!({"gap":1,"background":"red","wrap":"wrap","justify":"start"}));
+    let positional = parse(row(json!([1, "red", "wrap", "start"]))).unwrap();
+    assert_eq!(parse(explicit.clone()).unwrap(), positional);
+    assert_eq!(serde_json::to_value(positional).unwrap(), explicit);
+    for invalid in [json!("right"), json!("space-between"), json!(null)] {
+        assert!(parse(row(json!({"gap":0,"justify":invalid}))).is_err());
+    }
+}
+
+#[test]
+fn between_keeps_statusline_groups_at_opposite_edges_when_resized() {
+    let group = |fields: [&str; 2]| {
+        let children = fields.map(|field| json!({"type": "text", "children": [field]}));
+        json!({"type": "row", "props": {"gap": 1}, "children": children})
+    };
+    let node = tree(json!({
+        "type": "row", "props": {"gap": 1, "justify": "between", "wrap": "wrap"},
+        "children": [group(["界", "git"]), group(["75%", "2k"])]
+    }));
+    let wide = Size::new(20, 2);
+    assert_eq!(node.measure(wide), Size::new(20, 1));
+    insta::assert_snapshot!(painted_rows(&node, wide).join("\n"), @"界 git        75% 2k");
+    assert_eq!(painted_rows(&node, Size::new(13, 2)), ["界 git 75% 2k"]);
+    assert_eq!(painted_rows(&node, Size::new(12, 2)), ["界 git", "75% 2k"]);
+}
+
+#[test]
+fn center_and_end_align_each_wrapped_line_with_its_requested_gap() {
+    let layout = |justify| {
+        let children = ["界", "bb", "xyz"].map(|s| json!({"type":"text","children":[s]}));
+        let node = tree(
+            json!({"type":"row","props":{"gap":1,"wrap":"wrap","justify":justify},
+            "children":children}),
+        );
+        painted_rows(&node, Size::new(8, 2))
+            .iter()
+            .map(|line| format!("|{line}|"))
+            .collect::<Vec<_>>()
+            .join("\n")
+    };
+    insta::assert_snapshot!(layout("center"), @r"
+    | 界 bb|
+    |  xyz|
+    ");
+    insta::assert_snapshot!(layout("end"), @r"
+    |   界 bb|
+    |     xyz|
+    ");
+}
+
+#[test]
+fn end_alignment_uses_spare_padding_for_vertical_overflow() {
+    let node = tree(json!({
+        "type": "row", "props": {"gap": 1, "justify": "end", "wrap": "wrap"},
+        "children": ["界", {"type": "text", "children": ["12345678"]}]
+    }));
+    let bounds = Size::new(8, 1);
+    assert_eq!(node.measure(bounds), bounds);
+    insta::assert_snapshot!(format!("|{}|", painted_rows(&node, bounds).join("\n")), @"|     界…|");
+    assert_eq!(
+        painted_rows(&node, Size::new(8, 2)),
+        ["      界", "12345678"]
+    );
+}
+
+#[test]
+fn center_and_end_place_consecutive_strings_as_one_item() {
+    let layout = |justify| {
+        let row =
+            json!({"type":"row","props":{"gap":1,"justify":justify},"children":["L",null,"R"]});
+        let outer = json!({"type":"row","props":{"gap":0},"children":[row]});
+        [row, outer].map(|row| painted_rows(&tree(row), Size::new(10, 1)).join("\n"))
+    };
+    assert_eq!(layout("center"), ["    LR", "LR"]);
+    assert_eq!(layout("end"), ["        LR", "LR"]);
+}
+
+#[test]
+fn aligned_rows_pad_visible_content_and_keep_link_targets_on_their_text() {
+    let href = "https://example.com/pr";
+    for (justify, expected) in [("center", "  PR"), ("end", "     PR")] {
+        let row = |child: Value| {
+            tree(json!({"type":"row","props":{"gap":0,"justify":justify},"children":[child]}))
+        };
+        assert_eq!(row(json!("\n")).measure(Size::new(5, 2)), Size::new(0, 1));
+        assert_eq!(
+            painted_rows(&row(json!("abcdef")), Size::new(3, 1)),
+            ["ab…"]
+        );
+        let link = row(json!({"type":"link","props":{"href":href},"children":["PR"]}));
+        assert_eq!(
+            painted_rows(&link, Size::new(7, 1)),
+            [linked_columns(
+                expected,
+                expected.len() - 2..expected.len(),
+                href
+            )]
+        );
+    }
+}
+
+#[test]
+fn offscreen_blank_lines_count_toward_the_height_of_a_nested_row() {
+    for justify in ["center", "end"] {
+        let node = tree(
+            json!({"type":"row","props":{"gap":0,"wrap":"wrap"},"children":[
+                {"type":"row","props":{"gap":6,"justify":justify},"children":[
+                    {"type":"text","children":[""]}, {"type":"text","children":["\n\nB"]}
+                ]}, "ok"
+            ]}),
+        );
+        assert_eq!(painted_rows(&node, Size::new(5, 1)), ["…"]);
+        assert_eq!(painted_rows(&node, Size::new(5, 2)), ["", "…"]);
+    }
+}
+
+#[test]
+fn nested_aligned_rows_leave_authored_blank_lines_unpainted() {
+    let area = Rect::new(0, 0, 8, 2);
+    for justify in ["center", "end"] {
+        let row = |children: Value| {
+            tree(
+                json!({"type":"row","props":{"gap":0,"justify":justify,"background":"red"},
+                "children":[{"type":"row","props":{"gap":1},"children":children}]}),
+            )
+        };
+        assert_eq!(
+            row(json!(["\n", "\n"])).measure(area.as_size()),
+            Size::new(0, 1)
+        );
+        let mut buf = Buffer::empty(area);
+        row(json!(["A\n\n", "B\n\n"])).render(
+            area,
+            &Theme::default(),
+            &mut buf,
+            /*plain_style*/ None,
+        );
+        assert_eq!(buf[(0, 0)].bg, ratatui::style::Color::Red);
+        for x in 0..area.width {
+            assert_eq!(buf[(x, 1)], ratatui::buffer::Cell::default());
+        }
+    }
+}
+
+#[test]
+fn start_and_between_keep_their_gaps_before_blank_children() {
+    let area = Rect::new(0, 0, 8, 1);
+    for (justify, blank, visible) in [("start", 1, 2), ("between", 8, 8)] {
+        for (first, expected) in [("\n", blank), ("A", visible)] {
+            let node = tree(
+                json!({"type":"row","props":{"gap":1,"justify":justify,"background":"red"},
+                "children":[first,{"type":"text","children":["\n"]}]}),
+            );
+            assert_eq!(node.measure(area.as_size()), Size::new(expected, 1));
+            let mut buf = Buffer::empty(area);
+            node.render(area, &Theme::default(), &mut buf, /*plain_style*/ None);
+            for x in 0..expected {
+                assert_eq!(buf[(x, 0)].bg, ratatui::style::Color::Red);
+            }
+        }
+    }
+}
+
+#[test]
+fn a_link_around_an_aligned_row_keeps_its_padding_unlinked() {
+    let href = "https://example.com/pr";
+    let area = Rect::new(0, 0, 8, 1);
+    for (justify, leading) in [("center", 2), ("end", 5)] {
+        let node = tree(json!({"type":"link","props":{"href":href},"children":[
+            {"type":"row","props":{"gap":1,"justify":justify,"background":"red"},
+             "children":["P",{"type":"text","children":["R"]}]}
+        ]}));
+        let mut buf = Buffer::empty(area);
+        node.render(area, &Theme::default(), &mut buf, /*plain_style*/ None);
+        for x in 0..leading {
+            let cell = &buf[(x, 0)];
+            assert_eq!(cell.symbol(), " ");
+            assert_eq!(cell.bg, ratatui::style::Color::Red);
+            assert!(cell.modifier.is_empty());
+        }
+        assert_eq!(
+            painted_rows(&node, area.as_size()),
+            [format!(
+                "{}{}",
+                " ".repeat(usize::from(leading)),
+                linked_columns("P R", 0..3, href)
+            )]
+        );
+    }
+}
+
+#[test]
+fn between_distributes_indivisible_cells_on_each_wrapped_line() {
+    let children = ["a", "b", "c", "longest"].map(|s| json!({"type": "text", "children": [s]}));
+    let node = tree(json!({
+        "type": "row", "props": {"gap": 1, "justify": "between", "wrap": "wrap"},
+        "children": children
+    }));
+    assert_eq!(
+        painted_rows(&node, Size::new(8, 2)),
+        ["a   b  c", "longest"]
+    );
+}
+
+#[test]
+fn explicit_start_groups_bare_strings_and_omitted_justify_keeps_authored_gaps() {
+    let children = json!(["L", null, "R", {"type":"text","children":["end"]}]);
+    let row = |props| tree(json!({"type":"row","props":props,"children":children}));
+    let size = Size::new(12, 1);
+    assert_eq!(painted_rows(&row(json!({"gap":1})), size), ["L R end"]);
+    assert_eq!(
+        painted_rows(&row(json!({"gap":1,"justify":"start"})), size),
+        ["LR end"]
+    );
+}
+
+#[test]
+fn between_matches_web_for_root_and_nested_rows() {
+    let bounds = Size::new(10, 1);
+    let text = |s: &str| json!({"type": "text", "children": [s]});
+    let mut rows = vec!["children  |root      |nested    |".to_string()];
+    for (label, children) in [
+        ("strings", json!(["L", "R"])),
+        ("elements", json!([text("L"), text("R")])),
+        ("mixed", json!(["L", null, "M", text("R")])),
+        ("empty", json!([text(""), text("R")])),
+    ] {
+        let inner =
+            json!({"type": "row", "props": {"gap": 0, "justify": "between"}, "children": children});
+        let outer = json!({"type": "row", "props": {"gap": 0}, "children": [inner]});
+        let [root, nested] = [inner, outer].map(|row| painted_rows(&tree(row), bounds).join("\n"));
+        rows.push(format!("{label:<10}|{root:<10}|{nested:<10}|"));
+    }
+    insta::assert_snapshot!(rows.join("\n"), @r"
+    children  |root      |nested    |
+    strings   |LR        |LR        |
+    elements  |L        R|LR        |
+    mixed     |LM       R|LMR       |
+    empty     |         R|R         |
+    ");
+}
+
+#[test]
+fn between_rounds_each_fractional_position_to_the_nearest_cell() {
+    let children = ["A", "B", "C", "D", "E", "F"].map(|s| json!({"type":"text","children":[s]}));
+    let node =
+        tree(json!({"type":"row","props":{"gap":0,"justify":"between"},"children":children}));
+    insta::assert_snapshot!(painted_rows(&node, Size::new(14, 1)).join("\n"), @"A  B C  D E  F");
 }
 
 #[test]
@@ -575,8 +827,12 @@ fn styled_text_wraps_in_the_space_its_nowrap_row_assigns() {
 
 #[test]
 fn shrinking_a_hyphenated_word_reserves_the_siblings_column() {
-    let node = tree(json!({"type":"row","props":{"gap":1},"children":["aa-bb", "!"]}));
-    assert_eq!(painted_rows(&node, Size::new(6, 2)), ["aa-  !", "bb"]);
+    for props in [json!({"gap":1}), json!({"gap":1,"justify":"between"})] {
+        let node = tree(json!({"type":"row","props":props,"children":[
+            "aa-bb", {"type":"text","children":["!"]}
+        ]}));
+        assert_eq!(painted_rows(&node, Size::new(6, 2)), ["aa-  !", "bb"]);
+    }
 }
 
 #[test]

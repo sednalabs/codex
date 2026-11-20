@@ -86,7 +86,7 @@ async fn custom_statusline_requests_headline_and_billing_with_no_native_items() 
             server: "fixture".into(),
             tool: "line".into(),
         })));
-    chat.set_feature_enabled(Feature::TuiExtensionsStatusLine, /*enabled*/ true);
+    chat.statusline_feature_enabled = true;
     chat.refresh_status_line();
 
     let events: Vec<_> = std::iter::from_fn(|| rx.try_recv().ok()).collect();
@@ -111,14 +111,13 @@ async fn statusline_reader_waits_for_the_displayed_thread_and_keeps_its_result()
     chat.local_settings.tui.status_line = Some(Vec::new());
     chat.thread_id = Some(ThreadId::new());
     chat.local_settings.tui.status_line_provider = Some(selected.clone());
-    chat.set_feature_enabled(Feature::TuiExtensionsStatusLine, /*enabled*/ false);
     chat.refresh_status_line();
     assert!(read_events(&mut rx).is_empty());
 
     chat.local_settings.tui.status_line_provider = Some(Box::new(StatusLineSelection::Builtin(
         BuiltinStatusLine::Default,
     )));
-    chat.set_feature_enabled(Feature::TuiExtensionsStatusLine, /*enabled*/ true);
+    chat.statusline_feature_enabled = true;
     chat.refresh_status_line();
     assert!(read_events(&mut rx).is_empty());
     chat.thread_id = None;
@@ -169,12 +168,12 @@ async fn statusline_reader_waits_for_the_displayed_thread_and_keeps_its_result()
     assert_eq!(footer(&chat).as_deref(), Some("Initializing…"));
     let token = resumed.token;
     chat.primary_environment_cwd = Some(crate::session_state::EnvironmentCwd {
-        path: LegacyAppPathString::from_path(chat.config.cwd.join("executor-checkout").as_path()),
+        path: chat.config.cwd.join("executor-checkout").into(),
         is_server_local: false,
     });
     chat.refresh_status_line();
     assert!(read_events(&mut rx).is_empty());
-    chat.current_cwd = Some(chat.config.cwd.join("another-project").to_path_buf());
+    chat.current_cwd = chat.config.cwd.join("another-project").into();
     let (reply, snapshot) = oneshot::channel();
     chat.handle_statusline_read(
         StatuslineReadEvent {
@@ -224,7 +223,7 @@ impl Reader {
             ThreadParamsMode::Cloud,
         );
         chat.thread_id = Some(ThreadId::new());
-        chat.set_feature_enabled(Feature::TuiExtensionsStatusLine, /*enabled*/ true);
+        chat.statusline_feature_enabled = true;
         chat.local_settings.tui.status_line_provider =
             Some(Box::new(StatusLineSelection::Mcp(StatusLineProviderId {
                 server: "fixture".into(),

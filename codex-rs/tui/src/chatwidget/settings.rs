@@ -534,12 +534,42 @@ impl ChatWidget {
 
     fn apply_thread_settings(&mut self, mut settings: ThreadSettings) {
         self.invalidate_permission_discovery();
-        let cwd_changed = self.config.cwd != settings.cwd;
         if let Some(environments) = &settings.environments {
             self.primary_environment_cwd =
                 crate::session_state::primary_environment_cwd(environments);
         }
-        self.apply_thread_settings_cwd(settings.cwd.clone());
+        let Ok(cwd) = crate::app_server_session::decode_thread_cwd(
+            &settings.cwd,
+            self.app_server_path_convention,
+        ) else {
+            tracing::warn!("Invalid cwd in thread settings");
+            return;
+        };
+        let permission_profile = match settings.sandbox_policy.permission_profile_for_cwd(&cwd) {
+            Ok(profile) => profile,
+            Err(err) => {
+                tracing::warn!(%err, "Invalid sandbox policy in thread settings");
+                return;
+            }
+        };
+        let cwd_changed = self.current_cwd != cwd;
+        self.status_line_project_root_name_cache = None;
+        if let Ok(local) = cwd.to_abs_path()
+            && local != self.config.cwd
+        {
+            self.config.cwd = local;
+            self.permission_discovery = None;
+        }
+        crate::session_state::retarget_workspace_root(
+            &mut self.current_workspace_roots,
+            &self.current_cwd,
+            &cwd,
+        );
+        crate::session_state::sync_local_workspace_roots(
+            &mut self.config,
+            &self.current_workspace_roots,
+        );
+        self.current_cwd = cwd;
         self.config.model_provider_id = settings.model_provider.clone();
         self.set_daybreak_enabled(self.daybreak_enabled);
         self.set_service_tier(settings.service_tier.clone());
@@ -555,12 +585,11 @@ impl ChatWidget {
         }
         self.set_approvals_reviewer(settings.approvals_reviewer.to_core());
 
-        let permission_profile = PermissionProfile::from_legacy_sandbox_policy_for_cwd(
-            &settings.sandbox_policy.to_core(),
-            settings.cwd.as_path(),
-        );
         let permission_snapshot = PermissionProfileSnapshot::from_session_snapshot(
-            permission_profile,
+            crate::session_state::display_profile_for_roots(
+                permission_profile,
+                &self.current_workspace_roots,
+            ),
             settings.active_permission_profile.take().map(Into::into),
         );
         if let Err(err) = self
@@ -607,30 +636,6 @@ impl ChatWidget {
         }
         self.refresh_plugin_mentions();
         self.request_redraw();
-    }
-
-    fn apply_thread_settings_cwd(&mut self, cwd: AbsolutePathBuf) {
-        let previous_cwd = std::mem::replace(&mut self.config.cwd, cwd.clone());
-        if previous_cwd != cwd {
-            self.permission_discovery = None;
-        }
-        self.current_cwd = Some(cwd.to_path_buf());
-        self.status_line_project_root_name_cache = None;
-
-        if !self.config.workspace_roots.contains(&previous_cwd) {
-            return;
-        }
-
-        let previous_roots = std::mem::take(&mut self.config.workspace_roots);
-        self.config.workspace_roots.push(cwd);
-        for root in previous_roots {
-            if root != previous_cwd && !self.config.workspace_roots.contains(&root) {
-                self.config.workspace_roots.push(root);
-            }
-        }
-        self.config
-            .permissions
-            .set_workspace_roots(self.config.workspace_roots.clone());
     }
 
     pub(crate) fn set_effective_collaboration_mode(&mut self, mode: CollaborationMode) {

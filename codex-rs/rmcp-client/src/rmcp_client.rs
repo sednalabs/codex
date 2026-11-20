@@ -15,6 +15,7 @@ use std::time::Duration;
 use std::time::Instant;
 
 use crate::AuthProviderResolver;
+use crate::local_stdio_transport::DiscoveryOutcome;
 use anyhow::Context;
 use anyhow::Result;
 use anyhow::anyhow;
@@ -250,6 +251,19 @@ impl Drop for ElicitationPauseGuard {
     }
 }
 
+/// Bounds one handshake attempt, or leaves it unbounded when no timeout was configured.
+async fn handshake_timeout<T>(
+    timeout: Option<Duration>,
+    handshake: impl Future<Output = T>,
+) -> Result<T> {
+    match timeout {
+        Some(duration) => time::timeout(duration, handshake)
+            .await
+            .with_context(|| format!("timed out handshaking with MCP server after {duration:?}")),
+        None => Ok(handshake.await),
+    }
+}
+
 async fn active_time_timeout<T, Fut>(
     duration: Duration,
     mut pause_state: watch::Receiver<bool>,
@@ -463,6 +477,34 @@ impl RmcpClient {
     /// Returns the protocol compatibility policy captured when this client was created.
     pub fn protocol_mode(&self) -> McpProtocolMode {
         self.protocol_mode
+    }
+
+    /// Matches the registered HTTP route and header configuration after dispatch.
+    /// A client that selected stored OAuth during session recovery no longer qualifies.
+    pub fn matches_result_body_source(
+        &self,
+        require_runtime_auth: bool,
+        expected_url: &str,
+        expected_headers: Option<&HashMap<String, String>>,
+        expected_env_headers: Option<&HashMap<String, String>>,
+    ) -> bool {
+        let TransportRecipe::StreamableHttp {
+            url,
+            auth_provider,
+            bearer_token: None,
+            http_headers,
+            env_http_headers,
+            pinned_credential_store,
+            ..
+        } = &self.transport_recipe
+        else {
+            return false;
+        };
+        (!require_runtime_auth || auth_provider.is_some())
+            && pinned_credential_store.get().is_none()
+            && url == expected_url
+            && http_headers.as_ref() == expected_headers
+            && env_http_headers.as_ref() == expected_env_headers
     }
 
     pub async fn new_in_process_client(
@@ -1686,11 +1728,37 @@ impl RmcpClient {
             ),
         };
 
+        let started = time::Instant::now();
         let handshake = async {
-            let mut result = transport.await;
-            if let (Some((mut reply, process)), Err(error)) = (discovery, &result)
-                && let Some(mode) = stdio_handshake::restart_mode(error, reply.try_recv().ok())?
-            {
+            let initial = handshake_timeout(timeout, transport).await;
+            let mode = if let Some((reply, _)) = discovery.as_mut() {
+                let outcome = reply.try_recv();
+                match &initial {
+                    Ok(Err(error)) => stdio_handshake::restart_mode(error, outcome.ok())?,
+                    Err(_)
+                        if matches!(
+                            outcome,
+                            Ok(DiscoveryOutcome::RetryLegacy)
+                                | Err(tokio::sync::oneshot::error::TryRecvError::Closed)
+                        ) =>
+                    {
+                        Some(McpProtocolMode::Legacy)
+                    }
+                    _ => None,
+                }
+            } else {
+                None
+            };
+            let (Some(mode), Some((_, process))) = (mode, discovery) else {
+                return initial?.map_err(|source| HandshakeError { source }.into());
+            };
+            let retry_timeout = if mode == McpProtocolMode::Legacy {
+                timeout
+            } else {
+                // A modern version re-offer stays within the original deadline.
+                timeout.map(|limit| limit.saturating_sub(started.elapsed()))
+            };
+            handshake_timeout(retry_timeout, async {
                 process
                     .terminate(StdioTermination::Restart)
                     .await
@@ -1706,19 +1774,13 @@ impl RmcpClient {
                     }
                     mode => mode.client_lifecycle(),
                 };
-                result = connect_stdio(fresh, lifecycle).await;
-            }
-            result.map_err(|source| HandshakeError { source }.into())
+                connect_stdio(fresh, lifecycle)
+                    .await
+                    .map_err(|source| HandshakeError { source }.into())
+            })
+            .await?
         };
-        let service_result = match timeout {
-            Some(duration) => time::timeout(duration, handshake)
-                .await
-                .with_context(|| {
-                    format!("timed out handshaking with MCP server after {duration:?}")
-                })
-                .flatten(),
-            None => handshake.await,
-        };
+        let service_result = handshake.await;
         let service = match service_result {
             Ok(service) => service,
             Err(error) => {

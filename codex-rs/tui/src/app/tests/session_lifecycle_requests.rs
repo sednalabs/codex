@@ -50,6 +50,35 @@ use tokio_tungstenite::tungstenite::Message;
 use tokio_tungstenite::tungstenite::error::ProtocolError;
 
 #[tokio::test]
+async fn diff_result_matches_the_server_session_cwd() -> Result<()> {
+    use codex_utils_path_uri::LegacyAppPathString;
+    use codex_utils_path_uri::PathUri;
+
+    let mut app = make_test_app().await;
+    let (client, _commands, _events) =
+        codex_app_server_client::CloudClient::channel(/*capacity*/ 1);
+    let mut server = AppServerSession::new(
+        crate::backend_id::BackendId::new(),
+        codex_app_server_client::AppServerClient::Cloud(client),
+        crate::ThreadParamsMode::Cloud,
+    );
+    let mut tui = crate::tui::test_support::make_test_tui()?;
+    let foreign_cwd = if cfg!(windows) { "/repo" } else { r"D:\repo" };
+    let cwd = PathUri::try_from(LegacyAppPathString::from_string(foreign_cwd))?;
+    let mut session = test_thread_session(ThreadId::new(), app.config.cwd.to_path_buf());
+    session.cwd = cwd.clone();
+    app.chat_widget.handle_thread_session(session);
+    let stale = AppEvent::DiffResult(app.config.cwd.clone().into(), "old diff".into());
+    Box::pin(app.handle_event(&mut tui, &mut server, stale)).await?;
+    assert!(app.overlay.is_none());
+
+    let current = AppEvent::DiffResult(cwd, "current diff".into());
+    Box::pin(app.handle_event(&mut tui, &mut server, current)).await?;
+    assert!(app.overlay.is_some());
+    Ok(())
+}
+
+#[tokio::test]
 async fn cloud_skips_skills_refresh_and_ignores_stale_local_result() -> Result<()> {
     use futures::FutureExt;
 
@@ -74,7 +103,7 @@ async fn cloud_skips_skills_refresh_and_ignores_stale_local_result() -> Result<(
     for event in [
         AppEvent::CodexOp(refresh),
         AppEvent::SkillsListLoaded {
-            cwd,
+            cwd: app.config.cwd.clone().into(),
             result: Err("stale local skills refresh".into()),
         },
     ] {
@@ -391,17 +420,23 @@ async fn cloud_resume_picker_reconciles_admitted_steers() -> Result<()> {
         TurnStatus::InProgress,
         vec![
             commentary.clone(),
+            agent_item("blank-item", "", None),
             agent_item("live-item", "Partial response", None),
+            agent_item("late-directive", "::git-pu", None),
+            agent_item("directive-item", "::git-st", None),
         ],
     );
     ongoing_turn.items[0].completed_at_ms = Some(1);
+    ongoing_turn.items[1].started_at_ms = Some(1);
+    ongoing_turn.items[3].started_at_ms = Some(1);
+    ongoing_turn.items[4].started_at_ms = Some(1);
     let mut original_thread = overview_thread(
         original,
         /*parent_thread_id*/ None,
         "Original",
         ThreadStatus::Idle,
     );
-    original_thread.cwd = app.config.cwd.clone();
+    original_thread.cwd = app.config.cwd.clone().into();
     original_thread.turns = vec![test_turn(
         turn_id,
         TurnStatus::Completed,
@@ -415,7 +450,7 @@ async fn cloud_resume_picker_reconciles_admitted_steers() -> Result<()> {
             active_flags: Vec::new(),
         },
     );
-    other_thread.cwd = app.config.cwd.clone();
+    other_thread.cwd = app.config.cwd.clone().into();
     other_thread.turns = vec![ongoing_turn];
 
     let (client, mut commands, _server_events) =
@@ -570,6 +605,14 @@ async fn cloud_resume_picker_reconciles_admitted_steers() -> Result<()> {
             .collect::<Vec<_>>()
             .join("\n")
     };
+    let rendered_transcript = |app: &App| {
+        app.transcript_cells
+            .iter()
+            .flat_map(|cell| cell.display_lines(/*width*/ 80))
+            .map(|line| line.to_string())
+            .collect::<Vec<_>>()
+            .join("\n")
+    };
     let mut tui = crate::tui::test_support::make_test_tui()?;
     while events.try_recv().is_ok() {}
     for thread_id in [other, original] {
@@ -592,8 +635,68 @@ async fn cloud_resume_picker_reconciles_admitted_steers() -> Result<()> {
             • Commentary response
             • Partial response
             ");
+            assert!(rendered_transcript(&app).contains("::git-st"));
+            assert_eq!(app.chat_widget.last_agent_markdown_text(), Some("::git-st"));
+            let directive = agent_item("directive-item", r#"::git-stage{cwd="/repo"}"#, None);
+            for notification in [
+                agent_message_delta_notification(other, ongoing, "directive-item", "age"),
+                completed(other, ongoing, directive.clone()),
+            ] {
+                app.enqueue_thread_notification(other, notification).await?;
+                let event = app.active_thread_rx.as_mut().unwrap().recv().await.unwrap();
+                app.handle_thread_event_now(event);
+            }
+            drain_app_events(&mut app, &mut tui, &mut server, &mut events).await?;
+            assert!(!rendered_transcript(&app).contains("::git-st"));
+            assert!(app.transcript_cells.iter().all(|cell| {
+                !cell
+                    .copy_source()
+                    .is_some_and(|source| source.contains("::git-st"))
+            }));
+            assert_eq!(app.chat_widget.last_agent_markdown_text(), Some("::git-pu"));
+            let mut view = crate::transcript_view::TranscriptView::default();
+            let area = ratatui::layout::Rect::new(0, 0, 80, 20);
+            view.render(
+                area,
+                &mut ratatui::buffer::Buffer::empty(area),
+                &app.transcript_cells,
+            );
+            assert!(view.begin_copy_mode(&app.transcript_cells, /*guard*/ None));
+            let selection = view.selected_text(&app.transcript_cells).unwrap();
+            let mut copied = String::new();
+            view.copy_selected_text_with(
+                &app.transcript_cells,
+                &selection,
+                /*clear_selection*/ false,
+                |text, _| {
+                    copied = text.to_owned();
+                    Ok(crate::clipboard_copy::CopyStatus::Confirmed)
+                },
+            )
+            .unwrap();
+            assert_eq!(copied, "::git-pu");
             for notification in [
                 agent_message_delta_notification(other, ongoing, "live-item", "Live response "),
+                agent_message_delta_notification(other, ongoing, "late-directive", "sh"),
+                completed(
+                    other,
+                    ongoing,
+                    agent_item(
+                        "late-directive",
+                        r#"::git-push{cwd="/repo" branch="feat"}"#,
+                        None,
+                    ),
+                ),
+            ] {
+                app.enqueue_thread_notification(other, notification).await?;
+                let event = app.active_thread_rx.as_mut().unwrap().recv().await.unwrap();
+                app.handle_thread_event_now(event);
+            }
+            drain_app_events(&mut app, &mut tui, &mut server, &mut events).await?;
+            let intermediate = rendered_transcript(&app);
+            assert!(intermediate.contains("Live response"));
+            assert!(!intermediate.contains("::git-pu"));
+            for notification in [
                 agent_message_delta_notification(
                     other,
                     ongoing,
@@ -602,6 +705,23 @@ async fn cloud_resume_picker_reconciles_admitted_steers() -> Result<()> {
                 ),
                 completed(other, ongoing, commentary.clone()),
                 agent_message_delta_notification(other, ongoing, "live-item", "continues"),
+                completed(
+                    other,
+                    ongoing,
+                    agent_item("live-item", "Canonical final response", None),
+                ),
+                completed(
+                    other,
+                    ongoing,
+                    agent_item("live-item", "Canonical final response", None),
+                ),
+                completed(other, ongoing, directive),
+                agent_message_delta_notification(other, ongoing, "blank-item", "Earlier "),
+                completed(
+                    other,
+                    ongoing,
+                    agent_item("blank-item", "Earlier final response", None),
+                ),
                 turn_completed_notification(other, ongoing, TurnStatus::Completed),
             ] {
                 app.enqueue_thread_notification(other, notification).await?;
@@ -609,11 +729,37 @@ async fn cloud_resume_picker_reconciles_admitted_steers() -> Result<()> {
                 app.handle_thread_event_now(event);
             }
             drain_app_events(&mut app, &mut tui, &mut server, &mut events).await?;
-            insta::assert_snapshot!(rendered_responses(&app), @"
+            let live_responses = rendered_responses(&app);
+            let live_transcript = rendered_transcript(&app);
+            assert!(!live_transcript.contains("::git-st"));
+            assert!(!live_transcript.contains("::git-pu"));
+            assert_eq!(
+                app.chat_widget.last_agent_markdown_text(),
+                Some("Canonical final response")
+            );
+            insta::assert_snapshot!(&live_responses, @"
             • Commentary response
-            • Partial response
-            • Live response continues
+            • Earlier final response
+            • Canonical final response
             ");
+            let channel = app.ensure_thread_channel(other);
+            let snapshot = channel.store.lock().await.snapshot();
+            app.render_thread_snapshot(
+                &mut tui,
+                &mut server,
+                other,
+                snapshot,
+                /*resume_restored_queue*/ false,
+            )
+            .await?;
+            drain_app_events(&mut app, &mut tui, &mut server, &mut events).await?;
+            assert_eq!(rendered_responses(&app), live_responses);
+            assert!(!rendered_transcript(&app).contains("::git-st"));
+            assert!(!rendered_transcript(&app).contains("::git-pu"));
+            assert_eq!(
+                app.chat_widget.last_agent_markdown_text(),
+                Some("Canonical final response")
+            );
         }
     }
 
@@ -996,6 +1142,7 @@ async fn daybreak_command_persists_and_confirms_each_selection() -> Result<()> {
     let mut model = crate::test_support::TEST_MODEL_PRESETS[0].clone();
     model.model = app.chat_widget.current_model().to_string();
     model.available_access_programs = Some(ModelAccessPrograms {
+        daybreak_availability: Default::default(),
         cyber: vec![
             CyberAccessProgram::Standard,
             CyberAccessProgram::DaybreakBlue,
@@ -1004,6 +1151,7 @@ async fn daybreak_command_persists_and_confirms_each_selection() -> Result<()> {
     let mut unsupported_model = model.clone();
     unsupported_model.model = "standard-only".into();
     unsupported_model.available_access_programs = Some(ModelAccessPrograms {
+        daybreak_availability: Default::default(),
         cyber: vec![CyberAccessProgram::Standard],
     });
     app.chat_widget
@@ -1099,7 +1247,10 @@ async fn daybreak_command_persists_and_confirms_each_selection() -> Result<()> {
     ] {
         models.push(ModelPreset {
             model: name.into(),
-            available_access_programs: Some(ModelAccessPrograms { cyber }),
+            available_access_programs: Some(ModelAccessPrograms {
+                cyber,
+                daybreak_availability: Default::default(),
+            }),
             ..models[0].clone()
         });
     }
@@ -2001,8 +2152,7 @@ async fn first_prompt_counts_once_before_and_after_resume() -> Result<()> {
         )
         .await?;
         drain_app_events(&mut app, &mut tui, &mut server, &mut events).await?;
-        app.chat_widget
-            .set_feature_enabled(Feature::TuiExtensionsStatusLine, mode == "builtin");
+        app.chat_widget.statusline_feature_enabled = mode == "builtin";
         for text in ["first prompt", "follow-up"] {
             let sent = responses::mount_sse_once(&model, responses::sse_completed("ok")).await;
             app.chat_widget.apply_external_edit(text.into());
@@ -2230,6 +2380,7 @@ async fn delete_current_thread_navigates_only_after_success() -> Result<()> {
             .fork_side_thread(
                 &app.local_settings,
                 side_config.clone(),
+                /*workspace_roots*/ None,
                 thread_id,
                 /*selected_profile*/ None,
                 crate::app_server_session::SideChatStorage::Temporary,
@@ -2248,6 +2399,7 @@ async fn delete_current_thread_navigates_only_after_success() -> Result<()> {
                 .fork_side_thread(
                     &app.local_settings,
                     side_config,
+                    /*workspace_roots*/ None,
                     thread_id,
                     /*selected_profile*/ None,
                     crate::app_server_session::SideChatStorage::Temporary,
@@ -2759,6 +2911,7 @@ async fn archive_current_thread_returns_to_agents() -> Result<()> {
                 .fork_side_thread(
                     &app.local_settings,
                     side_config,
+                    /*workspace_roots*/ None,
                     thread_id,
                     /*selected_profile*/ None,
                     crate::app_server_session::SideChatStorage::Temporary,
@@ -3374,6 +3527,7 @@ async fn check_dynamic_tool_requests(
     for model in &mut catalog.models {
         model.available_access_programs =
             Some(codex_protocol::openai_models::ModelAccessPrograms {
+                daybreak_availability: Default::default(),
                 cyber: vec![codex_protocol::turn_input::CyberAccessProgram::DaybreakBlue],
             });
     }
@@ -4709,6 +4863,7 @@ async fn paginated_workflows_never_request_full_thread_history() -> Result<()> {
     Box::pin(app_server.fork_side_thread(
         &crate::local_settings::LocalSettings::from(&side_config),
         side_config,
+        /*workspace_roots*/ None,
         paginated_thread_id,
         /*selected_profile*/ None,
         crate::app_server_session::SideChatStorage::Temporary,
@@ -5694,19 +5849,26 @@ terminal_visualization_instructions = true
 
 #[test]
 fn changing_directory_preserves_project_trust_permissions_history_and_hooks() -> Result<()> {
+    run_embedded_tui_scenario("tui-change-directory", change_directory_scenario)
+}
+
+fn run_embedded_tui_scenario(
+    name: &str,
+    scenario: impl AsyncFnOnce() -> Result<()> + Send + 'static,
+) -> Result<()> {
     // The TUI and embedded app-server load full configurations on the same test thread.
     const TEST_STACK_SIZE_BYTES: usize = 16 * 1024 * 1024;
     std::thread::Builder::new()
-        .name("tui-change-directory".into())
+        .name(name.to_owned())
         .stack_size(TEST_STACK_SIZE_BYTES)
-        .spawn(|| {
+        .spawn(move || {
             tokio::runtime::Builder::new_current_thread()
                 .enable_all()
                 .build()?
-                .block_on(boxed_future!(change_directory_scenario()))
+                .block_on(boxed_future!(scenario()))
         })?
         .join()
-        .expect("directory change test thread panicked")
+        .expect("embedded TUI test thread panicked")
 }
 
 async fn change_directory_scenario() -> Result<()> {
@@ -5999,18 +6161,18 @@ async fn change_directory_scenario() -> Result<()> {
     let earlier_skills_requests = recorded_params(&requests, "skills/list");
     app.submit_active_thread_op(
         &mut server,
-        AppCommand::list_skills(vec![current.clone()], /*force_reload*/ true),
+        AppCommand::list_skills(current.clone().abs().into(), /*force_reload*/ true),
     )
     .await?;
     assert_eq!(
         recorded_params(&requests, "skills/list"),
         earlier_skills_requests
     );
-    let (cwd, result) = (current.clone(), Err("stale skills".into()));
+    let (cwd, result) = (current.clone().abs().into(), Err("stale skills".into()));
     let skills = AppEvent::SkillsListLoaded { cwd, result };
     let (cwd, plugins) = (current.clone(), Some(vec![]));
     let plugins = AppEvent::PluginMentionsLoaded { cwd, plugins };
-    let diff = AppEvent::DiffResult(current.clone(), "stale diff".to_string());
+    let diff = AppEvent::DiffResult(current.clone().abs().into(), "stale diff".to_string());
     let branch = AppEvent::SyncThreadGitBranch {
         thread_id: original,
         branch: "stale".to_string(),
@@ -6051,7 +6213,7 @@ async fn change_directory_scenario() -> Result<()> {
     let found = |id: ThreadId| removed.iter().any(|p| p["threadId"] == id.to_string());
     assert!([original, child].into_iter().all(found));
     let retained = server.thread_read(original, /*include_turns*/ false);
-    assert_eq!(retained.await?.cwd, current.abs().canonicalize()?);
+    assert_eq!(retained.await?.cwd, current.abs().canonicalize()?.into());
     assert_eq!(app.chat_widget.config_ref().cwd, trusted.clone().abs());
     assert!(render_bottom_popup(&app.chat_widget, /*width*/ 80).contains("SessionStart"));
     app.chat_widget

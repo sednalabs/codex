@@ -11,7 +11,6 @@ use codex_protocol::ThreadId;
 use codex_protocol::config_types::CollaborationMode;
 use codex_protocol::models::ActivePermissionProfile;
 use codex_protocol::models::PermissionProfile;
-use codex_utils_absolute_path::AbsolutePathBuf;
 use codex_utils_path_uri::LegacyAppPathString;
 use codex_utils_path_uri::PathUri;
 
@@ -53,10 +52,10 @@ pub(crate) struct ThreadSessionState {
     /// Named or implicit built-in profile that produced `permission_profile`,
     /// when the server knows it.
     pub(crate) active_permission_profile: Option<ActivePermissionProfile>,
-    pub(crate) cwd: AbsolutePathBuf,
+    pub(crate) cwd: PathUri,
     /// Native cwd of the primary executor, which can differ from the app-server cwd.
     pub(crate) primary_environment_cwd: Option<EnvironmentCwd>,
-    pub(crate) runtime_workspace_roots: Vec<AbsolutePathBuf>,
+    pub(crate) runtime_workspace_roots: Vec<PathUri>,
     pub(crate) instruction_source_paths: Vec<PathUri>,
     pub(crate) reasoning_effort: Option<codex_protocol::openai_models::ReasoningEffort>,
     pub(crate) collaboration_mode: Option<Box<CollaborationMode>>,
@@ -90,21 +89,53 @@ impl ThreadSessionState {
         self.forked_from_id = parent;
     }
 
-    pub(crate) fn set_cwd_retargeting_implicit_runtime_workspace_root(
-        &mut self,
-        cwd: AbsolutePathBuf,
-    ) {
-        let previous_cwd = std::mem::replace(&mut self.cwd, cwd.clone());
-        if !self.runtime_workspace_roots.contains(&previous_cwd) {
-            return;
-        }
+    pub(crate) fn set_cwd_retargeting_implicit_runtime_workspace_root(&mut self, cwd: PathUri) {
+        let previous_cwd = std::mem::replace(&mut self.cwd, cwd);
+        retarget_workspace_root(&mut self.runtime_workspace_roots, &previous_cwd, &self.cwd);
+    }
+}
 
-        let previous_roots = std::mem::take(&mut self.runtime_workspace_roots);
-        self.runtime_workspace_roots.push(cwd);
-        for root in previous_roots {
-            if root != previous_cwd && !self.runtime_workspace_roots.contains(&root) {
-                self.runtime_workspace_roots.push(root);
-            }
+/// Sync the native portion of the server's root list into both host-local config views.
+pub(crate) fn sync_local_workspace_roots(
+    config: &mut crate::legacy_core::config::Config,
+    roots: &[PathUri],
+) {
+    config.workspace_roots = roots
+        .iter()
+        .filter_map(|root| root.to_abs_path().ok())
+        .collect();
+    config
+        .permissions
+        .set_workspace_roots(config.workspace_roots.clone());
+}
+
+/// Retarget an implicit cwd root while preserving other roots and their order.
+pub(crate) fn retarget_workspace_root(
+    roots: &mut Vec<PathUri>,
+    previous_cwd: &PathUri,
+    cwd: &PathUri,
+) {
+    if !roots.contains(previous_cwd) {
+        return;
+    }
+    let previous_roots = std::mem::take(roots);
+    roots.push(cwd.clone());
+    for root in previous_roots {
+        if &root != previous_cwd && !roots.contains(&root) {
+            roots.push(root);
         }
+    }
+}
+
+/// Local config materializes native workspace roots itself. Resolve foreign roots before storing
+/// the display profile so permissions for those workspaces survive that host-local step.
+pub(crate) fn display_profile_for_roots(
+    profile: PermissionProfile,
+    roots: &[PathUri],
+) -> PermissionProfile {
+    if roots.iter().any(|root| root.to_abs_path().is_err()) {
+        profile.materialize_project_roots_with_path_uris(roots)
+    } else {
+        profile
     }
 }

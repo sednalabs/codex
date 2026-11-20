@@ -120,8 +120,19 @@ async fn document_preview_scenario() -> Result<()> {
     assert!(loading.contains("Opening…"), "{loading}");
 
     Box::pin(app.handle_event(&mut tui, &mut server, next_document_event(false).await)).await?;
-    let error = side_frame(&mut app, &mut tui, size)?;
-    assert!(error.contains("Could not open file"), "{error}");
+    let error = side_frame(&mut app, &mut tui, Size::new(size.width, /*height*/ 24))?;
+    let pane_text: String = error
+        .lines()
+        .filter_map(|line| line.split_once('│'))
+        .map(|(_, pane)| pane.trim())
+        .collect();
+    let directory = dir.path().canonicalize()?;
+    assert!(
+        pane_text.contains(&format!("File not foundguide.mdin {}", directory.display())),
+        "{error}"
+    );
+
+    assert!(pane_text.ends_with("esc close"), "{error}");
 
     std::fs::write(
         dir.path().join("guide.md"),
@@ -395,6 +406,8 @@ async fn document_preview_scenario() -> Result<()> {
     )
     .await?;
     Box::pin(app.handle_event(&mut tui, &mut server, next_document_event(true).await)).await?;
+    // A closed tab can cancel its read. Hold an already completed result to test late dispatch.
+    let closed_document_result = next_document_event(false).await;
     Box::pin(app.handle_tui_event(&mut tui, &mut server, TuiEvent::Key(KeyCode::Esc.into())))
         .await?;
     Box::pin(app.handle_tui_event(
@@ -407,7 +420,7 @@ async fn document_preview_scenario() -> Result<()> {
         )),
     ))
     .await?;
-    Box::pin(app.handle_event(&mut tui, &mut server, next_document_event(false).await)).await?;
+    Box::pin(app.handle_event(&mut tui, &mut server, closed_document_result)).await?;
     assert_eq!(app.sidebar().unwrap().documents.len(), 1);
     std::fs::write(
         dir.path().join("main.rs"),
@@ -637,9 +650,13 @@ size 123
         .expect("tab strip");
     let narrow_labels = visible_sidebar_row(&tui, strip, strip.y);
     insta::assert_snapshot!(narrow_labels, @"‹  fe…eA/g…md×  fe…eB/g…md×   +");
+    let long_file = "Before the fold.\n\n".repeat(24);
     for directory in ["feature-alpha-build", "feature-beta-build"] {
         std::fs::create_dir_all(dir.path().join(directory))?;
-        std::fs::write(dir.path().join(directory).join("guide.md"), "# Guide")?;
+        std::fs::write(
+            dir.path().join(directory).join("guide.md"),
+            format!("{long_file}Original ending."),
+        )?;
         Box::pin(app.open_document(
             &mut tui,
             &mut server,
@@ -660,6 +677,74 @@ size 123
         .expect("tab strip");
     let narrow_labels = visible_sidebar_row(&tui, strip, strip.y);
     insta::assert_snapshot!(narrow_labels, @"‹  1:f…ld/g…d×  2:f…ld/g…d×   +");
+    // If resolution itself fails, there is no new tab in which to show the path.
+    let tab_count = app.sidebar().unwrap().documents.len();
+    app.open_document(
+        &mut tui,
+        &mut server,
+        parent,
+        FileLink {
+            path: "~/notes.md".into(),
+            location: None,
+        },
+    )
+    .await?;
+    Box::pin(app.handle_event(&mut tui, &mut server, next_document_event(true).await)).await?;
+    assert_eq!(app.sidebar().unwrap().documents.len(), tab_count);
+    assert!(std::iter::from_fn(|| events.try_recv().ok()).any(|event| {
+        matches!(event, AppEvent::InsertHistoryCell(cell) if cell.display_lines(/*width*/ 120).iter()
+            .any(|line| line.to_string().contains("Could not open ~/notes.md:")))
+    }));
+
+    // Replace the file like an editor doing an atomic save. The new last line should
+    // appear in the still-open tab without reopening the file or jumping to the top.
+    app.sidebar_mut()
+        .active_document()
+        .unwrap()
+        .reader()
+        .unwrap()
+        .0
+        .jump_to_latest();
+    assert!(side_frame(&mut app, &mut tui, size)?.contains("Original ending."));
+    let mut wait_for_preview =
+        async |app: &mut App, tui: &mut tui::Tui, server: &mut AppServerSession, text: &str| {
+            tokio::time::timeout(std::time::Duration::from_secs(10), async {
+                loop {
+                    tokio::select! {
+                        Some(event) = server.next_event() => {
+                            Box::pin(app.handle_app_server_event(server, event.event)).await;
+                        }
+                        Some(event @ AppEvent::SidebarDocumentLoaded { .. }) = events.recv() => {
+                            Box::pin(app.handle_event(tui, server, event)).await?;
+                            if side_frame(app, tui, size)?.contains(text) {
+                                return Ok::<_, color_eyre::Report>(());
+                            }
+                        }
+                    }
+                }
+            })
+            .await
+            .unwrap_or_else(|_| panic!("open preview did not show {text:?}"))
+        };
+    let directory = dir.path().join("feature-beta-build");
+    let saved = tempfile::NamedTempFile::new_in(dir.path())?;
+    std::fs::write(saved.path(), format!("{long_file}Updated ending."))?;
+    saved.persist(directory.join("guide.md"))?;
+    wait_for_preview(&mut app, &mut tui, &mut server, "Updated ending.").await?;
+
+    // Moving the whole folder makes the file unreadable; bringing it back must
+    // restore the scrolled reader, even after the intervening error frame.
+    let moved = dir.path().join("moved");
+    std::fs::rename(&directory, &moved)?;
+    wait_for_preview(&mut app, &mut tui, &mut server, "File not found").await?;
+    std::fs::rename(moved, directory)?;
+    wait_for_preview(&mut app, &mut tui, &mut server, "Updated ending.").await?;
+    let sidebar = app.conversation_frame.panel_area().expect("document panel");
+    let visible = (sidebar.y..sidebar.bottom())
+        .map(|row| visible_sidebar_row(&tui, sidebar, row))
+        .collect::<Vec<_>>()
+        .join("\n");
+    insta::assert_snapshot!("refreshed_sidebar_at_reading_position", visible);
     server.shutdown().await?;
     Ok(())
 }
@@ -671,4 +756,40 @@ fn visible_sidebar_row(tui: &crate::tui::Tui, sidebar: Rect, row: u16) -> String
         .collect::<String>()
         .trim()
         .to_owned()
+}
+
+#[test]
+fn preview_error_keeps_the_filename_visible_in_a_narrow_pane() -> Result<()> {
+    let path = PathUri::parse("file:///archive/worktrees/docs/2026-09-11-tmux-attach-freeze.md")?;
+    let message = |method: &str, reason: &str| {
+        let error = codex_app_server_client::TypedRequestError::Server {
+            method: method.into(),
+            source: codex_app_server_protocol::JSONRPCErrorError {
+                code: -32603,
+                data: None,
+                message: reason.into(),
+            },
+        };
+        open_error::lines(&path, &error.into(), /*width*/ 38)
+            .iter()
+            .map(Line::to_string)
+            .collect::<Vec<_>>()
+            .join("\n")
+    };
+    insta::assert_snapshot!(message("fs/readFile", "No such file or directory (os error 2)"), @"
+    File not found
+
+    2026-09-11-tmux-attach-freeze.md
+    in /archive/worktrees/docs/
+
+    This file may have moved since the
+    link was added.
+    ");
+
+    let denied = message("fs/readFile", "Permission denied (os error 13)");
+    assert_eq!(denied.lines().next(), Some("Permission denied"));
+    let thread_error = message("thread/read", "No such file or directory (os error 2)");
+    assert_eq!(thread_error.lines().next(), Some("Could not open file"));
+    assert!(message("fs/readFile", "Storage offline").ends_with("Storage offline"));
+    Ok(())
 }

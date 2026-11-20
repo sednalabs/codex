@@ -362,8 +362,7 @@ async fn returns_config_error_for_schema_error_in_user_config() {
     let config_error = config_error_from_io(&err);
     let _guard = codex_utils_absolute_path::AbsolutePathBufGuard::new(tmp.path());
     let expected_config_error =
-        codex_config::config_error_from_typed_toml::<ConfigToml>(&config_path, contents)
-            .expect("schema error");
+        codex_config::config_error_from_typed_toml(&config_path, contents).expect("schema error");
     assert_eq!(config_error, &expected_config_error);
 }
 
@@ -487,7 +486,7 @@ exclude = ["LEGACY_*"]
 
     assert_eq!(
         config_error_from_io(&err),
-        &config_error_from_typed_toml::<ConfigToml>(&config_path, contents)
+        &config_error_from_typed_toml(&config_path, contents)
             .expect("mixed shell policy should produce a typed config error")
     );
 }
@@ -845,8 +844,8 @@ collaboration_modes = "true""#;
     std::fs::write(&config_path, contents).expect("write config");
 
     let _guard = codex_utils_absolute_path::AbsolutePathBufGuard::new(tmp.path());
-    let error = codex_config::config_error_from_typed_toml::<ConfigToml>(&config_path, contents)
-        .expect("schema error");
+    let error =
+        codex_config::config_error_from_typed_toml(&config_path, contents).expect("schema error");
 
     let value_line = contents.lines().nth(1).expect("value line");
     let value_column = value_line.find("\"true\"").expect("value") + 1;
@@ -1880,6 +1879,8 @@ managed-standard = true
 [permissions.managed-standard]
 extends = ":workspace"
 
+[permissions.managed-standard.credentials]
+
 [permissions.managed-standard.network]
 enabled = true
 proxy_url = "http://127.0.0.1:43128"
@@ -1910,6 +1911,8 @@ enable_socks5 = false
         toml::from_str::<PermissionProfileToml>(
             r#"
 extends = ":workspace"
+
+[credentials]
 
 [filesystem]
 ":root" = "read"
@@ -2354,6 +2357,47 @@ extends = ":workspace"
         error.to_string(),
         "requirements.toml permissions profile `duplicate-profile` conflicts with a config-defined profile of the same name"
     );
+    Ok(())
+}
+
+#[tokio::test]
+async fn empty_managed_credentials_table_cannot_select_a_user_profile() -> anyhow::Result<()> {
+    let home = tempdir()?;
+    tokio::fs::write(
+        home.path().join(CONFIG_TOML_FILE),
+        "[permissions.credentials]\nextends = ':workspace'",
+    )
+    .await?;
+
+    for (selected, child) in [
+        ("credentials", ""),
+        ("build", "[permissions.build]\nextends = 'credentials'"),
+    ] {
+        let requirements = format!(
+            r#"
+default_permissions = "{selected}"
+
+[allowed_permission_profiles]
+{selected} = true
+
+[permissions.credentials]
+{child}
+"#
+        );
+        let err = ConfigBuilder::without_managed_config_for_tests()
+            .codex_home(home.path().to_path_buf())
+            .fallback_cwd(Some(home.path().to_path_buf()))
+            .cloud_config_bundle(
+                CloudConfigBundleFixture::loader_with_enterprise_requirement(requirements),
+            )
+            .build()
+            .await
+            .expect_err("an empty managed profile must not bind to the writable user profile");
+        assert!(
+            err.to_string().contains("`permissions.credentials` in requirements.toml is reserved for shared credential policy; rename the managed profile"),
+            "{selected}: {err}"
+        );
+    }
     Ok(())
 }
 

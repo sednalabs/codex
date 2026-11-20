@@ -6,7 +6,7 @@ use codex_history::InitialHistory;
 use codex_protocol::models::ResponseItem;
 use codex_protocol::protocol::ThreadHistoryMode;
 use codex_protocol::protocol::TokenUsage;
-use codex_protocol_test_support::uuid_v7_item_id_generator_for_test;
+use codex_thread_context_ids_test_support::thread_context_ids;
 use pretty_assertions::assert_eq;
 use serde_json::json;
 use test_case::test_case;
@@ -38,8 +38,9 @@ async fn guardian_checkpoint_preserves_live_context_without_storage(
         state.history = ContextManager::for_session(
             /*root_capabilities_restricted*/ false,
             &crate::config::ManagedFeatures::from(codex_features::Features::with_defaults()),
+            /*reuse_parent_compaction*/ true,
             codex_guardian_context::ContextBudgeting::Fixed,
-            uuid_v7_item_id_generator_for_test(),
+            thread_context_ids(),
         );
         state
             .history
@@ -111,8 +112,9 @@ async fn guardian_checkpoint_preserves_live_context_without_storage(
     fork.state.lock().await.history = ContextManager::for_session(
         /*root_capabilities_restricted*/ false,
         &crate::config::ManagedFeatures::from(codex_features::Features::with_defaults()),
+        /*reuse_parent_compaction*/ true,
         codex_guardian_context::ContextBudgeting::Fixed,
-        uuid_v7_item_id_generator_for_test(),
+        thread_context_ids(),
     );
     fork.record_initial_history(InitialHistory::Forked(items))
         .await;

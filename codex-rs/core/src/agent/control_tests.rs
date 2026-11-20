@@ -29,12 +29,10 @@ use crate::context::MultiAgentRoleInstructions;
 use crate::context::SubagentNotification;
 use crate::context::world_state::IncrementalToolsUpdate;
 use crate::init_state_db;
-use crate::responses_metadata::CodexResponsesRequestKind;
 use crate::session::SessionSettingsUpdate;
 use crate::session::step_context::StepContext;
 use crate::session::step_settings::StepSettingsUpdate;
 use crate::session::tests::update_selected_settings_for_test;
-use crate::thread_manager::ForkSnapshot;
 use crate::thread_manager::StartThreadOptions;
 use crate::tools::context::ToolCallSource;
 use crate::tools::context::ToolInvocation;
@@ -66,7 +64,6 @@ use codex_protocol::capabilities::SelectedCapabilityRoot;
 use codex_protocol::config_types::ApprovalsReviewer;
 use codex_protocol::config_types::CollaborationMode;
 use codex_protocol::config_types::ModeKind;
-use codex_protocol::config_types::ReasoningSummary;
 use codex_protocol::config_types::Settings;
 use codex_protocol::error::AgentErrorContext;
 use codex_protocol::error::CodexErrKind;
@@ -74,10 +71,6 @@ use codex_protocol::error::CodexErrorDetails;
 use codex_protocol::items::TurnItem;
 use codex_protocol::items::UserMessageItem;
 use codex_protocol::mcp::ClientMcpExtensions;
-use codex_protocol::mcp::McpAttribution;
-use codex_protocol::mcp::McpAttributionErrorReason;
-use codex_protocol::mcp::McpAttributionSource;
-use codex_protocol::mcp::McpAttributionStatus;
 use codex_protocol::mcp::OPENAI_FORM_EXTENSION_ID;
 use codex_protocol::models::ContentItem;
 use codex_protocol::models::ContentItemKind;
@@ -111,6 +104,7 @@ use codex_protocol::protocol::TurnEnvironmentSelections;
 use codex_protocol::protocol::TurnStartedEvent;
 use codex_protocol::protocol::WorldStateItem;
 use codex_protocol_test_support::ContentItemTestExt;
+use codex_thread_context_ids_test_support::thread_context_ids;
 use codex_thread_store::ArchiveThreadParams;
 use codex_thread_store::InMemoryThreadStore;
 use codex_thread_store::LocalThreadStore;
@@ -491,56 +485,6 @@ async fn persist_thread_for_tree_resume(thread: &Arc<CodexThread>, message: &str
         .expect("test thread rollout should flush");
 }
 
-/// Builds a request entirely in process; it does not install a transport or send anything.
-/// The destination filtering behavior is covered separately in `client_tests`.
-async fn mcp_attribution_in_constructed_request(thread: &CodexThread) -> McpAttribution {
-    let turn_context = thread.session.new_default_turn().await;
-    let step_context = StepContext::for_test(Arc::clone(&turn_context));
-    let prompt = crate::session::turn::build_prompt(
-        thread
-            .session
-            .clone_history()
-            .await
-            .for_prompt(
-                &step_context.settings.model_info.input_modalities,
-                thread.session.services.image_store.as_ref(),
-            )
-            .await,
-        &step_context,
-        thread.session.get_prompt_base_instructions().await,
-        thread
-            .session
-            .current_window_uses_incremental_tools(&step_context)
-            .await,
-    );
-    let metadata = thread
-        .session
-        .responses_metadata(&step_context, CodexResponsesRequestKind::Turn)
-        .await;
-    let request = thread
-        .session
-        .services
-        .model_client
-        .build_responses_request(
-            &prompt,
-            &step_context.settings.model_info,
-            /*effort*/ None,
-            ReasoningSummary::None,
-            /*service_tier*/ None,
-            &metadata,
-            /*include_internal*/ true,
-        )
-        .expect("construct request");
-    serde_json::from_str(
-        request
-            .client_metadata
-            .as_ref()
-            .and_then(|metadata| metadata.get("mcp_attribution"))
-            .expect("request MCP attribution"),
-    )
-    .expect("valid request MCP attribution")
-}
-
 async fn wait_for_live_thread_spawn_children(
     control: &LocalAgentControl,
     parent_thread_id: ThreadId,
@@ -873,10 +817,14 @@ async fn cancelled_spawn_after_input_admission_discards_child() {
     });
     let child = poll_fn(|cx| {
         assert!(spawn.as_mut().poll(cx).is_pending());
-        let threads = state.threads.try_read().expect("uncontended manager");
+        let threads = state.threads.state.try_read().expect("uncontended manager");
         // On this single-thread runtime the session loop cannot consume the first
         // input until this poll returns. Leave spawn waiting for its admission reply.
-        match threads.values().find(|thread| !thread.io.tx_sub.is_empty()) {
+        match threads
+            .threads
+            .values()
+            .find(|thread| !thread.io.tx_sub.is_empty())
+        {
             Some(child) => Poll::Ready(Arc::clone(child)),
             None => Poll::Pending,
         }
@@ -1188,10 +1136,10 @@ async fn cancelled_v2_send_finishes_reload_registration() {
     let mut send = control.send(followup_request("cancelled follow-up"));
     let (reloaded, pin_blocker) = poll_fn(|cx| {
         assert!(send.as_mut().poll(cx).is_pending());
-        let Ok(threads) = state.threads.try_read() else {
+        let Ok(threads) = state.threads.state.try_read() else {
             return Poll::Pending;
         };
-        let Some(reloaded) = threads.get(&child_id).cloned() else {
+        let Some(reloaded) = threads.threads.get(&child_id).cloned() else {
             return Poll::Pending;
         };
         // On this single-thread runtime, intercept publication before the detached
@@ -3466,10 +3414,7 @@ async fn spawn_agent_fork_strips_parent_usage_hints_from_compacted_history(marke
         }),
     };
     let mut retained_context = codex_history::RetainedContext::default();
-    retained_context.record(
-        &answer_event,
-        &codex_protocol_test_support::uuid_v7_item_id_generator_for_test(),
-    );
+    retained_context.record(&answer_event, &thread_context_ids());
     retained_context.record_sender_user_messages(delivery.metadata.as_ref().unwrap());
     parent_thread
         .session
@@ -4119,131 +4064,6 @@ async fn spawn_agent_full_fork_legacy_compaction_rebuilds_child_instructions_onc
             .await
             .expect("parent shutdown should submit");
     }
-}
-
-#[test_case::test_case(false; "complete")]
-#[test_case::test_case(true; "error_reason")]
-#[tokio::test]
-async fn resume_and_cold_fork_restore_mcp_attribution_in_constructed_requests(
-    record_invalid_source: bool,
-) {
-    let harness = AgentControlHarness::new().await;
-    let source = harness
-        .manager
-        .start_thread(StartThreadOptions {
-            history_mode: Some(ThreadHistoryMode::Legacy),
-            ..StartThreadOptions::new(harness.config.clone())
-        })
-        .await
-        .expect("start legacy source");
-    let source_thread_id = source.thread_id;
-    let source_thread = source.thread;
-    let turn_context = source_thread.session.new_default_turn().await;
-    source_thread
-        .session
-        .record_conversation_items(
-            turn_context.as_ref(),
-            turn_context.model_info(),
-            &[user_message("source turn")],
-        )
-        .await;
-    let source = McpAttributionSource {
-        connector_id: None,
-        plugin_id: Some("messages@openai-bundled".to_string()),
-        server_name: "messages".to_string(),
-        tool_name: "search".to_string(),
-        first_turn_id: turn_context.sub_id.clone(),
-    };
-    source_thread
-        .session
-        .services
-        .executed_tool_calls
-        .record_mcp_source(source.clone());
-    if record_invalid_source {
-        source_thread
-            .session
-            .services
-            .executed_tool_calls
-            .record_mcp_source(McpAttributionSource {
-                tool_name: String::new(),
-                ..source.clone()
-            });
-    }
-    source_thread
-        .session
-        .record_conversation_items(
-            turn_context.as_ref(),
-            turn_context.model_info(),
-            &[assistant_message("source result", /*phase*/ None)],
-        )
-        .await;
-    source_thread.ensure_rollout_materialized().await;
-    source_thread
-        .flush_rollout()
-        .await
-        .expect("flush source rollout");
-    let rollout_path = source_thread.rollout_path().expect("source rollout path");
-    source_thread
-        .shutdown_and_wait()
-        .await
-        .expect("shutdown source thread");
-    assert!(
-        harness
-            .manager
-            .remove_thread(&source_thread_id)
-            .await
-            .is_some()
-    );
-    drop(source_thread);
-
-    let forked = harness
-        .manager
-        .fork_legacy_thread(
-            ForkSnapshot::Interrupted,
-            StartThreadOptions::new(harness.config.clone()),
-            rollout_path.clone(),
-        )
-        .await
-        .expect("fork unloaded source thread");
-    let resumed = harness
-        .manager
-        .resume_legacy_thread_from_rollout(
-            harness.config.clone(),
-            rollout_path,
-            AuthManager::from_auth_for_testing(CodexAuth::from_api_key("dummy")),
-            /*parent_trace*/ None,
-            ClientMcpExtensions::default(),
-        )
-        .await
-        .expect("resume source thread");
-    let expected = McpAttribution {
-        status: if record_invalid_source {
-            McpAttributionStatus::AttributionError
-        } else {
-            McpAttributionStatus::Complete
-        },
-        error_reason: record_invalid_source.then_some(McpAttributionErrorReason::SourceInvalid),
-        sources: vec![source],
-    };
-    assert_eq!(
-        mcp_attribution_in_constructed_request(&forked.thread).await,
-        expected
-    );
-    assert_eq!(
-        mcp_attribution_in_constructed_request(&resumed.thread).await,
-        expected
-    );
-
-    forked
-        .thread
-        .shutdown_and_wait()
-        .await
-        .expect("shutdown forked thread");
-    resumed
-        .thread
-        .shutdown_and_wait()
-        .await
-        .expect("shutdown resumed thread");
 }
 
 #[tokio::test]

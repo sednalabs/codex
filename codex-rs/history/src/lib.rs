@@ -18,6 +18,8 @@ pub use compaction_checkpoint::CompactionCheckpoint;
 mod initialization;
 pub use initialization::HistoryInitialization;
 
+mod legacy_mcp_attribution;
+
 use std::borrow::Borrow;
 use std::borrow::Cow;
 use std::ops::Deref;
@@ -28,8 +30,6 @@ use std::sync::Arc;
 use codex_protocol::ThreadId;
 use codex_protocol::capabilities::SelectedCapabilityRoot;
 use codex_protocol::dynamic_tools::DynamicToolSpec;
-use codex_protocol::mcp::McpAttribution;
-use codex_protocol::mcp::McpAttributionStatus;
 use codex_protocol::mcp::McpResourceOriginCheckpoint;
 use codex_protocol::models::BaseInstructions;
 use codex_protocol::models::ContentItem;
@@ -144,6 +144,11 @@ pub struct CodexHarnessMetadata {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub retain_across_windows: Option<bool>,
 
+    /// Override inheritance by spawned agents, including full-history forks.
+    /// Older rollouts pin items in both scopes when `retain_across_windows` is true.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub retain_in_children: Option<bool>,
+
     /// The originating history budget, including any tool-specific allowance.
     /// Measured in tokens and reused when replaying persisted history.
     #[serde(
@@ -193,13 +198,16 @@ pub struct CodexHarnessMetadata {
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub inherited_user_message: bool,
 
-    /// Cumulative MCP tools/call attribution checkpoint, never model-visible.
+    /// Whether an old `mcp_attribution` value indicates Search MCP may have been used.
     #[serde(
         default,
-        skip_serializing_if = "Option::is_none",
-        deserialize_with = "deserialize_mcp_attribution_checkpoint"
+        rename = "mcp_attribution",
+        skip_serializing,
+        deserialize_with = "legacy_mcp_attribution::deserialize_search_mcp_use"
     )]
-    pub mcp_attribution: Option<McpAttribution>,
+    #[schemars(skip)]
+    #[doc(hidden)]
+    pub legacy_search_mcp_used: Option<bool>,
 
     /// Search provider already used by this thread, or confirmation that neither has run yet.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -247,22 +255,6 @@ impl std::fmt::Debug for ImageReplaySource {
             .field("original_data_url_len", &self.original_data_url.len())
             .finish_non_exhaustive()
     }
-}
-
-fn deserialize_mcp_attribution_checkpoint<'de, D>(
-    deserializer: D,
-) -> Result<Option<McpAttribution>, D::Error>
-where
-    D: Deserializer<'de>,
-{
-    let value = serde_json::Value::deserialize(deserializer)?;
-    Ok(Some(serde_json::from_value(value).unwrap_or_else(|_| {
-        McpAttribution {
-            status: McpAttributionStatus::AttributionError,
-            error_reason: None,
-            sources: Vec::new(),
-        }
-    })))
 }
 
 impl CodexHarnessMetadata {
@@ -350,11 +342,42 @@ impl ResponseItemEnvelope {
         })
     }
 
-    /// Whether the client requested that this item survive context-window changes and forks.
+    /// Whether the client requested that this item survive context-window changes.
     pub fn is_always_retained(&self) -> bool {
         self.metadata
             .as_ref()
             .is_some_and(|metadata| metadata.retain_across_windows == Some(true))
+    }
+
+    /// Explicitly include or exclude the item when spawning an agent. With no override,
+    /// a full fork applies its ordinary history rules and a fresh child skips the item.
+    pub fn child_retention(&self) -> Option<bool> {
+        let metadata = self.metadata.as_ref()?;
+        metadata
+            .retain_in_children
+            .or_else(|| metadata.retain_across_windows.filter(|retain| *retain))
+    }
+
+    /// An explicit injection policy exempts the item from the soft carryover budget
+    /// wherever its policy pins it. Older developer messages and named turn outputs
+    /// could also have been retained by a feature, so keep their historical pricing.
+    pub fn has_explicit_retention_pin(&self) -> bool {
+        let Some(metadata) = &self.metadata else {
+            return false;
+        };
+        if metadata.retain_in_children.is_some() {
+            return true;
+        }
+        self.is_always_retained()
+            && match &self.item {
+                ResponseItem::Message { role, .. } => role != "developer",
+                ResponseItem::FunctionCallOutput {
+                    name: Some(_),
+                    call_id: None,
+                    ..
+                } => false,
+                _ => true,
+            }
     }
 
     /// Wraps a raw Responses API item for persisted history.
@@ -380,12 +403,16 @@ impl From<ResponseItem> for ResponseItemEnvelope {
 impl From<InjectedResponseItem> for ResponseItemEnvelope {
     fn from(injected: InjectedResponseItem) -> Self {
         let mut envelope = Self::new(injected.item);
-        if injected.retention != ItemRetention::Unspecified {
-            envelope
-                .metadata
-                .get_or_insert_default()
-                .retain_across_windows = Some(injected.retention == ItemRetention::Always);
-        }
+        let (across_windows, in_children) = match injected.retention {
+            ItemRetention::Unspecified => return envelope,
+            ItemRetention::Default => (false, None),
+            ItemRetention::Always => (true, Some(true)),
+            ItemRetention::AlwaysInThread => (true, Some(false)),
+            ItemRetention::AlwaysInChildren => (false, Some(true)),
+        };
+        let metadata = envelope.metadata.get_or_insert_default();
+        metadata.retain_across_windows = Some(across_windows);
+        metadata.retain_in_children = in_children;
         envelope
     }
 }
@@ -518,6 +545,9 @@ impl JsonSchema for RolloutItem {
 }
 
 mod guardian_history;
+mod initial_context_ids;
+pub use initial_context_ids::InitialContextIds;
+pub use initial_context_ids::context_ids_from_rollout;
 mod model_id_ordinals;
 pub use model_id_ordinals::next_model_id_ordinals;
 pub use model_id_ordinals::stamp_item_ordinals;

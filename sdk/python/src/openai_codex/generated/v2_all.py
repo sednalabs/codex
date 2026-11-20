@@ -263,14 +263,6 @@ class AppToolApproval(Enum):
     approve = "approve"
 
 
-class AppToolConfig(BaseModel):
-    model_config = ConfigDict(
-        populate_by_name=True,
-    )
-    approval_mode: AppToolApproval | None = None
-    enabled: bool | None = None
-
-
 class AppToolSummary(BaseModel):
     model_config = ConfigDict(
         populate_by_name=True,
@@ -1235,6 +1227,22 @@ class CyberAccessProgram(Enum):
     daybreak_red = "daybreakRed"
 
 
+class DaybreakAvailability(str, Enum):
+    available = "available"
+    enrollment_required = "enrollmentRequired"
+    unavailable_for_model = "unavailableForModel"
+    default = "default"
+
+    @classmethod
+    def _missing_(cls, value: object) -> DaybreakAvailability | None:
+        if not isinstance(value, str) or not value:
+            return None
+        member = str.__new__(cls, value)
+        member._name_ = value
+        member._value_ = value
+        return member
+
+
 class DeprecationNoticeNotification(BaseModel):
     model_config = ConfigDict(
         populate_by_name=True,
@@ -1676,6 +1684,14 @@ class FsGetMetadataResponse(BaseModel):
             description="File modification time in Unix milliseconds when available, otherwise `0`.",
         ),
     ]
+    size_bytes: Annotated[
+        int | None,
+        Field(
+            alias="sizeBytes",
+            description="Size in bytes if the path resolves to a regular file, otherwise null. Older servers omit this field.",
+            ge=0,
+        ),
+    ] = None
 
 
 class FsReadDirectoryEntry(BaseModel):
@@ -2957,6 +2973,13 @@ class ModelAccessPrograms(BaseModel):
         populate_by_name=True,
     )
     cyber: Annotated[list[CyberAccessProgram], Field(description="Accepted explicit selections.")]
+    daybreak_availability: Annotated[
+        DaybreakAvailability | None,
+        Field(
+            alias="daybreakAvailability",
+            description="Server-resolved Daybreak availability for this caller and model.",
+        ),
+    ] = "default"
 
 
 class ModelAvailabilityNux(BaseModel):
@@ -7605,6 +7628,15 @@ class AppTemplateSummary(BaseModel):
     name: str
     reason: AppTemplateUnavailableReason | None = None
     template_id: Annotated[str, Field(alias="templateId")]
+
+
+class AppToolConfig(BaseModel):
+    model_config = ConfigDict(
+        populate_by_name=True,
+    )
+    approval_mode: AppToolApproval | None = None
+    approvals_reviewer: ApprovalsReviewer | None = None
+    enabled: bool | None = None
 
 
 class ApplicationNetworkRequirements(BaseModel):

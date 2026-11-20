@@ -166,9 +166,14 @@ impl InferenceTraceAttempt {
         }
     }
 
+    /// Whether this attempt records inference payloads.
+    pub fn is_enabled(&self) -> bool {
+        matches!(&self.state, InferenceTraceAttemptState::Enabled(_))
+    }
+
     /// Whether terminal trace records need the completed output items.
     pub fn needs_output_items(&self) -> bool {
-        matches!(&self.state, InferenceTraceAttemptState::Enabled(_))
+        self.is_enabled()
     }
 
     fn inference_call_id(&self) -> Option<&str> {
@@ -381,7 +386,7 @@ fn record_partial_response(
     attempt: &EnabledInferenceTraceAttempt,
     upstream_request_id: Option<&str>,
     output_items: &[ResponseItem],
-    event: impl FnOnce(Option<crate::RawPayloadRef>) -> RawTraceEventPayload + Send + 'static,
+    event: impl FnOnce(Option<crate::RawPayloadRef>) -> RawTraceEventPayload + Clone + Send + 'static,
 ) {
     let ctx = &attempt.context;
     let envelope = RawTraceEventContext::turn(&ctx.thread_id, &ctx.codex_turn_id);

@@ -3,12 +3,28 @@
 #[path = "scenarios_bundled_app_hooks.rs"]
 mod bundled_app_hooks;
 
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn executor_discovery_v2_refreshes_inventory_and_reuses_it_across_turns() -> anyhow::Result<()>
+{
+    super::executor_discovery_v2::check_acquisition(/*enabled*/ true, "0.164.0").await
+}
+
+#[test_case::test_case(DiscoveryFailure::None; "success")]
+#[test_case::test_case(DiscoveryFailure::Server; "server_failure")]
+#[tokio::test]
+async fn executor_discovery_v2_prepares_inventory_while_sampling(
+    failure: DiscoveryFailure,
+) -> anyhow::Result<()> {
+    super::executor_discovery_v2::check_discovery_readiness(failure).await
+}
+
 #[path = "scenarios_turn_input_agent_message.rs"]
 mod turn_input_agent_message;
 
 #[path = "scenarios_multi_environment_mcp.rs"]
 mod multi_environment_mcp;
 
+use super::executor_discovery_v2::DiscoveryFailure;
 use super::image_rollout::RecordingFileAttachmentStore;
 use super::permissions_messages::PermissionPathScenario;
 use codex_attachment_store::AttachmentStoreErrorKind;
@@ -3552,7 +3568,11 @@ async fn attached_side_chat_preserves_model_context_on_cold_resume() -> Result<(
     resume_options.environments = options.environments.clone();
     let child = test
         .thread_manager
-        .fork_prepared_thread(options, prepared)
+        .fork_prepared_thread(
+            options,
+            prepared,
+            codex_thread_store::InheritedHistoryVisibility::Full,
+        )
         .await?;
     child
         .thread

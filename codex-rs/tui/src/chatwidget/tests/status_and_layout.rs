@@ -154,6 +154,7 @@ async fn daybreak_refusal_offers_enable_for_the_next_turn() {
     let mut model = crate::test_support::TEST_MODEL_PRESETS[0].clone();
     model.model = "gpt-5.6-sol".into();
     model.available_access_programs = Some(codex_protocol::openai_models::ModelAccessPrograms {
+        daybreak_availability: Default::default(),
         cyber: vec![codex_protocol::turn_input::CyberAccessProgram::DaybreakBlue],
     });
     chat.model_catalog = std::sync::Arc::new(ModelCatalog::new(vec![model]));
@@ -258,6 +259,7 @@ async fn daybreak_refusal_offers_enable_for_the_next_turn() {
     let mut daybreak = crate::test_support::TEST_MODEL_PRESETS[0].clone();
     daybreak.model = "gpt-5.6-sol".into();
     daybreak.available_access_programs = Some(codex_protocol::openai_models::ModelAccessPrograms {
+        daybreak_availability: Default::default(),
         cyber: vec![codex_protocol::turn_input::CyberAccessProgram::DaybreakBlue],
     });
     chat.model_catalog = std::sync::Arc::new(ModelCatalog::new(vec![daybreak.clone()]));
@@ -305,6 +307,7 @@ async fn daybreak_refusal_offers_enable_for_the_next_turn() {
     let mut astra = crate::test_support::TEST_MODEL_PRESETS[0].clone();
     astra.model = "gpt-6-astra".into();
     astra.available_access_programs = Some(codex_protocol::openai_models::ModelAccessPrograms {
+        daybreak_availability: Default::default(),
         cyber: vec![codex_protocol::turn_input::CyberAccessProgram::Standard],
     });
     chat.model_catalog = std::sync::Arc::new(ModelCatalog::new(vec![astra]));
@@ -4800,7 +4803,7 @@ async fn session_configured_clears_goal_status_footer() {
         approvals_reviewer: ApprovalsReviewer::User,
         permission_profile: PermissionProfile::read_only(),
         active_permission_profile: None,
-        cwd: test_path_buf("/home/user/project").abs(),
+        cwd: test_path_buf("/home/user/project").abs().into(),
         runtime_workspace_roots: Vec::new(),
         instruction_source_paths: Vec::new(),
         reasoning_effort: Some(ReasoningEffortConfig::default()),

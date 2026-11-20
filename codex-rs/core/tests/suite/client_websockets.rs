@@ -2724,6 +2724,30 @@ async fn responses_websocket_v2_after_error_uses_full_create_without_previous_re
     json!({"type": "error", "status": 400, "error": {"code": "budget_reached"}}),
     CodexErrorInfo::SessionBudgetExceeded; "budget HTTP envelope"
 )]
+#[test_case::test_case(
+    json!({"type": "error", "sequence_number": 0, "error": {"code": "bio_policy", "message": "policy rejection"}}),
+    CodexErrorInfo::BioPolicy; "bio policy without status"
+)]
+#[test_case::test_case(
+    json!({"type": "error", "sequence_number": 0, "error": {"code": "cyber_policy", "message": "policy rejection"}}),
+    CodexErrorInfo::CyberPolicy; "cyber policy without status"
+)]
+#[test_case::test_case(
+    json!({"type": "error", "error": {"code": "invalid_prompt"}}),
+    CodexErrorInfo::InvalidPrompt; "statusless invalid prompt"
+)]
+#[test_case::test_case(
+    json!({"type": "error", "error": {"code": "insufficient_quota"}}),
+    CodexErrorInfo::UsageLimitExceeded; "statusless quota"
+)]
+#[test_case::test_case(
+    json!({"type": "error", "error": {"code": "misalignment_policy_violation"}}),
+    CodexErrorInfo::MisalignmentPolicyViolation; "statusless misalignment"
+)]
+#[test_case::test_case(
+    json!({"type": "error", "error": {"code": "server_is_overloaded"}}),
+    CodexErrorInfo::ServerOverloaded; "statusless overload without advice"
+)]
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn responses_websocket_v2_surfaces_terminal_error_without_close_handshake(
     failure: serde_json::Value,
@@ -3111,7 +3135,7 @@ async fn websocket_harness_with_provider_factory(
         provider_factory(provider.clone(), client_auth_manager),
         AgentIdentityAuthPolicy::JwtOnly,
         thread_id,
-        codex_protocol_test_support::uuid_v7_item_id_generator_for_test(),
+        codex_thread_context_ids_test_support::thread_context_ids(),
         SessionSource::Exec,
         "test_originator".to_string(),
         config.model_verbosity,

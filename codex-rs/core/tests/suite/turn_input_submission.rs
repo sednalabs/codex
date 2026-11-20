@@ -25,6 +25,8 @@ use codex_protocol::config_types::CollaborationMode;
 use codex_protocol::config_types::ModeKind;
 use codex_protocol::config_types::Settings;
 use codex_protocol::items::TurnItem;
+use codex_protocol::protocol::AdditionalContextEntry;
+use codex_protocol::protocol::AdditionalContextKind;
 use codex_protocol::protocol::AskForApproval;
 use codex_protocol::protocol::EventMsg;
 use codex_protocol::protocol::InterAgentCommunication;
@@ -246,7 +248,7 @@ async fn turn_extension_data_is_captured_for_automatic_turns() -> anyhow::Result
 }
 
 #[derive(Debug)]
-struct TestAdmission(AtomicBool);
+struct TestAdmission(AtomicBool, tokio::sync::watch::Sender<()>);
 
 impl TurnStartAdmission for TestAdmission {
     fn admit_turn_start(&self) -> Option<Box<dyn Send>> {
@@ -256,17 +258,39 @@ impl TurnStartAdmission for TestAdmission {
             Some(Box::new(()))
         }
     }
+
+    fn admission_updates(&self) -> Option<tokio::sync::watch::Receiver<()>> {
+        Some(self.1.subscribe())
+    }
 }
 
 #[tokio::test]
 async fn host_drain_rejects_turn_start_paths_without_recording_input() -> anyhow::Result<()> {
     let server = responses::start_mock_server().await;
-    let response = responses::mount_sse_once(&server, responses::sse_completed("allowed")).await;
-    let admission = Arc::new(TestAdmission(AtomicBool::new(true)));
+    let response = responses::mount_sse_sequence(
+        &server,
+        vec![
+            responses::sse_completed("resumed"),
+            responses::sse_completed("allowed"),
+        ],
+    )
+    .await;
+    let admission = Arc::new(TestAdmission(
+        AtomicBool::new(true),
+        tokio::sync::watch::channel(()).0,
+    ));
     let mut extensions = ExtensionRegistryBuilder::new();
     extensions.turn_start_admission(admission.clone());
+    extensions.thread_lifecycle_contributor(Arc::new(ThreadIdle));
     let test = test_codex()
         .with_extensions(Arc::new(extensions.build()))
+        .with_config(|config| {
+            config.features.enable(Feature::MultiAgentV2).unwrap();
+            config
+                .features
+                .enable(Feature::WakeOnAgentMessages)
+                .unwrap();
+        })
         .build_with_auto_env(&server)
         .await?;
     assert_eq!(
@@ -292,7 +316,38 @@ async fn host_drain_rejects_turn_start_paths_without_recording_input() -> anyhow
         );
     }
     assert!(response.requests().is_empty());
+    test.codex
+        .submit(Op::InterAgentCommunication {
+            communication: InterAgentCommunication::new(
+                AgentPath::root().join("worker").unwrap(),
+                AgentPath::root(),
+                Vec::new(),
+                "mail received while admission is paused".to_owned(),
+                /*trigger_turn*/ false,
+            ),
+            start_options: TurnStartOptions::default(),
+        })
+        .await?;
+    // Fence the mailbox dispatch so the first wake has already been rejected.
+    test.codex
+        .update_thread_settings(ThreadSettingsOverrides::default())
+        .await?;
+    assert!(response.requests().is_empty());
+
     admission.0.store(false, Ordering::SeqCst);
+    admission.1.send_replace(());
+    // Reopening alone must deliver the queued mail, without another input or turn.
+    wait_for_event(&test.codex, |event| {
+        matches!(event, EventMsg::TurnComplete(_))
+    })
+    .await;
+    ThreadIdle::wait(&test.codex).await;
+    assert!(
+        response
+            .single_request()
+            .body_contains_text("mail received while admission is paused")
+    );
+
     test.codex
         .start_turn_if_idle(user_message_request("allowed input"))
         .await?;
@@ -300,11 +355,15 @@ async fn host_drain_rejects_turn_start_paths_without_recording_input() -> anyhow
         matches!(event, EventMsg::TurnComplete(_))
     })
     .await;
-    let request = response.single_request();
+    ThreadIdle::wait(&test.codex).await;
+    let requests = response.requests();
+    assert_eq!(requests.len(), 2);
+    let request = &requests[1];
     assert!(request.body_contains_text("allowed input"));
     assert!(!request.body_contains_text("rejected direct input"));
     assert!(!request.body_contains_text("rejected queued input"));
     assert!(!request.body_contains_text("rejected continuation"));
+
     Ok(())
 }
 
@@ -313,7 +372,10 @@ async fn host_drain_allows_spawned_agent_input_but_not_automatic_work() -> anyho
     let server = responses::start_mock_server().await;
     let response = responses::mount_sse_once(&server, responses::sse_completed("child")).await;
     let mut extensions = ExtensionRegistryBuilder::new();
-    extensions.turn_start_admission(Arc::new(TestAdmission(AtomicBool::new(true))));
+    extensions.turn_start_admission(Arc::new(TestAdmission(
+        AtomicBool::new(true),
+        tokio::sync::watch::channel(()).0,
+    )));
     let test = test_codex()
         .with_extensions(Arc::new(extensions.build()))
         .build_with_auto_env(&server)
@@ -416,7 +478,10 @@ async fn host_drain_allows_running_review_to_finish_its_delegate() -> anyhow::Re
     )
     .await;
     let mut extensions = ExtensionRegistryBuilder::new();
-    extensions.turn_start_admission(Arc::new(TestAdmission(AtomicBool::new(true))));
+    extensions.turn_start_admission(Arc::new(TestAdmission(
+        AtomicBool::new(true),
+        tokio::sync::watch::channel(()).0,
+    )));
     let test = test_codex()
         .with_extensions(Arc::new(extensions.build()))
         .build_with_auto_env(&server)
@@ -469,7 +534,10 @@ async fn host_drain_closes_realtime_after_handoff_error() -> anyhow::Result<()> 
     ]]])
     .await;
     let mut extensions = ExtensionRegistryBuilder::new();
-    extensions.turn_start_admission(Arc::new(TestAdmission(AtomicBool::new(true))));
+    extensions.turn_start_admission(Arc::new(TestAdmission(
+        AtomicBool::new(true),
+        tokio::sync::watch::channel(()).0,
+    )));
     let test = test_codex()
         .with_extensions(Arc::new(extensions.build()))
         .with_config({
@@ -551,7 +619,10 @@ async fn host_drain_allows_mailbox_work_to_start_a_turn() -> anyhow::Result<()> 
     let server = responses::start_mock_server().await;
     let response = responses::mount_sse_once(&server, responses::sse_completed("mailbox")).await;
     let mut extensions = ExtensionRegistryBuilder::new();
-    extensions.turn_start_admission(Arc::new(TestAdmission(AtomicBool::new(true))));
+    extensions.turn_start_admission(Arc::new(TestAdmission(
+        AtomicBool::new(true),
+        tokio::sync::watch::channel(()).0,
+    )));
     let test = test_codex()
         .with_extensions(Arc::new(extensions.build()))
         .build_with_auto_env(&server)
@@ -1106,14 +1177,20 @@ async fn continue_turn_if_idle_starts_new_turn_with_internal_input() {
     let submission = test
         .codex
         .continue_turn_if_idle(
-            TurnInputRequest::new(TurnInput::ResponseItem(input.clone())).on_start(
-                TurnStartOptions {
+            TurnInputRequest::new(TurnInput::ResponseItem(input.clone()))
+                .with_additional_context(BTreeMap::from([(
+                    "recovery_info".to_string(),
+                    AdditionalContextEntry::new(
+                        "active tab".to_string(),
+                        AdditionalContextKind::Untrusted,
+                    ),
+                )]))
+                .on_start(TurnStartOptions {
                     final_output_json_schema: Some(schema.clone()),
                     service_tier: Some("priority".to_string()),
                     root_turn_id: Some("originating-turn".to_string()),
                     ..Default::default()
-                },
-            ),
+                }),
             previous_turn_id.clone(),
         )
         .await
@@ -1131,6 +1208,12 @@ async fn continue_turn_if_idle_starts_new_turn_with_internal_input() {
     ThreadIdle::wait(&test.codex).await;
     let request = mock.single_request();
     assert!(request.has_content_kinds(&["daemon_recovery.internal_context"]));
+    assert!(
+        request
+            .inputs_of_type("function_call_output")
+            .iter()
+            .any(|item| item["name"] == "recovery_info" && item["output"] == "active tab")
+    );
     let metadata: Value = serde_json::from_str(
         &request
             .header("x-codex-turn-metadata")

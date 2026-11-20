@@ -122,6 +122,7 @@ use codex_utils_absolute_path::canonicalize_existing_preserving_symlinks;
 use codex_utils_cli::SharedCliOptions;
 use codex_utils_oss::ensure_oss_provider_ready;
 use codex_utils_oss::get_default_model_for_oss_provider;
+use codex_utils_path_uri::LegacyAppPathString;
 use codex_worktree::CreateWorktree;
 use codex_worktree::WorktreeManager;
 use codex_worktree::WorktreeSettings;
@@ -1155,7 +1156,11 @@ async fn run_exec_session(args: ExecRunArgs) -> anyhow::Result<()> {
             first_turn_cwd = None;
             resumed_workspace_roots = Some(permissions.workspace_roots);
             if !overrides.additional_writable_roots.is_empty() {
-                let mut roots = response.runtime_workspace_roots;
+                let mut roots = response
+                    .runtime_workspace_roots
+                    .into_iter()
+                    .map(AbsolutePathBuf::try_from)
+                    .collect::<Result<Vec<_>, _>>()?;
                 roots.extend(overrides.additional_writable_roots.into_iter().map(|path| {
                     AbsolutePathBuf::resolve_path_against_base(path, config.cwd.as_path())
                 }));
@@ -1220,7 +1225,9 @@ async fn run_exec_session(args: ExecRunArgs) -> anyhow::Result<()> {
                     model: config.model.clone(),
                     model_provider: Some(config.model_provider_id.clone()),
                     cwd: Some(config.cwd.to_string_lossy().to_string()),
-                    runtime_workspace_roots: Some(config.workspace_roots.clone()),
+                    runtime_workspace_roots: Some(LegacyAppPathString::from_abs_paths(
+                        &config.workspace_roots,
+                    )),
                     approval_policy: Some(config.permissions.approval_policy.value().into()),
                     approvals_reviewer: resume_approvals_reviewer_override,
                     sandbox: sandbox.flatten(),
@@ -1640,7 +1647,7 @@ fn thread_start_params_from_config(
     ThreadStartParams {
         model: config.model.clone(),
         model_provider: Some(config.model_provider_id.clone()),
-        runtime_workspace_roots: Some(config.workspace_roots.clone()),
+        runtime_workspace_roots: Some(LegacyAppPathString::from_abs_paths(&config.workspace_roots)),
         approval_policy: Some(config.permissions.approval_policy.value().into()),
         approvals_reviewer: Some(config.approvals_reviewer.into()),
         sandbox: sandbox.flatten(),
@@ -1697,7 +1704,8 @@ fn thread_resume_params_from_config(
             .and_then(|settings| settings.get("writable_roots"))
             .is_some()
         {
-            runtime_workspace_roots = Some(config.workspace_roots.clone());
+            runtime_workspace_roots =
+                Some(LegacyAppPathString::from_abs_paths(&config.workspace_roots));
         }
     }
     ThreadResumeParams {
@@ -1852,7 +1860,7 @@ fn session_configured_from_thread_response(
     approvals_reviewer: codex_protocol::config_types::ApprovalsReviewer,
     permission_profile: PermissionProfile,
     active_permission_profile: Option<codex_protocol::models::ActivePermissionProfile>,
-    cwd: AbsolutePathBuf,
+    cwd: LegacyAppPathString,
     reasoning_effort: Option<codex_protocol::openai_models::ReasoningEffort>,
 ) -> Result<SessionConfiguredEvent, String> {
     let session_id = SessionId::from_string(session_id)
@@ -1882,7 +1890,7 @@ fn session_configured_from_thread_response(
         approvals_reviewer,
         permission_profile,
         active_permission_profile,
-        cwd,
+        cwd: AbsolutePathBuf::try_from(cwd).map_err(|err| err.to_string())?,
         reasoning_effort,
         network_proxy: None,
         rollout_path,

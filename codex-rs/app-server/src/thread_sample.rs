@@ -55,8 +55,6 @@ use tokio_util::sync::CancellationToken;
 use tokio_util::task::TaskTracker;
 
 const SAMPLE_TIMEOUT: Duration = Duration::from_secs(30);
-// Bytes conservatively bound tokens, including for byte-fallback tokenizers.
-const MAX_PROMPT_BYTES: usize = 4_000;
 const MAX_OUTPUT_BYTES: usize = 64 * 1024;
 const THREAD_SNAPSHOT_NOTE: &str = concat!(
     "\nThis snapshot is a copy of the source thread’s history taken while its turn was still running. ",
@@ -85,13 +83,10 @@ pub(crate) async fn generate_sample(
     rpc_gate: Arc<ConnectionRpcGate>,
 ) -> SampleResult {
     let deadline = Instant::now() + SAMPLE_TIMEOUT;
-    if task.params.expected_turn_id.trim().is_empty()
-        || task.params.prompt.trim().is_empty()
-        || task.params.prompt.len() > MAX_PROMPT_BYTES
-    {
-        return Err(invalid_request(format!(
-            "thread/sample requires expectedTurnId and a prompt of at most {MAX_PROMPT_BYTES} bytes",
-        )));
+    if task.params.expected_turn_id.trim().is_empty() || task.params.prompt.trim().is_empty() {
+        return Err(invalid_request(
+            "thread/sample requires a nonblank expectedTurnId and prompt",
+        ));
     }
     let (sender, receiver) = oneshot::channel();
     let originator = AuthStorageOriginator::current();
@@ -184,7 +179,11 @@ impl SampleTask {
         .map_err(|error| internal_error(error.to_string()))?;
         let model = parent
             .model_info(
-                options.config.model.as_deref().unwrap_or(&snapshot.model),
+                params
+                    .model
+                    .as_deref()
+                    .or(options.config.model.as_deref())
+                    .unwrap_or(&snapshot.model),
                 &options.config.to_models_manager_config(),
             )
             .await;
@@ -268,6 +267,7 @@ impl SampleTask {
                 text_elements: Vec::new(),
             }])
             .with_thread_settings(ThreadSettingsOverrides {
+                model: params.model,
                 effort: effort.map(Some),
                 ..Default::default()
             })
@@ -278,7 +278,7 @@ impl SampleTask {
             .with_responses_metadata(params.responsesapi_client_metadata)
             .with_trace(trace);
             if source_in_progress {
-                input.additional_context.insert(
+                input.additional_context.get_or_insert_default().insert(
                     "thread_snapshot".to_string(),
                     AdditionalContextEntry::new(
                         THREAD_SNAPSHOT_NOTE.to_string(),

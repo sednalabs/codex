@@ -39,7 +39,7 @@ use std::collections::HashSet;
 use test_case::test_case;
 use tokio::sync::mpsc;
 
-async fn test_processor(
+pub(super) async fn test_processor(
     test: &TestCodex,
 ) -> Result<(ThreadRequestProcessor, mpsc::Receiver<OutgoingEnvelope>)> {
     let config = Arc::new(test.config.clone());
@@ -690,6 +690,7 @@ async fn revert_settles_interrupts_before_replacing_a_runtime() -> Result<()> {
         .await;
     let turn_processor = TurnRequestProcessor::new(
         test.thread_manager.clone(),
+        test.thread_store.clone(),
         processor.outgoing.clone(),
         AnalyticsEventsClient::disabled(),
         processor.config.clone(),

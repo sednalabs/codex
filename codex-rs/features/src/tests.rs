@@ -252,6 +252,46 @@ fn guardian_v3_feature_config_resolves_base_and_profile_toggles() {
 }
 
 #[test]
+fn guardian_v3_prompt_settings_do_not_implicitly_enable_the_feature() {
+    let features: FeaturesToml = toml::from_str(
+        r#"
+[guardianv3]
+message_board_in_memory = true
+[guardianv3.housekeeper]
+routing_instructions = "Group related deployment evidence."
+batch_timeout_ms = 15000
+[guardianv3.reviewer]
+retrieval_instructions = "Search before assessing deployments."
+"#,
+    )
+    .expect("Guardian V3 settings should deserialize");
+
+    assert!(features.entries().is_empty());
+    assert_eq!(
+        features.guardianv3,
+        Some(FeatureToml::Config(crate::GuardianV3ConfigToml {
+            enabled: None,
+            message_board_in_memory: Some(true),
+            housekeeper: Some(crate::GuardianV3HousekeeperConfigToml {
+                routing_instructions: Some("Group related deployment evidence.".to_owned()),
+                batch_timeout_ms: std::num::NonZeroU32::new(15_000),
+            }),
+            reviewer: Some(crate::GuardianV3ReviewerConfigToml {
+                retrieval_instructions: Some("Search before assessing deployments.".to_owned()),
+            }),
+            max_instruction_tokens: None,
+        }))
+    );
+}
+
+#[test]
+fn guardian_v3_rejects_a_zero_batch_timeout() {
+    assert!(
+        toml::from_str::<FeaturesToml>("[guardianv3.housekeeper]\nbatch_timeout_ms = 0").is_err()
+    );
+}
+
+#[test]
 fn guardian_thread_context_is_ignored_with_a_migration_notice() {
     let enabled_context = "[guardianv2]\nthread_context = true";
     let disabled_context = "[guardianv2]\nthread_context = false";
@@ -619,6 +659,28 @@ fn from_sources_applies_base_profile_and_overrides() {
     assert_eq!(features.enabled(Feature::CodeMode), true);
     assert_eq!(features.enabled(Feature::ApplyPatchFreeform), false);
     assert_eq!(features.enabled(Feature::WebSearchRequest), false);
+}
+
+#[test]
+fn code_mode_host_grpc_is_recognized_and_ignored() {
+    assert!(crate::is_known_feature_key("code_mode_host_grpc"));
+    for enabled in [false, true] {
+        let config: FeaturesToml = toml::from_str(&format!("code_mode_host_grpc = {enabled}"))
+            .expect("legacy transport setting should deserialize");
+        let mut features = Features::with_defaults();
+        features.apply_toml(&config);
+        assert_eq!(
+            features.enabled_features(),
+            Features::with_defaults().enabled_features()
+        );
+        assert_eq!(
+            features
+                .legacy_feature_usages()
+                .map(|usage| usage.feature)
+                .collect::<Vec<_>>(),
+            vec![Feature::CodeModeHostGrpc]
+        );
+    }
 }
 
 #[test]

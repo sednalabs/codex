@@ -426,9 +426,30 @@ impl App {
             resume_settings,
         )
         .await?;
-        Ok(self
+        let archived = matches!(
+            &prepared,
+            PreparedAttachment::ReplayOnly {
+                read_only: Some(crate::chatwidget::ReadOnlyThread::Archived),
+                ..
+            }
+        );
+        let replace_active = self.active_thread_id == Some(thread_id)
+            && self.active_thread_rx.is_some()
+            && matches!(&prepared, PreparedAttachment::Live(_));
+        if replace_active {
+            // The active receiver belongs to the channel that installation will replace.
+            self.drain_outgoing_thread_events().await;
+            self.store_active_thread_receiver().await;
+        }
+        let live = self
             .install_thread_attachment(app_server, thread_id, prepared, ChannelMode::ReplaceLive)
-            .await)
+            .await;
+        if replace_active {
+            self.set_thread_active(thread_id, /*active*/ true).await;
+            self.active_thread_rx = self.ensure_thread_channel(thread_id).receiver.take();
+        }
+        self.ensure_thread_channel(thread_id).archived = archived;
+        Ok(live)
     }
 
     pub(super) async fn install_thread_attachment(
@@ -444,7 +465,7 @@ impl App {
         };
         let closed = incoming
             .is_some_and(|updates| updates.close == super::thread_attachment::CloseState::Closed);
-        let was_external_writer = self
+        let mut external_writer = self
             .thread_event_channels
             .get(&thread_id)
             .is_some_and(|channel| channel.attachment() == ThreadEventAttachment::ExternalWriter);
@@ -464,8 +485,16 @@ impl App {
                 }
                 (started.session, started.turns, true)
             }
-            PreparedAttachment::ReplayOnly(thread) => {
-                let mut session = self.session_state_for_thread_read(thread_id, &thread).await;
+            PreparedAttachment::ReplayOnly {
+                thread,
+                cwd,
+                read_only,
+            } => {
+                external_writer |=
+                    read_only == Some(crate::chatwidget::ReadOnlyThread::ExternalWriter);
+                let mut session = self
+                    .session_state_for_thread_read(thread_id, &thread, cwd)
+                    .await;
                 // Reads have no settings. Keep this cached thread's permissions rather than
                 // inferring them from the conversation that is currently displayed.
                 if let Some(channel) = self.thread_event_channels.get(&thread_id)
@@ -479,7 +508,7 @@ impl App {
                 // `thread/read` can seed replay state, but it does not attach the app-server
                 // listener that `thread/resume` establishes, so treat this path as replay-only.
                 session.model.clear();
-                if was_external_writer {
+                if external_writer {
                     app_server.freeze_viewed_receipt(thread_id);
                 }
                 (session, thread.turns, false)
@@ -525,15 +554,20 @@ impl App {
         if live_attached {
             channel.mark_live();
         } else {
-            if was_external_writer {
+            if external_writer {
                 channel.mark_external_writer();
             } else {
                 channel.mark_replay_only();
             }
         }
         let mut store = channel.store.lock().await;
-        if let Some(settings) = incoming.and_then(|updates| updates.settings.as_ref()) {
-            super::thread_settings::apply_thread_settings_to_session(&mut session, settings);
+        if let Some(settings) = incoming.and_then(|updates| updates.settings.as_ref())
+            && let Ok(cwd) = crate::app_server_session::decode_thread_cwd(
+                &settings.cwd,
+                app_server.path_convention(),
+            )
+        {
+            super::thread_settings::apply_thread_settings_to_session(&mut session, settings, &cwd);
         }
         let live_turn = incoming.filter(|updates| updates.turn_changed).map(|_| {
             (
@@ -596,9 +630,11 @@ impl App {
         chat_widget.config_panel_tui = self.chat_widget.config_panel_tui.clone();
         chat_widget.config_panel_tui.mouse_scroll_speed =
             chat_widget.local_settings.tui.mouse_scroll_speed;
+        chat_widget.statusline_feature_enabled = self.chat_widget.statusline_feature_enabled;
         chat_widget.remote_connection = self.chat_widget.remote_connection.clone();
         chat_widget.snapshot_local_images = self.app_server_target.uses_remote_workspace();
         chat_widget.thread_params_mode = self.chat_widget.thread_params_mode;
+        chat_widget.app_server_path_convention = self.chat_widget.app_server_path_convention;
         chat_widget.pending_cloud_turn_settings =
             self.chat_widget.pending_cloud_turn_settings.clone();
         chat_widget.set_local_worktree_operations(self.chat_widget.local_worktree_operations);
@@ -686,7 +722,10 @@ impl App {
         } else {
             None
         };
-        if self.active_thread_id == Some(thread_id) && !self.thread_unavailable(thread_id) {
+        if self.active_thread_id == Some(thread_id)
+            && !self.thread_unavailable(thread_id)
+            && !self.chat_widget.is_read_only_view()
+        {
             return Ok(());
         }
         if !self.can_select_thread() {
@@ -719,7 +758,9 @@ impl App {
             ));
             return Ok(());
         }
-        let mode = if self.should_attach_live_thread_for_selection(thread_id) {
+        let mode = if self.should_attach_live_thread_for_selection(thread_id)
+            || (self.active_thread_id == Some(thread_id) && self.chat_widget.is_read_only_view())
+        {
             match self
                 .attach_live_thread_for_selection(app_server, thread_id)
                 .await

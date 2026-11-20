@@ -169,6 +169,7 @@ pub(crate) async fn handle_mcp_tool_call(
     invocation_tool_name: ToolName,
     source: &crate::tools::context::ToolCallSource,
     arguments: String,
+    observe_server_result: impl FnOnce(&PreparedMcpCall, &CallToolResult),
 ) -> Result<CompletedMcpToolCall, FunctionCallError> {
     let turn_context = &step_context.turn;
     let server = advertised_tool.server_name().to_owned();
@@ -325,6 +326,7 @@ pub(crate) async fn handle_mcp_tool_call(
                     metadata,
                     item_metadata,
                     source,
+                    observe_server_result,
                     McpToolApprovalApplication::Apply {
                         decision,
                         policy: approval_policy,
@@ -417,6 +419,7 @@ pub(crate) async fn handle_mcp_tool_call(
         metadata,
         item_metadata,
         source,
+        observe_server_result,
         McpToolApprovalApplication::NotRequired,
     )
     .await
@@ -488,6 +491,7 @@ async fn handle_approved_mcp_tool_call(
     metadata: &McpToolApprovalMetadata,
     item_metadata: McpToolCallItemMetadata,
     source: &crate::tools::context::ToolCallSource,
+    observe_server_result: impl FnOnce(&PreparedMcpCall, &CallToolResult),
     approval_application: McpToolApprovalApplication,
 ) -> Result<CompletedMcpToolCall, FunctionCallError> {
     let turn_context = step_context.turn.as_ref();
@@ -549,6 +553,10 @@ async fn handle_approved_mcp_tool_call(
         }
         Ok(())
     };
+    let mcp_tool = McpToolContext::from_prepared_call(
+        &prepared_call,
+        turn_context.config.mcp_servers.get().get(&server),
+    );
     let result = async {
         let result = async {
             let result = prepared_call
@@ -698,6 +706,25 @@ async fn handle_approved_mcp_tool_call(
                         )
                         .await?;
                     }
+                    for contributor in sess.services.extensions.tool_lifecycle_contributors() {
+                        if let Some((key, value)) = contributor.mcp_tool_request_meta(
+                            &sess.services.thread_extension_data,
+                            &turn_context.extension_data,
+                            &mcp_tool,
+                        ) {
+                            let meta = request_meta
+                                .get_or_insert_with(|| serde_json::json!({}))
+                                .as_object_mut()
+                                .ok_or_else(|| {
+                                    anyhow::anyhow!("missing MCP request metadata object")
+                                })?;
+                            anyhow::ensure!(
+                                !meta.contains_key(key),
+                                "MCP request metadata already contains {key}"
+                            );
+                            meta.insert(key.to_owned(), value);
+                        }
+                    }
                     Ok((rewritten_arguments, request_meta))
                 })
                 .await
@@ -719,6 +746,7 @@ async fn handle_approved_mcp_tool_call(
                 &result,
             );
             let mut result = result?;
+            observe_server_result(&prepared_call, &result);
             crate::tools::record_confirmed_code_mode_send(
                 sess,
                 &turn_context.sub_id,
@@ -730,10 +758,6 @@ async fn handle_approved_mcp_tool_call(
             );
             // Capture trusted server metadata before result callbacks or model-facing rewrites.
             elicitation_type = mcp_tool_call_auth_elicitation_type(&server, connector_id, &result);
-            let mcp_tool = McpToolContext::from_prepared_call(
-                &prepared_call,
-                turn_context.config.mcp_servers.get().get(&server),
-            );
             process_mcp_tool_result(
                 sess,
                 turn_context,
@@ -795,21 +819,6 @@ async fn handle_approved_mcp_tool_call(
     if let Some(elicitation_type) = elicitation_type {
         track_mcp_tool_call_elicitation(sess, turn_context, call_id, elicitation_type);
     }
-    // Direct and Code Mode calls share this boundary. Once an approved call enters
-    // it, conservatively attribute returned errors too: they may contain peer data.
-    let source_connector_id = prepared_call
-        .is_host_owned_apps()
-        .then(|| prepared_call.tool_info().connector_id.clone())
-        .flatten();
-    sess.services.executed_tool_calls.record_mcp_source(
-        codex_protocol::mcp::McpAttributionSource {
-            connector_id: source_connector_id,
-            plugin_id: prepared_call.plugin_id().map(str::to_string),
-            server_name: prepared_call.server_name().to_string(),
-            tool_name: prepared_call.tool_info().tool.name.to_string(),
-            first_turn_id: turn_context.sub_id.clone(),
-        },
-    );
     notify_mcp_tool_call_completed(
         sess,
         turn_context,
@@ -1362,7 +1371,7 @@ pub(crate) struct McpToolApprovalMetadata {
     connector_description: Option<String>,
     connected_account_email: Option<String>,
     plugin_id: Option<String>,
-    tool_title: Option<String>,
+    pub(crate) tool_title: Option<String>,
     tool_description: Option<String>,
     mcp_app_resource_uri: Option<String>,
     mcp_app_ui: Option<McpAppUi>,
@@ -1759,6 +1768,7 @@ async fn prepare_mcp_tool_approval(
         &invocation.server,
         metadata.connector_id.as_deref(),
         metadata.link_id.as_deref(),
+        Some((&invocation.tool, metadata.tool_title.as_deref())),
     );
     let action = ApprovalAction::McpToolCall {
         id: call_id.to_string(),
@@ -2720,7 +2730,8 @@ async fn maybe_persist_mcp_tool_approval(
         return;
     }
 
-    sess.reload_user_config_layer().await;
+    // Keep the config reload's large future out of ordinary MCP calls, which never poll it.
+    Box::pin(sess.reload_user_config_layer()).await;
 }
 
 async fn persist_codex_app_tool_approval(

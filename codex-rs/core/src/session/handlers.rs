@@ -273,9 +273,18 @@ pub async fn reload_user_config(sess: &Arc<Session>) {
 pub async fn compact(sess: &Arc<Session>, sub_id: String) {
     // Stop the old turn before the compact task picks up the next turn's environments.
     sess.abort_all_tasks(TurnAbortReason::Replaced).await;
-    let turn_context = sess
-        .new_turn_with_default_settings(sub_id, Default::default())
-        .await;
+    let turn_context = if sess.enabled(Feature::TokenBudget) {
+        sess.new_turn_with_default_settings(sub_id, Default::default())
+            .await
+    } else {
+        let Ok((turn_context, _)) = sess
+            .new_turn_with_sub_id(sub_id, Default::default(), Default::default())
+            .await
+        else {
+            return;
+        };
+        turn_context
+    };
 
     sess.spawn_task(turn_context, Vec::new(), CompactTask).await;
 }
@@ -532,6 +541,7 @@ pub(super) async fn submission_loop(
 ) {
     // Session shutdown and tree shutdown both use the existing teardown handler.
     let mut shutdown_received = false;
+    let mut admission_updates = sess.services.extensions.turn_start_admission_updates();
     let mut catalog_updates = sess.services.models_manager.model_catalog_updates();
     if let Some(updates) = &mut catalog_updates {
         // A resumed chat must also consume a catalog fetched before it was opened.
@@ -587,6 +597,25 @@ pub(super) async fn submission_loop(
                 Ok(sub) => *sub,
                 Err(_) => break,
             },
+            _ = sess.input_queue.pending_work_wake.notified() => {
+                sess.maybe_start_turn_for_pending_work().await;
+                continue;
+            }
+            update = async {
+                match &mut admission_updates {
+                    Some(updates) => updates.changed().await,
+                    None => std::future::pending().await,
+                }
+            } => {
+                if update.is_err() {
+                    admission_updates = None;
+                } else {
+                    // Recheck the normal gate: another pause or shutdown may have
+                    // begun since this notification, and mail must remain queued.
+                    sess.maybe_start_turn_for_pending_work().await;
+                }
+                continue;
+            }
             update = async {
                 match &mut mailbox {
                     Some(updates) => updates.changed().await.map(|()| *updates.borrow_and_update()),

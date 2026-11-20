@@ -847,6 +847,7 @@ impl App {
         let fork = app_server.sidebar_fork(
             self.local_settings.clone(),
             self.side_fork_config(),
+            Some(self.chat_widget.session_workspace_roots().to_vec()),
             parent_thread_id,
             self.selected_server_profile(parent_thread_id),
             if workspace && app_server.can_list_saved_side_chats(parent_thread_id) {
@@ -983,7 +984,7 @@ impl App {
                 if !enter {
                     self.side_companions
                         .entry(child_thread_id)
-                        .or_insert_with(|| SideCompanion::empty(forked.session.cwd.clone()));
+                        .or_insert_with(|| SideCompanion::empty(forked.session.cwd.to_path_buf()));
                 }
                 let channel = self.ensure_thread_channel(child_thread_id);
                 channel.backend_id = Some(app_server.backend_id());

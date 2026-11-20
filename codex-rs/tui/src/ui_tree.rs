@@ -118,6 +118,9 @@ impl TryFrom<&str> for LinkHref {
     }
 }
 
+/// A root row receives the available footer width. A row inside another row takes up to its content width.
+/// An explicit `justify` groups adjacent bare strings into one item. Use separate `text` or `row`
+/// elements to position fields independently. Omitting `justify` keeps gaps between authored children.
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 #[cfg_attr(test, derive(ts_rs::TS), ts(export_to = "statusline.d.ts", optional_fields = nullable))]
@@ -139,6 +142,15 @@ pub(crate) struct RowProps {
     )]
     #[cfg_attr(test, ts(as = "Option<RowWrap>", optional))]
     wrap: RowWrap,
+    /// Position each line's items at the `start`, `center`, or `end`.
+    /// `between` distributes spare columns across the gaps between children.
+    #[serde(
+        default,
+        deserialize_with = "decode::present_token",
+        skip_serializing_if = "Option::is_none"
+    )]
+    #[cfg_attr(test, ts(optional))]
+    justify: Option<RowJustify>,
 }
 
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
@@ -148,6 +160,17 @@ enum RowWrap {
     #[default]
     Nowrap,
     Wrap,
+}
+
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+#[cfg_attr(test, derive(ts_rs::TS), ts(export_to = "statusline.d.ts"))]
+enum RowJustify {
+    #[default]
+    Start,
+    Center,
+    End,
+    Between,
 }
 
 fn is_default<T: Default + PartialEq>(value: &T) -> bool {

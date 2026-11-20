@@ -300,6 +300,7 @@ pub(crate) mod thread_attachment;
 mod thread_event_buffer;
 mod thread_events;
 mod thread_goal_actions;
+mod thread_links;
 mod thread_routing;
 mod thread_session_state;
 mod thread_settings;
@@ -543,15 +544,6 @@ fn resumable_thread(
 
 fn rollout_path_is_resumable(rollout_path: &Path) -> bool {
     std::fs::metadata(rollout_path).is_ok_and(|metadata| metadata.is_file() && metadata.len() > 0)
-}
-
-fn errors_for_cwd(cwd: &Path, response: &SkillsListResponse) -> Vec<SkillErrorInfo> {
-    response
-        .data
-        .iter()
-        .find(|entry| entry.cwd.as_path() == cwd)
-        .map(|entry| entry.errors.clone())
-        .unwrap_or_default()
 }
 
 #[derive(Debug, Default)]
@@ -938,16 +930,7 @@ impl App {
             tui.frame_requester().schedule_frame();
             return Ok(AppRunControl::Continue);
         }
-        let previous = tui.link_hover.position();
-        tui.link_hover.observe(&event);
-        let current = tui.link_hover.position();
-        if previous != current
-            && (self.hovered_sidebar_target(previous) != self.hovered_sidebar_target(current)
-                || previous.is_some_and(|point| self.transcript_view.has_document_link_at(point))
-                || current.is_some_and(|point| self.transcript_view.has_document_link_at(point)))
-        {
-            tui.frame_requester().schedule_frame();
-        }
+        self.observe_pointer(tui, &event);
         if Box::pin(sidebar_close::handle(self, tui, app_server, &event)).await {
             return Ok(AppRunControl::Continue);
         }
@@ -1044,9 +1027,9 @@ impl App {
             return Ok(AppRunControl::Continue);
         }
         let transcript_owns_input = match (&event, &self.overlay) {
-            (TuiEvent::Key(key), Some(Overlay::Transcript(overlay))) => {
-                overlay.owns_interaction_key(*key)
-            }
+            (TuiEvent::Key(key), Some(overlay)) => overlay
+                .input_transcript()
+                .is_some_and(|view| view.owns_interaction_key(*key)),
             (TuiEvent::Key(key), None) => {
                 tui.is_owned_screen()
                     && self.chat_widget.no_modal_or_popup_active()
@@ -1293,10 +1276,11 @@ impl App {
         {
             if self.overlay.is_none()
                 && self.chat_widget.no_modal_or_popup_active()
-                && self.chat_widget.is_read_only_view()
-                && (crate::key_hint::plain(KeyCode::Esc).is_press(*key)
-                    || (crate::key_hint::plain(KeyCode::Left).is_press(*key)
-                        && self.chat_widget.agents_navigation_key_available()))
+                && ((self.chat_widget.is_read_only_view()
+                    && crate::key_hint::plain(KeyCode::Esc).is_press(*key))
+                    || self
+                        .chat_widget
+                        .blocked_thread_command_center_key_pressed(*key))
             {
                 self.open_agents_overview(app_server);
             } else if self

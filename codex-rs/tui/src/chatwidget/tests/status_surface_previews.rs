@@ -154,7 +154,7 @@ async fn status_surface_preview_lines_live_only_snapshot() {
 #[tokio::test]
 async fn status_line_setup_popup_live_only_snapshot() {
     let (mut chat, _rx, _op_rx) = make_chatwidget_manual(/*model_override*/ None).await;
-    chat.set_feature_enabled(Feature::TuiExtensionsStatusLine, /*enabled*/ true);
+    chat.statusline_feature_enabled = true;
     cache_project_root(&mut chat, "preview-live-root");
     chat.status_line_branch = Some("feature/live-preview-branch".to_string());
     chat.thread_name = Some("Live preview thread".to_string());
@@ -173,7 +173,7 @@ async fn status_line_setup_popup_live_only_snapshot() {
 #[tokio::test]
 async fn status_line_setup_popup_cloud_hides_create() {
     let (mut chat, _rx, _op_rx) = make_chatwidget_manual(/*model_override*/ None).await;
-    chat.set_feature_enabled(Feature::TuiExtensionsStatusLine, /*enabled*/ true);
+    chat.statusline_feature_enabled = true;
     chat.thread_params_mode = crate::ThreadParamsMode::Cloud;
     assert_chatwidget_snapshot!(
         "status_line_setup_popup_native_cloud",
@@ -565,6 +565,17 @@ async fn missing_project_root_uses_different_status_and_title_preview_sources() 
 
     assert_eq!(status_preview, "my-project");
     assert_eq!(title_preview, "project");
+
+    chat.remote_connection = crate::status::remote_connection::remote_connection_status_value(
+        &crate::AppServerTarget::Cloud,
+        /*server_version*/ None,
+    );
+    chat.current_cwd = PathUri::try_from(LegacyAppPathString::from_string(r"D:\workspace\remote"))
+        .expect("absolute server path");
+    assert_snapshot!(
+        title_preview_line(&mut chat, &[TerminalTitleItem::Project]),
+        @"remote"
+    );
 }
 
 #[tokio::test]

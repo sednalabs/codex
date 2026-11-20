@@ -2,6 +2,45 @@ use codex_app_server_protocol::JSONRPCErrorError;
 use codex_thread_store::ThreadStoreError;
 use pretty_assertions::assert_eq;
 
+#[cfg(unix)]
+#[test]
+fn thread_cwd_rejects_invalid_utf8() {
+    use std::ffi::OsStr;
+    use std::os::unix::ffi::OsStrExt;
+
+    let cwd = codex_utils_absolute_path::AbsolutePathBuf::from_absolute_path(OsStr::from_bytes(
+        b"/workspace-\xFF",
+    ))
+    .expect("absolute native path");
+    assert_eq!(
+        super::thread_cwd_for_api(&cwd).expect_err("cwd cannot be represented as a wire string"),
+        JSONRPCErrorError {
+            code: crate::error_code::INTERNAL_ERROR_CODE,
+            message: "cannot encode thread cwd: path contains invalid UTF-8".into(),
+            data: None,
+        }
+    );
+}
+
+#[test]
+fn runtime_workspace_roots_reject_home_relative_paths() {
+    use codex_utils_absolute_path::AbsolutePathBufGuard;
+    use codex_utils_path_uri::LegacyAppPathString;
+
+    let home = std::env::current_dir().expect("current directory");
+    let result = AbsolutePathBufGuard::with_home_directory(&home, || {
+        super::native_runtime_workspace_roots(vec![LegacyAppPathString::from_string("~/extra")])
+    });
+    assert_eq!(
+        result.expect_err("runtime workspace root must be absolute"),
+        JSONRPCErrorError {
+            code: crate::error_code::INVALID_REQUEST_ERROR_CODE,
+            message: "invalid runtimeWorkspaceRoots: path is not absolute: ~/extra".into(),
+            data: None,
+        }
+    );
+}
+
 #[test]
 fn storage_failure_classification_does_not_change_mutation_error_policy() {
     for error in [
@@ -183,6 +222,127 @@ mod thread_processor_behavior_tests {
     use std::path::PathBuf;
     use std::sync::Arc;
     use tempfile::TempDir;
+
+    #[tokio::test]
+    async fn full_resume_restores_only_recoverable_mcp_results() -> Result<()> {
+        use codex_protocol::protocol::HasLegacyEvent;
+        use core_test_support::responses;
+
+        let server = responses::start_mock_server().await;
+        responses::mount_sse_once(
+            &server,
+            responses::sse(vec![
+                responses::ev_response_created("seed"),
+                responses::ev_completed("seed"),
+            ]),
+        )
+        .await;
+        let test = core_test_support::test_codex::test_codex()
+            .with_history_mode(ThreadHistoryMode::Paginated)
+            .build_with_auto_env(&server)
+            .await?;
+        test.submit_turn("seed history").await?;
+        let store = test.thread_store.as_ref();
+        let thread_id = test.session_configured.thread_id;
+        let started: EventMsg =
+            serde_json::from_value(json!({"type": "turn_started", "turn_id": "turn"}))?;
+        let mut live = ThreadHistoryBuilder::new();
+        live.handle_live_paginated_event(&started);
+        let mut saved = vec![RolloutItem::EventMsg(started)];
+        let completion = |id: &str, text: &str, view: &str| -> serde_json::Result<EventMsg> {
+            serde_json::from_value(json!({
+                "type": "item_completed", "thread_id": thread_id, "turn_id": "turn",
+                "started_at_ms": 2000, "completed_at_ms": 2007,
+                "item": {
+                    "type": "McpToolCall", "id": id, "server": "docs", "tool": "read",
+                    "arguments": {}, "status": if id == "failed" { "failed" } else { "completed" },
+                    "duration": {"secs": 0, "nanos": 7000000},
+                    "result": {"content": [{"type": "text", "text": text}], "isError": id == "failed",
+                               "structuredContent": {"id": id}, "_meta": {"view": view}}
+                }
+            }))
+        };
+        let deliver = |live: &mut ThreadHistoryBuilder, event: &EventMsg| {
+            live.handle_live_paginated_event(event);
+            for legacy in event.as_legacy_events(/*show_raw_agent_reasoning*/ false) {
+                live.handle_live_paginated_event(&legacy);
+            }
+        };
+
+        // The prepared full page predates a correction to this same call ID.
+        let old = completion("exact", "old result", "detail")?;
+        deliver(&mut live, &old);
+        saved.push(RolloutItem::EventMsg(old));
+        let mut page = live.active_turn_snapshot().expect("prepared turn");
+        let ids = ["exact", "preview", "metadata", "missing", "failed"];
+        let oversized = "x".repeat(200_000);
+        for id in ids {
+            let text = if id == "preview" {
+                &oversized
+            } else {
+                "full result"
+            };
+            let event = completion(id, text, "detail")?;
+            deliver(&mut live, &event);
+            match id {
+                "missing" => {}
+                "metadata" => saved.push(RolloutItem::EventMsg(completion(id, text, "summary")?)),
+                _ => saved.push(RolloutItem::EventMsg(event)),
+            }
+        }
+        store
+            .append_items(codex_thread_store::AppendThreadItemsParams {
+                thread_id,
+                items: saved,
+            })
+            .await?;
+        let rows = ThreadRequestProcessor::read_thread_items(
+            store,
+            ThreadItemsReadParams {
+                thread_id: thread_id.to_string(),
+                turn_id: "turn".to_string(),
+                item_ids: ids.map(str::to_string).into(),
+            },
+        )
+        .await
+        .expect("read saved results");
+        assert_eq!(
+            rows.data
+                .iter()
+                .map(|entry| entry.item.id())
+                .collect::<Vec<_>>(),
+            ["exact", "preview", "metadata", "failed"]
+        );
+
+        let expected = live.active_turn_snapshot().expect("full turn");
+        assert_eq!(
+            expected
+                .items
+                .iter()
+                .map(ThreadItem::id)
+                .collect::<Vec<_>>(),
+            ids
+        );
+        live.release_saved_mcp_results(&rows.data);
+        let mut resumed = live.active_turn_snapshot().expect("evicted turn");
+        let mut evicted = expected.clone();
+        let ThreadItemPayload::McpToolCall { result, .. } = &mut evicted.items[0].payload else {
+            panic!("expected MCP call")
+        };
+        assert!(result.take().is_some());
+        assert_eq!(resumed, evicted);
+
+        crate::request_processors::thread_lifecycle::restore_evicted_payloads(
+            store,
+            thread_id,
+            &mut resumed,
+            std::iter::once(&mut page),
+        )
+        .await
+        .expect("full reconnect");
+        assert_eq!(resumed, expected);
+        Ok(())
+    }
 
     fn dynamic_tool(
         namespace: Option<&str>,
@@ -771,7 +931,8 @@ mod thread_processor_behavior_tests {
                 &request,
                 &config_snapshot,
                 /* selected_service_tier */ Some("flex"),
-            ),
+            )
+            .unwrap(),
             vec!["service_tier requested=Some(\"priority\") active=Some(\"flex\")".to_string()]
         );
     }
@@ -1286,6 +1447,7 @@ mod thread_processor_behavior_tests {
         ensure_conversation_listener(
             ListenerTaskContext {
                 thread_manager: test.thread_manager.clone(),
+                thread_store: Arc::clone(&test.thread_store),
                 thread_state_manager,
                 outgoing: outgoing.clone(),
                 pending_thread_unloads: Default::default(),

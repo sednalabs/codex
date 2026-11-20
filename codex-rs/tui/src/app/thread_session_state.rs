@@ -74,6 +74,7 @@ impl App {
         &self,
         thread_id: ThreadId,
         thread: &Thread,
+        cwd: Option<codex_utils_path_uri::PathUri>,
     ) -> ThreadSessionState {
         let permission_profile = self.current_permission_profile();
         let active_permission_profile = self.current_active_permission_profile();
@@ -108,8 +109,15 @@ impl App {
                 approvals_reviewer: self.config.approvals_reviewer,
                 permission_profile: permission_profile.clone(),
                 active_permission_profile: active_permission_profile.clone(),
-                cwd: thread.cwd.clone(),
-                runtime_workspace_roots: self.config.workspace_roots.clone(),
+                cwd: cwd
+                    .clone()
+                    .unwrap_or_else(|| self.config.cwd.clone().into()),
+                runtime_workspace_roots: self
+                    .config
+                    .workspace_roots
+                    .iter()
+                    .map(codex_utils_path_uri::PathUri::from_abs_path)
+                    .collect(),
                 instruction_source_paths: Vec::new(),
                 reasoning_effort: self.chat_widget.current_reasoning_effort(),
                 collaboration_mode: None,
@@ -129,7 +137,9 @@ impl App {
         session.daybreak_enabled = thread.daybreak_enabled.unwrap_or(false);
         session.thread_name = thread.name.clone();
         session.model_provider_id = thread.model_provider.clone();
-        session.set_cwd_retargeting_implicit_runtime_workspace_root(thread.cwd.clone());
+        if let Some(cwd) = cwd {
+            session.set_cwd_retargeting_implicit_runtime_workspace_root(cwd);
+        }
         session.permission_profile = permission_profile;
         session.active_permission_profile = active_permission_profile;
         session.instruction_source_paths = Vec::new();
@@ -200,8 +210,8 @@ mod tests {
             approvals_reviewer: ApprovalsReviewer::User,
             permission_profile: PermissionProfile::read_only(),
             active_permission_profile: None,
-            cwd: cwd.abs(),
-            runtime_workspace_roots: vec![cwd.abs()],
+            cwd: cwd.abs().into(),
+            runtime_workspace_roots: vec![cwd.abs().into()],
             instruction_source_paths: Vec::new(),
             reasoning_effort: None,
             collaboration_mode: None,
@@ -452,7 +462,7 @@ mod tests {
             recency_at: Some(2),
             status: codex_app_server_protocol::ThreadStatus::Idle,
             path: None,
-            cwd: test_path_buf("/tmp/read").abs(),
+            cwd: test_path_buf("/tmp/read").abs().into(),
             cli_version: "0.0.0".to_string(),
             source: codex_app_server_protocol::SessionSource::Unknown,
             can_accept_direct_input: None,
@@ -468,7 +478,11 @@ mod tests {
         app.chat_widget.handle_thread_session(primary_session);
 
         let session = app
-            .session_state_for_thread_read(read_thread_id, &read_thread)
+            .session_state_for_thread_read(
+                read_thread_id,
+                &read_thread,
+                read_thread.cwd.to_inferred_path_uri(),
+            )
             .await;
 
         assert_eq!(

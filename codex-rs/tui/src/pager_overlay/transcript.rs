@@ -24,12 +24,21 @@ pub(crate) struct TranscriptOverlay {
     content_area: Rect,
     cursor: Option<(u16, u16)>,
     notice: Option<String>,
+    pub(crate) pending_thread_link: Option<codex_protocol::ThreadId>,
     pub(crate) browsing_footer: Option<Line<'static>>,
     find_transcript: Vec<crate::key_hint::KeyBinding>,
     select_transcript: Vec<crate::key_hint::KeyBinding>,
     pub(super) pending_follow_close: Option<(u64, bool)>,
     pending_select_mode: bool,
     is_done: bool,
+}
+
+impl Overlay {
+    pub(crate) fn set_keymap_bindings(&mut self, keymap: &RuntimeKeymap) {
+        if let Self::Transcript(view) = self {
+            view.set_keymap_bindings(keymap);
+        }
+    }
 }
 
 impl TranscriptOverlay {
@@ -64,6 +73,7 @@ impl TranscriptOverlay {
             content_area: Rect::default(),
             cursor: None,
             notice: None,
+            pending_thread_link: None,
             browsing_footer: None,
             find_transcript: Vec::new(),
             select_transcript: Vec::new(),
@@ -543,10 +553,12 @@ impl TranscriptOverlay {
                 Ok(status) => status.message("selection"),
                 Err(error) => error,
             });
-        } else if let ViewAction::OpenLink(url) = action
-            && let Err(error) = webbrowser::open(&url)
-        {
-            self.notice = Some(format!("Could not open link: {error}"));
+        } else if let ViewAction::OpenLink(url) = action {
+            if let Some(thread_id) = crate::thread_links::thread_id(&url) {
+                self.pending_thread_link = Some(thread_id);
+            } else if let Err(error) = webbrowser::open(&url) {
+                self.notice = Some(format!("Could not open link: {error}"));
+            }
         }
     }
 

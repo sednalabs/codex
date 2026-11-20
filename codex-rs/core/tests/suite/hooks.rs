@@ -1,3 +1,4 @@
+use std::collections::BTreeMap;
 use std::fs;
 use std::path::Path;
 
@@ -29,6 +30,8 @@ use codex_protocol::models::ResponseItem;
 use codex_protocol::openai_models::ModelsResponse;
 use codex_protocol::openai_models::ReasoningEffort;
 use codex_protocol::permissions::NetworkSandboxPolicy;
+use codex_protocol::protocol::AdditionalContextEntry;
+use codex_protocol::protocol::AdditionalContextKind;
 use codex_protocol::protocol::AskForApproval;
 use codex_protocol::protocol::EventMsg;
 use codex_protocol::protocol::HookEventName;
@@ -1287,21 +1290,6 @@ fn sse_event(event: Value) -> String {
     sse(vec![event])
 }
 
-fn request_message_input_texts(body: &[u8], role: &str) -> Vec<String> {
-    let body: Value = serde_json::from_slice(body).expect("parse request body");
-    body.get("input")
-        .and_then(Value::as_array)
-        .into_iter()
-        .flatten()
-        .filter(|item| item.get("type").and_then(Value::as_str) == Some("message"))
-        .filter(|item| item.get("role").and_then(Value::as_str) == Some(role))
-        .filter_map(|item| item.get("content").and_then(Value::as_array))
-        .flatten()
-        .filter(|span| span.get("type").and_then(Value::as_str) == Some("input_text"))
-        .filter_map(|span| span.get("text").and_then(Value::as_str).map(str::to_owned))
-        .collect()
-}
-
 #[tokio::test]
 async fn stop_hook_can_block_multiple_times_in_same_turn() -> Result<()> {
     skip_if_no_network!(Ok(()));
@@ -1474,6 +1462,93 @@ async fn session_start_hook_skips_persistence_for_non_local_thread_store() -> Re
     assert_eq!(hook_inputs[0]["transcript_path"], Value::Null);
     assert_eq!(store.calls().await.persist_thread, 0);
 
+    Ok(())
+}
+
+#[tokio::test]
+async fn session_start_stop_does_not_deliver_submitted_context() -> Result<()> {
+    skip_if_no_network!(Ok(()));
+
+    let server = start_mock_server().await;
+    let responses = mount_sse_sequence(
+        &server,
+        vec![
+            sse(vec![ev_completed("resp-1")]),
+            sse(vec![ev_completed("resp-2")]),
+        ],
+    )
+    .await;
+    let hook_gate = tokio::net::TcpListener::bind("127.0.0.1:0").await?;
+    let port = hook_gate.local_addr()?.port();
+    let test = test_codex()
+        .with_pre_build_hook(move |home| {
+            let script = home.join("stop_session_start.py");
+            fs::write(
+                &script,
+                format!(
+                    r#"import json, socket
+with socket.create_connection(("127.0.0.1", {port})) as gate:
+    gate.recv(1)
+print(json.dumps({{"continue": False}}))
+"#
+                ),
+            )
+            .expect("write hook script");
+            let hooks = json!({"hooks": {"SessionStart": [{"hooks": [{
+                "type": "command", "command": format!("python3 {}", script.display())
+            }]}]}});
+            fs::write(home.join("hooks.json"), hooks.to_string()).expect("write hook config");
+        })
+        .with_config(trust_discovered_hooks)
+        // SessionStart must run the Python hook installed in the host test home.
+        .build(&server)
+        .await?;
+    let context = BTreeMap::from([(
+        "continuation".to_owned(),
+        AdditionalContextEntry::new(
+            "resume the task".to_owned(),
+            AdditionalContextKind::Application,
+        ),
+    )]);
+    test.codex
+        .start_or_steer_turn(
+            TurnInputRequest::user_input(vec![UserInput::Text {
+                text: "stopped prompt".to_owned(),
+                text_elements: Vec::new(),
+            }])
+            .with_additional_context(context.clone()),
+        )
+        .await?;
+    let (held_hook, _) = timeout(Duration::from_secs(10), hook_gate.accept()).await??;
+    test.codex
+        .start_or_steer_turn(TurnInputRequest::user_input(vec![UserInput::Text {
+            text: "queued steer".to_owned(),
+            text_elements: Vec::new(),
+        }]))
+        .await?;
+    drop(held_hook);
+    wait_for_event(&test.codex, |event| {
+        matches!(event, EventMsg::TurnComplete(_))
+    })
+    .await;
+
+    test.codex
+        .start_turn_if_idle(
+            TurnInputRequest::user_input(Vec::new()).with_additional_context(context),
+        )
+        .await?;
+    wait_for_event(&test.codex, |event| {
+        matches!(event, EventMsg::TurnComplete(_))
+    })
+    .await;
+
+    let requests = responses.requests();
+    assert_eq!(requests.len(), 2);
+    let texts = requests[0].message_input_texts("user");
+    assert!(texts.iter().any(|text| text == "queued steer"));
+    assert!(!texts.iter().any(|text| text == "stopped prompt"));
+    assert!(!requests[0].has_content_kinds(&["additional_content.continuation"]));
+    assert!(requests[1].has_content_kinds(&["additional_content.continuation"]));
     Ok(())
 }
 
@@ -2837,41 +2912,53 @@ async fn blocked_user_prompt_submit_persists_additional_context_for_next_turn() 
 async fn blocked_queued_prompt_does_not_strand_earlier_accepted_prompt() -> Result<()> {
     skip_if_no_network!(Ok(()));
 
-    let (gate_completed_tx, gate_completed_rx) = oneshot::channel();
-    let first_chunks = vec![
-        StreamingSseChunk {
-            gate: None,
-            body: sse_event(ev_response_created("resp-1")),
-        },
-        StreamingSseChunk {
-            gate: None,
-            body: sse_event(ev_message_item_added("msg-1", "")),
-        },
-        StreamingSseChunk {
-            gate: None,
-            body: sse_event(ev_output_text_delta("first ")),
-        },
-        StreamingSseChunk {
-            gate: Some(gate_completed_rx),
-            body: sse_event(ev_message_item_done("msg-1", "first response")),
-        },
-        StreamingSseChunk {
-            gate: None,
-            body: sse_event(ev_completed("resp-1")),
-        },
-    ];
-    let second_chunks = vec![StreamingSseChunk {
-        gate: None,
-        body: sse(vec![
-            ev_response_created("resp-2"),
-            ev_assistant_message("msg-2", "accepted queued prompt handled"),
-            ev_completed("resp-2"),
-        ]),
-    }];
-    let (server, _completions) =
-        start_streaming_sse_server(vec![first_chunks, second_chunks]).await;
+    #[derive(Default)]
+    struct FirstMessageGate {
+        entered: tokio::sync::Notify,
+        release: tokio::sync::Notify,
+    }
+
+    impl codex_extension_api::TurnLifecycleContributor for FirstMessageGate {
+        fn on_item_completed<'a>(
+            &'a self,
+            _thread_store: &'a codex_extension_api::ExtensionData,
+            _turn_store: &'a codex_extension_api::ExtensionData,
+            item: &'a codex_protocol::items::TurnItem,
+        ) -> codex_extension_api::ExtensionFuture<'a, ()> {
+            Box::pin(async move {
+                if item.id() == "msg-1" {
+                    self.entered.notify_one();
+                    self.release.notified().await;
+                }
+            })
+        }
+    }
+
+    let gate = Arc::new(FirstMessageGate::default());
+    let mut extensions = codex_extension_api::ExtensionRegistryBuilder::new();
+    extensions.turn_lifecycle_contributor(gate.clone());
+    let server = start_mock_server().await;
+    let responses = mount_sse_sequence(
+        &server,
+        vec![
+            sse(vec![
+                ev_response_created("resp-1"),
+                ev_message_item_added("msg-1", ""),
+                ev_output_text_delta("first "),
+                ev_message_item_done("msg-1", "first response"),
+                ev_completed("resp-1"),
+            ]),
+            sse(vec![
+                ev_response_created("resp-2"),
+                ev_assistant_message("msg-2", "accepted queued prompt handled"),
+                ev_completed("resp-2"),
+            ]),
+        ],
+    )
+    .await;
 
     let mut builder = test_codex()
+        .with_extensions(Arc::new(extensions.build()))
         .with_model("gpt-5.4")
         .with_pre_build_hook(|home| {
             write_user_prompt_submit_hook(home, "blocked queued prompt", BLOCKED_PROMPT_CONTEXT)
@@ -2881,7 +2968,8 @@ async fn blocked_queued_prompt_does_not_strand_earlier_accepted_prompt() -> Resu
             trust_discovered_hooks(config);
             config.otel.log_user_prompt = true;
         });
-    let test = builder.build_with_streaming_server(&server).await?;
+    // The hook fixture executes a host script from this temporary home.
+    let test = builder.build(&server).await?;
 
     test.codex
         .start_or_steer_turn(TurnInputRequest::user_input(vec![UserInput::Text {
@@ -2890,42 +2978,39 @@ async fn blocked_queued_prompt_does_not_strand_earlier_accepted_prompt() -> Resu
         }]))
         .await?;
 
-    wait_for_event(&test.codex, |event| {
-        matches!(event, EventMsg::AgentMessageContentDelta(_))
-    })
-    .await;
+    // A steer can cancel the HTTP stream even if its mock is gated. Stop the turn
+    // inside message completion instead, so both steers are in the same pending batch.
+    timeout(Duration::from_secs(30), gate.entered.notified()).await?;
 
-    for text in ["accepted queued prompt", "blocked queued prompt"] {
+    for (text, context) in [
+        ("accepted queued prompt", "accepted-context-value"),
+        ("blocked queued prompt", "blocked-context-value"),
+    ] {
         test.codex
-            .start_or_steer_turn(TurnInputRequest::user_input(vec![UserInput::Text {
-                text: text.to_string(),
-                text_elements: Vec::new(),
-            }]))
+            .start_or_steer_turn(
+                TurnInputRequest::user_input(vec![UserInput::Text {
+                    text: text.to_string(),
+                    text_elements: Vec::new(),
+                }])
+                .with_additional_context(BTreeMap::from([(
+                    "source".to_string(),
+                    AdditionalContextEntry::new(
+                        context.to_string(),
+                        AdditionalContextKind::Untrusted,
+                    ),
+                )])),
+            )
             .await?;
     }
 
-    sleep(Duration::from_millis(100)).await;
-    let _ = gate_completed_tx.send(());
-
-    let requests = tokio::time::timeout(Duration::from_secs(30), async {
-        loop {
-            let requests = server.requests().await;
-            if requests.len() >= 2 {
-                break requests;
-            }
-            sleep(Duration::from_millis(50)).await;
-        }
-    })
-    .await
-    .expect("second request should arrive")
-    .into_iter()
-    .collect::<Vec<_>>();
+    gate.release.notify_one();
 
     wait_for_event(&test.codex, |event| {
         matches!(event, EventMsg::TurnComplete(_))
     })
     .await;
 
+    let requests = responses.requests();
     assert_eq!(requests.len(), 2);
 
     logs_assert(|lines| {
@@ -2946,9 +3031,20 @@ async fn blocked_queued_prompt_does_not_strand_earlier_accepted_prompt() -> Resu
     });
     let rollout = fs::read_to_string(test.codex.rollout_path().expect("rollout path"))?;
     assert!(!rollout.contains("blocked queued prompt"));
+    assert!(!rollout.contains("blocked-context-value"));
     assert!(rollout.contains("accepted queued prompt"));
 
-    let second_user_texts = request_message_input_texts(&requests[1], "user");
+    let second_user_texts = requests[1].message_input_texts("user");
+    let second_request = requests[1].body_json();
+    assert!(
+        second_request["input"]
+            .as_array()
+            .expect("request input")
+            .iter()
+            .any(|item| item["type"] == "function_call_output"
+                && item["name"] == "source"
+                && item["output"] == "accepted-context-value")
+    );
     assert!(
         second_user_texts.contains(&"accepted queued prompt".to_string()),
         "second request should include the accepted queued prompt",
@@ -3024,7 +3120,6 @@ async fn blocked_queued_prompt_does_not_strand_earlier_accepted_prompt() -> Resu
         ],
     );
 
-    server.shutdown().await;
     Ok(())
 }
 
@@ -6217,7 +6312,7 @@ enum ToolDispatchCase {
 #[test_case::test_case(ToolDispatchCase::SyncHook; "streaming text and tools do not wait for synchronous pricing")]
 #[test_case::test_case(ToolDispatchCase::InterruptedHook; "interrupt discards the held response and its charge")]
 #[test_case::test_case(ToolDispatchCase::ExhaustedHook; "the response bill blocks its own tool")]
-#[test_case::test_case(ToolDispatchCase::OverflowHook(AgentRuntimeOwnership::Host); "the host receives an overflow lower bound and keeps its policy")]
+#[test_case::test_case(ToolDispatchCase::OverflowHook(AgentRuntimeOwnership::Host); "an overflowing hook charge never reaches the host")]
 #[test_case::test_case(ToolDispatchCase::OverflowHook(AgentRuntimeOwnership::Controller); "a native overflow closes even the largest allowance")]
 #[tokio::test]
 async fn model_request_post_hook_orders_tool_dispatch(case: ToolDispatchCase) -> Result<()> {
@@ -6520,19 +6615,7 @@ async fn model_request_post_hook_orders_tool_dispatch(case: ToolDispatchCase) ->
         );
         assert!(!marker.exists());
         if owner == AgentRuntimeOwnership::Host {
-            let reports = accounting.reports.lock().expect("usage reports");
-            let [bill] = reports.as_slice() else {
-                anyhow::bail!("expected one partial bill: {reports:?}");
-            };
-            assert_eq!(bill.additional_budget_units, 1e308);
-            assert!(bill.additional_budget_units_overflowed);
-            assert_eq!(
-                bill.usage
-                    .as_ref()
-                    .and_then(|usage| usage.codex_rollout_budget_units.as_ref())
-                    .and_then(serde_json::Number::as_f64),
-                Some(1.0)
-            );
+            assert!(accounting.reports.lock().expect("usage reports").is_empty());
         }
         test.codex
             .start_or_steer_turn(TurnInputRequest::user_input(vec![UserInput::Text {

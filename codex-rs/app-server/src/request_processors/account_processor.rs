@@ -2,6 +2,7 @@ use super::bedrock_auth::BedrockProviderConfig;
 use super::bedrock_auth::clear_user_model_provider_if_bedrock;
 use super::bedrock_auth::prepare_bedrock_provider;
 use super::config_processor::map_error as map_config_error;
+use super::config_processor::refresh_guardian_policy;
 use super::*;
 use crate::auth_mode::auth_mode_to_api;
 use crate::external_auth::ExternalAuthBridge;
@@ -963,7 +964,8 @@ impl AccountRequestProcessor {
             .await
             .map_err(|err| internal_error(format!("failed to set external auth: {err}")))?;
         self.config_manager
-            .update_managed_config_loader(self.auth_manager.clone(), &self.config);
+            .update_managed_config_loader(self.auth_manager.clone(), &self.config)
+            .await;
         self.config_manager
             .sync_default_client_residency_requirement()
             .await;
@@ -990,13 +992,15 @@ impl AccountRequestProcessor {
     ) {
         let auth_changes = self.auth_manager.auth_change_state_receiver();
         let owner_generation = auth_changes.borrow().owner_generation;
-        if payload.success
-            && let Err(error) = self.read_account(/*request*/ None).await
-        {
+        let logged_in = payload.success;
+        if logged_in && let Err(error) = self.read_account(/*request*/ None).await {
             payload.success = false;
             payload.error = Some(error.to_string());
         }
-        if payload.success && auth_changes.borrow().owner_generation == owner_generation {
+        if logged_in && auth_changes.borrow().owner_generation == owner_generation {
+            refresh_guardian_policy(&self.thread_manager).await;
+        }
+        if logged_in && auth_changes.borrow().owner_generation == owner_generation {
             Self::maybe_refresh_plugin_caches_for_current_config(
                 &self.config_manager,
                 &self.thread_manager,
@@ -1005,7 +1009,6 @@ impl AccountRequestProcessor {
             .await;
         }
 
-        let success = payload.success;
         self.outgoing
             .send_account_notification(
                 /*connection_id*/ None,
@@ -1015,7 +1018,7 @@ impl AccountRequestProcessor {
             )
             .await;
 
-        if success {
+        if logged_in {
             let notification = self.current_account_updated_notification();
             self.outgoing
                 .send_account_notification(
@@ -1040,7 +1043,8 @@ impl AccountRequestProcessor {
                 .invalidate_mcp_runtimes_for(McpRefreshReason::AccountAuthReloaded)
                 .await;
             self.config_manager
-                .update_managed_config_loader(self.auth_manager.clone(), &self.config);
+                .update_managed_config_loader(self.auth_manager.clone(), &self.config)
+                .await;
             self.config_manager
                 .sync_default_client_residency_requirement()
                 .await;
@@ -1071,6 +1075,7 @@ impl AccountRequestProcessor {
         self.model_catalog.invalidate().await;
         *self.workspace_routing.lock().await = None;
 
+        refresh_guardian_policy(&self.thread_manager).await;
         Self::maybe_refresh_plugin_caches_for_current_config(
             &self.config_manager,
             &self.thread_manager,
@@ -1583,7 +1588,9 @@ pub(crate) async fn logout_configured_account(
         .reload_with_cached_auth()
         .await
         .map_err(|err| internal_error(format!("logout failed: {err}")))?;
-    config_manager.update_managed_config_loader(Arc::clone(auth_manager), fallback_config);
+    config_manager
+        .update_managed_config_loader(Arc::clone(auth_manager), fallback_config)
+        .await;
     let config = config_manager
         .load_latest_config(/*fallback_cwd*/ None)
         .await;

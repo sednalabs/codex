@@ -363,11 +363,11 @@ async fn live_center_columns() {
         .insert(ThreadId::from_u128(/*value*/ 47));
     let mut view = app.agents_overview_view(threads, Some(current));
     let narrow = screen(&view, /*width*/ 50, /*height*/ 24);
-    assert!(narrow.contains("● Error: ☁︎ Failed task"));
+    assert!(narrow.contains("● Error: ☁️  Failed task"));
     assert!(
         narrow
             .lines()
-            .any(|line| { line.contains("☁︎ A longer task title") && line.contains('…') })
+            .any(|line| { line.contains("☁️  A longer task title") && line.contains('…') })
     );
     insta::assert_snapshot!(screen(&view, /*width*/ 160, /*height*/ 22));
     view.pinned_thread_ranks = None;
@@ -415,7 +415,7 @@ async fn live_center_pages_visible_rows_without_wrapping() {
                 );
                 thread.updated_at -= index as i64;
                 if index >= 10 {
-                    thread.cwd = test_path_buf("/tmp/second-project").abs();
+                    thread.cwd = test_path_buf("/tmp/second-project").abs().into();
                 }
                 thread
             })
@@ -477,7 +477,9 @@ async fn live_center_navigates_sections() {
                 ThreadStatus::Idle,
             );
             thread.updated_at -= index as i64;
-            thread.cwd = test_path_buf(&format!("/tmp/project-{}", index / 2)).abs();
+            thread.cwd = test_path_buf(&format!("/tmp/project-{}", index / 2))
+                .abs()
+                .into();
             thread
         })
         .collect();

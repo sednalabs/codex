@@ -6,6 +6,7 @@ use std::sync::Weak;
 use anyhow::Context;
 use codex_core::ThreadManager;
 use codex_core::config::Config;
+use codex_core::guardian_review::ReviewRetrieval;
 use codex_extension_api::ExtensionData;
 use codex_extension_api::ExtensionFuture;
 use codex_extension_api::ExtensionRegistryBuilder;
@@ -15,8 +16,11 @@ use codex_extension_api::ThreadStopInput;
 use codex_extension_api::TurnAbortInput;
 use codex_extension_api::TurnLifecycleContributor;
 use codex_extension_api::TurnStopInput;
+use codex_features::GuardianV3HousekeeperConfigToml;
 use codex_guardian_reviewer::ReviewerTasks;
+use codex_history::HistoryInitialization;
 use codex_message_board::AgentMessageBoard;
+use codex_message_board::LocalAgentMessageBoard;
 use codex_message_board::MessageBoardHost;
 use codex_protocol::AgentPath;
 use codex_protocol::ThreadId;
@@ -29,25 +33,51 @@ use crate::EvidenceCursor;
 use crate::Housekeeper;
 use crate::cutoff::RootEvidence;
 use crate::local_board;
+use crate::local_board_options;
 
 pub fn install(
     registry: &mut ExtensionRegistryBuilder<Config>,
     manager: Weak<ThreadManager>,
-    sqlite: SqliteConfig,
+    config: &Config,
     board_host: impl Fn(ThreadId) -> Arc<dyn MessageBoardHost> + Send + Sync + 'static,
 ) {
+    let settings = config.guardian_v3.as_deref();
     let host = Arc::new(Host {
         manager,
-        sqlite,
+        storage: if settings
+            .and_then(|settings| settings.message_board_in_memory)
+            .unwrap_or(false)
+        {
+            BoardStorage::Memory
+        } else {
+            BoardStorage::File(config.sqlite_config().clone())
+        },
+        housekeeper: Arc::new(
+            settings
+                .and_then(|settings| settings.housekeeper.clone())
+                .unwrap_or_default(),
+        ),
+        retrieval: crate::board_retrieval(
+            settings
+                .and_then(|settings| settings.reviewer.as_ref())
+                .and_then(|reviewer| reviewer.retrieval_instructions.as_deref()),
+        ),
         board_host: Box::new(board_host),
     });
     registry.thread_lifecycle_contributor(host.clone());
     registry.turn_lifecycle_contributor(host);
 }
 
+enum BoardStorage {
+    File(SqliteConfig),
+    Memory,
+}
+
 struct Host {
     manager: Weak<ThreadManager>,
-    sqlite: SqliteConfig,
+    storage: BoardStorage,
+    housekeeper: Arc<GuardianV3HousekeeperConfigToml>,
+    retrieval: ReviewRetrieval,
     board_host: Box<dyn Fn(ThreadId) -> Arc<dyn MessageBoardHost> + Send + Sync>,
 }
 
@@ -63,6 +93,17 @@ impl Host {
         root: ThreadId,
         input: &ThreadReadyInput<'_, Config>,
     ) -> anyhow::Result<()> {
+        // On resume the intake cursor starts at the tail. A new in-memory board
+        // cannot serve earlier evidence, so leave its attached reviewer unavailable.
+        if matches!(self.storage, BoardStorage::Memory) {
+            anyhow::ensure!(
+                matches!(
+                    input.history_initialization,
+                    HistoryInitialization::New | HistoryInitialization::Cleared
+                ),
+                "in-memory Guardian evidence requires a fresh root"
+            );
+        }
         let history = self
             .manager
             .upgrade()
@@ -75,11 +116,24 @@ impl Host {
             input.history_initialization,
         )
         .await?;
-        let storage = local_board(self.sqlite.clone(), root.into());
         let board_host = (self.board_host)(root);
-        let board = storage.read_write().open(board_host.clone()).await?;
-        let reader: Arc<dyn AgentMessageBoard> =
-            Arc::new(storage.read_only().open(board_host).await?);
+        let board = match &self.storage {
+            BoardStorage::File(sqlite) => {
+                local_board(sqlite.clone(), root.into())
+                    .read_write()
+                    .open(board_host)
+                    .await?
+            }
+            BoardStorage::Memory => {
+                LocalAgentMessageBoard::open_in_memory(
+                    &local_board_options(),
+                    root.into(),
+                    board_host,
+                )
+                .await?
+            }
+        };
+        let reader: Arc<dyn AgentMessageBoard> = Arc::new(board.read_only_handle());
         let lifetime = Arc::new(ReviewerTasks::default());
         let (wake, wakes) = mpsc::channel(1);
         let (queue, mut captures) = RootEvidence::new(lifetime.clone(), history, cursor.clone());
@@ -94,6 +148,7 @@ impl Host {
         let delivery = Arc::clone(&queue.delivery);
         let scope = lifetime.clone();
         let manager = self.manager.clone();
+        let settings = Arc::clone(&self.housekeeper);
         lifetime.tasks.spawn(async move {
             let cancellation = &scope.cancellation;
             let work = async {
@@ -107,7 +162,15 @@ impl Host {
                 let startup = async {
                     let manager = manager.upgrade().context("Guardian host stopped")?;
                     let parent = manager.get_thread(root).await?;
-                    Housekeeper::new(Arc::new(board), cursor, delivery, &parent, &manager).await
+                    Housekeeper::new(
+                        Arc::new(board),
+                        cursor,
+                        delivery,
+                        &parent,
+                        &manager,
+                        &settings,
+                    )
+                    .await
                 };
                 let Some(housekeeper) = cancellation.run_until_cancelled(startup).await else {
                     return Ok(());
@@ -165,8 +228,13 @@ impl ThreadLifecycleContributor<Config> for Host {
             else {
                 return;
             };
-            let actor_reviewer =
-                Arc::new(ActorReviewer::new(self.manager.clone(), root, actor, path));
+            let actor_reviewer = Arc::new(ActorReviewer::new(
+                self.manager.clone(),
+                root,
+                actor,
+                path,
+                self.retrieval.clone(),
+            ));
             input.thread_store.insert_arc(Arc::clone(&actor_reviewer));
             let attached: Arc<dyn codex_core::guardian_review::AttachedReviewer> = actor_reviewer;
             input.thread_store.insert(attached);

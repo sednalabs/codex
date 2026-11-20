@@ -161,7 +161,7 @@ async fn thread_read_returns_summary_without_turns() -> Result<()> {
     assert_eq!(thread.model_provider, "mock_provider");
     assert!(!thread.ephemeral, "stored rollouts should not be ephemeral");
     assert!(thread.path.as_ref().expect("thread path").is_absolute());
-    assert_eq!(thread.cwd, test_absolute_path("/"));
+    assert_eq!(thread.cwd, test_absolute_path("/").into());
     assert_eq!(thread.cli_version, "0.0.0");
     assert_eq!(thread.source, SessionSource::Cli);
     assert_eq!(thread.git_info, None);
@@ -660,6 +660,7 @@ async fn thread_search_occurrences_reads_paginated_projection() -> Result<()> {
             multi_agent_version: None,
             history_mode: codex_protocol::protocol::ThreadHistoryMode::Paginated,
             history_base: None,
+            inherited_history_visibility: Default::default(),
             subagent_history_start_ordinal: None,
             initial_window_id: ContextWindowId::new_uuid_v7(),
             runtime_workspace_roots: None,
@@ -3130,6 +3131,7 @@ async fn create_paginated_thread(
             multi_agent_version: None,
             history_mode: codex_protocol::protocol::ThreadHistoryMode::Paginated,
             history_base: None,
+            inherited_history_visibility: Default::default(),
             subagent_history_start_ordinal: None,
             initial_window_id: ContextWindowId::new_uuid_v7(),
             runtime_workspace_roots: None,
@@ -3248,6 +3250,7 @@ async fn seed_pathless_store_thread(
             multi_agent_version: None,
             history_mode: Default::default(),
             history_base: None,
+            inherited_history_visibility: Default::default(),
             subagent_history_start_ordinal: None,
             initial_window_id: ContextWindowId::new_uuid_v7(),
             runtime_workspace_roots: None,

@@ -18,6 +18,7 @@ members = [
     "app-server-transport",
     "app-server-daemon",
     "app-server-client",
+    "app-server-remote-client",
     "app-server-protocol",
     "app-server-protocol-noop-macros",
     "app-server-test-client",
@@ -64,6 +65,7 @@ members = [
     "exec-server-cli",
     "exec-server/tests/support",
     "execpolicy",
+    "execpolicy-rules",
     "ext/agent",
     "ext/agent-message-board",
     "ext/connectors",
@@ -164,6 +166,8 @@ members = [
     "terminal-detection",
     "test-binary-support",
     "thread-manager-sample",
+    "thread-context-ids",
+    "thread-context-ids/tests/support",
     "thread-store",
     "uds",
     "codex-experimental-api-macros",
@@ -197,6 +201,7 @@ codex-app-server = { path = "app-server" }
 codex-app-server-transport = { path = "app-server-transport" }
 codex-app-server-daemon = { path = "app-server-daemon" }
 codex-app-server-client = { path = "app-server-client" }
+codex-app-server-remote-client = { path = "app-server-remote-client" }
 codex-app-server-protocol = { path = "app-server-protocol" }
 codex-app-server-protocol-noop-macros = { path = "app-server-protocol-noop-macros" }
 codex-app-server-test-client = { path = "app-server-test-client" }
@@ -242,6 +247,7 @@ codex-exec-server = { path = "exec-server" }
 codex-exec-server-cli = { path = "exec-server-cli" }
 codex-exec-server-test-support = { path = "exec-server/tests/support" }
 codex-execpolicy = { path = "execpolicy" }
+codex-execpolicy-rules = { path = "execpolicy-rules" }
 codex-extension-api = { path = "ext/extension-api" }
 codex-extension-items = { path = "ext/items" }
 codex-multi-env-copy-file = { path = "ext/multi-env-copy-file" }
@@ -303,6 +309,8 @@ codex-skills = { path = "skills" }
 codex-state = { path = "state" }
 codex-terminal-detection = { path = "terminal-detection" }
 codex-test-binary-support = { path = "test-binary-support" }
+codex-thread-context-ids = { path = "thread-context-ids" }
+codex-thread-context-ids-test-support = { path = "thread-context-ids/tests/support" }
 codex-thread-store = { path = "thread-store" }
 codex-tools = { path = "tools" }
 codex-tcp-tunnel = { path = "tcp-tunnel" }
@@ -706,12 +714,12 @@ crossterm = { git = "https://github.com/openai-oss-forks/crossterm", rev = "37ca
 # the same reviewed source until a release includes transact-rs/sqlx#4502.
 sqlx-core = { git = "https://github.com/transact-rs/sqlx", rev = "10462fa4414c6c7f1ed1d39bb31678e3b726878c" }
 sqlx-sqlite = { git = "https://github.com/transact-rs/sqlx", rev = "10462fa4414c6c7f1ed1d39bb31678e3b726878c" }
-tokio-tungstenite = { git = "https://github.com/openai-oss-forks/tokio-tungstenite", rev = "7447c427513cfe685f236e1ac0513c4ea3dd9c0b" }
-tungstenite = { git = "https://github.com/openai-oss-forks/tungstenite-rs", rev = "bc589d684755a8c02da0fc7e58d0861cbfc306f1" }
+tokio-tungstenite = { git = "https://github.com/openai-oss-forks/tokio-tungstenite", rev = "7a920470d62138955446b64220c7609e46ad770e" }
+tungstenite = { git = "https://github.com/openai-oss-forks/tungstenite-rs", rev = "e19950ef7828cb311e6d51a6bedcebf0192e055c" }
 v8 = { git = "https://github.com/openai-oss-forks/rusty_v8.git", rev = "90a65f887a0c0f048f3784afbcb320b373c8a2e0" }
 
 # Uncomment to debug local changes.
 # rmcp = { path = "../../rust-sdk/crates/rmcp" }
 
 [patch."ssh://git@github.com/openai-oss-forks/tungstenite-rs.git"]
-tungstenite = { git = "https://github.com/openai-oss-forks/tungstenite-rs", rev = "bc589d684755a8c02da0fc7e58d0861cbfc306f1" }
+tungstenite = { git = "https://github.com/openai-oss-forks/tungstenite-rs", rev = "e19950ef7828cb311e6d51a6bedcebf0192e055c" }
