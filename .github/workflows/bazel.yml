@@ -274,6 +274,18 @@ jobs:
         with:
           persist-credentials: false
 
+      - name: Reclaim unused Android SDK space
+        if: runner.os == 'Linux'
+        shell: bash
+        run: |
+          # The Linux release-build target set does not consume Android tools.
+          # Remove only the runner image's preinstalled SDK to leave room for
+          # the large Bazel output tree on the standard hosted runner.
+          if [[ -d /usr/local/lib/android/sdk ]]; then
+            sudo rm -rf -- /usr/local/lib/android/sdk
+          fi
+          df -h /
+
       - name: Prepare Bazel CI
         id: prepare_bazel
         uses: ./.github/actions/prepare-bazel-ci
