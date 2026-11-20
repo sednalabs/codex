@@ -48,7 +48,7 @@ jobs:
     permissions:
       contents: read
       id-token: write
-    timeout-minutes: 150
+    timeout-minutes: 210
     strategy:
       fail-fast: false
       matrix:
@@ -83,6 +83,18 @@ jobs:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
         with:
           persist-credentials: false
+
+      - name: Reclaim unused Android SDK space
+        if: runner.os == 'Linux'
+        shell: bash
+        run: |
+          # The Linux Bazel test targets do not consume Android tools.
+          # Remove only the runner image's preinstalled SDK to leave room for
+          # the large Bazel output tree on the standard hosted runner.
+          if [[ -d /usr/local/lib/android/sdk ]]; then
+            sudo rm -rf -- /usr/local/lib/android/sdk
+          fi
+          df -h /
 
       - name: Prepare Bazel CI
         id: prepare_bazel
@@ -254,7 +266,7 @@ jobs:
     permissions:
       contents: read
       id-token: write
-    timeout-minutes: 150
+    timeout-minutes: 210
     strategy:
       fail-fast: false
       matrix:

@@ -728,16 +728,14 @@ fn status_summary_spans(status: &CollabAgentState, include_details: bool) -> Vec
         CollabAgentStatus::Interrupted => vec![Span::from("Interrupted").yellow()],
         CollabAgentStatus::Completed => {
             let mut spans = vec![Span::from("Completed").green()];
-            if include_details {
-                if let Some(message) = status.message.as_ref() {
-                    let message_preview = truncate_text(
-                        &message.split_whitespace().collect::<Vec<_>>().join(" "),
-                        COLLAB_AGENT_RESPONSE_PREVIEW_GRAPHEMES,
-                    );
-                    if !message_preview.is_empty() {
-                        spans.push(Span::from(" - ").dim());
-                        spans.push(Span::from(message_preview));
-                    }
+            if include_details && let Some(message) = status.message.as_ref() {
+                let message_preview = truncate_text(
+                    &message.split_whitespace().collect::<Vec<_>>().join(" "),
+                    COLLAB_AGENT_RESPONSE_PREVIEW_GRAPHEMES,
+                );
+                if !message_preview.is_empty() {
+                    spans.push(Span::from(" - ").dim());
+                    spans.push(Span::from(message_preview));
                 }
             }
             spans
