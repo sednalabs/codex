@@ -548,9 +548,21 @@ pub(super) async fn prepare_forked_history(
             .await
             .is_some()
     {
-        let developer_message = ContextualUserFragment::into(DeveloperInstructions::new(
-            subagent_developer_instructions,
-        ));
+        // This is the current child's configured fragment, not text classified
+        // from the inherited prefix. Keep the prefix unchanged.
+        let developer_instructions = if config.client_owned_developer_instructions
+            && let Some(model) = config.model.as_deref()
+            && config
+                .instruction_overlays
+                .developer_guidance
+                .as_ref()
+                .is_some_and(|plan| !plan.edits.is_empty() && plan.applies_to_model(model))
+        {
+            DeveloperInstructions::client_owned(subagent_developer_instructions)
+        } else {
+            DeveloperInstructions::new(subagent_developer_instructions)
+        };
+        let developer_message = ContextualUserFragment::into(developer_instructions);
         forked_rollout_items.push(RolloutItem::ResponseItem(developer_message.into()));
     }
     if preserve_context_baselines
