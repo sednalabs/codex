@@ -4575,10 +4575,7 @@ async fn async_compaction_reuses_pending_work(
     const BACKGROUND_TOKENS: i64 = 3_001;
 
     skip_if_no_network!(Ok(()));
-    let over_budget = match outcome {
-        PendingCompactionOutcome::SuccessOverBudget => true,
-        _ => false,
-    };
+    let over_budget = matches!(outcome, PendingCompactionOutcome::SuccessOverBudget);
     let retained_output = format!("LATE_OUTPUT {}", "x ".repeat(12_000));
     let manual = matches!(trigger, CompactionTrigger::Manual);
     let has_background = outcome != PendingCompactionOutcome::Absent;
