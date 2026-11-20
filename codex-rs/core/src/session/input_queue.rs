@@ -7,8 +7,8 @@ use codex_diagnostics::GaugeGuard;
 use codex_history::ResponseItemEnvelope;
 use codex_protocol::ThreadId;
 use codex_protocol::models::ResponseItem;
-use codex_protocol::protocol::AgentCommunicationOrigin;
 use codex_protocol::protocol::AdditionalContextEntry;
+use codex_protocol::protocol::AgentCommunicationOrigin;
 use codex_protocol::turn_input::TurnStartOptions;
 use codex_user_input::ResolvedUserInput;
 use serde::Deserialize;
@@ -225,7 +225,7 @@ impl InputQueue {
             let activity = queue
                 .items
                 .iter()
-                .filter_map(|input| match input {
+                .filter_map(|entry| match &entry.input {
                     TurnInput::InterAgentCommunication(message) => {
                         wait_eligible_communication(message, exact_target_wait)
                             .then_some(InputQueueActivity::Mailbox)
