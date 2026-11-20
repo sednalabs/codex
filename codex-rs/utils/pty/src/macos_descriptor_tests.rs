@@ -163,11 +163,17 @@ async fn high_stdio_descriptors_use_compatible_fallback() -> anyhow::Result<()> 
     let raw = unsafe { libc::fcntl(file.as_raw_fd(), libc::F_DUPFD, 3) };
     anyhow::ensure!(raw >= 3, "{}", io::Error::last_os_error());
     let sentinel = unsafe { OwnedFd::from_raw_fd(raw) };
-    // SAFETY: Duplicate one live descriptor directly above Darwin OPEN_MAX so the
-    // test exercises the fallback without consuming thousands of file descriptors.
-    let high_raw = unsafe { libc::fcntl(file.as_raw_fd(), libc::F_DUPFD, 10_240) };
-    anyhow::ensure!(high_raw >= 10_240, "{}", io::Error::last_os_error());
-    let _high_descriptor = unsafe { OwnedFd::from_raw_fd(high_raw) };
+    let mut occupied = Vec::new();
+    loop {
+        let descriptor = file.try_clone()?;
+        let raw = descriptor.as_raw_fd();
+        occupied.push(descriptor);
+        // Keep the descriptor table occupied so the stdio pipes use source
+        // descriptors at or above Darwin OPEN_MAX, exercising the native fallback.
+        if raw >= 10_240 {
+            break;
+        }
+    }
 
     let mut strict = Command::new("/usr/bin/true");
     strict.fallback(SpawnFallback::ReturnError);
