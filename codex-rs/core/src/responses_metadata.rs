@@ -358,7 +358,7 @@ impl CodexResponsesMetadata {
         serde_json::to_value(self.turn_metadata_payload()).ok()
     }
 
-    pub(crate) fn client_metadata(&self, include_internal: bool) -> HashMap<String, String> {
+    pub(crate) fn client_metadata(&self, _include_internal: bool) -> HashMap<String, String> {
         let mut client_metadata = HashMap::from([
             (
                 X_CODEX_INSTALLATION_ID_HEADER.to_string(),

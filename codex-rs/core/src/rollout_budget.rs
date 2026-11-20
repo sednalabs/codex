@@ -141,8 +141,7 @@ impl RolloutBudget {
             return self.reject_overflow(&state, "totalBudgetUsed");
         };
         state.posted = posted;
-        let enforcement = self.enforce_posted_limit(&state);
-        enforcement
+        self.enforce_posted_limit(&state)
     }
 
     fn reject_overflow(&self, state: &RolloutBudgetState, field: &str) -> CodexResult<()> {
