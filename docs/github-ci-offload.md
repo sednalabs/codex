@@ -71,14 +71,12 @@ artifacts.
   - trigger: manual dispatch only
   - purpose: disposable Linux x64/ARM64, macOS, or opt-in native Windows x64
     preview binaries when buildability is the actual question
-  - Windows x64 preview: uses the standard `windows-2025` hosted runner and
-    pinned MSVC/Rust/V8 setup. Its three-day ZIP is source/version-bound and
-    includes the matching Codex host, app-server, Responses API proxy, command
-    runner, Windows sandbox setup helper, and ripgrep. The job validates the
-    extracted ZIP on Windows: CLI/app-server use, persisted thread
-    create/resume, restricted-token workspace-write allow/deny, ConPTY TUI
-    startup, and quiet/actionable wait fixtures. This disposable preview does
-    not add Windows to the official-release support contract.
+  - Windows x64 preview: standard `windows-2025` hosted runner with pinned
+    MSVC/Rust/V8. Its three-day, source/version-bound ZIP includes the matching
+    host, app-server, Responses API proxy, command runner, Windows sandbox
+    setup helper, and ripgrep. Native validation covers exact-ZIP CLI/app-server
+    use, persisted thread create/resume, restricted-token workspace-write
+    allow/deny, ConPTY TUI startup, and quiet/actionable waits; official Windows release support is unchanged.
   - retention: 3 days
   - release visibility: never published as a GitHub Release
 - `rust-ci-full`
