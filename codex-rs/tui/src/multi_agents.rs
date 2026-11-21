@@ -63,6 +63,9 @@ pub(crate) struct AgentMetadata {
     pub(crate) agent_nickname: Option<String>,
     /// Agent type shown in brackets when present, for example `worker`.
     pub(crate) agent_role: Option<String>,
+    pub(crate) agent_path: Option<String>,
+    pub(crate) model: Option<String>,
+    pub(crate) reasoning_effort: Option<ReasoningEffortConfig>,
 }
 
 #[derive(Clone, Copy)]
@@ -70,6 +73,7 @@ struct AgentLabel<'a> {
     thread_id: Option<ThreadId>,
     nickname: Option<&'a str>,
     role: Option<&'a str>,
+    path: Option<&'a str>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -336,6 +340,8 @@ pub(crate) fn sub_agent_activity_history_cell(
         kind,
         agent_path,
         agent_thread_id,
+        model,
+        reasoning_effort,
         ..
     } = item
     else {
@@ -353,6 +359,12 @@ pub(crate) fn sub_agent_activity_history_cell(
         format!("`{agent_path}`").fg(accent_color()),
         parse_thread_id(agent_thread_id),
     );
+    if matches!(kind, SubAgentActivityKind::Started) {
+        title.line.spans.extend(model_reasoning_spans(
+            model.as_deref(),
+            reasoning_effort.as_ref(),
+        ));
+    }
     Some(collab_event(title, Vec::new()))
 }
 
@@ -417,11 +429,15 @@ fn waiting_begin(
         .collect::<Vec<_>>();
 
     let title = match receiver_agents.as_slice() {
-        [(thread_id, metadata)] => title_with_agent(
-            "Waiting for",
-            agent_label(*thread_id, metadata),
-            /*spawn_request*/ None,
-        ),
+        [(thread_id, metadata)] => {
+            let mut title = title_text("Waiting for ");
+            append_agent(&mut title, agent_label(*thread_id, metadata));
+            title.line.spans.extend(model_reasoning_spans(
+                metadata.model.as_deref(),
+                metadata.reasoning_effort.as_ref(),
+            ));
+            title
+        }
         [] => title_text("Waiting for agents"),
         _ => title_text(format!("Waiting for {} agents", receiver_agents.len())),
     };
@@ -429,7 +445,14 @@ fn waiting_begin(
     let mut details = if receiver_agents.len() > 1 {
         receiver_agents
             .iter()
-            .map(|(thread_id, metadata)| agent_label_line(agent_label(*thread_id, metadata)))
+            .map(|(thread_id, metadata)| {
+                let mut line = agent_label_line(agent_label(*thread_id, metadata));
+                line.line.spans.extend(model_reasoning_spans(
+                    metadata.model.as_deref(),
+                    metadata.reasoning_effort.as_ref(),
+                ));
+                line
+            })
             .collect()
     } else {
         Vec::new()
@@ -597,6 +620,7 @@ fn agent_label(thread_id: ThreadId, metadata: &AgentMetadata) -> AgentLabel<'_> 
         thread_id: Some(thread_id),
         nickname: metadata.agent_nickname.as_deref(),
         role: metadata.agent_role.as_deref(),
+        path: metadata.agent_path.as_deref(),
     }
 }
 
@@ -608,7 +632,10 @@ fn agent_label_line(agent: AgentLabel<'_>) -> HyperlinkLine {
 
 fn append_agent(line: &mut HyperlinkLine, agent: AgentLabel<'_>) {
     let nickname = agent.nickname.map(str::trim).filter(|n| !n.is_empty());
-    let name = if let Some(nickname) = nickname {
+    let path = agent.path.map(str::trim).filter(|path| !path.is_empty());
+    let name = if let Some(path) = path {
+        path.to_string().bold()
+    } else if let Some(nickname) = nickname {
         nickname.to_string().bold()
     } else if let Some(id) = agent.thread_id {
         Span::from(id.to_string())
@@ -638,6 +665,20 @@ fn spawn_request_spans(spawn_request: Option<&SpawnRequestSummary>) -> Vec<Span<
         format!("({model} {})", spawn_request.reasoning_effort)
     };
 
+    vec![Span::from(" ").dim(), Span::from(details).magenta()]
+}
+
+fn model_reasoning_spans(
+    model: Option<&str>,
+    reasoning_effort: Option<&ReasoningEffortConfig>,
+) -> Vec<Span<'static>> {
+    let model = model.map(str::trim).filter(|model| !model.is_empty());
+    let details = match (model, reasoning_effort) {
+        (Some(model), Some(effort)) => format!("({model} {effort})"),
+        (Some(model), None) => format!("({model} · effort unavailable)"),
+        (None, Some(effort)) => format!("(model unavailable · {effort})"),
+        (None, None) => return Vec::new(),
+    };
     vec![Span::from(" ").dim(), Span::from(details).magenta()]
 }
 
@@ -972,6 +1013,60 @@ mod tests {
     }
 
     #[test]
+    fn started_and_targeted_wait_show_resolved_agent_identity() {
+        let side = ThreadId::new();
+        let windows = ThreadId::new();
+        let path = "/root/side_chat_overlay_delivery";
+        let started = sub_agent_activity_history_cell(&ThreadItemPayload::SubAgentActivity {
+            id: "spawn".to_string(),
+            kind: SubAgentActivityKind::Started,
+            agent_thread_id: side.to_string(),
+            agent_path: path.to_string(),
+            model: Some("gpt-6.1-sol".to_string()),
+            reasoning_effort: Some(ReasoningEffortConfig::High),
+        })
+        .expect("started activity renders");
+        assert!(cell_to_text(&started).contains(&format!("Started `{path}` (gpt-6.1-sol high)")));
+
+        let mut metadata = |thread_id| {
+            let (path, model, effort) = if thread_id == side {
+                (path, "gpt-6.1-sol", ReasoningEffortConfig::High)
+            } else {
+                (
+                    "/root/native_windows_delivery",
+                    "gpt-6-luna",
+                    ReasoningEffortConfig::XHigh,
+                )
+            };
+            AgentMetadata {
+                agent_nickname: Some("Nickname".to_string()),
+                agent_path: Some(path.to_string()),
+                model: Some(model.to_string()),
+                reasoning_effort: Some(effort),
+                ..AgentMetadata::default()
+            }
+        };
+        let single = waiting_begin(
+            &[side.to_string()],
+            Some(&CollabAgentWaitReturnWhen::Any),
+            &mut metadata,
+        );
+        assert!(cell_to_text(&single).contains(&format!("Waiting for {path} (gpt-6.1-sol high)")));
+
+        let multiple = waiting_begin(
+            &[side.to_string(), windows.to_string()],
+            Some(&CollabAgentWaitReturnWhen::All),
+            &mut metadata,
+        );
+        let rendered = cell_to_text(&multiple);
+        assert!(rendered.contains(&format!("{path} (gpt-6.1-sol high)")));
+        assert!(rendered.contains("/root/native_windows_delivery (gpt-6-luna xhigh)"));
+        assert!(rendered.contains("all selected targets complete"));
+        assert!(!rendered.contains(&side.to_string()));
+        assert!(!rendered.contains(&windows.to_string()));
+    }
+
+    #[test]
     fn collab_wait_missing_reason_is_explicit() {
         let mut agent_metadata = |_| AgentMetadata::default();
         let cell = waiting_end(
@@ -1136,11 +1231,13 @@ mod tests {
             AgentMetadata {
                 agent_nickname: Some("Robie".to_string()),
                 agent_role: Some("explorer".to_string()),
+                ..AgentMetadata::default()
             }
         } else if thread_id == bob_id {
             AgentMetadata {
                 agent_nickname: Some("Bob".to_string()),
                 agent_role: Some("worker".to_string()),
+                ..AgentMetadata::default()
             }
         } else {
             AgentMetadata::default()

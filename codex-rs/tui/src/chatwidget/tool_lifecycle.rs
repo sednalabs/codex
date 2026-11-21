@@ -161,6 +161,7 @@ impl ChatWidget {
     }
 
     pub(super) fn on_sub_agent_activity(&mut self, item: ThreadItemPayload) {
+        self.remember_sub_agent_identity(&item);
         // Background agents can finish while the parent answer is still streaming.
         // Keep that stream intact until its authoritative message completion.
         // After the turn stops, leftover prompts must not hold up late activity.
@@ -178,6 +179,30 @@ impl ChatWidget {
     fn handle_sub_agent_activity_now(&mut self, item: ThreadItemPayload) {
         if let Some(cell) = multi_agents::sub_agent_activity_history_cell(&item) {
             self.on_collab_event(cell);
+        }
+    }
+
+    fn remember_sub_agent_identity(&mut self, item: &ThreadItemPayload) {
+        let ThreadItemPayload::SubAgentActivity {
+            agent_thread_id,
+            agent_path,
+            model,
+            reasoning_effort,
+            ..
+        } = item
+        else {
+            return;
+        };
+        let Ok(thread_id) = ThreadId::from_string(agent_thread_id) else {
+            return;
+        };
+        self.set_collab_agent_path(thread_id, agent_path);
+        let metadata = self.collab_agent_metadata.entry(thread_id).or_default();
+        if model.is_some() {
+            metadata.model.clone_from(model);
+        }
+        if reasoning_effort.is_some() {
+            metadata.reasoning_effort.clone_from(reasoning_effort);
         }
     }
 

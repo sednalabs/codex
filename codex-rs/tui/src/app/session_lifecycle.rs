@@ -283,6 +283,13 @@ impl App {
     }
 
     pub(super) fn sync_agent_picker_thread(&mut self, thread_id: ThreadId) {
+        if let Some(path) = self
+            .agent_navigation
+            .get(&thread_id)
+            .and_then(|entry| entry.agent_path.as_deref())
+        {
+            self.chat_widget.set_collab_agent_path(thread_id, path);
+        }
         if self.agent_navigation.pending_approvals.contains(&thread_id) {
             self.refresh_agent_picker();
         } else {
@@ -674,6 +681,9 @@ impl App {
                 entry.agent_nickname.clone(),
                 entry.agent_role.clone(),
             );
+            if let Some(path) = entry.agent_path.as_deref() {
+                chat_widget.set_collab_agent_path(thread_id, path);
+            }
         }
         chat_widget.restore_kill_buffer_snapshot(self.chat_widget.take_kill_buffer_snapshot());
         crate::markdown_render::preferences::init(chat_widget.local_settings.tui.rendering);

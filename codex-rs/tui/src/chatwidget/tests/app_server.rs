@@ -1601,6 +1601,63 @@ async fn live_app_server_sub_agent_activity_renders_once() {
 }
 
 #[tokio::test]
+async fn live_agent_identity_survives_metadata_refresh_before_wait() {
+    let (mut chat, mut rx, _op_rx) = make_chatwidget_manual(/*model_override*/ None).await;
+    let child = ThreadId::new();
+    let path = "/root/worker";
+    chat.handle_server_notification(
+        ServerNotification::ItemCompleted(ItemCompletedNotification::new(
+            "thread-1".to_string(),
+            "turn-1".to_string(),
+            AppServerThreadItemPayload::SubAgentActivity {
+                model: Some("worker-model".to_string()),
+                reasoning_effort: Some(ReasoningEffortConfig::High),
+                id: "activity-1".to_string(),
+                kind: codex_app_server_protocol::SubAgentActivityKind::Started,
+                agent_thread_id: child.to_string(),
+                agent_path: path.to_string(),
+            },
+            /*started_at_ms*/ None,
+            /*completed_at_ms*/ 0,
+        )),
+        /*replay_kind*/ None,
+    );
+    chat.set_collab_agent_metadata(child, Some("Worker".into()), /*agent_role*/ None);
+
+    chat.handle_server_notification(
+        ServerNotification::ItemStarted(ItemStartedNotification::new(
+            "thread-1".to_string(),
+            "turn-1".to_string(),
+            AppServerThreadItemPayload::CollabAgentToolCall {
+                id: "wait-1".to_string(),
+                return_when: None,
+                completion_reason: None,
+                completed_target_thread_ids: Vec::new(),
+                tool: AppServerCollabAgentTool::Wait,
+                status: AppServerCollabAgentToolCallStatus::InProgress,
+                sender_thread_id: ThreadId::new().to_string(),
+                receiver_thread_ids: vec![child.to_string()],
+                prompt: None,
+                model: None,
+                reasoning_effort: None,
+                agents_states: HashMap::new(),
+            },
+            /*started_at_ms*/ 0,
+        )),
+        /*replay_kind*/ None,
+    );
+
+    let rendered = drain_insert_history(&mut rx)
+        .into_iter()
+        .map(|lines| lines_to_single_string(&lines))
+        .collect::<Vec<_>>()
+        .join("\n");
+    assert!(rendered.contains("Started `/root/worker` (worker-model high)"));
+    assert!(rendered.contains("Waiting for /root/worker (worker-model high)"));
+    assert!(!rendered.contains(&child.to_string()));
+}
+
+#[tokio::test]
 async fn live_app_server_collab_wait_items_render_history() {
     let (mut chat, mut rx, _op_rx) = make_chatwidget_manual(/*model_override*/ None).await;
     let sender_thread_id =

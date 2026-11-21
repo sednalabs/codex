@@ -983,13 +983,18 @@ impl ChatWidget {
         agent_nickname: Option<String>,
         agent_role: Option<String>,
     ) {
-        self.collab_agent_metadata.insert(
-            thread_id,
-            AgentMetadata {
-                agent_nickname,
-                agent_role,
-            },
-        );
+        let metadata = self.collab_agent_metadata.entry(thread_id).or_default();
+        metadata.agent_nickname = agent_nickname;
+        metadata.agent_role = agent_role;
+    }
+
+    pub(crate) fn set_collab_agent_path(&mut self, thread_id: ThreadId, path: &str) {
+        if !path.is_empty() {
+            self.collab_agent_metadata
+                .entry(thread_id)
+                .or_default()
+                .agent_path = Some(path.to_owned());
+        }
     }
 
     /// Returns the cached metadata for a thread, defaulting to empty if none has been registered.
