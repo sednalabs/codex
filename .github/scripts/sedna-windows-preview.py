@@ -357,6 +357,9 @@ def main() -> None:
     artifact_dir.mkdir(parents=True)
 
     for binary in BINARIES:
+        if binary == "rg.exe":
+            # The canonical package builder fetches the pinned DotSlash artifact.
+            continue
         if not (release_dir / binary).is_file():
             raise RuntimeError(f"required Windows preview binary is missing: {release_dir / binary}")
 
@@ -552,6 +555,13 @@ The package includes the matching app-server and Responses API proxy executables
         raise RuntimeError("Windows restricted-token workspace-write sandbox rejected its allowed command")
     if allowed_file.read_text(encoding="utf-8").strip() != "ALLOWED":
         raise RuntimeError("allowed sandbox command wrote unexpected content")
+    rg = validation_dir / "codex-path" / "rg.exe"
+    rg_version = run_cli(rg, ["--version"], consumer_workspace, cli_env)
+    if "ripgrep 15.2.0" not in rg_version:
+        raise RuntimeError(f"packaged ripgrep version is unexpected: {rg_version.strip()}")
+    rg_matches = run_cli(rg, ["ALLOWED", str(allowed_file)], consumer_workspace, cli_env)
+    if "ALLOWED" not in rg_matches:
+        raise RuntimeError("packaged ripgrep did not find the expected workspace fixture")
     outside_result = run_sandbox_command(r"echo BLOCKED> ..\outside.txt")
     if outside_result.get("exitCode") == 0 or outside_file.exists():
         outside_file.unlink(missing_ok=True)
