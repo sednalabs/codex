@@ -6,7 +6,7 @@ from __future__ import annotations
 import hashlib
 import json
 import os
-from pathlib import Path, PurePosixPath
+from pathlib import Path, PurePosixPath, PureWindowsPath
 import queue
 import re
 import shutil
@@ -407,7 +407,7 @@ def main() -> None:
         (
             candidate
             for drive, candidate in target_root_by_drive.items()
-            if os.environ["CARGO_TARGET_DIR"].casefold() == str(candidate).casefold()
+            if PureWindowsPath(os.environ["CARGO_TARGET_DIR"]) == PureWindowsPath(candidate)
         ),
         None,
     )
