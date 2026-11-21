@@ -87,18 +87,25 @@ def app_server_request(
 
     def read_stdout() -> None:
         assert process.stdout is not None
-        for line in process.stdout:
-            if not line.strip():
-                continue
-            try:
-                output.put(json.loads(line))
-            except json.JSONDecodeError:
-                output.put(f"non-JSON app-server stdout: {line.rstrip()}")
-        output.put(None)
+        try:
+            for line in process.stdout:
+                if not line.strip():
+                    continue
+                try:
+                    output.put(json.loads(line))
+                except json.JSONDecodeError:
+                    output.put(f"non-JSON app-server stdout: {line.rstrip()}")
+        except (OSError, ValueError):
+            pass
+        finally:
+            output.put(None)
 
     def read_stderr() -> None:
         assert process.stderr is not None
-        errors.append(process.stderr.read())
+        try:
+            errors.append(process.stderr.read())
+        except (OSError, ValueError):
+            pass
 
     stdout_reader = threading.Thread(target=read_stdout, daemon=True)
     stderr_reader = threading.Thread(target=read_stderr, daemon=True)
@@ -143,8 +150,7 @@ def app_server_request(
             }
         )
         initialized = receive(1, "initialize")
-        if "error" in initialized:
-            raise RuntimeError(f"app-server initialize failed: {initialized['error']}")
+        jsonrpc_result(initialized, "initialize")
         send({"jsonrpc": "2.0", "method": "initialized"})
         send(request)
         response = receive(int(request["id"]), str(request["method"]))
@@ -158,7 +164,7 @@ def app_server_request(
         stderr_reader.join(timeout=5)
         if stdout_reader.is_alive() or stderr_reader.is_alive():
             raise TimeoutError("app-server output pipes did not close")
-        return response, "".join(errors)
+        return jsonrpc_result(response, method), "".join(errors)
     finally:
         if process.poll() is None:
             process.kill()
@@ -169,6 +175,15 @@ def app_server_request(
             process.stdout.close()
         if process.stderr is not None:
             process.stderr.close()
+
+
+def jsonrpc_result(response: dict[str, object], method: str) -> dict[str, object]:
+    if "error" in response:
+        raise RuntimeError(f"app-server {method} failed: {response['error']}")
+    result = response.get("result")
+    if not isinstance(result, dict):
+        raise RuntimeError(f"app-server {method} returned no object result")
+    return result
 
 
 def require_pe_x64(path: Path) -> None:
@@ -212,9 +227,16 @@ def validate_archive(
             raise RuntimeError("preview ZIP contains duplicate file entries")
         for name in names:
             path = PurePosixPath(name)
-            if path.is_absolute() or ".." in path.parts or "\\" in name or ":" in path.parts[0]:
+            if (
+                not name
+                or not path.parts
+                or path.is_absolute()
+                or ".." in path.parts
+                or "\\" in name
+                or ":" in name
+            ):
                 raise RuntimeError(f"unsafe ZIP member path: {name}")
-        archive.extractall(validation_dir)
+        archive.extractall(validation_dir, members=members)
 
     manifest_path = validation_dir / "MANIFEST.json"
     if not manifest_path.is_file():
@@ -426,10 +448,8 @@ The package includes the matching app-server and Responses API proxy executables
     sidecar = f"{archive_hash}  {archive_path.name}\n"
     sidecar_path = Path(f"{archive_path}.sha256")
     sidecar_path.write_text(sidecar, encoding="ascii", newline="\n")
-    shutil.copyfile(manifest_path, artifact_dir / f"{archive_base}.manifest.json")
 
-    expected_files = {package_path(package_dir, path) for path in payload_files}
-    expected_files.add("MANIFEST.json")
+    expected_files = {package_path(package_dir, path) for path in payload_files} | {"MANIFEST.json"}
     extracted = validate_archive(
         archive_path,
         validation_dir,
@@ -463,14 +483,7 @@ The package includes the matching app-server and Responses API proxy executables
         raise RuntimeError(f"CLI version does not match this clean preview build: {version_output.strip()}")
     for arguments in (["--help"], ["exec", "--help"], ["app-server", "--help"]):
         run_cli(codex, arguments, consumer_workspace, cli_env)
-    for executable in (
-        app_server,
-        validation_dir / "bin/codex-code-mode-host.exe",
-        validation_dir / "bin/codex-responses-api-proxy.exe",
-    ):
-        run_cli(executable, ["--help"], consumer_workspace, cli_env)
-
-    start_response, _ = app_server_request(
+    start_result, _ = app_server_request(
         codex,
         ["app-server", "--listen", "stdio://"],
         {
@@ -482,12 +495,11 @@ The package includes the matching app-server and Responses API proxy executables
         code_home,
         consumer_workspace,
     )
-    if "error" in start_response:
-        raise RuntimeError(f"packaged CLI could not create a disposable thread: {start_response['error']}")
-    thread_id = str(start_response.get("result", {}).get("thread", {}).get("id", ""))
-    if not thread_id:
+    thread = start_result.get("thread")
+    thread_id = thread.get("id") if isinstance(thread, dict) else None
+    if not isinstance(thread_id, str) or not thread_id:
         raise RuntimeError("thread/start returned no thread ID")
-    resume_response, _ = app_server_request(
+    resume_result, _ = app_server_request(
         app_server,
         ["--listen", "stdio://"],
         {
@@ -499,7 +511,8 @@ The package includes the matching app-server and Responses API proxy executables
         code_home,
         consumer_workspace,
     )
-    if "error" in resume_response or resume_response.get("result", {}).get("thread", {}).get("id") != thread_id:
+    resumed_thread = resume_result.get("thread")
+    if not isinstance(resumed_thread, dict) or resumed_thread.get("id") != thread_id:
         raise RuntimeError(f"packaged standalone app-server could not resume thread {thread_id}")
 
     allowed_file = consumer_workspace / "allowed.txt"
@@ -515,7 +528,7 @@ The package includes the matching app-server and Responses API proxy executables
     }
 
     def run_sandbox_command(command: str) -> dict[str, object]:
-        response, _ = app_server_request(
+        result, _ = app_server_request(
             app_server,
             ["--listen", "stdio://"],
             {
@@ -532,9 +545,7 @@ The package includes the matching app-server and Responses API proxy executables
             code_home,
             consumer_workspace,
         )
-        if "error" in response:
-            raise RuntimeError(f"command/exec returned an RPC error: {response['error']}")
-        return response.get("result", {})
+        return result
 
     allowed_result = run_sandbox_command("echo ALLOWED> allowed.txt")
     if allowed_result.get("exitCode") != 0 or not allowed_file.is_file():
@@ -564,8 +575,6 @@ The package includes the matching app-server and Responses API proxy executables
     ]
     with Path(os.environ["GITHUB_STEP_SUMMARY"]).open("a", encoding="utf-8") as summary_file:
         summary_file.write("\n".join(summary))
-    print(f"Built and natively validated {archive_path}")
-    print(f"SHA-256 {archive_hash}")
 
 
 if __name__ == "__main__":

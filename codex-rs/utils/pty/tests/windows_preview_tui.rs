@@ -1,16 +1,11 @@
 #![cfg(windows)]
 
-use std::collections::HashMap;
 use std::fs;
 use std::path::PathBuf;
-use std::time::Duration;
-use std::time::SystemTime;
-use std::time::UNIX_EPOCH;
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
-use anyhow::Context;
-use anyhow::Result;
-use codex_utils_pty::TerminalSize;
-use codex_utils_pty::spawn_pty_process;
+use anyhow::{Context, Result};
+use codex_utils_pty::{TerminalSize, spawn_pty_process};
 use tokio::time::timeout;
 
 struct PreviewFixture(PathBuf);
@@ -45,8 +40,7 @@ async fn preview_cli_enters_tui_in_conpty_and_exits_on_ctrl_c() -> Result<()> {
     fs::create_dir_all(&home)?;
     fs::create_dir_all(&cwd)?;
 
-    let mut env = HashMap::new();
-    for key in [
+    let mut env: std::collections::HashMap<String, String> = [
         "APPDATA",
         "COMSPEC",
         "HOMEDRIVE",
@@ -60,27 +54,28 @@ async fn preview_cli_enters_tui_in_conpty_and_exits_on_ctrl_c() -> Result<()> {
         "TMP",
         "USERPROFILE",
         "WINDIR",
-    ] {
-        if let Some(value) = std::env::var_os(key) {
-            env.insert(key.to_string(), value.to_string_lossy().into_owned());
-        }
-    }
-    env.insert(
-        "CODEX_HOME".to_string(),
-        home.to_string_lossy().into_owned(),
-    );
-    env.insert("NO_COLOR".to_string(), "1".to_string());
-    env.insert("TERM".to_string(), "xterm-256color".to_string());
+    ]
+    .into_iter()
+    .filter_map(|key| {
+        std::env::var_os(key).map(|value| (key.to_string(), value.to_string_lossy().into_owned()))
+    })
+    .collect();
+    env.extend([
+        (
+            "CODEX_HOME".to_string(),
+            home.to_string_lossy().into_owned(),
+        ),
+        ("NO_COLOR".to_string(), "1".to_string()),
+        ("TERM".to_string(), "xterm-256color".to_string()),
+    ]);
 
-    let args = [];
-    let arg0 = None;
     let mut process = spawn_pty_process(
         cli.to_str()
             .context("preview CLI path is not valid UTF-8")?,
-        &args,
+        &[],
         &cwd,
         &env,
-        &arg0,
+        &None,
         TerminalSize {
             rows: 30,
             cols: 100,
