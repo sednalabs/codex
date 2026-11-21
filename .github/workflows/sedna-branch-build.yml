@@ -631,11 +631,6 @@ jobs:
         with:
           python-version: "3.12"
 
-      - name: Configure and verify rusty_v8 artifacts
-        uses: ./.github/actions/setup-rusty-v8
-        with:
-          target: x86_64-pc-windows-msvc
-
       - name: Build native Windows preview binaries
         shell: bash
         run: |
