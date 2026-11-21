@@ -69,7 +69,16 @@ artifacts.
   - retention: ordinary workflow logs plus code-scanning results
 - `sedna-branch-build`
   - trigger: manual dispatch only
-  - purpose: disposable preview binaries when buildability is the actual question
+  - purpose: disposable Linux x64/ARM64, macOS, or opt-in native Windows x64
+    preview binaries when buildability is the actual question
+  - Windows x64 preview: uses the standard `windows-2025` hosted runner and
+    pinned MSVC/Rust/V8 setup. Its three-day ZIP is source/version-bound and
+    includes the matching Codex host, app-server, Responses API proxy, command
+    runner, Windows sandbox setup helper, and ripgrep. The job validates the
+    extracted ZIP on Windows: CLI/app-server use, persisted thread
+    create/resume, restricted-token workspace-write allow/deny, ConPTY TUI
+    startup, and quiet/actionable wait fixtures. This disposable preview does
+    not add Windows to the official-release support contract.
   - retention: 3 days
   - release visibility: never published as a GitHub Release
 - `rust-ci-full`
@@ -359,7 +368,7 @@ replaying an older ref, migrate it to the explicit lane schema used on `main`
 | `sdk.yml`                 | rewrite in place              | SDK checks on GitHub-hosted Linux for the Sedna branch model            |
 | `v8-canary.yml`           | rewrite in place              | V8 canary validation on `main` and `upstream-main`                      |
 | `validation-lab.yml`      | new                           | Dispatch-only remote validation lab for scratch/integration/orphan refs |
-| `sedna-branch-build.yml`  | new                           | Preview binary offload lane                                             |
+| `sedna-branch-build.yml`  | new                           | Linux/macOS/opt-in Windows x64 preview binary offload lane              |
 | `sedna-heavy-tests.yml`   | new                           | Expensive Linux validation lane                                         |
 | `sedna-sync-upstream.yml` | new                           | Mirror maintenance lane                                                 |
 | `sedna-release.yml`       | keep and harden               | Official Sedna release publisher                                        |

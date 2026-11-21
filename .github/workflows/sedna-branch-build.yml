@@ -19,6 +19,7 @@ on:
           - linux-x86_64
           - linux-aarch64
           - macos
+          - windows-x86_64
       host_only:
         description: Build only the Linux x86_64 code-mode host helper
         required: false
@@ -579,6 +580,88 @@ jobs:
         json.dump(payload, sys.stdout, indent=2)
         sys.stdout.write("\n")
         PY
+
+  build-windows-x86_64:
+    name: Build and validate native Windows x64 preview
+    needs: metadata
+    if: ${{ inputs.platform == 'windows-x86_64' }}
+    runs-on: windows-2025
+    timeout-minutes: 240
+    permissions:
+      contents: read
+    env:
+      CARGO_INCREMENTAL: "0"
+      CARGO_NET_GIT_FETCH_WITH_CLI: "true"
+      LIBSQLITE3_FLAGS: SQLITE_DISABLE_INTRINSIC
+      CODEX_RELEASE_REPOSITORY: ${{ github.repository }}
+      CODEX_RELEASE_TAG_PREFIX: v
+      CODEX_RELEASE_VERSION: ${{ needs.metadata.outputs.preview_version }}
+      DISPLAY_REF: ${{ needs.metadata.outputs.display_ref }}
+      TARGET: x86_64-pc-windows-msvc
+    defaults:
+      run:
+        working-directory: codex-rs
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 1
+          ref: ${{ needs.metadata.outputs.checkout_ref }}
+          persist-credentials: false
+
+      - name: Check out the workflow source
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 1
+          ref: ${{ github.sha }}
+          path: .workflow-src
+          persist-credentials: false
+
+      - uses: ./.github/actions/setup-ci
+
+      - uses: dtolnay/rust-toolchain@e081816240890017053eacbb1bdf337761dc5582 # 1.95.0
+        with:
+          targets: x86_64-pc-windows-msvc
+
+      - name: Configure the native MSVC environment
+        uses: ./.github/actions/setup-msvc-env
+        with:
+          target: x86_64-pc-windows-msvc
+
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: "3.12"
+
+      - name: Configure and verify rusty_v8 artifacts
+        uses: ./.github/actions/setup-rusty-v8
+        with:
+          target: x86_64-pc-windows-msvc
+
+      - name: Build native Windows preview binaries
+        shell: bash
+        run: |
+          set -euo pipefail
+          cargo build \
+            --locked \
+            --target "${TARGET}" \
+            --release \
+            --bin codex \
+            --bin codex-code-mode-host \
+            --bin codex-responses-api-proxy \
+            --bin codex-windows-sandbox-setup \
+            --bin codex-command-runner \
+            --bin codex-app-server
+
+      - name: Package and validate the exact Windows preview ZIP
+        shell: pwsh
+        run: python "$env:GITHUB_WORKSPACE/.github/scripts/sedna-windows-preview.py"
+
+      - name: Upload disposable Windows preview artifact
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: ${{ needs.metadata.outputs.artifact_name }}-x86_64-pc-windows-msvc
+          path: dist/sedna-windows-preview-${{ github.run_id }}/*
+          if-no-files-found: error
+          retention-days: 3
 
   build-macos:
     name: Build macOS preview - x86_64-apple-darwin
