@@ -608,14 +608,6 @@ jobs:
           ref: ${{ needs.metadata.outputs.checkout_ref }}
           persist-credentials: false
 
-      - name: Check out the workflow source
-        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          fetch-depth: 1
-          ref: ${{ github.sha }}
-          path: .workflow-src
-          persist-credentials: false
-
       - uses: ./.github/actions/setup-ci
 
       - uses: dtolnay/rust-toolchain@e081816240890017053eacbb1bdf337761dc5582 # 1.95.0
@@ -635,6 +627,12 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
+          source_status="$(git status --porcelain --untracked-files=normal)"
+          if [[ -n "${source_status}" ]]; then
+            echo "Refusing to build a preview from a dirty source tree." >&2
+            printf '%s\n' "${source_status}" >&2
+            exit 1
+          fi
           cargo build \
             --locked \
             --target "${TARGET}" \
@@ -654,7 +652,7 @@ jobs:
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
         with:
           name: ${{ needs.metadata.outputs.artifact_name }}-x86_64-pc-windows-msvc
-          path: dist/sedna-windows-preview-${{ github.run_id }}/*
+          path: dist/sedna-windows-preview/*
           if-no-files-found: error
           retention-days: 3
 

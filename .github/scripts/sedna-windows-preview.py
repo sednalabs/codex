@@ -8,6 +8,7 @@ import json
 import os
 from pathlib import Path, PurePosixPath
 import queue
+import re
 import shutil
 import struct
 import subprocess
@@ -52,8 +53,42 @@ def sha256(path: Path) -> str:
     return digest.hexdigest()
 
 
+def relative_parts(value: str) -> tuple[str, ...]:
+    path = PurePosixPath(value)
+    if (
+        not value
+        or "\x00" in value
+        or path.is_absolute()
+        or path.as_posix() != value
+        or any(part in ("", ".", "..") for part in path.parts)
+        or "\\" in value
+        or ":" in value
+    ):
+        raise RuntimeError(f"unsafe relative package path: {value}")
+    return path.parts
+
+
+def contained_path(root: Path, relative: str) -> Path:
+    parts = relative_parts(relative)
+    canonical_root = os.path.realpath(root)
+    candidate = os.path.realpath(os.path.join(canonical_root, *parts))
+    try:
+        common = os.path.commonpath((canonical_root, candidate))
+    except ValueError as error:
+        raise RuntimeError(f"package path is on another volume: {relative}") from error
+    if os.path.normcase(common) != os.path.normcase(canonical_root):
+        raise RuntimeError(f"package path escapes its root: {relative}")
+    return Path(candidate)
+
+
 def package_path(root: Path, path: Path) -> str:
-    return path.relative_to(root).as_posix()
+    if path.is_symlink():
+        raise RuntimeError(f"package contains a symbolic link: {path.name}")
+    relative = path.relative_to(root).as_posix()
+    checked = contained_path(root, relative)
+    if checked != path:
+        raise RuntimeError(f"package path is not canonical: {relative}")
+    return relative
 
 
 def isolated_env(code_home: Path) -> dict[str, str]:
@@ -69,6 +104,7 @@ def app_server_request(
     code_home: Path,
     cwd: Path,
 ) -> tuple[dict[str, object], str]:
+    request_method = str(request["method"])
     process = subprocess.Popen(
         [str(executable), *arguments],
         cwd=cwd,
@@ -95,8 +131,8 @@ def app_server_request(
                     output.put(json.loads(line))
                 except json.JSONDecodeError:
                     output.put(f"non-JSON app-server stdout: {line.rstrip()}")
-        except (OSError, ValueError):
-            pass
+        except (OSError, ValueError) as error:
+            output.put(f"app-server stdout read failed: {error}")
         finally:
             output.put(None)
 
@@ -104,8 +140,8 @@ def app_server_request(
         assert process.stderr is not None
         try:
             errors.append(process.stderr.read())
-        except (OSError, ValueError):
-            pass
+        except (OSError, ValueError) as error:
+            errors.append(f"app-server stderr read failed: {error}")
 
     stdout_reader = threading.Thread(target=read_stdout, daemon=True)
     stderr_reader = threading.Thread(target=read_stderr, daemon=True)
@@ -153,7 +189,7 @@ def app_server_request(
         jsonrpc_result(initialized, "initialize")
         send({"jsonrpc": "2.0", "method": "initialized"})
         send(request)
-        response = receive(int(request["id"]), str(request["method"]))
+        response = receive(int(request["id"]), request_method)
         assert process.stdin is not None
         process.stdin.close()
         try:
@@ -164,7 +200,7 @@ def app_server_request(
         stderr_reader.join(timeout=5)
         if stdout_reader.is_alive() or stderr_reader.is_alive():
             raise TimeoutError("app-server output pipes did not close")
-        return jsonrpc_result(response, method), "".join(errors)
+        return jsonrpc_result(response, request_method), "".join(errors)
     finally:
         if process.poll() is None:
             process.kill()
@@ -219,26 +255,23 @@ def validate_archive(
     validation_dir: Path,
     expected_manifest: dict[str, object],
     expected_package_files: set[str],
-) -> dict[str, object]:
+) -> None:
     with ZipFile(archive_path) as archive:
-        members = [member for member in archive.infolist() if not member.is_dir()]
-        names = {member.filename for member in members}
+        members = archive.infolist()
+        names = [member.filename for member in members]
         if len(names) != len(members):
             raise RuntimeError("preview ZIP contains duplicate file entries")
-        for name in names:
-            path = PurePosixPath(name)
-            if (
-                not name
-                or not path.parts
-                or path.is_absolute()
-                or ".." in path.parts
-                or "\\" in name
-                or ":" in name
-            ):
-                raise RuntimeError(f"unsafe ZIP member path: {name}")
-        archive.extractall(validation_dir, members=members)
+        for member in members:
+            if member.is_dir():
+                raise RuntimeError("preview ZIP contains an unmanifested directory entry")
+            relative_parts(member.filename)
+        for member in members:
+            destination = contained_path(validation_dir, member.filename)
+            destination.parent.mkdir(parents=True, exist_ok=True)
+            with archive.open(member) as source, destination.open("xb") as target:
+                shutil.copyfileobj(source, target)
 
-    manifest_path = validation_dir / "MANIFEST.json"
+    manifest_path = contained_path(validation_dir, "MANIFEST.json")
     if not manifest_path.is_file():
         raise RuntimeError("preview ZIP is missing MANIFEST.json")
     manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
@@ -249,21 +282,33 @@ def validate_archive(
     files = manifest.get("files")
     if not isinstance(files, list):
         raise RuntimeError("preview manifest files field is not an array")
-    manifest_paths = {str(entry["path"]) for entry in files}
+    manifest_paths: set[str] = set()
+    for entry in files:
+        if not isinstance(entry, dict) or not isinstance(entry.get("path"), str):
+            raise RuntimeError("preview manifest contains an invalid file entry")
+        relative = entry["path"]
+        relative_parts(relative)
+        digest = entry.get("sha256")
+        if not isinstance(digest, str) or re.fullmatch(r"[0-9a-f]{64}", digest) is None:
+            raise RuntimeError(f"preview manifest contains an invalid SHA-256 for {relative}")
+        manifest_paths.add(relative)
     expected_names = manifest_paths | {"MANIFEST.json"}
-    if len(manifest_paths) != len(files) or "MANIFEST.json" in manifest_paths or names != expected_names:
+    if (
+        len(manifest_paths) != len(files)
+        or "MANIFEST.json" in manifest_paths
+        or set(names) != expected_names
+    ):
         raise RuntimeError("preview ZIP has an unmanifested, missing, or duplicate file")
     if expected_names != expected_package_files:
         raise RuntimeError("preview ZIP does not have the exact expected package contents")
 
     for entry in files:
-        relative = str(entry["path"])
-        path = validation_dir.joinpath(*PurePosixPath(relative).parts)
+        relative = entry["path"]
+        path = contained_path(validation_dir, relative)
         if not path.is_file() or sha256(path) != entry["sha256"]:
             raise RuntimeError(f"preview ZIP payload hash mismatch: {relative}")
     for relative in BINARIES.values():
-        require_pe_x64(validation_dir.joinpath(*PurePosixPath(relative).parts))
-    return manifest
+        require_pe_x64(contained_path(validation_dir, relative))
 
 
 def run_cargo_tests(workspace: Path, target: str, codex: Path) -> None:
@@ -275,7 +320,7 @@ def run_cargo_tests(workspace: Path, target: str, codex: Path) -> None:
     env.pop("OPENAI_API_KEY", None)
     env.pop("CODEX_API_KEY", None)
     env["SEDNA_PREVIEW_CLI"] = str(codex)
-    cargo_dir = workspace / "codex-rs"
+    cargo_dir = contained_path(workspace, "codex-rs")
     for test_name in (
         "multi_agent_v2_wait_agent_keeps_queue_only_mailbox_activity_durable",
         "multi_agent_v2_wait_agent_returns_for_already_queued_mail",
@@ -325,16 +370,14 @@ def run_cargo_tests(workspace: Path, target: str, codex: Path) -> None:
 
 def main() -> None:
     required_env = (
-        "GITHUB_WORKSPACE",
-        "RUNNER_TEMP",
         "CARGO_TARGET_DIR",
         "CODEX_RELEASE_VERSION",
         "TARGET",
         "DISPLAY_REF",
+        "GITHUB_SHA",
         "GITHUB_RUN_ID",
         "GITHUB_REPOSITORY",
         "GITHUB_SERVER_URL",
-        "GITHUB_STEP_SUMMARY",
     )
     missing = [name for name in required_env if not os.environ.get(name)]
     if missing:
@@ -342,31 +385,78 @@ def main() -> None:
     if os.environ["TARGET"] != TARGET:
         raise RuntimeError(f"only {TARGET} is supported, not {os.environ['TARGET']}")
 
-    workspace = Path(os.environ["GITHUB_WORKSPACE"]).resolve()
-    release_dir = Path(os.environ["CARGO_TARGET_DIR"]) / TARGET / "release"
-    run_root = Path(os.environ["RUNNER_TEMP"]) / f"sedna-windows-preview-{os.environ['GITHUB_RUN_ID']}"
-    artifact_dir = workspace / "dist" / f"sedna-windows-preview-{os.environ['GITHUB_RUN_ID']}"
-    if run_root.exists() or artifact_dir.exists():
+    checkout_root = Path.cwd().resolve(strict=True)
+    if checkout_root.name != "codex-rs":
+        raise RuntimeError("preview validation must run from the codex-rs checkout directory")
+    workspace = checkout_root.parent
+    if not (workspace / "scripts" / "build_codex_package.py").is_file():
+        raise RuntimeError("the canonical Codex package builder is missing from the checkout")
+
+    target_root_by_drive = {
+        "C:": Path("C:/cargo-target"),
+        "D:": Path("D:/cargo-target"),
+    }
+    target_dir = next(
+        (
+            candidate
+            for drive, candidate in target_root_by_drive.items()
+            if os.environ["CARGO_TARGET_DIR"].casefold() == str(candidate).casefold()
+        ),
+        None,
+    )
+    if target_dir is None or not target_dir.is_dir():
+        raise RuntimeError("CARGO_TARGET_DIR is not one of the standard runner cargo-target roots")
+    if os.path.normcase(os.path.realpath(target_dir)) != os.path.normcase(str(target_dir)):
+        raise RuntimeError("CARGO_TARGET_DIR resolves through an unexpected path alias")
+    release_dir = contained_path(target_dir, f"{TARGET}/release")
+
+    release_version = os.environ["CODEX_RELEASE_VERSION"]
+    file_version = release_version.replace("+", "__")
+    if re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._-]{0,159}", file_version) is None:
+        raise RuntimeError("preview version contains characters that are unsafe in an artifact filename")
+    run_id = os.environ["GITHUB_RUN_ID"]
+    repository = os.environ["GITHUB_REPOSITORY"]
+    server_url = os.environ["GITHUB_SERVER_URL"]
+    workflow_commit = os.environ["GITHUB_SHA"]
+    if not run_id.isdecimal():
+        raise RuntimeError("workflow run ID must be decimal")
+    if re.fullmatch(r"[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+", repository) is None:
+        raise RuntimeError("workflow repository value is malformed")
+    if server_url != "https://github.com":
+        raise RuntimeError("native Windows preview artifacts may only be published from github.com")
+    if re.fullmatch(r"[0-9a-f]{40,64}", workflow_commit) is None:
+        raise RuntimeError("workflow commit must be a full hexadecimal Git object ID")
+
+    dist_root = contained_path(workspace, "dist")
+    if os.path.normcase(str(dist_root)) != os.path.normcase(str(workspace / "dist")):
+        raise RuntimeError("refusing to write preview artifacts through a dist symlink")
+    work_root = contained_path(dist_root, ".sedna-windows-preview-work")
+    artifact_dir = contained_path(dist_root, "sedna-windows-preview")
+    if work_root.exists() or artifact_dir.exists():
         raise RuntimeError("refusing to replace an existing preview output")
-    package_dir = run_root / "package"
-    validation_dir = run_root / "zip-validation"
-    consumer_root = run_root / "consumer"
-    package_dir.mkdir(parents=True)
+    dist_root.mkdir(parents=True, exist_ok=True)
+    work_root.mkdir()
+    artifact_dir.mkdir()
+    package_dir = contained_path(work_root, "package")
+    validation_dir = contained_path(work_root, "zip-validation")
+    consumer_root = contained_path(work_root, "consumer")
+    package_dir.mkdir()
     validation_dir.mkdir()
     consumer_root.mkdir()
-    artifact_dir.mkdir(parents=True)
 
     for binary in BINARIES:
         if binary == "rg.exe":
             # The canonical package builder fetches the pinned DotSlash artifact.
             continue
-        if not (release_dir / binary).is_file():
-            raise RuntimeError(f"required Windows preview binary is missing: {release_dir / binary}")
+        binary_path = contained_path(release_dir, binary)
+        if not binary_path.is_file():
+            raise RuntimeError(f"required Windows preview binary is missing: {binary}")
 
+    package_builder = contained_path(workspace, "scripts/build_codex_package.py")
     subprocess.run(
         [
             sys.executable,
-            str(workspace / "scripts" / "build_codex_package.py"),
+            str(package_builder),
             "--target",
             TARGET,
             "--variant",
@@ -374,21 +464,28 @@ def main() -> None:
             "--package-dir",
             str(package_dir),
             "--entrypoint-bin",
-            str(release_dir / "codex.exe"),
+            str(contained_path(release_dir, "codex.exe")),
             "--code-mode-host-bin",
-            str(release_dir / "codex-code-mode-host.exe"),
+            str(contained_path(release_dir, "codex-code-mode-host.exe")),
             "--codex-command-runner-bin",
-            str(release_dir / "codex-command-runner.exe"),
+            str(contained_path(release_dir, "codex-command-runner.exe")),
             "--codex-windows-sandbox-setup-bin",
-            str(release_dir / "codex-windows-sandbox-setup.exe"),
+            str(contained_path(release_dir, "codex-windows-sandbox-setup.exe")),
         ],
         cwd=workspace,
         check=True,
     )
-    shutil.copyfile(release_dir / "codex-responses-api-proxy.exe", package_dir / "bin/codex-responses-api-proxy.exe")
-    shutil.copyfile(release_dir / "codex-app-server.exe", package_dir / "bin/codex-app-server.exe")
+    shutil.copyfile(
+        contained_path(release_dir, "codex-responses-api-proxy.exe"),
+        contained_path(package_dir, "bin/codex-responses-api-proxy.exe"),
+    )
+    shutil.copyfile(
+        contained_path(release_dir, "codex-app-server.exe"),
+        contained_path(package_dir, "bin/codex-app-server.exe"),
+    )
 
-    codex_package = json.loads((package_dir / "codex-package.json").read_text(encoding="utf-8"))
+    codex_package_path = contained_path(package_dir, "codex-package.json")
+    codex_package = json.loads(codex_package_path.read_text(encoding="utf-8"))
     binary_version = codex_package["version"]
     install_text = """# Sedna native Windows x64 CLI preview
 
@@ -405,24 +502,23 @@ This disposable, unsigned package is not an official Sedna release and does not 
 
 The package includes the matching app-server and Responses API proxy executables. MANIFEST.json binds each payload file to the source commit and hosted preview run.
 """
-    (package_dir / "INSTALL-WINDOWS.md").write_text(install_text, encoding="utf-8", newline="\n")
-
-    source_commit = subprocess.check_output(
-        ["git", "-C", str(workspace), "rev-parse", "HEAD"], text=True
-    ).strip()
-    workflow_root = workspace / ".workflow-src"
-    workflow_commit = subprocess.check_output(
-        ["git", "-C", str(workflow_root), "rev-parse", "HEAD"], text=True
-    ).strip()
-    release_version = os.environ["CODEX_RELEASE_VERSION"]
-    run_url = (
-        f"{os.environ['GITHUB_SERVER_URL']}/{os.environ['GITHUB_REPOSITORY']}"
-        f"/actions/runs/{os.environ['GITHUB_RUN_ID']}"
+    contained_path(package_dir, "INSTALL-WINDOWS.md").write_text(
+        install_text, encoding="utf-8", newline="\n"
     )
-    payload_files = sorted(path for path in package_dir.rglob("*") if path.is_file())
+
+    source_commit = subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=workspace, text=True).strip()
+    if re.fullmatch(r"[0-9a-f]{40,64}", source_commit) is None:
+        raise RuntimeError("source commit must be a full hexadecimal Git object ID")
+    run_url = f"{server_url}/{repository}/actions/runs/{run_id}"
+    payload_files: list[Path] = []
+    for path in sorted(package_dir.rglob("*")):
+        if path.is_symlink():
+            raise RuntimeError(f"package builder produced a symbolic link: {path.name}")
+        if path.is_file():
+            payload_files.append(contained_path(package_dir, package_path(package_dir, path)))
     manifest = {
         "manifestVersion": 1,
-        "repository": os.environ["GITHUB_REPOSITORY"],
+        "repository": repository,
         "ref": os.environ["DISPLAY_REF"],
         "sourceCommit": source_commit,
         "workflowCommit": workflow_commit,
@@ -438,22 +534,21 @@ The package includes the matching app-server and Responses API proxy executables
             for path in payload_files
         ],
     }
-    manifest_path = package_dir / "MANIFEST.json"
+    manifest_path = contained_path(package_dir, "MANIFEST.json")
     manifest_path.write_text(json.dumps(manifest, indent=2) + "\n", encoding="utf-8", newline="\n")
 
-    archive_base = f"codex-sedna-preview-{release_version.replace('+', '__')}-{TARGET}"
-    archive_path = artifact_dir / f"{archive_base}.zip"
+    archive_name = f"codex-sedna-preview-{file_version}-{TARGET}.zip"
+    archive_path = contained_path(artifact_dir, archive_name)
     with ZipFile(archive_path, "w", ZIP_DEFLATED, compresslevel=9) as archive:
-        for path in sorted(package_dir.rglob("*")):
-            if path.is_file():
-                archive.write(path, package_path(package_dir, path))
+        for path in sorted([*payload_files, manifest_path]):
+            archive.write(path, package_path(package_dir, path))
     archive_hash = sha256(archive_path)
     sidecar = f"{archive_hash}  {archive_path.name}\n"
-    sidecar_path = Path(f"{archive_path}.sha256")
+    sidecar_path = contained_path(artifact_dir, f"{archive_path.name}.sha256")
     sidecar_path.write_text(sidecar, encoding="ascii", newline="\n")
 
     expected_files = {package_path(package_dir, path) for path in payload_files} | {"MANIFEST.json"}
-    extracted = validate_archive(
+    validate_archive(
         archive_path,
         validation_dir,
         {
@@ -469,16 +564,20 @@ The package includes the matching app-server and Responses API proxy executables
     if sha256(archive_path) != archive_hash or sidecar_path.read_text(encoding="ascii") != sidecar:
         raise RuntimeError("preview ZIP or external SHA-256 sidecar changed after creation")
 
-    package_metadata = json.loads((validation_dir / "codex-package.json").read_text(encoding="utf-8"))
+    package_metadata = json.loads(
+        contained_path(validation_dir, "codex-package.json").read_text(encoding="utf-8")
+    )
     if package_metadata.get("target") != TARGET or package_metadata.get("version") != binary_version:
         raise RuntimeError("canonical package metadata does not match the source-built binary")
 
-    codex = validation_dir / "bin/codex.exe"
-    app_server = validation_dir / "bin/codex-app-server.exe"
-    code_home = consumer_root / "codex-home"
+    codex = contained_path(validation_dir, BINARIES["codex.exe"])
+    app_server = contained_path(validation_dir, BINARIES["codex-app-server.exe"])
+    code_home = contained_path(consumer_root, "codex-home")
     code_home.mkdir()
-    (code_home / "config.toml").write_text('[windows]\nsandbox = "unelevated"\n', encoding="utf-8")
-    consumer_workspace = consumer_root / "workspace"
+    contained_path(code_home, "config.toml").write_text(
+        '[windows]\nsandbox = "unelevated"\n', encoding="utf-8"
+    )
+    consumer_workspace = contained_path(consumer_root, "workspace")
     consumer_workspace.mkdir()
     cli_env = isolated_env(code_home)
     version_output = run_cli(codex, ["--version"], consumer_workspace, cli_env)
@@ -518,8 +617,8 @@ The package includes the matching app-server and Responses API proxy executables
     if not isinstance(resumed_thread, dict) or resumed_thread.get("id") != thread_id:
         raise RuntimeError(f"packaged standalone app-server could not resume thread {thread_id}")
 
-    allowed_file = consumer_workspace / "allowed.txt"
-    outside_file = consumer_root / "outside.txt"
+    allowed_file = contained_path(consumer_workspace, "allowed.txt")
+    outside_file = contained_path(consumer_root, "outside.txt")
     if allowed_file.exists() or outside_file.exists():
         raise RuntimeError("refusing to overwrite an existing sandbox smoke target")
     workspace_policy = {
@@ -555,7 +654,7 @@ The package includes the matching app-server and Responses API proxy executables
         raise RuntimeError("Windows restricted-token workspace-write sandbox rejected its allowed command")
     if allowed_file.read_text(encoding="utf-8").strip() != "ALLOWED":
         raise RuntimeError("allowed sandbox command wrote unexpected content")
-    rg = validation_dir / "codex-path" / "rg.exe"
+    rg = contained_path(validation_dir, BINARIES["rg.exe"])
     rg_version = run_cli(rg, ["--version"], consumer_workspace, cli_env)
     if "ripgrep 15.2.0" not in rg_version:
         raise RuntimeError(f"packaged ripgrep version is unexpected: {rg_version.strip()}")
@@ -583,8 +682,9 @@ The package includes the matching app-server and Responses API proxy executables
         f"- Workflow: {run_url}",
         "",
     ]
-    with Path(os.environ["GITHUB_STEP_SUMMARY"]).open("a", encoding="utf-8") as summary_file:
-        summary_file.write("\n".join(summary))
+    contained_path(artifact_dir, "PREVIEW-SUMMARY.md").write_text(
+        "\n".join(summary), encoding="utf-8", newline="\n"
+    )
 
 
 if __name__ == "__main__":

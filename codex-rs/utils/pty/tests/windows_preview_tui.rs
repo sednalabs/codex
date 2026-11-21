@@ -2,10 +2,14 @@
 
 use std::fs;
 use std::path::PathBuf;
-use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use std::time::Duration;
+use std::time::SystemTime;
+use std::time::UNIX_EPOCH;
 
-use anyhow::{Context, Result};
-use codex_utils_pty::{TerminalSize, spawn_pty_process};
+use anyhow::Context;
+use anyhow::Result;
+use codex_utils_pty::TerminalSize;
+use codex_utils_pty::spawn_pty_process;
 use tokio::time::timeout;
 
 struct PreviewFixture(PathBuf);
