@@ -70,6 +70,11 @@ artifacts.
 - `sedna-branch-build`
   - trigger: manual dispatch only
   - purpose: disposable preview binaries when buildability is the actual question
+  - Windows x64 preview: opt-in `windows-2025`, pinned MSVC/Rust/V8, and a
+    three-day source/version-bound ZIP with helpers, manifest, SHA-256, and
+    install notes. Exact-ZIP checks cover CLI/app-server, thread create/resume,
+    sandbox allow/deny, ConPTY TUI, and wait fixtures; official Windows release
+    support is unchanged.
   - retention: 3 days
   - release visibility: never published as a GitHub Release
 - `rust-ci-full`
@@ -359,7 +364,7 @@ replaying an older ref, migrate it to the explicit lane schema used on `main`
 | `sdk.yml`                 | rewrite in place              | SDK checks on GitHub-hosted Linux for the Sedna branch model            |
 | `v8-canary.yml`           | rewrite in place              | V8 canary validation on `main` and `upstream-main`                      |
 | `validation-lab.yml`      | new                           | Dispatch-only remote validation lab for scratch/integration/orphan refs |
-| `sedna-branch-build.yml`  | new                           | Preview binary offload lane                                             |
+| `sedna-branch-build.yml`  | new                           | Linux/macOS/opt-in Windows x64 preview binary offload lane              |
 | `sedna-heavy-tests.yml`   | new                           | Expensive Linux validation lane                                         |
 | `sedna-sync-upstream.yml` | new                           | Mirror maintenance lane                                                 |
 | `sedna-release.yml`       | keep and harden               | Official Sedna release publisher                                        |
