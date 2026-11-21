@@ -45,16 +45,40 @@ class Responses(http.server.BaseHTTPRequestHandler):
             }
         )
         serialized = json.dumps(payload)
-        side = side_opening in serialized or side_followup in serialized
-        if side_followup in serialized:
+        last_user_text = next(
+            (
+                " ".join(
+                    part.get("text", "")
+                    for part in item.get("content", [])
+                    if isinstance(part, dict)
+                )
+                for item in reversed(items)
+                if item.get("role") == "user"
+            ),
+            "",
+        )
+        side_context = side_opening in serialized or side_followup in serialized
+        side_title_request = last_user_text.startswith(
+            "Generate a concise, single-line task title"
+        )
+        side = not side_title_request and (
+            side_opening in last_user_text or side_followup in last_user_text
+        )
+        if side_title_request and side_context:
+            phase = "side-title"
+            text = '{"title":"Side discussion"}'
+        elif side_followup in last_user_text:
             phase = "side-followup"
             text = "SIDE_POLICY_FOLLOWUP_OK"
-        elif side_opening in serialized:
+        elif side_opening in last_user_text:
             phase = "side-opening"
             text = "SIDE_POLICY_OK"
-        elif parent_followup in serialized:
+        elif parent_followup in last_user_text:
             phase = "parent-followup"
             text = "PARENT_FOLLOWUP_OK"
+        elif side_context:
+            phase = "side-auxiliary"
+            text = "SIDE_AUXILIARY_OK"
         else:
             phase = "parent-seed"
             text = "PARENT_SEED_OK"
@@ -62,6 +86,7 @@ class Responses(http.server.BaseHTTPRequestHandler):
             {
                 "phase": phase,
                 "side_request": side,
+                "side_context": side_context,
                 "edited_count": developer.count(edited),
                 "original_present": original in developer,
                 "side_policy": "You are in a side conversation" in developer,
@@ -150,6 +175,7 @@ with tempfile.TemporaryDirectory(prefix="side-chat-exact-package-") as directory
                 {
                     "phase": "parent-seed",
                     "side_request": False,
+                    "side_context": False,
                     "edited_count": 1,
                     "original_present": False,
                     "side_policy": False,
@@ -157,13 +183,24 @@ with tempfile.TemporaryDirectory(prefix="side-chat-exact-package-") as directory
                 {
                     "phase": "side-opening",
                     "side_request": True,
+                    "side_context": True,
                     "edited_count": 1,
                     "original_present": False,
                     "side_policy": True,
                 },
+                # The TUI's hidden structured title thread is metadata, not a Side turn.
+                {
+                    "phase": "side-title",
+                    "side_request": False,
+                    "side_context": True,
+                    "edited_count": 1,
+                    "original_present": False,
+                    "side_policy": False,
+                },
                 {
                     "phase": "side-followup",
                     "side_request": True,
+                    "side_context": True,
                     "edited_count": 1,
                     "original_present": False,
                     "side_policy": True,
@@ -171,6 +208,7 @@ with tempfile.TemporaryDirectory(prefix="side-chat-exact-package-") as directory
                 {
                     "phase": "parent-followup",
                     "side_request": False,
+                    "side_context": False,
                     "edited_count": 1,
                     "original_present": False,
                     "side_policy": False,
