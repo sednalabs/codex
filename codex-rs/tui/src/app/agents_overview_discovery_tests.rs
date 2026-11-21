@@ -329,7 +329,7 @@ async fn overview_local_enter_drops_the_displayed_cloud_list_before_detach() -> 
     let local_owner = local.backend_id();
     let local_session = local.start_thread(&app.config).await?.session;
     let local_id = local_session.thread_id;
-    let saved_item = serde_json::from_str(
+    let saved_item: serde_json::Value = serde_json::from_str(
         r#"{"type":"message","role":"assistant","content":[{"type":"output_text","text":"saved locally"}]}"#,
     )?;
     local

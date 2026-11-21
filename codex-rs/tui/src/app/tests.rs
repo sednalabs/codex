@@ -3404,7 +3404,7 @@ async fn reopen_saved_side_chat(during: DuringOpen) -> Result<()> {
     server
         .thread_inject_items(
             child,
-            codex_context_fragments::SideConversationPolicy::Attached.fork_items(),
+            codex_context_fragments::SideConversationPolicy::Attached.fork_items().to_vec(),
         )
         .await?;
     let children = [fork.thread.session.thread_id, child];
