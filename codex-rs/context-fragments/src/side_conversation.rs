@@ -62,8 +62,8 @@ impl SideConversationPolicy {
 
     /// An inherited turn can suppress the fork's configured instructions. Append the
     /// developer policy before the history boundary so the first child request sees it.
-    pub fn fork_items(self) -> Vec<ResponseItem> {
-        vec![
+    pub fn fork_items(self) -> [ResponseItem; 2] {
+        [
             ContextualUserFragment::into(self),
             side_conversation_boundary(),
         ]

@@ -216,6 +216,16 @@ enum ForkPresentation {
     SideConversation(SideChatStorage),
 }
 
+impl ForkPresentation {
+    fn preserve_side_guidance_provenance(self, params: &mut ThreadForkParams) {
+        if matches!(self, Self::SideConversation(_)) {
+            // Re-read developer guidance from server config. A text override loses
+            // its provenance; the Side Chat policy is injected as a separate item.
+            params.developer_instructions = None;
+        }
+    }
+}
+
 pub(crate) const ATTACHED_SIDE_CHAT_SOURCE: &str = "tui_side_chat";
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -234,10 +244,14 @@ impl SideChatStorage {
 
     pub(crate) fn configure_fork(self, config: &mut Config) {
         config.ephemeral = self == Self::Temporary;
-        config.developer_instructions = Some(
-            self.policy()
-                .instructions(config.developer_instructions.as_deref()),
-        );
+    }
+
+    fn context_items(self) -> Vec<serde_json::Value> {
+        let [policy, boundary] = self.policy().fork_items();
+        vec![
+            serde_json::json!({ "item": policy, "retention": "alwaysInThread" }),
+            serde_json::json!(boundary),
+        ]
     }
 }
 
@@ -1429,8 +1443,10 @@ impl AppServerSession {
                 result => result?,
             };
             let child = thread.session.thread_id;
-            let items = storage.policy().fork_items();
-            let boundary = match view.thread_inject_items(child, items).await {
+            let boundary = match view
+                .thread_inject_items(child, storage.context_items())
+                .await
+            {
                 Ok(_) if storage == SideChatStorage::Attached => {
                     match side_context_checkpoint(thread.session.rollout_path.as_deref()).await {
                         Ok(Some(_)) => Ok(()),
@@ -1491,7 +1507,7 @@ impl AppServerSession {
             thread_id,
             /*last_turn_id*/ None,
             /*before_turn_id*/ None,
-            ForkGoalContinuation::StartIfIdle,
+            ForkGoalContinuation::DeferUntilNextTurn,
             ForkPresentation::SideConversation(storage),
             selected_profile,
             ForkPermissionMode::InheritSaved,
@@ -1560,6 +1576,7 @@ impl AppServerSession {
             params.thread_source =
                 Some(ThreadSource::Feature(ATTACHED_SIDE_CHAT_SOURCE.to_string()));
         }
+        presentation.preserve_side_guidance_provenance(&mut params);
         params.model_provider = match config_source {
             ForkConfigSource::Local => self
                 .model_provider_override
@@ -1914,7 +1931,7 @@ impl AppServerSession {
     pub(crate) async fn thread_inject_items(
         &mut self,
         thread_id: ThreadId,
-        items: Vec<ResponseItem>,
+        items: Vec<impl serde::Serialize>,
     ) -> Result<ThreadInjectItemsResponse> {
         let items = items
             .into_iter()
@@ -2921,16 +2938,6 @@ fn thread_resume_params_from_config(
     {
         return ThreadResumeParams {
             thread_id: thread_id.to_string(),
-            developer_instructions: if model_settings
-                == ResumeModelSettings::PreserveSideConversation
-            {
-                with_terminal_visualization_instructions(
-                    &config,
-                    config.developer_instructions.clone(),
-                )
-            } else {
-                None
-            },
             ..ThreadResumeParams::default()
         };
     }
@@ -3418,6 +3425,67 @@ mod tests {
             .build()
             .await
             .expect("config should build")
+    }
+
+    #[tokio::test]
+    async fn side_chat_keeps_configured_guidance_separate_from_retained_policy() {
+        use codex_protocol::turn_input::InjectedResponseItem;
+        use codex_protocol::turn_input::ItemRetention;
+
+        let home = tempfile::tempdir().expect("tempdir");
+        let mut config = build_config(&home).await;
+        config.developer_instructions = Some("Configured developer guidance.".to_string());
+        let thread_id = ThreadId::new();
+        let mut regular = thread_fork_params_from_config(
+            config.clone(),
+            thread_id,
+            ThreadParamsMode::Embedded,
+            /*remote_cwd_override*/ None,
+        );
+        ForkPresentation::Regular.preserve_side_guidance_provenance(&mut regular);
+        assert_eq!(
+            regular.developer_instructions.as_deref(),
+            Some("Configured developer guidance.")
+        );
+
+        for storage in [SideChatStorage::Temporary, SideChatStorage::Attached] {
+            let mut config = config.clone();
+            storage.configure_fork(&mut config);
+            assert_eq!(config.ephemeral, storage == SideChatStorage::Temporary);
+            let mut params = thread_fork_params_from_config(
+                config.clone(),
+                thread_id,
+                ThreadParamsMode::Embedded,
+                /*remote_cwd_override*/ None,
+            );
+            ForkPresentation::SideConversation(storage)
+                .preserve_side_guidance_provenance(&mut params);
+            assert_eq!(params.developer_instructions, None);
+            let resume = thread_resume_params_from_config(
+                config,
+                thread_id,
+                ThreadParamsMode::Embedded,
+                /*remote_cwd_override*/ None,
+                ResumeModelSettings::PreserveSideConversation,
+                crate::resume_permissions::ResumePermissions::CURRENT_CONFIG,
+            );
+            assert_eq!(resume.developer_instructions, None);
+
+            let [policy, boundary] = storage
+                .context_items()
+                .try_into()
+                .expect("policy and boundary");
+            let policy: InjectedResponseItem =
+                serde_json::from_value(policy).expect("app server accepts the retained policy");
+            let boundary: InjectedResponseItem =
+                serde_json::from_value(boundary).expect("app server accepts the boundary");
+            assert_eq!(policy.retention, ItemRetention::AlwaysInThread);
+            assert_eq!(boundary.retention, ItemRetention::Unspecified);
+            assert!(
+                matches!(&policy.item, ResponseItem::Message { role, .. } if role == "developer")
+            );
+            assert!(matches!(&boundary.item, ResponseItem::Message { role, .. } if role == "user"));
+        }
     }
 
     #[test]
