@@ -242,6 +242,13 @@ impl SideChatStorage {
         }
     }
 
+    fn goal_continuation(self) -> ForkGoalContinuation {
+        match self {
+            Self::Temporary => ForkGoalContinuation::StartIfIdle,
+            Self::Attached => ForkGoalContinuation::DeferUntilNextTurn,
+        }
+    }
+
     pub(crate) fn configure_fork(self, config: &mut Config) {
         config.ephemeral = self == Self::Temporary;
     }
@@ -1507,7 +1514,7 @@ impl AppServerSession {
             thread_id,
             /*last_turn_id*/ None,
             /*before_turn_id*/ None,
-            ForkGoalContinuation::DeferUntilNextTurn,
+            storage.goal_continuation(),
             ForkPresentation::SideConversation(storage),
             selected_profile,
             ForkPermissionMode::InheritSaved,
@@ -3449,6 +3456,13 @@ mod tests {
         );
 
         for storage in [SideChatStorage::Temporary, SideChatStorage::Attached] {
+            assert_eq!(
+                storage.goal_continuation(),
+                match storage {
+                    SideChatStorage::Temporary => ForkGoalContinuation::StartIfIdle,
+                    SideChatStorage::Attached => ForkGoalContinuation::DeferUntilNextTurn,
+                }
+            );
             let mut config = config.clone();
             storage.configure_fork(&mut config);
             assert_eq!(config.ephemeral, storage == SideChatStorage::Temporary);
