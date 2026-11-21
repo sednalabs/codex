@@ -1931,13 +1931,8 @@ impl AppServerSession {
     pub(crate) async fn thread_inject_items(
         &mut self,
         thread_id: ThreadId,
-        items: Vec<impl serde::Serialize>,
+        items: Vec<serde_json::Value>,
     ) -> Result<ThreadInjectItemsResponse> {
-        let items = items
-            .into_iter()
-            .map(serde_json::to_value)
-            .collect::<std::result::Result<Vec<_>, _>>()
-            .wrap_err("failed to encode thread/inject_items payload")?;
         let request_id = self.next_request_id();
         self.request_handle
             .request_typed(ClientRequest::ThreadInjectItems {
