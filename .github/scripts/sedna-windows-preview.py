@@ -3,7 +3,9 @@
 
 from __future__ import annotations
 
+from contextlib import contextmanager
 import hashlib
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 import json
 import os
 from pathlib import Path, PurePosixPath, PureWindowsPath
@@ -15,6 +17,7 @@ import subprocess
 import sys
 import threading
 import time
+from typing import Iterator
 from zipfile import ZIP_DEFLATED, ZipFile
 
 
@@ -43,6 +46,81 @@ WINDOWS_ENV = (
     "USERPROFILE",
     "WINDIR",
 )
+
+
+class LocalResponsesHandler(BaseHTTPRequestHandler):
+    def do_POST(self) -> None:
+        self.rfile.read(int(self.headers.get("Content-Length", "0")))
+        self.server.request_count += 1
+        if self.path != "/v1/responses":
+            self.send_error(404)
+            return
+
+        response_id = "sedna-windows-smoke-response"
+        events = (
+            {
+                "type": "response.created",
+                "response": {"id": response_id},
+            },
+            {
+                "type": "response.output_item.done",
+                "item": {
+                    "type": "message",
+                    "role": "assistant",
+                    "id": "sedna-windows-smoke-message",
+                    "content": [{"type": "output_text", "text": "WINDOWS_SMOKE_OK"}],
+                },
+            },
+            {
+                "type": "response.completed",
+                "response": {
+                    "id": response_id,
+                    "usage": {
+                        "input_tokens": 0,
+                        "input_tokens_details": None,
+                        "output_tokens": 0,
+                        "output_tokens_details": None,
+                        "total_tokens": 0,
+                    },
+                },
+            },
+        )
+        body = "".join(
+            f"event: {event['type']}\n"
+            f"data: {json.dumps(event, separators=(',', ':'))}\n\n"
+            for event in events
+        ).encode("utf-8")
+        self.send_response(200)
+        self.send_header("Content-Type", "text/event-stream")
+        self.send_header("Cache-Control", "no-cache")
+        self.send_header("Connection", "close")
+        self.end_headers()
+        self.wfile.write(body)
+        self.wfile.flush()
+
+    def log_message(self, format: str, *args: object) -> None:
+        del format, args
+
+
+class LocalResponsesServer(ThreadingHTTPServer):
+    daemon_threads = True
+
+    def __init__(self) -> None:
+        super().__init__(("127.0.0.1", 0), LocalResponsesHandler)
+        self.request_count = 0
+
+
+@contextmanager
+def local_responses_server() -> Iterator[LocalResponsesServer]:
+    server = LocalResponsesServer()
+    server_thread = threading.Thread(target=server.serve_forever, daemon=True)
+    server_thread.start()
+    try:
+        yield server
+    finally:
+        server.shutdown()
+        server.server_close()
+        server_thread.join(timeout=5)
 
 
 def sha256(path: Path) -> str:
@@ -110,6 +188,7 @@ def app_server_request(
     request: dict[str, object],
     code_home: Path,
     cwd: Path,
+    complete_thread_turn: bool = False,
 ) -> tuple[dict[str, object], str]:
     request_method = str(request["method"])
     process = subprocess.Popen(
@@ -127,6 +206,7 @@ def app_server_request(
     )
     output: queue.Queue[dict[str, object] | str | None] = queue.Queue()
     errors: list[str] = []
+    pending_notifications: list[dict[str, object]] = []
 
     def read_stdout() -> None:
         assert process.stdout is not None
@@ -174,8 +254,37 @@ def app_server_request(
                 raise RuntimeError(f"app-server exited before answering {method}")
             if isinstance(message, str):
                 raise RuntimeError(message)
-            if "method" not in message and message.get("id") == request_id:
+            if "method" in message:
+                pending_notifications.append(message)
+            elif message.get("id") == request_id:
                 return message
+
+    def receive_notification(method: str, expected_thread_id: str) -> dict[str, object]:
+        deadline = time.monotonic() + 45
+        while True:
+            for index, message in enumerate(pending_notifications):
+                params = message.get("params")
+                if not isinstance(params, dict):
+                    continue
+                thread = params.get("thread")
+                thread_id = params.get("threadId")
+                if isinstance(thread, dict):
+                    thread_id = thread.get("id")
+                if message.get("method") == method and thread_id == expected_thread_id:
+                    return pending_notifications.pop(index)
+
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                raise TimeoutError(f"app-server {method} notification timed out")
+            try:
+                message = output.get(timeout=remaining)
+            except queue.Empty as error:
+                raise TimeoutError(f"app-server {method} notification timed out") from error
+            if message is None:
+                raise RuntimeError(f"app-server exited before emitting {method}")
+            if isinstance(message, str):
+                raise RuntimeError(message)
+            pending_notifications.append(message)
 
     try:
         send(
@@ -197,6 +306,51 @@ def app_server_request(
         send({"jsonrpc": "2.0", "method": "initialized"})
         send(request)
         response = receive(int(request["id"]), request_method)
+        result = jsonrpc_result(response, request_method)
+        if complete_thread_turn:
+            if request_method != "thread/start":
+                raise RuntimeError("only thread/start can request a completed smoke turn")
+            thread = result.get("thread")
+            thread_id = thread.get("id") if isinstance(thread, dict) else None
+            if not isinstance(thread_id, str) or not thread_id:
+                raise RuntimeError("thread/start returned no thread ID")
+            started = receive_notification("thread/started", thread_id)
+            started_params = started.get("params")
+            started_thread = (
+                started_params.get("thread") if isinstance(started_params, dict) else None
+            )
+            if not isinstance(started_thread, dict) or started_thread.get("id") != thread_id:
+                raise RuntimeError("thread/started notification did not match the created thread")
+
+            send(
+                {
+                    "jsonrpc": "2.0",
+                    "id": 3,
+                    "method": "turn/start",
+                    "params": {
+                        "threadId": thread_id,
+                        "cwd": str(cwd),
+                        "input": [
+                            {"type": "text", "text": "Reply exactly: WINDOWS_SMOKE_OK"}
+                        ],
+                        "sandboxPolicy": {
+                            "type": "workspaceWrite",
+                            "writableRoots": [str(cwd)],
+                            "networkAccess": False,
+                            "excludeTmpdirEnvVar": True,
+                            "excludeSlashTmp": True,
+                        },
+                    },
+                }
+            )
+            turn_response = receive(3, "turn/start")
+            jsonrpc_result(turn_response, "turn/start")
+            completed = receive_notification("turn/completed", thread_id)
+            completed_params = completed.get("params")
+            turn = completed_params.get("turn") if isinstance(completed_params, dict) else None
+            if not isinstance(turn, dict) or turn.get("status") != "completed":
+                raise RuntimeError("local mock-provider smoke turn did not complete successfully")
+
         assert process.stdin is not None
         process.stdin.close()
         try:
@@ -207,7 +361,7 @@ def app_server_request(
         stderr_reader.join(timeout=5)
         if stdout_reader.is_alive() or stderr_reader.is_alive():
             raise TimeoutError("app-server output pipes did not close")
-        return jsonrpc_result(response, request_method), "".join(errors)
+        return result, "".join(errors)
     finally:
         if process.poll() is None:
             process.kill()
@@ -598,18 +752,46 @@ The package includes the matching app-server and Responses API proxy executables
         raise RuntimeError(f"CLI version does not match this clean preview build: {version_output.strip()}")
     for arguments in (["--help"], ["exec", "--help"], ["app-server", "--help"]):
         run_cli(codex, arguments, consumer_workspace, cli_env)
-    start_result, _ = app_server_request(
-        codex,
-        ["app-server", "--listen", "stdio://"],
-        {
-            "jsonrpc": "2.0",
-            "id": 2,
-            "method": "thread/start",
-            "params": {"cwd": str(consumer_workspace), "sandbox": "workspace-write"},
-        },
-        code_home,
-        consumer_workspace,
-    )
+    config_path = contained_path(code_home, "config.toml")
+    with local_responses_server() as mock_server:
+        mock_host, mock_port = mock_server.server_address
+        config_path.write_text(
+            f'''model = "mock-model"
+model_provider = "local_smoke"
+approval_policy = "never"
+sandbox_mode = "read-only"
+
+[windows]
+sandbox = "unelevated"
+
+[model_providers.local_smoke]
+name = "Local Windows package smoke fixture"
+base_url = "http://{mock_host}:{mock_port}/v1"
+wire_api = "responses"
+request_max_retries = 0
+stream_max_retries = 0
+supports_websockets = false
+requires_openai_auth = false
+''',
+            encoding="utf-8",
+        )
+        start_result, _ = app_server_request(
+            codex,
+            ["app-server", "--listen", "stdio://"],
+            {
+                "jsonrpc": "2.0",
+                "id": 2,
+                "method": "thread/start",
+                "params": {"cwd": str(consumer_workspace), "sandbox": "workspace-write"},
+            },
+            code_home,
+            consumer_workspace,
+            complete_thread_turn=True,
+        )
+        if mock_server.request_count != 1:
+            raise RuntimeError(
+                "persisted thread smoke did not use exactly one local mock Responses request"
+            )
     thread = start_result.get("thread")
     thread_id = thread.get("id") if isinstance(thread, dict) else None
     if not isinstance(thread_id, str) or not thread_id:
