@@ -767,7 +767,7 @@ async fn command_center_new_preserves_only_selected_server_profiles() -> Result<
     // Exercise the persisted-history attachment path rather than blank-task reuse.
     app.agents_overview.blank_sessions.remove(&thread_id);
     for id in [thread_id, other] {
-        server.thread_inject_items(id, vec![serde_json::from_value(serde_json::json!({
+        server.thread_inject_items(id, vec![serde_json::from_value::<serde_json::Value>(serde_json::json!({
             "type": "message", "role": "assistant", "content": [{"type": "output_text", "text": "saved history"}]
         }))?]).await?;
     }
@@ -954,7 +954,7 @@ async fn command_center_new_restores_blank_drafts_and_builtin_permissions() -> R
     // Seed persisted history without sending the user's draft. Subsequent navigation
     // must exercise thread/resume, including its restoration of permission settings.
     for id in [first, other] {
-        server.thread_inject_items(id, vec![serde_json::from_value(serde_json::json!({
+        server.thread_inject_items(id, vec![serde_json::from_value::<serde_json::Value>(serde_json::json!({
             "type": "message", "role": "assistant", "content": [{"type": "output_text", "text": "saved history"}]
         }))?]).await?;
         app.agents_overview.blank_sessions.remove(&id);

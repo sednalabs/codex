@@ -411,7 +411,7 @@ async fn custom_permission_selection_scenario() -> Result<()> {
         Some("other")
     );
     // Materialize the task so /fork exercises persisted history with the confirmed profile.
-    server.thread_inject_items(thread_id, vec![serde_json::from_value(serde_json::json!({
+    server.thread_inject_items(thread_id, vec![serde_json::from_value::<serde_json::Value>(serde_json::json!({
         "type": "message", "role": "assistant", "content": [{"type": "output_text", "text": "saved history"}]
     }))?]).await?;
     let mut tui = crate::tui::test_support::make_test_tui()?;
@@ -483,7 +483,7 @@ async fn accepted_permissions_survive_directory_change_before_notification() -> 
         app.runtime_permission_profile_override =
             Some(RuntimePermissionProfileOverride::from_config(&app.config));
         if preserve_history {
-            server.thread_inject_items(source, vec![serde_json::from_value(serde_json::json!({
+            server.thread_inject_items(source, vec![serde_json::from_value::<serde_json::Value>(serde_json::json!({
                 "type": "message", "role": "assistant", "content": [{"type": "output_text", "text": "saved history"}]
             }))?]).await?;
         }

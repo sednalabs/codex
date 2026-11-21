@@ -1262,7 +1262,7 @@ async fn resumed_backend_handoff_detaches_through_the_source_connection() -> Res
     let destination_id = destination.backend_id();
     let resumed = destination.start_thread(&app.config).await?;
     let resumed_id = resumed.session.thread_id;
-    let saved_item = serde_json::from_str(
+    let saved_item: serde_json::Value = serde_json::from_str(
         r#"{"type":"message","role":"assistant","content":[{"type":"output_text","text":"saved history"}]}"#,
     )?;
     destination

@@ -5389,7 +5389,7 @@ model_reasoning_effort = "low"
         format!("model_provider = \"ollama\"\n{contents}"),
     )?;
     let original = app.chat_widget.thread_id().expect("original thread");
-    server.thread_inject_items(original, vec![serde_json::from_value(serde_json::json!({
+    server.thread_inject_items(original, vec![serde_json::from_value::<serde_json::Value>(serde_json::json!({
         "type": "message", "role": "assistant", "content": [{"type": "output_text", "text": "managed fork history"}]
     }))?]).await?;
     let manager = codex_worktree::WorktreeManager::new(
@@ -5629,7 +5629,7 @@ terminal_visualization_instructions = true
         );
         assert_eq!(app.config.model_provider_id, "ollama");
         // Injection flushes and materializes a new thread's otherwise lazy rollout.
-        server.thread_inject_items(replacement, vec![serde_json::from_value(serde_json::json!({
+        server.thread_inject_items(replacement, vec![serde_json::from_value::<serde_json::Value>(serde_json::json!({
             "type": "message", "role": "assistant", "content": [{"type": "output_text", "text": format!("replacement persistence probe {mode:?}")}]
         }))?]).await?;
         let rollout = app.chat_widget.rollout_path().expect("replacement rollout");
@@ -5925,7 +5925,7 @@ async fn change_directory_scenario() -> Result<()> {
     let original = app.chat_widget.thread_id().expect("original thread");
     let rollout = app.chat_widget.rollout_path().expect("original rollout");
     let json = r#"{"type":"message","role":"assistant","content":[{"type":"output_text","text":"saved history"}]}"#;
-    let item = serde_json::from_str(json)?;
+    let item: serde_json::Value = serde_json::from_str(json)?;
     server.thread_inject_items(original, vec![item]).await?;
     let tracked = server.start_thread(&app.config).await?;
     let (child, capacity) = (tracked.session.thread_id, THREAD_EVENT_CHANNEL_CAPACITY);
