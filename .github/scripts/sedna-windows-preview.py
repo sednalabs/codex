@@ -91,6 +91,13 @@ def package_path(root: Path, path: Path) -> str:
     return relative
 
 
+def is_github_name_component(value: str) -> bool:
+    return 0 < len(value) <= 100 and all(
+        character.isascii() and (character.isalnum() or character in "._-")
+        for character in value
+    )
+
+
 def isolated_env(code_home: Path) -> dict[str, str]:
     env = {key: os.environ[key] for key in WINDOWS_ENV if key in os.environ}
     env.update(CODEX_HOME=str(code_home), RUST_LOG="error")
@@ -416,11 +423,17 @@ def main() -> None:
         raise RuntimeError("preview version contains characters that are unsafe in an artifact filename")
     run_id = os.environ["GITHUB_RUN_ID"]
     repository = os.environ["GITHUB_REPOSITORY"]
+    owner, separator, repository_name = repository.partition("/")
     server_url = os.environ["GITHUB_SERVER_URL"]
     workflow_commit = os.environ["GITHUB_SHA"]
     if not run_id.isdecimal():
         raise RuntimeError("workflow run ID must be decimal")
-    if re.fullmatch(r"[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+", repository) is None:
+    if (
+        not separator
+        or "/" in repository_name
+        or not is_github_name_component(owner)
+        or not is_github_name_component(repository_name)
+    ):
         raise RuntimeError("workflow repository value is malformed")
     if server_url != "https://github.com":
         raise RuntimeError("native Windows preview artifacts may only be published from github.com")

@@ -43,6 +43,22 @@ jobs:
       preview_version: ${{ steps.meta.outputs.preview_version }}
       artifact_name: ${{ steps.meta.outputs.artifact_name }}
     steps:
+      - name: Require the hosted source ref for native Windows previews
+        if: ${{ inputs.platform == 'windows-x86_64' }}
+        shell: bash
+        env:
+          REQUESTED_REF: ${{ inputs.ref }}
+        run: |
+          set -euo pipefail
+          if [[ -n "${REQUESTED_REF}" ]]; then
+            echo "Windows previews must use the selected workflow ref, not the separate ref input." >&2
+            exit 1
+          fi
+          if [[ "${GITHUB_REF}" != refs/heads/* ]]; then
+            echo "Windows previews must be dispatched from a branch, not a tag or other ref." >&2
+            exit 1
+          fi
+
       - uses: actions/checkout@v7
         with:
           fetch-depth: 0
@@ -605,7 +621,7 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           fetch-depth: 1
-          ref: ${{ needs.metadata.outputs.checkout_ref }}
+          ref: ${{ github.sha }}
           persist-credentials: false
 
       - uses: ./.github/actions/setup-ci
