@@ -14,6 +14,18 @@ use tokio::time::timeout;
 
 struct PreviewFixture(PathBuf);
 
+// The empty-chat composer chooses one prompt at random; any one proves that the TUI rendered.
+const VISIBLE_COMPOSER_MARKERS: [&[u8]; 8] = [
+    b"Explain this codebase",
+    b"Summarize recent commits",
+    b"Implement {feature}",
+    b"Find and fix a bug in @filename",
+    b"Write tests for @filename",
+    b"Improve documentation in @filename",
+    b"Run /review on my current changes",
+    b"Use /skills to list available skills",
+];
+
 impl Drop for PreviewFixture {
     fn drop(&mut self) {
         let _ = fs::remove_dir_all(&self.0);
@@ -94,23 +106,23 @@ async fn preview_cli_renders_tui_in_conpty_and_exits_on_ctrl_c() -> Result<()> {
     .await
     .context("failed to start preview CLI in native ConPTY")?;
 
-    let visible_ui_marker = b"OpenAI Codex";
     let mut terminal_output = Vec::new();
     let rendered_ui = timeout(Duration::from_secs(30), async {
         loop {
             let Some(chunk) = process.stdout_rx.recv().await else {
-                anyhow::bail!("preview TUI exited before rendering its Codex header")
+                anyhow::bail!("preview TUI exited before rendering its composer")
             };
             terminal_output.extend_from_slice(&chunk);
-            if terminal_output
-                .windows(visible_ui_marker.len())
-                .any(|window| window == visible_ui_marker)
-            {
+            if VISIBLE_COMPOSER_MARKERS.iter().any(|marker| {
+                terminal_output
+                    .windows(marker.len())
+                    .any(|window| window == *marker)
+            }) {
                 return Ok::<(), anyhow::Error>(());
             }
             anyhow::ensure!(
                 terminal_output.len() <= 1024 * 1024,
-                "preview TUI produced more than 1 MiB before rendering its Codex header"
+                "preview TUI produced more than 1 MiB before rendering its composer"
             );
         }
     })
@@ -120,29 +132,44 @@ async fn preview_cli_renders_tui_in_conpty_and_exits_on_ctrl_c() -> Result<()> {
         let log_bytes = fs::metadata(&log_path)
             .map(|metadata| metadata.len())
             .unwrap_or_default();
+        let fixture_path = fixture_root.to_string_lossy().into_owned();
+        let fixture_path_forward_slashes = fixture_path.replace('\\', "/");
+        let workspace_path = cwd.to_string_lossy().into_owned();
+        let workspace_path_forward_slashes = workspace_path.replace('\\', "/");
         let diagnostics = fs::read_to_string(log_path)
             .unwrap_or_default()
             .lines()
             .filter_map(|line| {
-                line.split_once(" ERROR ")
-                    .or_else(|| line.split_once(" WARN "))
-                    .map(|(_, message)| message.trim())
+                let message = if line.contains(" ERROR ") {
+                    line.split_once(" ERROR ")
+                } else if line.contains(" WARN ")
+                    && !line.contains("path=")
+                    && !line.contains("://")
+                {
+                    line.split_once(" WARN ")
+                } else {
+                    None
+                };
+                message.map(|(_, message)| message.trim())
             })
             .take(20)
             .map(|message| {
                 message
-                    .replace(&fixture_root.to_string_lossy().to_string(), "<fixture>")
-                    .replace(&cwd.to_string_lossy().to_string(), "<workspace>")
+                    .replace(&fixture_path, "<fixture>")
+                    .replace(&fixture_path_forward_slashes, "<fixture>")
+                    .replace(&workspace_path, "<workspace>")
+                    .replace(&workspace_path_forward_slashes, "<workspace>")
             })
             .collect::<Vec<_>>()
             .join("\n");
         anyhow::bail!(
-            "preview TUI did not render its Codex header within 30 seconds (terminal output: {} bytes, TUI log: {log_bytes} bytes, process exited: {}); TUI warnings/errors:\n{diagnostics}",
+            "preview TUI did not render a composer placeholder within 30 seconds (terminal output: {} bytes, TUI log: {log_bytes} bytes, process exited: {}); TUI warnings/errors:\n{diagnostics}",
             terminal_output.len(),
             process.session.has_exited(),
         );
     }
-    rendered_ui.context("preview TUI did not render its Codex header within 30 seconds")??;
+    rendered_ui
+        .context("preview TUI did not render a composer placeholder within 30 seconds")??;
     anyhow::ensure!(
         !process.session.has_exited(),
         "preview TUI exited before Ctrl+C was sent"
