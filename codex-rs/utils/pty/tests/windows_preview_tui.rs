@@ -26,6 +26,54 @@ const VISIBLE_COMPOSER_MARKERS: [&[u8]; 8] = [
     b"Use /skills to list available skills",
 ];
 
+fn visible_terminal_bytes(output: &[u8]) -> Vec<u8> {
+    let mut visible = Vec::with_capacity(output.len());
+    let mut index = 0;
+    while index < output.len() {
+        match output[index] {
+            0x1b => {
+                index += 1;
+                if index == output.len() {
+                    break;
+                }
+                match output[index] {
+                    b'[' => {
+                        index += 1;
+                        while index < output.len() {
+                            let byte = output[index];
+                            index += 1;
+                            if (0x40..=0x7e).contains(&byte) {
+                                break;
+                            }
+                        }
+                    }
+                    b']' => {
+                        index += 1;
+                        while index < output.len() {
+                            let byte = output[index];
+                            index += 1;
+                            if byte == 0x07 {
+                                break;
+                            }
+                            if byte == 0x1b && output.get(index) == Some(&b'\\') {
+                                index += 1;
+                                break;
+                            }
+                        }
+                    }
+                    _ => index += 1,
+                }
+            }
+            b'\r' | b'\n' | b'\t' | 0x20..=0x7e => {
+                visible.push(output[index]);
+                index += 1;
+            }
+            _ => index += 1,
+        }
+    }
+    visible
+}
+
 impl Drop for PreviewFixture {
     fn drop(&mut self) {
         let _ = fs::remove_dir_all(&self.0);
@@ -113,8 +161,9 @@ async fn preview_cli_renders_tui_in_conpty_and_exits_on_ctrl_c() -> Result<()> {
                 anyhow::bail!("preview TUI exited before rendering its composer")
             };
             terminal_output.extend_from_slice(&chunk);
+            let visible_output = visible_terminal_bytes(&terminal_output);
             if VISIBLE_COMPOSER_MARKERS.iter().any(|marker| {
-                terminal_output
+                visible_output
                     .windows(marker.len())
                     .any(|window| window == *marker)
             }) {
@@ -136,6 +185,19 @@ async fn preview_cli_renders_tui_in_conpty_and_exits_on_ctrl_c() -> Result<()> {
         let fixture_path_forward_slashes = fixture_path.replace('\\', "/");
         let workspace_path = cwd.to_string_lossy().into_owned();
         let workspace_path_forward_slashes = workspace_path.replace('\\', "/");
+        let visible_output = String::from_utf8_lossy(&visible_terminal_bytes(&terminal_output))
+            .replace(&fixture_path, "<fixture>")
+            .replace(&fixture_path_forward_slashes, "<fixture>")
+            .replace(&workspace_path, "<workspace>")
+            .replace(&workspace_path_forward_slashes, "<workspace>");
+        let terminal_excerpt = visible_output
+            .chars()
+            .rev()
+            .take(2048)
+            .collect::<String>()
+            .chars()
+            .rev()
+            .collect::<String>();
         let diagnostics = fs::read_to_string(log_path)
             .unwrap_or_default()
             .lines()
@@ -163,7 +225,7 @@ async fn preview_cli_renders_tui_in_conpty_and_exits_on_ctrl_c() -> Result<()> {
             .collect::<Vec<_>>()
             .join("\n");
         anyhow::bail!(
-            "preview TUI did not render a composer placeholder within 30 seconds (terminal output: {} bytes, TUI log: {log_bytes} bytes, process exited: {}); TUI warnings/errors:\n{diagnostics}",
+            "preview TUI did not render a composer placeholder within 30 seconds (terminal output: {} bytes, TUI log: {log_bytes} bytes, process exited: {}); visible terminal excerpt:\n{terminal_excerpt}\nTUI warnings/errors:\n{diagnostics}",
             terminal_output.len(),
             process.session.has_exited(),
         );
