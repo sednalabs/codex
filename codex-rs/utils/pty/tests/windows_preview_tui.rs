@@ -22,7 +22,7 @@ impl Drop for PreviewFixture {
 
 #[tokio::test]
 #[ignore = "run only against the extracted native Windows preview ZIP"]
-async fn preview_cli_enters_tui_in_conpty_and_exits_on_ctrl_c() -> Result<()> {
+async fn preview_cli_renders_tui_in_conpty_and_exits_on_ctrl_c() -> Result<()> {
     let cli = std::env::var_os("SEDNA_PREVIEW_CLI")
         .map(PathBuf::from)
         .context("SEDNA_PREVIEW_CLI must point to the codex.exe extracted from the preview ZIP")?;
@@ -94,27 +94,28 @@ async fn preview_cli_enters_tui_in_conpty_and_exits_on_ctrl_c() -> Result<()> {
     .await
     .context("failed to start preview CLI in native ConPTY")?;
 
+    let visible_ui_marker = b"OpenAI Codex";
     let mut terminal_output = Vec::new();
-    let alternate_screen = timeout(Duration::from_secs(30), async {
+    let rendered_ui = timeout(Duration::from_secs(30), async {
         loop {
             let Some(chunk) = process.stdout_rx.recv().await else {
-                anyhow::bail!("preview TUI exited before entering the alternate screen")
+                anyhow::bail!("preview TUI exited before rendering its Codex header")
             };
             terminal_output.extend_from_slice(&chunk);
             if terminal_output
-                .windows(b"\x1b[?1049h".len())
-                .any(|window| window == b"\x1b[?1049h")
+                .windows(visible_ui_marker.len())
+                .any(|window| window == visible_ui_marker)
             {
                 return Ok::<(), anyhow::Error>(());
             }
             anyhow::ensure!(
                 terminal_output.len() <= 1024 * 1024,
-                "preview TUI produced more than 1 MiB before entering the alternate screen"
+                "preview TUI produced more than 1 MiB before rendering its Codex header"
             );
         }
     })
     .await;
-    if alternate_screen.is_err() {
+    if rendered_ui.is_err() {
         let log_path = log_dir.join("codex-tui.log");
         let log_bytes = fs::metadata(&log_path)
             .map(|metadata| metadata.len())
@@ -136,16 +137,15 @@ async fn preview_cli_enters_tui_in_conpty_and_exits_on_ctrl_c() -> Result<()> {
             .collect::<Vec<_>>()
             .join("\n");
         anyhow::bail!(
-            "preview TUI did not enter the alternate screen within 30 seconds (terminal output: {} bytes, TUI log: {log_bytes} bytes, process exited: {}); TUI warnings/errors:\n{diagnostics}",
+            "preview TUI did not render its Codex header within 30 seconds (terminal output: {} bytes, TUI log: {log_bytes} bytes, process exited: {}); TUI warnings/errors:\n{diagnostics}",
             terminal_output.len(),
             process.session.has_exited(),
         );
     }
-    alternate_screen
-        .context("preview TUI did not enter the alternate screen within 30 seconds")??;
+    rendered_ui.context("preview TUI did not render its Codex header within 30 seconds")??;
     anyhow::ensure!(
         !process.session.has_exited(),
-        "preview TUI exited immediately after entering the alternate screen"
+        "preview TUI exited before Ctrl+C was sent"
     );
 
     process
