@@ -115,11 +115,28 @@ async fn preview_cli_enters_tui_in_conpty_and_exits_on_ctrl_c() -> Result<()> {
     })
     .await;
     if alternate_screen.is_err() {
-        let log_bytes = fs::metadata(log_dir.join("codex-tui.log"))
+        let log_path = log_dir.join("codex-tui.log");
+        let log_bytes = fs::metadata(&log_path)
             .map(|metadata| metadata.len())
             .unwrap_or_default();
+        let diagnostics = fs::read_to_string(log_path)
+            .unwrap_or_default()
+            .lines()
+            .filter_map(|line| {
+                line.split_once(" ERROR ")
+                    .or_else(|| line.split_once(" WARN "))
+                    .map(|(_, message)| message.trim())
+            })
+            .take(20)
+            .map(|message| {
+                message
+                    .replace(&fixture_root.to_string_lossy().to_string(), "<fixture>")
+                    .replace(&cwd.to_string_lossy().to_string(), "<workspace>")
+            })
+            .collect::<Vec<_>>()
+            .join("\n");
         anyhow::bail!(
-            "preview TUI did not enter the alternate screen within 30 seconds (terminal output: {} bytes, TUI log: {log_bytes} bytes, process exited: {})",
+            "preview TUI did not enter the alternate screen within 30 seconds (terminal output: {} bytes, TUI log: {log_bytes} bytes, process exited: {}); TUI warnings/errors:\n{diagnostics}",
             terminal_output.len(),
             process.session.has_exited(),
         );
