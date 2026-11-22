@@ -137,7 +137,11 @@ async fn preview_cli_renders_tui_in_conpty_and_exits_on_ctrl_c() -> Result<()> {
     ]);
 
     let log_dir_config = format!("log_dir={:?}", log_dir.to_string_lossy());
-    let args = vec!["-c".to_string(), log_dir_config];
+    let args = vec![
+        "--no-alt-screen".to_string(),
+        "-c".to_string(),
+        log_dir_config,
+    ];
     let mut process = spawn_pty_process(
         cli.to_str()
             .context("preview CLI path is not valid UTF-8")?,
@@ -162,8 +166,14 @@ async fn preview_cli_renders_tui_in_conpty_and_exits_on_ctrl_c() -> Result<()> {
             };
             terminal_output.extend_from_slice(&chunk);
             let visible_output = visible_terminal_bytes(&terminal_output);
+            let visible_text = String::from_utf8_lossy(&visible_output);
+            let normalized_visible_text = visible_text
+                .split_whitespace()
+                .collect::<Vec<_>>()
+                .join(" ");
             if VISIBLE_COMPOSER_MARKERS.iter().any(|marker| {
-                visible_output
+                normalized_visible_text
+                    .as_bytes()
                     .windows(marker.len())
                     .any(|window| window == *marker)
             }) {
@@ -186,6 +196,9 @@ async fn preview_cli_renders_tui_in_conpty_and_exits_on_ctrl_c() -> Result<()> {
         let workspace_path = cwd.to_string_lossy().into_owned();
         let workspace_path_forward_slashes = workspace_path.replace('\\', "/");
         let visible_output = String::from_utf8_lossy(&visible_terminal_bytes(&terminal_output))
+            .split_whitespace()
+            .collect::<Vec<_>>()
+            .join(" ")
             .replace(&fixture_path, "<fixture>")
             .replace(&fixture_path_forward_slashes, "<fixture>")
             .replace(&workspace_path, "<workspace>")
