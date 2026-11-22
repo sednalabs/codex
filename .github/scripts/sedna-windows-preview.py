@@ -99,7 +99,7 @@ class LocalResponsesHandler(BaseHTTPRequestHandler):
         self.wfile.flush()
 
     def log_message(self, format: str, *args: object) -> None:
-        del format, args
+        return
 
 
 class LocalResponsesServer(ThreadingHTTPServer):
