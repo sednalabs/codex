@@ -41,8 +41,10 @@ async fn preview_cli_enters_tui_in_conpty_and_exits_on_ctrl_c() -> Result<()> {
     let _fixture = PreviewFixture(fixture_root.clone());
     let home = fixture_root.join("home");
     let cwd = fixture_root.join("workspace");
+    let log_dir = fixture_root.join("logs");
     fs::create_dir_all(&home)?;
     fs::create_dir_all(&cwd)?;
+    fs::create_dir_all(&log_dir)?;
 
     let mut env: std::collections::HashMap<String, String> = [
         "APPDATA",
@@ -70,13 +72,16 @@ async fn preview_cli_enters_tui_in_conpty_and_exits_on_ctrl_c() -> Result<()> {
             home.to_string_lossy().into_owned(),
         ),
         ("NO_COLOR".to_string(), "1".to_string()),
+        ("RUST_LOG".to_string(), "trace".to_string()),
         ("TERM".to_string(), "xterm-256color".to_string()),
     ]);
 
+    let log_dir_config = format!("log_dir={:?}", log_dir.to_string_lossy());
+    let args = vec!["-c".to_string(), log_dir_config];
     let mut process = spawn_pty_process(
         cli.to_str()
             .context("preview CLI path is not valid UTF-8")?,
-        &[],
+        &args,
         &cwd,
         &env,
         &None,
@@ -90,7 +95,7 @@ async fn preview_cli_enters_tui_in_conpty_and_exits_on_ctrl_c() -> Result<()> {
     .context("failed to start preview CLI in native ConPTY")?;
 
     let mut terminal_output = Vec::new();
-    timeout(Duration::from_secs(30), async {
+    let alternate_screen = timeout(Duration::from_secs(30), async {
         loop {
             let Some(chunk) = process.stdout_rx.recv().await else {
                 anyhow::bail!("preview TUI exited before entering the alternate screen")
@@ -108,8 +113,19 @@ async fn preview_cli_enters_tui_in_conpty_and_exits_on_ctrl_c() -> Result<()> {
             );
         }
     })
-    .await
-    .context("preview TUI did not enter the alternate screen within 30 seconds")??;
+    .await;
+    if alternate_screen.is_err() {
+        let log_bytes = fs::metadata(log_dir.join("codex-tui.log"))
+            .map(|metadata| metadata.len())
+            .unwrap_or_default();
+        anyhow::bail!(
+            "preview TUI did not enter the alternate screen within 30 seconds (terminal output: {} bytes, TUI log: {log_bytes} bytes, process exited: {})",
+            terminal_output.len(),
+            process.session.has_exited(),
+        );
+    }
+    alternate_screen
+        .context("preview TUI did not enter the alternate screen within 30 seconds")??;
     anyhow::ensure!(
         !process.session.has_exited(),
         "preview TUI exited immediately after entering the alternate screen"
