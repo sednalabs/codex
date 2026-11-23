@@ -1,8 +1,9 @@
 #!/usr/bin/env python3
-"""Build, hash, and natively smoke-test a disposable Windows Codex package."""
+"""Build or natively smoke-test a disposable Windows Codex package."""
 
 from __future__ import annotations
 
+import argparse
 from contextlib import contextmanager
 import hashlib
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -472,7 +473,14 @@ def validate_archive(
         require_pe_x64(contained_path(validation_dir, relative))
 
 
-def run_cargo_tests(workspace: Path, target: str, codex: Path) -> None:
+def run_cargo_tests(
+    workspace: Path,
+    target: str,
+    codex: Path,
+    *,
+    include_core: bool = True,
+    include_tui: bool = True,
+) -> None:
     env = os.environ.copy()
     for name in list(env):
         if any(marker in name.lower() for marker in ("token", "secret", "password", "api_key", "apikey", "credential")):
@@ -482,10 +490,32 @@ def run_cargo_tests(workspace: Path, target: str, codex: Path) -> None:
     env.pop("CODEX_API_KEY", None)
     env["SEDNA_PREVIEW_CLI"] = str(codex)
     cargo_dir = contained_path(workspace, "codex-rs")
-    for test_name in (
-        "multi_agent_v2_wait_agent_keeps_queue_only_mailbox_activity_durable",
-        "multi_agent_v2_wait_agent_returns_for_already_queued_mail",
-    ):
+    if include_core:
+        for test_name in (
+            "multi_agent_v2_wait_agent_keeps_queue_only_mailbox_activity_durable",
+            "multi_agent_v2_wait_agent_returns_for_already_queued_mail",
+        ):
+            subprocess.run(
+                [
+                    "cargo",
+                    "test",
+                    "--locked",
+                    "--target",
+                    target,
+                    "--release",
+                    "-p",
+                    "codex-core",
+                    "--lib",
+                    test_name,
+                    "--",
+                    "--nocapture",
+                    "--test-threads=1",
+                ],
+                cwd=cargo_dir,
+                env=env,
+                check=True,
+            )
+    if include_tui:
         subprocess.run(
             [
                 "cargo",
@@ -495,10 +525,11 @@ def run_cargo_tests(workspace: Path, target: str, codex: Path) -> None:
                 target,
                 "--release",
                 "-p",
-                "codex-core",
-                "--lib",
-                test_name,
+                "codex-utils-pty",
+                "--test",
+                "windows_preview_tui",
                 "--",
+                "--ignored",
                 "--nocapture",
                 "--test-threads=1",
             ],
@@ -506,30 +537,356 @@ def run_cargo_tests(workspace: Path, target: str, codex: Path) -> None:
             env=env,
             check=True,
         )
-    subprocess.run(
-        [
-            "cargo",
-            "test",
-            "--locked",
-            "--target",
-            target,
-            "--release",
-            "-p",
-            "codex-utils-pty",
-            "--test",
-            "windows_preview_tui",
-            "--",
-            "--ignored",
-            "--nocapture",
-            "--test-threads=1",
-        ],
-        cwd=cargo_dir,
-        env=env,
-        check=True,
+
+
+def smoke_package(
+    workspace: Path,
+    artifact_dir: Path,
+    validation_dir: Path,
+    consumer_root: Path,
+    archive_path: Path,
+    sidecar_path: Path,
+    source_commit: str,
+    workflow_commit: str,
+    release_version: str,
+    binary_version: str,
+    run_url: str,
+    *,
+    include_core_tests: bool,
+    include_tui_test: bool,
+) -> None:
+    archive_hash = sha256(archive_path)
+    expected_sidecar = f"{archive_hash}  {archive_path.name}\n"
+    if sidecar_path.read_text(encoding="ascii") != expected_sidecar:
+        raise RuntimeError("preview ZIP or external SHA-256 sidecar changed after creation")
+
+    package_metadata = json.loads(
+        contained_path(validation_dir, "codex-package.json").read_text(encoding="utf-8")
+    )
+    if package_metadata.get("target") != TARGET or package_metadata.get("version") != binary_version:
+        raise RuntimeError("canonical package metadata does not match the source-built binary")
+
+    codex = contained_path(validation_dir, BINARIES["codex.exe"])
+    app_server = contained_path(validation_dir, BINARIES["codex-app-server.exe"])
+    code_home = contained_path(consumer_root, "codex-home")
+    code_home.mkdir()
+    contained_path(code_home, "config.toml").write_text(
+        '[windows]\nsandbox = "unelevated"\n', encoding="utf-8"
+    )
+    consumer_workspace = contained_path(consumer_root, "workspace")
+    consumer_workspace.mkdir()
+    cli_env = isolated_env(code_home)
+    version_output = run_cli(codex, ["--version"], consumer_workspace, cli_env)
+    if release_version not in version_output or "-dirty" in version_output:
+        raise RuntimeError(f"CLI version does not match this clean preview build: {version_output.strip()}")
+    for arguments in (["--help"], ["exec", "--help"], ["app-server", "--help"]):
+        run_cli(codex, arguments, consumer_workspace, cli_env)
+
+    config_path = contained_path(code_home, "config.toml")
+    with local_responses_server() as mock_server:
+        mock_host, mock_port = mock_server.server_address
+        config_path.write_text(
+            f'''model = "mock-model"
+model_provider = "local_smoke"
+approval_policy = "never"
+sandbox_mode = "read-only"
+
+[windows]
+sandbox = "unelevated"
+
+[model_providers.local_smoke]
+name = "Local Windows package smoke fixture"
+base_url = "http://{mock_host}:{mock_port}/v1"
+wire_api = "responses"
+request_max_retries = 0
+stream_max_retries = 0
+supports_websockets = false
+requires_openai_auth = false
+''',
+            encoding="utf-8",
+        )
+        start_result, _ = app_server_request(
+            codex,
+            ["app-server", "--listen", "stdio://"],
+            {
+                "jsonrpc": "2.0",
+                "id": 2,
+                "method": "thread/start",
+                "params": {"cwd": str(consumer_workspace), "sandbox": "workspace-write"},
+            },
+            code_home,
+            consumer_workspace,
+            complete_thread_turn=True,
+        )
+        if mock_server.request_count != 1:
+            raise RuntimeError(
+                "persisted thread smoke did not use exactly one local mock Responses request"
+            )
+
+    thread = start_result.get("thread")
+    thread_id = thread.get("id") if isinstance(thread, dict) else None
+    if not isinstance(thread_id, str) or not thread_id:
+        raise RuntimeError("thread/start returned no thread ID")
+    resume_result, _ = app_server_request(
+        app_server,
+        ["--listen", "stdio://"],
+        {
+            "jsonrpc": "2.0",
+            "id": 2,
+            "method": "thread/resume",
+            "params": {"threadId": thread_id, "cwd": str(consumer_workspace)},
+        },
+        code_home,
+        consumer_workspace,
+    )
+    resumed_thread = resume_result.get("thread")
+    if not isinstance(resumed_thread, dict) or resumed_thread.get("id") != thread_id:
+        raise RuntimeError(f"packaged standalone app-server could not resume thread {thread_id}")
+
+    allowed_file = contained_path(consumer_workspace, "allowed.txt")
+    outside_file = contained_path(consumer_root, "outside.txt")
+    if allowed_file.exists() or outside_file.exists():
+        raise RuntimeError("refusing to overwrite an existing sandbox smoke target")
+    workspace_policy = {
+        "type": "workspaceWrite",
+        "writableRoots": [str(consumer_workspace)],
+        "networkAccess": False,
+        "excludeTmpdirEnvVar": True,
+        "excludeSlashTmp": True,
+    }
+
+    def run_sandbox_command(command: str) -> dict[str, object]:
+        result, _ = app_server_request(
+            app_server,
+            ["--listen", "stdio://"],
+            {
+                "jsonrpc": "2.0",
+                "id": 2,
+                "method": "command/exec",
+                "params": {
+                    "command": ["cmd.exe", "/d", "/c", command],
+                    "cwd": str(consumer_workspace),
+                    "timeoutMs": 15000,
+                    "sandboxPolicy": workspace_policy,
+                },
+            },
+            code_home,
+            consumer_workspace,
+        )
+        return result
+
+    allowed_result = run_sandbox_command("echo ALLOWED> allowed.txt")
+    if allowed_result.get("exitCode") != 0 or not allowed_file.is_file():
+        raise RuntimeError("Windows restricted-token workspace-write sandbox rejected its allowed command")
+    if allowed_file.read_text(encoding="utf-8").strip() != "ALLOWED":
+        raise RuntimeError("allowed sandbox command wrote unexpected content")
+    rg = contained_path(validation_dir, BINARIES["rg.exe"])
+    rg_version = run_cli(rg, ["--version"], consumer_workspace, cli_env)
+    if "ripgrep 15.2.0" not in rg_version:
+        raise RuntimeError(f"packaged ripgrep version is unexpected: {rg_version.strip()}")
+    rg_matches = run_cli(rg, ["ALLOWED", str(allowed_file)], consumer_workspace, cli_env)
+    if "ALLOWED" not in rg_matches:
+        raise RuntimeError("packaged ripgrep did not find the expected workspace fixture")
+    outside_result = run_sandbox_command(r"echo BLOCKED> ..\outside.txt")
+    if outside_result.get("exitCode") == 0 or outside_file.exists():
+        outside_file.unlink(missing_ok=True)
+        raise RuntimeError("Windows restricted-token sandbox did not deny the out-of-scope write")
+
+    source_status = subprocess.check_output(
+        ["git", "status", "--porcelain", "--untracked-files=normal"],
+        cwd=workspace,
+        text=True,
+    )
+    if source_status:
+        raise RuntimeError("refusing to run native smoke tests from a dirty source tree")
+    run_cargo_tests(
+        workspace,
+        TARGET,
+        codex,
+        include_core=include_core_tests,
+        include_tui=include_tui_test,
+    )
+    summary = [
+        "### Native Windows x64 Sedna CLI preview",
+        "",
+        f"- Source commit: `{source_commit}`",
+        f"- Workflow commit: `{workflow_commit}`",
+        f"- Preview version: `{release_version}`",
+        f"- Binary version: `{binary_version}`",
+        "- Signing: unsigned preview; not published as a GitHub Release.",
+        f"- Target: `{TARGET}`",
+        f"- Package: `{archive_path.name}`",
+        f"- SHA-256: `{archive_hash}`",
+        "- Consumer proof: exact ZIP verified; CLI/app-server startup; persisted thread create/resume; Windows restricted-token workspace-write allow/deny; exact-ZIP ConPTY TUI startup; quiet/actionable wait fixtures.",
+        f"- Workflow: {run_url}",
+        "",
+    ]
+    contained_path(artifact_dir, "PREVIEW-SUMMARY.md").write_text(
+        "\n".join(summary), encoding="utf-8", newline="\n"
+    )
+
+
+def smoke_existing_package() -> None:
+    required_env = (
+        "CARGO_TARGET_DIR",
+        "CODEX_RELEASE_VERSION",
+        "DISPLAY_REF",
+        "GITHUB_SHA",
+        "GITHUB_RUN_ID",
+        "GITHUB_REPOSITORY",
+        "GITHUB_SERVER_URL",
+    )
+    missing = [name for name in required_env if not os.environ.get(name)]
+    if missing:
+        raise RuntimeError(f"missing workflow environment values: {', '.join(missing)}")
+    if os.environ.get("TARGET") not in (None, TARGET):
+        raise RuntimeError(f"only {TARGET} is supported, not {os.environ['TARGET']}")
+    if os.environ["GITHUB_SERVER_URL"] != "https://github.com":
+        raise RuntimeError("native Windows preview artifacts may only be published from github.com")
+
+    checkout_root = Path.cwd().resolve(strict=True)
+    if checkout_root.name != "codex-rs":
+        raise RuntimeError("preview smoke must run from the codex-rs checkout directory")
+    workspace = checkout_root.parent
+    source_commit = subprocess.check_output(
+        ["git", "rev-parse", "HEAD"], cwd=workspace, text=True
+    ).strip()
+    workflow_commit = os.environ["GITHUB_SHA"]
+    if source_commit != workflow_commit:
+        raise RuntimeError("preview smoke checkout does not match the workflow source commit")
+    source_status = subprocess.check_output(
+        ["git", "status", "--porcelain", "--untracked-files=normal"],
+        cwd=workspace,
+        text=True,
+    )
+    if source_status:
+        raise RuntimeError("refusing to smoke a preview from a dirty source tree")
+
+    target_root_by_drive = {
+        "C:": Path("C:/cargo-target"),
+        "D:": Path("D:/cargo-target"),
+    }
+    target_dir = next(
+        (
+            candidate
+            for candidate in target_root_by_drive.values()
+            if PureWindowsPath(os.environ["CARGO_TARGET_DIR"]) == PureWindowsPath(candidate)
+        ),
+        None,
+    )
+    if target_dir is None:
+        raise RuntimeError("CARGO_TARGET_DIR is not one of the standard runner cargo-target roots")
+    target_dir.mkdir(parents=True, exist_ok=True)
+    if os.path.normcase(os.path.realpath(target_dir)) != os.path.normcase(str(target_dir)):
+        raise RuntimeError("CARGO_TARGET_DIR resolves through an unexpected path alias")
+
+    repository = os.environ["GITHUB_REPOSITORY"]
+    owner, separator, repository_name = repository.partition("/")
+    if (
+        not separator
+        or "/" in repository_name
+        or not is_github_name_component(owner)
+        or not is_github_name_component(repository_name)
+    ):
+        raise RuntimeError("workflow repository value is malformed")
+    run_id = os.environ["GITHUB_RUN_ID"]
+    if not run_id.isdecimal():
+        raise RuntimeError("workflow run ID must be decimal")
+    run_url = f"{os.environ['GITHUB_SERVER_URL']}/{repository}/actions/runs/{run_id}"
+
+    dist_root = contained_path(workspace, "dist")
+    if os.path.normcase(str(dist_root)) != os.path.normcase(str(workspace / "dist")):
+        raise RuntimeError("refusing to smoke preview artifacts through a dist symlink")
+    artifact_dir = contained_path(dist_root, "sedna-windows-preview")
+    if not artifact_dir.is_dir():
+        raise RuntimeError("downloaded Windows preview artifact directory is missing")
+    zip_paths = [path for path in artifact_dir.iterdir() if path.suffix == ".zip"]
+    if len(zip_paths) != 1:
+        raise RuntimeError("downloaded diagnostic artifact must contain exactly one preview ZIP")
+    archive_path = contained_path(artifact_dir, zip_paths[0].name)
+    sidecar_path = contained_path(artifact_dir, f"{archive_path.name}.sha256")
+    external_manifest_path = contained_path(artifact_dir, "MANIFEST.json")
+    install_path = contained_path(artifact_dir, "INSTALL-WINDOWS.md")
+    if not sidecar_path.is_file() or not external_manifest_path.is_file() or not install_path.is_file():
+        raise RuntimeError("downloaded diagnostic artifact is missing its checksum, manifest, or install guide")
+
+    release_version = os.environ["CODEX_RELEASE_VERSION"]
+    file_version = release_version.replace("+", "__")
+    if archive_path.name != f"codex-sedna-preview-{file_version}-{TARGET}.zip":
+        raise RuntimeError("downloaded preview ZIP filename does not match this workflow version")
+    archive_hash = sha256(archive_path)
+    if sidecar_path.read_text(encoding="ascii") != f"{archive_hash}  {archive_path.name}\n":
+        raise RuntimeError("downloaded preview ZIP does not match its external SHA-256 sidecar")
+    external_manifest = json.loads(external_manifest_path.read_text(encoding="utf-8"))
+    if not isinstance(external_manifest, dict):
+        raise RuntimeError("downloaded preview MANIFEST.json is not an object")
+    manifest_files = external_manifest.get("files")
+    if not isinstance(manifest_files, list):
+        raise RuntimeError("preview manifest files field is not an array")
+    expected_package_files = {"MANIFEST.json"}
+    for entry in manifest_files:
+        if not isinstance(entry, dict) or not isinstance(entry.get("path"), str):
+            raise RuntimeError("preview manifest contains an invalid file entry")
+        relative_parts(entry["path"])
+        expected_package_files.add(entry["path"])
+
+    source_commit = workflow_commit
+    workflow = {
+        "manifestVersion": 1,
+        "repository": repository,
+        "ref": os.environ["DISPLAY_REF"],
+        "sourceCommit": source_commit,
+        "workflowCommit": workflow_commit,
+        "previewVersion": release_version,
+        "binaryVersion": external_manifest.get("binaryVersion"),
+        "target": TARGET,
+        "packageVariant": "codex",
+        "signing": "unsigned",
+        "workflowRun": run_url,
+        "binaries": list(BINARIES.values()),
+    }
+    validation_dir = contained_path(dist_root, ".sedna-windows-preview-smoke-validation")
+    consumer_root = contained_path(dist_root, ".sedna-windows-preview-smoke-consumer")
+    if validation_dir.exists() or consumer_root.exists():
+        raise RuntimeError("refusing to replace an existing Windows preview smoke directory")
+    validation_dir.mkdir()
+    consumer_root.mkdir()
+    validate_archive(archive_path, validation_dir, workflow, expected_package_files)
+    if external_manifest != json.loads(
+        contained_path(validation_dir, "MANIFEST.json").read_text(encoding="utf-8")
+    ):
+        raise RuntimeError("downloaded external manifest does not match the exact preview ZIP")
+
+    binary_version = external_manifest.get("binaryVersion")
+    if not isinstance(binary_version, str):
+        raise RuntimeError("preview manifest binaryVersion is not a string")
+    smoke_package(
+        workspace,
+        artifact_dir,
+        validation_dir,
+        consumer_root,
+        archive_path,
+        sidecar_path,
+        source_commit,
+        workflow_commit,
+        release_version,
+        binary_version,
+        run_url,
+        include_core_tests=False,
+        include_tui_test=True,
     )
 
 
 def main() -> None:
+    parser = argparse.ArgumentParser()
+    mode = parser.add_mutually_exclusive_group(required=True)
+    mode.add_argument("--package-only", action="store_true")
+    mode.add_argument("--smoke-package", action="store_true")
+    args = parser.parse_args()
+    if args.smoke_package:
+        smoke_existing_package()
+        return
+
     required_env = (
         "CARGO_TARGET_DIR",
         "CODEX_RELEASE_VERSION",
@@ -676,6 +1033,8 @@ The package includes the matching app-server and Responses API proxy executables
     source_commit = subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=workspace, text=True).strip()
     if re.fullmatch(r"[0-9a-f]{40,64}", source_commit) is None:
         raise RuntimeError("source commit must be a full hexadecimal Git object ID")
+    if source_commit != workflow_commit:
+        raise RuntimeError("preview package checkout does not match the workflow source commit")
     run_url = f"{server_url}/{repository}/actions/runs/{run_id}"
     payload_files: list[Path] = []
     for path in sorted(package_dir.rglob("*")):
@@ -719,166 +1078,40 @@ The package includes the matching app-server and Responses API proxy executables
         archive_path,
         validation_dir,
         {
+            "manifestVersion": 1,
+            "repository": repository,
+            "ref": os.environ["DISPLAY_REF"],
             "sourceCommit": source_commit,
             "workflowCommit": workflow_commit,
             "previewVersion": release_version,
             "binaryVersion": binary_version,
             "target": TARGET,
+            "packageVariant": "codex",
             "signing": "unsigned",
+            "workflowRun": run_url,
+            "binaries": list(BINARIES.values()),
         },
         expected_files,
     )
     if sha256(archive_path) != archive_hash or sidecar_path.read_text(encoding="ascii") != sidecar:
         raise RuntimeError("preview ZIP or external SHA-256 sidecar changed after creation")
 
-    package_metadata = json.loads(
-        contained_path(validation_dir, "codex-package.json").read_text(encoding="utf-8")
-    )
-    if package_metadata.get("target") != TARGET or package_metadata.get("version") != binary_version:
-        raise RuntimeError("canonical package metadata does not match the source-built binary")
-
     codex = contained_path(validation_dir, BINARIES["codex.exe"])
-    app_server = contained_path(validation_dir, BINARIES["codex-app-server.exe"])
-    code_home = contained_path(consumer_root, "codex-home")
-    code_home.mkdir()
-    contained_path(code_home, "config.toml").write_text(
-        '[windows]\nsandbox = "unelevated"\n', encoding="utf-8"
+    source_status = subprocess.check_output(
+        ["git", "status", "--porcelain", "--untracked-files=normal"],
+        cwd=workspace,
+        text=True,
     )
-    consumer_workspace = contained_path(consumer_root, "workspace")
-    consumer_workspace.mkdir()
-    cli_env = isolated_env(code_home)
-    version_output = run_cli(codex, ["--version"], consumer_workspace, cli_env)
-    if release_version not in version_output or "-dirty" in version_output:
-        raise RuntimeError(f"CLI version does not match this clean preview build: {version_output.strip()}")
-    for arguments in (["--help"], ["exec", "--help"], ["app-server", "--help"]):
-        run_cli(codex, arguments, consumer_workspace, cli_env)
-    config_path = contained_path(code_home, "config.toml")
-    with local_responses_server() as mock_server:
-        mock_host, mock_port = mock_server.server_address
-        config_path.write_text(
-            f'''model = "mock-model"
-model_provider = "local_smoke"
-approval_policy = "never"
-sandbox_mode = "read-only"
-
-[windows]
-sandbox = "unelevated"
-
-[model_providers.local_smoke]
-name = "Local Windows package smoke fixture"
-base_url = "http://{mock_host}:{mock_port}/v1"
-wire_api = "responses"
-request_max_retries = 0
-stream_max_retries = 0
-supports_websockets = false
-requires_openai_auth = false
-''',
-            encoding="utf-8",
-        )
-        start_result, _ = app_server_request(
-            codex,
-            ["app-server", "--listen", "stdio://"],
-            {
-                "jsonrpc": "2.0",
-                "id": 2,
-                "method": "thread/start",
-                "params": {"cwd": str(consumer_workspace), "sandbox": "workspace-write"},
-            },
-            code_home,
-            consumer_workspace,
-            complete_thread_turn=True,
-        )
-        if mock_server.request_count != 1:
-            raise RuntimeError(
-                "persisted thread smoke did not use exactly one local mock Responses request"
-            )
-    thread = start_result.get("thread")
-    thread_id = thread.get("id") if isinstance(thread, dict) else None
-    if not isinstance(thread_id, str) or not thread_id:
-        raise RuntimeError("thread/start returned no thread ID")
-    resume_result, _ = app_server_request(
-        app_server,
-        ["--listen", "stdio://"],
-        {
-            "jsonrpc": "2.0",
-            "id": 2,
-            "method": "thread/resume",
-            "params": {"threadId": thread_id, "cwd": str(consumer_workspace)},
-        },
-        code_home,
-        consumer_workspace,
+    if source_status:
+        raise RuntimeError("refusing to run package tests from a dirty source tree")
+    run_cargo_tests(workspace, TARGET, codex, include_core=True, include_tui=False)
+    shutil.copyfile(
+        contained_path(package_dir, "MANIFEST.json"),
+        contained_path(artifact_dir, "MANIFEST.json"),
     )
-    resumed_thread = resume_result.get("thread")
-    if not isinstance(resumed_thread, dict) or resumed_thread.get("id") != thread_id:
-        raise RuntimeError(f"packaged standalone app-server could not resume thread {thread_id}")
-
-    allowed_file = contained_path(consumer_workspace, "allowed.txt")
-    outside_file = contained_path(consumer_root, "outside.txt")
-    if allowed_file.exists() or outside_file.exists():
-        raise RuntimeError("refusing to overwrite an existing sandbox smoke target")
-    workspace_policy = {
-        "type": "workspaceWrite",
-        "writableRoots": [str(consumer_workspace)],
-        "networkAccess": False,
-        "excludeTmpdirEnvVar": True,
-        "excludeSlashTmp": True,
-    }
-
-    def run_sandbox_command(command: str) -> dict[str, object]:
-        result, _ = app_server_request(
-            app_server,
-            ["--listen", "stdio://"],
-            {
-                "jsonrpc": "2.0",
-                "id": 2,
-                "method": "command/exec",
-                "params": {
-                    "command": ["cmd.exe", "/d", "/c", command],
-                    "cwd": str(consumer_workspace),
-                    "timeoutMs": 15000,
-                    "sandboxPolicy": workspace_policy,
-                },
-            },
-            code_home,
-            consumer_workspace,
-        )
-        return result
-
-    allowed_result = run_sandbox_command("echo ALLOWED> allowed.txt")
-    if allowed_result.get("exitCode") != 0 or not allowed_file.is_file():
-        raise RuntimeError("Windows restricted-token workspace-write sandbox rejected its allowed command")
-    if allowed_file.read_text(encoding="utf-8").strip() != "ALLOWED":
-        raise RuntimeError("allowed sandbox command wrote unexpected content")
-    rg = contained_path(validation_dir, BINARIES["rg.exe"])
-    rg_version = run_cli(rg, ["--version"], consumer_workspace, cli_env)
-    if "ripgrep 15.2.0" not in rg_version:
-        raise RuntimeError(f"packaged ripgrep version is unexpected: {rg_version.strip()}")
-    rg_matches = run_cli(rg, ["ALLOWED", str(allowed_file)], consumer_workspace, cli_env)
-    if "ALLOWED" not in rg_matches:
-        raise RuntimeError("packaged ripgrep did not find the expected workspace fixture")
-    outside_result = run_sandbox_command(r"echo BLOCKED> ..\outside.txt")
-    if outside_result.get("exitCode") == 0 or outside_file.exists():
-        outside_file.unlink(missing_ok=True)
-        raise RuntimeError("Windows restricted-token sandbox did not deny the out-of-scope write")
-
-    run_cargo_tests(workspace, TARGET, codex)
-    summary = [
-        "### Native Windows x64 Sedna CLI preview",
-        "",
-        f"- Source commit: `{source_commit}`",
-        f"- Workflow commit: `{workflow_commit}`",
-        f"- Preview version: `{release_version}`",
-        f"- Binary version: `{binary_version}`",
-        "- Signing: unsigned preview; not published as a GitHub Release.",
-        f"- Target: `{TARGET}`",
-        f"- Package: `{archive_path.name}`",
-        f"- SHA-256: `{archive_hash}`",
-        "- Consumer proof: exact ZIP verified; CLI/app-server startup; persisted thread create/resume; Windows restricted-token workspace-write allow/deny; exact-ZIP ConPTY TUI startup; quiet/actionable wait fixtures.",
-        f"- Workflow: {run_url}",
-        "",
-    ]
-    contained_path(artifact_dir, "PREVIEW-SUMMARY.md").write_text(
-        "\n".join(summary), encoding="utf-8", newline="\n"
+    shutil.copyfile(
+        contained_path(package_dir, "INSTALL-WINDOWS.md"),
+        contained_path(artifact_dir, "INSTALL-WINDOWS.md"),
     )
 
 

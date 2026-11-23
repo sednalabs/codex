@@ -598,7 +598,7 @@ jobs:
         PY
 
   build-windows-x86_64:
-    name: Build and validate native Windows x64 preview
+    name: Build native Windows x64 preview ZIP
     needs: metadata
     if: ${{ inputs.platform == 'windows-x86_64' }}
     runs-on: windows-2025
@@ -660,11 +660,72 @@ jobs:
             --bin codex-command-runner \
             --bin codex-app-server
 
-      - name: Package and validate the exact Windows preview ZIP
+      - name: Package the Windows preview ZIP and run orchestration fixtures
         shell: pwsh
-        run: python "$env:GITHUB_WORKSPACE/.github/scripts/sedna-windows-preview.py"
+        run: python "$env:GITHUB_WORKSPACE/.github/scripts/sedna-windows-preview.py" --package-only
 
-      - name: Upload disposable Windows preview artifact
+      - name: Upload short-lived diagnostic Windows preview package
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: ${{ needs.metadata.outputs.artifact_name }}-x86_64-pc-windows-msvc-diagnostic
+          path: dist/sedna-windows-preview/*
+          if-no-files-found: error
+          retention-days: 1
+
+  smoke-windows-x86_64:
+    name: Smoke exact native Windows x64 preview ZIP
+    needs: [metadata, build-windows-x86_64]
+    if: ${{ inputs.platform == 'windows-x86_64' }}
+    runs-on: windows-2025
+    timeout-minutes: 120
+    permissions:
+      actions: read
+      contents: read
+    env:
+      CARGO_INCREMENTAL: "0"
+      CARGO_NET_GIT_FETCH_WITH_CLI: "true"
+      LIBSQLITE3_FLAGS: SQLITE_DISABLE_INTRINSIC
+      CODEX_RELEASE_REPOSITORY: ${{ github.repository }}
+      CODEX_RELEASE_TAG_PREFIX: v
+      CODEX_RELEASE_VERSION: ${{ needs.metadata.outputs.preview_version }}
+      DISPLAY_REF: ${{ needs.metadata.outputs.display_ref }}
+      TARGET: x86_64-pc-windows-msvc
+    defaults:
+      run:
+        working-directory: codex-rs
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 1
+          ref: ${{ github.sha }}
+          persist-credentials: false
+
+      - uses: ./.github/actions/setup-ci
+
+      - uses: dtolnay/rust-toolchain@e081816240890017053eacbb1bdf337761dc5582 # 1.95.0
+        with:
+          targets: x86_64-pc-windows-msvc
+
+      - name: Configure the native MSVC environment
+        uses: ./.github/actions/setup-msvc-env
+        with:
+          target: x86_64-pc-windows-msvc
+
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: "3.12"
+
+      - name: Download the exact diagnostic Windows preview package
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: ${{ needs.metadata.outputs.artifact_name }}-x86_64-pc-windows-msvc-diagnostic
+          path: codex-rs/dist/sedna-windows-preview
+
+      - name: Smoke the exact Windows preview ZIP
+        shell: pwsh
+        run: python "$env:GITHUB_WORKSPACE/.github/scripts/sedna-windows-preview.py" --smoke-package
+
+      - name: Upload validated Windows preview artifact
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
         with:
           name: ${{ needs.metadata.outputs.artifact_name }}-x86_64-pc-windows-msvc
