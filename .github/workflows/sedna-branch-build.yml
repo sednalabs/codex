@@ -801,7 +801,6 @@ jobs:
           path: ${{ runner.temp }}/sedna-windows-preview-diagnostic
 
       - name: Verify and extract the exact preview ZIP
-        id: package
         shell: pwsh
         run: |
           $artifactDir = Join-Path $env:RUNNER_TEMP 'sedna-windows-preview-diagnostic'
@@ -826,7 +825,7 @@ jobs:
           if ($binaryHash -ne $binaryEntry[0].sha256) { throw 'The extracted preview CLI does not match its manifest hash.' }
           "SEDNA_PREVIEW_CLI=$cli" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
 
-      - name: Smoke the retained Windows preview in ConPTY and exit on Ctrl+C
+      - name: Smoke the default Windows preview TUI in ConPTY and exit on Ctrl+C
         shell: pwsh
         run: cargo test --locked --target x86_64-pc-windows-msvc --release -p codex-utils-pty --test windows_preview_tui -- --ignored --nocapture --test-threads=1
 

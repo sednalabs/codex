@@ -147,11 +147,7 @@ async fn preview_cli_renders_tui_in_conpty_and_exits_on_ctrl_c() -> Result<()> {
     ]);
 
     let log_dir_config = format!("log_dir={:?}", log_dir.to_string_lossy());
-    let args = vec![
-        "--no-alt-screen".to_string(),
-        "-c".to_string(),
-        log_dir_config,
-    ];
+    let args = vec!["-c".to_string(), log_dir_config];
     let mut process = spawn_pty_process(
         cli.to_str()
             .context("preview CLI path is not valid UTF-8")?,
@@ -172,7 +168,7 @@ async fn preview_cli_renders_tui_in_conpty_and_exits_on_ctrl_c() -> Result<()> {
     let rendered_ui = timeout(Duration::from_secs(30), async {
         loop {
             let Some(chunk) = process.stdout_rx.recv().await else {
-                anyhow::bail!("preview TUI exited before rendering its composer")
+                anyhow::bail!("preview TUI exited before rendering its interactive UI")
             };
             terminal_output.extend_from_slice(&chunk);
             let visible_output = visible_terminal_bytes(&terminal_output);
@@ -250,13 +246,13 @@ async fn preview_cli_renders_tui_in_conpty_and_exits_on_ctrl_c() -> Result<()> {
             .collect::<Vec<_>>()
             .join("\n");
         anyhow::bail!(
-            "preview TUI did not render a composer placeholder within 30 seconds (terminal output: {} bytes, TUI log: {log_bytes} bytes, process exited: {}); visible terminal excerpt:\n{terminal_excerpt}\nTUI warnings/errors:\n{diagnostics}",
+            "preview TUI did not render a composer or unauthenticated welcome/sign-in screen within 30 seconds (terminal output: {} bytes, TUI log: {log_bytes} bytes, process exited: {}); visible terminal excerpt:\n{terminal_excerpt}\nTUI warnings/errors:\n{diagnostics}",
             terminal_output.len(),
             process.session.has_exited(),
         );
     }
     rendered_ui
-        .context("preview TUI did not render a composer placeholder within 30 seconds")??;
+        .context("preview TUI did not render an interactive composer or welcome/sign-in screen within 30 seconds")??;
     anyhow::ensure!(
         !process.session.has_exited(),
         "preview TUI exited before Ctrl+C was sent"
