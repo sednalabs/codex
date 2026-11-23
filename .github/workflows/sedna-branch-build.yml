@@ -19,6 +19,7 @@ on:
           - linux-x86_64
           - linux-aarch64
           - macos
+          - windows-x86_64
       host_only:
         description: Build only the Linux x86_64 code-mode host helper
         required: false
@@ -42,6 +43,22 @@ jobs:
       preview_version: ${{ steps.meta.outputs.preview_version }}
       artifact_name: ${{ steps.meta.outputs.artifact_name }}
     steps:
+      - name: Require the hosted source ref for native Windows previews
+        if: ${{ inputs.platform == 'windows-x86_64' }}
+        shell: bash
+        env:
+          REQUESTED_REF: ${{ inputs.ref }}
+        run: |
+          set -euo pipefail
+          if [[ -n "${REQUESTED_REF}" ]]; then
+            echo "Windows previews must use the selected workflow ref, not the separate ref input." >&2
+            exit 1
+          fi
+          if [[ "${GITHUB_REF}" != refs/heads/* ]]; then
+            echo "Windows previews must be dispatched from a branch, not a tag or other ref." >&2
+            exit 1
+          fi
+
       - uses: actions/checkout@v7
         with:
           fetch-depth: 0
@@ -579,6 +596,142 @@ jobs:
         json.dump(payload, sys.stdout, indent=2)
         sys.stdout.write("\n")
         PY
+
+  build-windows-x86_64:
+    name: Build native Windows x64 preview ZIP
+    needs: metadata
+    if: ${{ inputs.platform == 'windows-x86_64' }}
+    runs-on: windows-2025
+    timeout-minutes: 240
+    permissions:
+      contents: read
+    env:
+      CARGO_INCREMENTAL: "0"
+      CARGO_NET_GIT_FETCH_WITH_CLI: "true"
+      LIBSQLITE3_FLAGS: SQLITE_DISABLE_INTRINSIC
+      CODEX_RELEASE_REPOSITORY: ${{ github.repository }}
+      CODEX_RELEASE_TAG_PREFIX: v
+      CODEX_RELEASE_VERSION: ${{ needs.metadata.outputs.preview_version }}
+      DISPLAY_REF: ${{ needs.metadata.outputs.display_ref }}
+      TARGET: x86_64-pc-windows-msvc
+    defaults:
+      run:
+        working-directory: codex-rs
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 1
+          ref: ${{ github.sha }}
+          persist-credentials: false
+
+      - uses: ./.github/actions/setup-ci
+
+      - uses: dtolnay/rust-toolchain@e081816240890017053eacbb1bdf337761dc5582 # 1.95.0
+        with:
+          targets: x86_64-pc-windows-msvc
+
+      - name: Configure the native MSVC environment
+        uses: ./.github/actions/setup-msvc-env
+        with:
+          target: x86_64-pc-windows-msvc
+
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: "3.12"
+
+      - name: Build native Windows preview binaries
+        shell: bash
+        run: |
+          set -euo pipefail
+          source_status="$(git status --porcelain --untracked-files=normal)"
+          if [[ -n "${source_status}" ]]; then
+            echo "Refusing to build a preview from a dirty source tree." >&2
+            printf '%s\n' "${source_status}" >&2
+            exit 1
+          fi
+          cargo build \
+            --locked \
+            --target "${TARGET}" \
+            --release \
+            --bin codex \
+            --bin codex-code-mode-host \
+            --bin codex-responses-api-proxy \
+            --bin codex-windows-sandbox-setup \
+            --bin codex-command-runner \
+            --bin codex-app-server
+
+      - name: Package the Windows preview ZIP and run orchestration fixtures
+        shell: pwsh
+        run: python "$env:GITHUB_WORKSPACE/.github/scripts/sedna-windows-preview.py" --package-only
+
+      - name: Upload short-lived diagnostic Windows preview package
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: ${{ needs.metadata.outputs.artifact_name }}-x86_64-pc-windows-msvc-diagnostic
+          path: dist/sedna-windows-preview/*
+          if-no-files-found: error
+          retention-days: 1
+
+  smoke-windows-x86_64:
+    name: Smoke exact native Windows x64 preview ZIP
+    needs: [metadata, build-windows-x86_64]
+    if: ${{ inputs.platform == 'windows-x86_64' }}
+    runs-on: windows-2025
+    timeout-minutes: 120
+    permissions:
+      actions: read
+      contents: read
+    env:
+      CARGO_INCREMENTAL: "0"
+      CARGO_NET_GIT_FETCH_WITH_CLI: "true"
+      LIBSQLITE3_FLAGS: SQLITE_DISABLE_INTRINSIC
+      CODEX_RELEASE_REPOSITORY: ${{ github.repository }}
+      CODEX_RELEASE_TAG_PREFIX: v
+      CODEX_RELEASE_VERSION: ${{ needs.metadata.outputs.preview_version }}
+      DISPLAY_REF: ${{ needs.metadata.outputs.display_ref }}
+      TARGET: x86_64-pc-windows-msvc
+    defaults:
+      run:
+        working-directory: codex-rs
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 1
+          ref: ${{ github.sha }}
+          persist-credentials: false
+
+      - uses: ./.github/actions/setup-ci
+
+      - uses: dtolnay/rust-toolchain@e081816240890017053eacbb1bdf337761dc5582 # 1.95.0
+        with:
+          targets: x86_64-pc-windows-msvc
+
+      - name: Configure the native MSVC environment
+        uses: ./.github/actions/setup-msvc-env
+        with:
+          target: x86_64-pc-windows-msvc
+
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: "3.12"
+
+      - name: Download the exact diagnostic Windows preview package
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: ${{ needs.metadata.outputs.artifact_name }}-x86_64-pc-windows-msvc-diagnostic
+          path: ${{ github.workspace }}/dist/sedna-windows-preview
+
+      - name: Smoke the exact Windows preview ZIP
+        shell: pwsh
+        run: python "$env:GITHUB_WORKSPACE/.github/scripts/sedna-windows-preview.py" --smoke-package
+
+      - name: Upload validated Windows preview artifact
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: ${{ needs.metadata.outputs.artifact_name }}-x86_64-pc-windows-msvc
+          path: dist/sedna-windows-preview/*
+          if-no-files-found: error
+          retention-days: 3
 
   build-macos:
     name: Build macOS preview - x86_64-apple-darwin

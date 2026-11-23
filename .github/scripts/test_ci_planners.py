@@ -4791,7 +4791,7 @@ class ValidationPlanScriptTests(unittest.TestCase):
         ).get("inputs") or {}
         self.assertEqual(
             (workflow_dispatch_inputs.get("platform") or {}).get("options"),
-            ["linux-x86_64", "linux-aarch64", "macos"],
+            ["linux-x86_64", "linux-aarch64", "macos", "windows-x86_64"],
         )
         self.assertEqual(
             (workflow_dispatch_inputs.get("platform") or {}).get("default"),

@@ -1,3 +1,5 @@
+#![cfg_attr(target_os = "windows", recursion_limit = "256")]
+
 use clap::Parser;
 use codex_app_server::AppServerCodeModeHostArgs;
 use codex_app_server::AppServerRuntimeOptions;
