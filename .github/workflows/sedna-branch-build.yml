@@ -36,7 +36,6 @@ permissions:
 jobs:
   metadata:
     name: Resolve preview metadata
-    if: ${{ inputs.ref != 'diagnostic-45157961781' }}
     runs-on: ubuntu-24.04
     outputs:
       checkout_ref: ${{ steps.meta.outputs.checkout_ref }}
@@ -733,101 +732,6 @@ jobs:
           path: dist/sedna-windows-preview/*
           if-no-files-found: error
           retention-days: 3
-
-  diagnostic-windows-preview:
-    name: Smoke retained Windows preview artifact 14824155131
-    if: >-
-      ${{
-        inputs.platform == 'windows-x86_64' &&
-        inputs.ref == 'diagnostic-45157961781' &&
-        github.ref == 'refs/heads/feature/sedna-native-windows-cli-preview-20261121'
-      }}
-    runs-on: windows-2025
-    timeout-minutes: 30
-    permissions:
-      actions: read
-      contents: read
-    env:
-      CARGO_INCREMENTAL: "0"
-      CARGO_NET_GIT_FETCH_WITH_CLI: "true"
-      CARGO_TARGET_DIR: D:/cargo-target
-      TARGET: x86_64-pc-windows-msvc
-    defaults:
-      run:
-        working-directory: codex-rs
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          fetch-depth: 1
-          ref: ${{ github.sha }}
-          persist-credentials: false
-
-      - uses: dtolnay/rust-toolchain@e081816240890017053eacbb1bdf337761dc5582 # 1.95.0
-        with:
-          targets: x86_64-pc-windows-msvc
-
-      - name: Configure the native MSVC environment
-        uses: ./.github/actions/setup-msvc-env
-        with:
-          target: x86_64-pc-windows-msvc
-
-      - name: Verify the exact retained diagnostic artifact identity
-        shell: pwsh
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: |
-          $head = git rev-parse HEAD
-          if ($head -ne $env:GITHUB_SHA -or $env:GITHUB_REF -ne 'refs/heads/feature/sedna-native-windows-cli-preview-20261121') {
-            throw 'The one-off Windows diagnostic is not running on the expected candidate branch head.'
-          }
-          $status = git status --porcelain --untracked-files=normal
-          if ($status) { throw 'The one-off Windows diagnostic checkout is not clean.' }
-          $artifact = gh api repos/sednalabs/codex/actions/artifacts/14824155131 | ConvertFrom-Json
-          if ($artifact.id -ne 14824155131 -or $artifact.name -ne 'sedna-branch-feature-sedna-native-windows-cli-preview-2026112-b6ceae22-x86_64-pc-windows-msvc-diagnostic' -or $artifact.expired -or $artifact.digest -ne 'sha256:4e1e18c508d1be8d7a29b6a3994ae7f9de43ca5cc616d8e406832e5e9803cfcd') {
-            throw 'The retained Windows artifact identity, digest, or expiry state changed.'
-          }
-          $sourceRun = gh api repos/sednalabs/codex/actions/runs/45157961781 | ConvertFrom-Json
-          if ($sourceRun.id -ne 45157961781 -or $sourceRun.head_branch -ne 'feature/sedna-native-windows-cli-preview-20261121' -or $sourceRun.head_sha -ne 'b6ceae2256a15a02e331260996616fd94217c0ae' -or $artifact.workflow_run.id -ne 45157961781) {
-            throw 'The retained Windows artifact is not bound to the expected native run and source.'
-          }
-
-      - name: Download the exact retained diagnostic Windows package
-        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
-        with:
-          name: sedna-branch-feature-sedna-native-windows-cli-preview-2026112-b6ceae22-x86_64-pc-windows-msvc-diagnostic
-          repository: sednalabs/codex
-          run-id: 45157961781
-          github-token: ${{ github.token }}
-          path: ${{ runner.temp }}/sedna-windows-preview-diagnostic
-
-      - name: Verify and extract the exact preview ZIP
-        shell: pwsh
-        run: |
-          $artifactDir = Join-Path $env:RUNNER_TEMP 'sedna-windows-preview-diagnostic'
-          $archives = @(Get-ChildItem -LiteralPath $artifactDir -File -Filter 'codex-sedna-preview-*.zip')
-          if ($archives.Count -ne 1) { throw 'Expected exactly one retained preview ZIP.' }
-          $archive = $archives[0]
-          $sidecar = Get-Content -Raw -LiteralPath "$($archive.FullName).sha256"
-          $expectedHash = ($sidecar.Trim() -split '\s+')[0].ToLowerInvariant()
-          $actualHash = (Get-FileHash -LiteralPath $archive.FullName -Algorithm SHA256).Hash.ToLowerInvariant()
-          if ($actualHash -ne $expectedHash) { throw 'The retained preview ZIP does not match its SHA-256 sidecar.' }
-          $manifest = Get-Content -Raw -LiteralPath (Join-Path $artifactDir 'MANIFEST.json') | ConvertFrom-Json
-          if ($manifest.repository -ne 'sednalabs/codex' -or $manifest.ref -ne 'feature/sedna-native-windows-cli-preview-20261121' -or $manifest.sourceCommit -ne 'b6ceae2256a15a02e331260996616fd94217c0ae' -or $manifest.workflowCommit -ne 'b6ceae2256a15a02e331260996616fd94217c0ae' -or $manifest.workflowRun -ne 'https://github.com/sednalabs/codex/actions/runs/45157961781' -or $manifest.target -ne 'x86_64-pc-windows-msvc' -or $manifest.signing -ne 'unsigned') {
-            throw 'The retained preview manifest does not match the exact source, workflow run, target, and unsigned preview.'
-          }
-          $extractRoot = Join-Path $env:RUNNER_TEMP 'sedna-windows-preview-extracted'
-          if (Test-Path -LiteralPath $extractRoot) { throw 'Refusing to replace the Windows preview extraction directory.' }
-          Expand-Archive -LiteralPath $archive.FullName -DestinationPath $extractRoot
-          $binaryEntry = @($manifest.files | Where-Object { $_.path -eq 'bin/codex.exe' })
-          if ($binaryEntry.Count -ne 1) { throw 'Manifest does not contain exactly one packaged codex.exe.' }
-          $cli = Join-Path $extractRoot 'bin/codex.exe'
-          $binaryHash = (Get-FileHash -LiteralPath $cli -Algorithm SHA256).Hash.ToLowerInvariant()
-          if ($binaryHash -ne $binaryEntry[0].sha256) { throw 'The extracted preview CLI does not match its manifest hash.' }
-          "SEDNA_PREVIEW_CLI=$cli" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
-
-      - name: Smoke the default Windows preview TUI in ConPTY and exit on Ctrl+C
-        shell: pwsh
-        run: cargo test --locked --target x86_64-pc-windows-msvc --release -p codex-utils-pty --test windows_preview_tui -- --ignored --nocapture --test-threads=1
 
   build-macos:
     name: Build macOS preview - x86_64-apple-darwin
