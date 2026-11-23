@@ -25,6 +25,16 @@ const VISIBLE_COMPOSER_MARKERS: [&[u8]; 8] = [
     b"Run /review on my current changes",
     b"Use /skills to list available skills",
 ];
+// The isolated preview home has no credentials, so the interactive welcome/sign-in screen is the
+// expected first UI instead of an empty-chat composer.
+const VISIBLE_LOGIN_SCREEN_MARKERS: [&[u8]; 2] = [
+    b"Welcome to Codex, OpenAI's command-line coding agent",
+    b"Sign in with ChatGPT",
+];
+
+fn contains_marker(text: &[u8], marker: &[u8]) -> bool {
+    text.windows(marker.len()).any(|window| window == marker)
+}
 
 fn visible_terminal_bytes(output: &[u8]) -> Vec<u8> {
     let mut visible = Vec::with_capacity(output.len());
@@ -171,12 +181,14 @@ async fn preview_cli_renders_tui_in_conpty_and_exits_on_ctrl_c() -> Result<()> {
                 .split_whitespace()
                 .collect::<Vec<_>>()
                 .join(" ");
-            if VISIBLE_COMPOSER_MARKERS.iter().any(|marker| {
-                normalized_visible_text
-                    .as_bytes()
-                    .windows(marker.len())
-                    .any(|window| window == *marker)
-            }) {
+            let visible_bytes = normalized_visible_text.as_bytes();
+            let composer_rendered = VISIBLE_COMPOSER_MARKERS
+                .iter()
+                .any(|marker| contains_marker(visible_bytes, marker));
+            let unauthenticated_ui_rendered = VISIBLE_LOGIN_SCREEN_MARKERS
+                .iter()
+                .all(|marker| contains_marker(visible_bytes, marker));
+            if composer_rendered || unauthenticated_ui_rendered {
                 return Ok::<(), anyhow::Error>(());
             }
             anyhow::ensure!(
