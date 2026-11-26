@@ -116,7 +116,7 @@ jobs:
             echo "The event source commit is not present in the workflow-host checkout." >&2
             exit 1
           fi
-          if ! git merge-base --is-ancestor "${SOURCE_SHA}" "${WORKFLOW_HOST_SHA}"; then
+          if [[ "${convergence_package}" != true ]] && ! git merge-base --is-ancestor "${SOURCE_SHA}" "${WORKFLOW_HOST_SHA}"; then
             echo "The event source is not an ancestor of this workflow host." >&2
             exit 1
           fi
