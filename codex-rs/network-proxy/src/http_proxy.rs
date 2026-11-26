@@ -36,9 +36,8 @@ use anyhow::Result;
 use codex_utils_rustls_provider::ensure_rustls_crypto_provider;
 use rama_core::Layer;
 use rama_core::Service;
-use rama_core::error::ErrorExt as _;
+use rama_core::error::ErrorContext as _;
 use rama_core::error::OpaqueError;
-use rama_core::extensions::ExtensionsMut;
 use rama_core::extensions::ExtensionsRef;
 use rama_core::service::BoxService;
 use rama_core::service::service_fn;
@@ -62,13 +61,13 @@ use rama_http_backend::server::layer::upgrade::Upgraded;
 use rama_net::Protocol;
 use rama_net::client::ConnectorService;
 use rama_net::client::EstablishedClientConnection;
+use rama_net::client::Request as TcpRequest;
 use rama_net::http::RequestContext;
 use rama_net::proxy::ProxyRequest;
 use rama_net::proxy::ProxyTarget;
 use rama_net::proxy::StreamForwardService;
 use rama_net::stream::SocketInfo;
 use rama_tcp::TcpStream;
-use rama_tcp::client::Request as TcpRequest;
 use rama_tcp::server::TcpListener;
 use rama_tls_rustls::client::TlsConnectorDataBuilder;
 use rama_tls_rustls::client::TlsConnectorLayer;
@@ -342,13 +341,13 @@ async fn http_connect_accept(
         return Err(blocked_text_with_details(REASON_MITM_REQUIRED, &details));
     }
 
-    req.extensions_mut().insert(ProxyTarget(authority));
-    req.extensions_mut().insert(connect_mitm_mode);
-    req.extensions_mut().insert(mode);
+    req.extensions().insert(ProxyTarget(authority));
+    req.extensions().insert(connect_mitm_mode);
+    req.extensions().insert(mode);
     if connect_mitm_mode != ConnectMitmMode::Disabled
         && let Some(mitm_state) = mitm_state
     {
-        req.extensions_mut().insert(mitm_state);
+        req.extensions().insert(mitm_state);
     }
 
     Ok((
@@ -383,7 +382,7 @@ async fn http_connect_proxy(upgraded: Upgraded) -> Result<(), Infallible> {
 
 async fn mitm_connect_tunnel<S>(stream: S) -> Result<(), OpaqueError>
 where
-    S: Stream + Unpin + ExtensionsMut,
+    S: Stream + Unpin + ExtensionsRef,
 {
     let target = stream
         .extensions()
@@ -397,7 +396,7 @@ where
         .get::<NetworkMode>()
         .copied()
         .unwrap_or(NetworkMode::Full);
-    if stream.extensions().get::<Arc<mitm::MitmState>>().is_none() {
+    if stream.extensions().get_ref::<Arc<mitm::MitmState>>().is_none() {
         return Err(OpaqueError::from_display(format!(
             "cannot enable MITM without state (host={host}, port={port})"
         )));
@@ -411,7 +410,7 @@ where
 
 async fn forward_connect_tunnel<S>(upgraded: S) -> Result<(), OpaqueError>
 where
-    S: Stream + Unpin + ExtensionsMut,
+    S: Stream + Unpin + ExtensionsRef,
 {
     let authority = upgraded
         .extensions()
@@ -452,7 +451,7 @@ where
     }
 
     let req = TcpRequest::new_with_extensions(authority.clone(), extensions)
-        .with_protocol(Protocol::HTTPS);
+        .with_application_protocol(Some(Protocol::HTTPS));
     let proxy_connector = HttpProxyConnector::optional(TargetCheckedTcpConnector::new(app_state));
     let tls_config = TlsConnectorDataBuilder::new()
         .with_alpn_protocols_http_auto()
@@ -510,7 +509,7 @@ async fn http_plain_proxy(
     environment_id: Option<String>,
     mut req: Request,
 ) -> Result<Response, Infallible> {
-    let app_state = match req.extensions().get::<Arc<NetworkProxyState>>().cloned() {
+    let app_state = match req.extensions().get_ref::<Arc<NetworkProxyState>>().cloned() {
         Some(state) => state,
         None => {
             error!("missing app state");
@@ -1125,7 +1124,7 @@ mod tests {
             .header("host", "example.com:443")
             .body(Body::empty())
             .unwrap();
-        req.extensions_mut().insert(state);
+        req.extensions().insert(state);
 
         let response = http_connect_accept(
             /*policy_decider*/ None, /*environment_id*/ None, req,
@@ -1157,7 +1156,7 @@ mod tests {
             .header("host", "example.com:443")
             .body(Body::empty())
             .unwrap();
-        req.extensions_mut().insert(state);
+        req.extensions().insert(state);
 
         let (response, _request) = http_connect_accept(
             /*policy_decider*/ None, /*environment_id*/ None, req,
@@ -1187,7 +1186,7 @@ mod tests {
             .header("host", "example.com:443")
             .body(Body::empty())
             .unwrap();
-        req.extensions_mut().insert(state);
+        req.extensions().insert(state);
 
         let (response, _request) =
             http_connect_accept(Some(decider), Some("remote".to_string()), req)
@@ -1222,7 +1221,7 @@ mod tests {
             .header("host", "github.com:22")
             .body(Body::empty())
             .unwrap();
-        req.extensions_mut().insert(state);
+        req.extensions().insert(state);
 
         let (response, request) = http_connect_accept(
             /*policy_decider*/ None, /*environment_id*/ None, req,
@@ -1231,7 +1230,7 @@ mod tests {
         .expect("brokered credentials should defer MITM until protocol detection");
         assert_eq!(response.status(), StatusCode::OK);
         assert_eq!(
-            request.extensions().get::<ConnectMitmMode>().copied(),
+            request.extensions().get_ref::<ConnectMitmMode>().copied(),
             Some(ConnectMitmMode::DetectTls)
         );
     }
@@ -1323,7 +1322,7 @@ mod tests {
             .header("host", "api.github.com:8443")
             .body(Body::empty())
             .unwrap();
-        req.extensions_mut().insert(state);
+        req.extensions().insert(state);
 
         let response = http_connect_accept(
             /*policy_decider*/ None, /*environment_id*/ None, req,
@@ -1434,7 +1433,7 @@ mod tests {
             .header("x-unix-socket", "/tmp/test.sock")
             .body(Body::empty())
             .expect("request should build");
-        req.extensions_mut().insert(state);
+        req.extensions().insert(state);
 
         let response = http_plain_proxy(
             /*policy_decider*/ None, /*environment_id*/ None, req,
@@ -1459,7 +1458,7 @@ mod tests {
             .header("x-unix-socket", "/tmp/test.sock")
             .body(Body::empty())
             .expect("request should build");
-        req.extensions_mut().insert(state);
+        req.extensions().insert(state);
 
         let response = http_plain_proxy(
             /*policy_decider*/ None, /*environment_id*/ None, req,
@@ -1493,7 +1492,7 @@ mod tests {
             .header("x-unix-socket", "/tmp/test.sock")
             .body(Body::empty())
             .expect("request should build");
-        req.extensions_mut().insert(state);
+        req.extensions().insert(state);
 
         let response = http_plain_proxy(
             /*policy_decider*/ None, /*environment_id*/ None, req,
@@ -1519,7 +1518,7 @@ mod tests {
             .header("host", "api.openai.com:443")
             .body(Body::empty())
             .unwrap();
-        req.extensions_mut().insert(state);
+        req.extensions().insert(state);
 
         let response = http_connect_accept(
             /*policy_decider*/ None, /*environment_id*/ None, req,
@@ -1542,7 +1541,7 @@ mod tests {
             .header(header::HOST, "api.github.com")
             .body(Body::empty())
             .unwrap();
-        req.extensions_mut().insert(state);
+        req.extensions().insert(state);
 
         let response = http_plain_proxy(
             /*policy_decider*/ None, /*environment_id*/ None, req,
